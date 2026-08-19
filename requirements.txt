@@ -1,0 +1,7 @@
+librosa>=0.10.1
+soundfile>=0.12.1
+imageio-ffmpeg>=0.4.9
+numpy>=1.24
+requests>=2.31.0
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
