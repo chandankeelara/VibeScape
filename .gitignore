@@ -1,0 +1,29 @@
+# Secrets — NEVER commit
+config.py
+
+# Data — regeneratable, large, or contains user library state
+data/audio/
+data/*.db
+data/*.log
+data/*.log.err
+data/recompute_progress.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+venv/
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
