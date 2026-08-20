@@ -405,14 +405,19 @@ def list_tracks(
     shuffle: bool = False,
     sess: dict = Depends(require_user),
 ):
-    where = ["user_id = ?", "vibe_score BETWEEN ? AND ?"]
+    where = ["ut.user_id = ?", "t.vibe_score BETWEEN ? AND ?"]
     params: list = [sess["user_id"], vibe_min, vibe_max]
     if mood:
-        where.append("mood = ?")
+        where.append("t.mood = ?")
         params.append(mood)
 
-    order = "ORDER BY RANDOM()" if shuffle else "ORDER BY vibe_score"
-    sql = f"SELECT {TRACK_SELECT} FROM tracks WHERE {' AND '.join(where)} {order} LIMIT ?"
+    order = "ORDER BY RANDOM()" if shuffle else "ORDER BY t.vibe_score"
+    select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
+    sql = (
+        f"SELECT {select} FROM tracks t "
+        f"JOIN user_tracks ut ON ut.track_id = t.id "
+        f"WHERE {' AND '.join(where)} {order} LIMIT ?"
+    )
     params.append(limit)
 
     conn = get_conn()
@@ -445,14 +450,19 @@ def random_track(
 
     conn = get_conn()
     try:
+        select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
         for attempt in range(2):
             tol = tolerance + (10 if attempt else 0)
             lo, hi = vibe - tol, vibe + tol
-            sql = f"SELECT {TRACK_SELECT} FROM tracks WHERE user_id = ? AND vibe_score BETWEEN ? AND ?"
+            sql = (
+                f"SELECT {select} FROM tracks t "
+                f"JOIN user_tracks ut ON ut.track_id = t.id "
+                f"WHERE ut.user_id = ? AND t.vibe_score BETWEEN ? AND ?"
+            )
             params: list = [sess["user_id"], lo, hi]
             if exclude:
                 placeholders = ",".join("?" * len(exclude))
-                sql += f" AND apple_id NOT IN ({placeholders})"
+                sql += f" AND t.apple_id NOT IN ({placeholders})"
                 params.extend(exclude)
             sql += " ORDER BY RANDOM() LIMIT 1"
             try:
@@ -479,7 +489,9 @@ def get_track_spotify(apple_id: int, sess: dict = Depends(require_user)):
     conn = get_conn()
     try:
         row = conn.execute(
-            "SELECT spotify_id FROM tracks WHERE apple_id = ? AND user_id = ?",
+            "SELECT t.spotify_id FROM tracks t "
+            "JOIN user_tracks ut ON ut.track_id = t.id "
+            "WHERE t.apple_id = ? AND ut.user_id = ?",
             (apple_id, sess["user_id"]),
         ).fetchone()
     finally:
@@ -653,8 +665,8 @@ def stream_track_by_spotify(spotify_id: str, request: Request, sess: dict = Depe
     conn = get_conn()
     try:
         row = conn.execute(
-            "SELECT audio_path FROM tracks WHERE spotify_id = ? AND user_id = ?",
-            (spotify_id, sess["user_id"]),
+            "SELECT audio_path FROM tracks WHERE spotify_id = ?",
+            (spotify_id,),
         ).fetchone()
     finally:
         conn.close()
@@ -669,15 +681,15 @@ def stream_track(track_key: str, request: Request, sess: dict = Depends(require_
         try:
             apple_id_int = int(track_key)
             row = conn.execute(
-                "SELECT audio_path FROM tracks WHERE apple_id = ? AND user_id = ?",
-                (apple_id_int, sess["user_id"]),
+                "SELECT audio_path FROM tracks WHERE apple_id = ?",
+                (apple_id_int,),
             ).fetchone()
         except ValueError:
             pass
         if not row:
             row = conn.execute(
-                "SELECT audio_path FROM tracks WHERE spotify_id = ? AND user_id = ?",
-                (track_key, sess["user_id"]),
+                "SELECT audio_path FROM tracks WHERE spotify_id = ?",
+                (track_key,),
             ).fetchone()
     finally:
         conn.close()
@@ -743,20 +755,19 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 
 def _recompute_axes_and_zscores(conn, user_id: Optional[int] = None) -> dict:
     """
-    For every track that has stored features (optionally scoped to one
-    user), recompute activation/valence from scoring.compute_axes(), then
-    compute library-wide z-scored activation_relative and update the row.
-    Returns summary stats. Cheap: pure DB + math, no audio.
+    Recompute activation/valence from stored features for every track,
+    then z-score-normalize activation across the global library and mirror
+    into vibe_score. Since tracks are now global (song-level truth), the
+    z-score baseline is shared across users; the user_id parameter is
+    accepted for backward-compat but ignored.
     """
+    del user_id
     base_select = ("SELECT id, tempo, energy, energy_mean, energy_std, brightness, "
                    "tempo_stability, onset_rate, bandwidth, rolloff, "
                    "spectral_contrast, flatness, zcr, timbre_variability, "
                    "valence_mode, tonnetz_std, acousticness, mfcc_json, "
                    "chroma_mean_json FROM tracks")
-    if user_id is not None:
-        rows = conn.execute(base_select + " WHERE user_id = ?", (user_id,)).fetchall()
-    else:
-        rows = conn.execute(base_select).fetchall()
+    rows = conn.execute(base_select).fetchall()
 
     activations: list[float] = []
     per_row: list[tuple[int, float, float]] = []
@@ -836,15 +847,15 @@ def get_track_features(track_key: str, sess: dict = Depends(require_user)):
         try:
             apple_id_int = int(track_key)
             row = conn.execute(
-                "SELECT * FROM tracks WHERE apple_id = ? AND user_id = ?",
-                (apple_id_int, sess["user_id"]),
+                "SELECT * FROM tracks WHERE apple_id = ?",
+                (apple_id_int,),
             ).fetchone()
         except ValueError:
             pass
         if not row:
             row = conn.execute(
-                "SELECT * FROM tracks WHERE spotify_id = ? AND user_id = ?",
-                (track_key, sess["user_id"]),
+                "SELECT * FROM tracks WHERE spotify_id = ?",
+                (track_key,),
             ).fetchone()
     finally:
         conn.close()
@@ -1022,46 +1033,51 @@ def spotify_library(
 
 @app.post("/api/ingest/clear")
 def ingest_clear(sess: dict = Depends(require_user)):
-    """Clear only the caller's tracks. Audio files are content-addressed
-    by spotify_id and shared across users; only unlink files that no
-    other user still references."""
+    """Clear only the caller's library membership. Global tracks that no
+    other user still references are pruned in a second pass along with
+    their on-disk audio files."""
     conn = get_conn()
     try:
         n = conn.execute(
-            "SELECT COUNT(*) FROM tracks WHERE user_id = ?", (sess["user_id"],)
+            "SELECT COUNT(*) FROM user_tracks WHERE user_id = ?", (sess["user_id"],)
         ).fetchone()[0]
-        # Grab the caller's audio_path list before delete so we can consider
-        # unlinking files not referenced by any surviving row.
-        my_paths = [r[0] for r in conn.execute(
-            "SELECT audio_path FROM tracks WHERE user_id = ? AND audio_path IS NOT NULL",
+        my_track_ids = [r[0] for r in conn.execute(
+            "SELECT track_id FROM user_tracks WHERE user_id = ?",
             (sess["user_id"],),
         ).fetchall()]
-        conn.execute("DELETE FROM tracks WHERE user_id = ?", (sess["user_id"],))
+        conn.execute("DELETE FROM user_tracks WHERE user_id = ?", (sess["user_id"],))
         conn.commit()
 
-        # After delete: which paths are still referenced by someone else?
+        removed_tracks = 0
         removed_files = 0
-        for p in my_paths:
-            if not p:
-                continue
-            other = conn.execute(
-                "SELECT 1 FROM tracks WHERE audio_path = ? LIMIT 1", (p,),
+        for tid in my_track_ids:
+            still = conn.execute(
+                "SELECT 1 FROM user_tracks WHERE track_id = ? LIMIT 1", (tid,),
             ).fetchone()
-            if other:
+            if still:
                 continue
-            resolved = _resolve_audio_path(p)
+            row = conn.execute(
+                "SELECT audio_path FROM tracks WHERE id = ?", (tid,),
+            ).fetchone()
+            audio = row["audio_path"] if row else None
+            conn.execute("DELETE FROM tracks WHERE id = ?", (tid,))
+            removed_tracks += 1
+            if not audio:
+                continue
+            resolved = _resolve_audio_path(audio)
             if resolved and resolved.exists() and resolved.is_file():
                 try:
                     resolved.unlink()
                     removed_files += 1
                 except OSError as e:
                     log.warning("failed to unlink %s: %s", resolved, e)
+        conn.commit()
     finally:
         conn.close()
 
-    log.info("ingest/clear user=%s removed %d tracks, %d audio files",
-             sess["user_id"], n, removed_files)
-    return {"cleared": int(n), "audio_files_removed": removed_files}
+    log.info("ingest/clear user=%s removed %d user_tracks, pruned %d orphan tracks, %d audio files",
+             sess["user_id"], n, removed_tracks, removed_files)
+    return {"cleared": int(n), "tracks_pruned": removed_tracks, "audio_files_removed": removed_files}
 
 
 class IngestSources(BaseModel):
@@ -1198,7 +1214,7 @@ def _is_cancelled(job_id: str) -> bool:
         return bool(job and job.get("cancel_requested"))
 
 
-def _process_track(conn, track: dict, job_id: str, user_id: int) -> str:
+def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "manual") -> str:
     spotify_id = track.get("id")
     if not spotify_id:
         return "skip:no_id"
@@ -1219,12 +1235,29 @@ def _process_track(conn, track: dict, job_id: str, user_id: int) -> str:
     log.info("[ingest] user=%s track=%r artist=%r spotify_preview=%s isrc=%s",
              user_id, name, artist_name, bool(preview_url), isrc or "-")
 
-    existing = conn.execute(
-        "SELECT id FROM tracks WHERE spotify_id = ? AND user_id = ?",
+    existing_link = conn.execute(
+        "SELECT 1 FROM tracks t "
+        "JOIN user_tracks ut ON ut.track_id = t.id "
+        "WHERE t.spotify_id = ? AND ut.user_id = ?",
         (spotify_id, user_id),
     ).fetchone()
-    if existing:
+    if existing_link:
         return "skip:already_ingested"
+
+    # Track exists globally but this user hasn't linked it yet. Reuse
+    # features + audio, just add the user_tracks row.
+    existing_global = conn.execute(
+        "SELECT id FROM tracks WHERE spotify_id = ?",
+        (spotify_id,),
+    ).fetchone()
+    if existing_global:
+        conn.execute(
+            "INSERT OR IGNORE INTO user_tracks (user_id, track_id, source) "
+            "VALUES (?, ?, ?)",
+            (user_id, int(existing_global["id"]), source),
+        )
+        conn.commit()
+        return "ok:linked_existing"
 
     audio_url = None
     audio_ext = ".mp3"
@@ -1262,9 +1295,8 @@ def _process_track(conn, track: dict, job_id: str, user_id: int) -> str:
         log.info("[ingest]   -> no_preview (spotify+itunes both failed)")
         return "skip:no_preview"
 
-    # If another user already downloaded this spotify_id, reuse their
-    # local file instead of hitting the network (audio is content-addressed
-    # by spotify_id, so ownership is not audio-specific).
+    # If a prior ingest downloaded this spotify_id, reuse the file
+    # (audio is content-addressed by spotify_id).
     shared_row = conn.execute(
         "SELECT audio_path FROM tracks WHERE spotify_id = ? AND audio_path IS NOT NULL LIMIT 1",
         (spotify_id,),
@@ -1311,6 +1343,7 @@ def _process_track(conn, track: dict, job_id: str, user_id: int) -> str:
 
         track_data = {
             "user_id": user_id,
+            "source": source,
             "apple_id": apple_id,
             "spotify_id": spotify_id,
             "isrc": isrc,
@@ -1362,7 +1395,6 @@ def _process_track(conn, track: dict, job_id: str, user_id: int) -> str:
 
 def _upsert(conn, td: dict) -> None:
     cols = [
-        "user_id",
         "apple_id", "spotify_id", "isrc", "title", "artist", "album", "genre",
         "artwork_url", "preview_url", "track_view_url", "duration_ms",
         "tempo", "energy", "brightness", "zcr", "mfcc_json",
@@ -1374,52 +1406,63 @@ def _upsert(conn, td: dict) -> None:
         "vibe_score", "mood", "audio_path", "classification_source",
     ]
     values = [td.get(c) for c in cols]
-    existing = None
     uid = td.get("user_id")
-    if uid is not None and td.get("spotify_id"):
+    source = td.get("source") or "manual"
+
+    existing = None
+    if td.get("spotify_id"):
         row = conn.execute(
-            "SELECT id FROM tracks WHERE spotify_id = ? AND user_id = ?",
-            (td["spotify_id"], uid),
+            "SELECT id FROM tracks WHERE spotify_id = ?", (td["spotify_id"],)
         ).fetchone()
         if row:
             existing = row[0]
-    if existing is None and uid is not None and td.get("apple_id"):
+    if existing is None and td.get("apple_id"):
         row = conn.execute(
-            "SELECT id FROM tracks WHERE apple_id = ? AND user_id = ?",
-            (td["apple_id"], uid),
+            "SELECT id FROM tracks WHERE apple_id = ?", (td["apple_id"],)
         ).fetchone()
         if row:
             existing = row[0]
 
     if existing is None:
         placeholders = ", ".join(["?"] * len(cols))
-        conn.execute(f"INSERT INTO tracks ({', '.join(cols)}) VALUES ({placeholders})", values)
+        cur = conn.execute(
+            f"INSERT INTO tracks ({', '.join(cols)}) VALUES ({placeholders})",
+            values,
+        )
+        track_id = int(cur.lastrowid)
     else:
         set_clause = ", ".join([f"{c} = ?" for c in cols])
         conn.execute(f"UPDATE tracks SET {set_clause} WHERE id = ?", values + [existing])
+        track_id = int(existing)
+
+    if uid is not None:
+        conn.execute(
+            "INSERT OR IGNORE INTO user_tracks (user_id, track_id, source) VALUES (?, ?, ?)",
+            (uid, track_id, source),
+        )
     conn.commit()
 
 
-def _collect_tracks(token: str, sources: IngestSources) -> list[dict]:
+def _collect_tracks(token: str, sources: IngestSources) -> list[tuple[dict, str]]:
     seen: set[str] = set()
-    out: list[dict] = []
+    out: list[tuple[dict, str]] = []
 
-    def _add(items: list[dict]):
+    def _add(items: list[dict], src: str):
         for t in items:
             tid = t.get("id") if isinstance(t, dict) else None
             if not tid or tid in seen:
                 continue
             seen.add(tid)
-            out.append(t)
+            out.append((t, src))
 
     if sources.liked:
-        _add(splib.fetch_liked(token))
+        _add(splib.fetch_liked(token), "liked_songs")
     if sources.top_tracks:
-        _add(splib.fetch_top_tracks(token))
+        _add(splib.fetch_top_tracks(token), "top_tracks")
     for pid in sources.playlist_ids or []:
         if not pid:
             continue
-        _add(splib.fetch_playlist_tracks(pid, token))
+        _add(splib.fetch_playlist_tracks(pid, token), f"playlist:{pid}")
     return out
 
 
@@ -1465,17 +1508,19 @@ def _run_ingest_job(job_id: str, token: str, sources: IngestSources, user_id: in
         conn = get_conn()
         try:
             cancelled = False
-            for track in tracks:
+            for track, src in tracks:
                 if _is_cancelled(job_id):
                     log.info("[ingest job=%s] cancel_requested — stopping loop", job_id)
                     cancelled = True
                     break
                 try:
-                    result = _process_track(conn, track, job_id, user_id)
+                    result = _process_track(conn, track, job_id, user_id, source=src)
                     if result == "ok:spotify":
                         _bump(job_id, "matched_spotify", 1)
                     elif result == "ok:itunes":
                         _bump(job_id, "preview_only", 1)
+                    elif result == "ok:linked_existing":
+                        _bump(job_id, "matched_spotify", 1)
                     elif result == "skip:no_preview":
                         _bump(job_id, "no_preview", 1)
                     else:
@@ -1659,17 +1704,20 @@ def _run_public_playlist_job(job_id: str, playlist_id: str, user_id: int,
         conn = get_conn()
         try:
             cancelled = False
+            src_label = f"playlist:{playlist_id}"
             for track in unique_tracks:
                 if _is_cancelled(job_id):
                     log.info("[public-playlist job=%s] cancel_requested — stopping loop", job_id)
                     cancelled = True
                     break
                 try:
-                    result = _process_track(conn, track, job_id, user_id)
+                    result = _process_track(conn, track, job_id, user_id, source=src_label)
                     if result == "ok:spotify":
                         _bump(job_id, "matched_spotify", 1)
                     elif result == "ok:itunes":
                         _bump(job_id, "preview_only", 1)
+                    elif result == "ok:linked_existing":
+                        _bump(job_id, "matched_spotify", 1)
                     elif result == "skip:no_preview":
                         _bump(job_id, "no_preview", 1)
                     else:

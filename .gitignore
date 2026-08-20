@@ -4,6 +4,7 @@ config.py
 # Data — regeneratable, large, or contains user library state
 data/audio/
 data/*.db
+data/*.db.*
 data/*.log
 data/*.log.err
 data/recompute_progress.json

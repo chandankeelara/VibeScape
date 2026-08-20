@@ -18,18 +18,17 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 
 CREATE TABLE IF NOT EXISTS tracks (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id       INTEGER REFERENCES users(id) ON DELETE CASCADE,
-    apple_id      INTEGER,
     spotify_id    TEXT,
+    apple_id      INTEGER,
     isrc          TEXT,
     title         TEXT NOT NULL,
     artist        TEXT NOT NULL,
     album         TEXT,
     genre         TEXT,
+    duration_ms   INTEGER,
     artwork_url   TEXT,
     preview_url   TEXT,
     track_view_url TEXT,
-    duration_ms   INTEGER,
 
     -- legacy / core scalars
     tempo         REAL,
@@ -60,25 +59,40 @@ CREATE TABLE IF NOT EXISTS tracks (
     valence             REAL,
     activation_relative REAL,
 
-    vibe_score    REAL NOT NULL,
+    vibe_score    REAL,
     mood          TEXT,
 
     audio_path    TEXT,
     classification_source TEXT,
 
-    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- future ML model outputs (nullable, filled by ml/ pipeline)
+    energy_pred      REAL,
+    danceability_pred REAL,
+    valence_pred     REAL,
+    vibe_score_ml    REAL,
+    model_version    TEXT,
 
-    -- (spotify_id, apple_id) are unique per-user, not globally, so two
-    -- users can independently ingest the same track without collision.
-    UNIQUE (user_id, spotify_id),
-    UNIQUE (user_id, apple_id)
+    features_extracted_at TIMESTAMP,
+    ml_predicted_at       TIMESTAMP,
+    created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_spotify_id ON tracks(spotify_id) WHERE spotify_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_apple_id   ON tracks(apple_id)   WHERE apple_id   IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tracks_vibe ON tracks(vibe_score);
 CREATE INDEX IF NOT EXISTS idx_tracks_mood ON tracks(mood);
-CREATE INDEX IF NOT EXISTS idx_tracks_apple_id ON tracks(apple_id);
-CREATE INDEX IF NOT EXISTS idx_tracks_spotify_id ON tracks(spotify_id);
--- Indexes on columns added by later migrations (user_id, activation,
--- activation_relative) are created inside db.py::_migrate() after the
--- ADD COLUMN statements run — executescript here would try to index
--- columns that don't yet exist on legacy DBs.
+CREATE INDEX IF NOT EXISTS idx_tracks_activation     ON tracks(activation);
+CREATE INDEX IF NOT EXISTS idx_tracks_activation_rel ON tracks(activation_relative);
+
+CREATE TABLE IF NOT EXISTS user_tracks (
+    user_id     INTEGER NOT NULL REFERENCES users(id)  ON DELETE CASCADE,
+    track_id    INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    added_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    source      TEXT,
+    play_count  INTEGER DEFAULT 0,
+    last_played TIMESTAMP,
+    PRIMARY KEY (user_id, track_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_tracks_user  ON user_tracks(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_tracks_track ON user_tracks(track_id);
