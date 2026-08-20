@@ -6,6 +6,8 @@ import random
 import sys
 from pathlib import Path
 
+os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
+
 import numpy as np
 import torch
 import yaml

@@ -1039,6 +1039,8 @@
     if (el.album) el.album.textContent = t.album || '';
     if (el.artistSep) el.artistSep.hidden = !t.album;
 
+    updateMediaSessionMetadata(t);
+
     // Genre whisper line (item #14) — replaces the chip when present.
     if (t.genre) {
       if (el.genreEm) el.genreEm.textContent = t.genre;
@@ -1411,19 +1413,27 @@
   el.player.addEventListener('play', () => {
     document.body.classList.add('playing');
     startGlowAnalyser();
+    setMediaSessionState(true);
+    applyMediaSessionHandlers();
+    setMediaSessionPosition(el.player.duration, el.player.currentTime);
   });
   el.player.addEventListener('playing', () => {
     document.body.classList.add('playing');
     startGlowAnalyser();
+    setMediaSessionState(true);
+    applyMediaSessionHandlers();
+    setMediaSessionPosition(el.player.duration, el.player.currentTime);
   });
   el.player.addEventListener('pause', () => {
     if (!sdkActive()) document.body.classList.remove('playing');
     stopGlowAnalyser();
+    if (!sdkActive()) setMediaSessionState(false);
   });
   el.player.addEventListener('ended', () => {
     document.body.classList.remove('playing');
     stopGlowAnalyser();
     setGlowAlpha(0.65);
+    setMediaSessionState(false);
     fetchTrack(state.vibe);
   });
   el.player.addEventListener('loadedmetadata', () => {
@@ -1443,6 +1453,7 @@
       el.progressThumb.style.left = pct + '%';
       el.progress.setAttribute('aria-valuenow', String(Math.round(pct)));
       el.progress.setAttribute('aria-valuetext', fmtTime(cur) + ' of ' + fmtTime(dur));
+      setMediaSessionPosition(dur, cur);
     }
   });
 
@@ -1458,6 +1469,75 @@
     state.firstInteraction = true;
     fetchTrack(state.vibe);
   });
+
+  function updateMediaSessionMetadata(t) {
+    if (!('mediaSession' in navigator) || !t) return;
+    const artwork = t.artwork_url
+      ? [{ src: t.artwork_url, sizes: '300x300', type: 'image/jpeg' }]
+      : [];
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: t.title || 'Untitled',
+        artist: t.artist || 'Unknown artist',
+        album: t.album || '',
+        artwork,
+      });
+    } catch (e) {}
+  }
+
+  function setMediaSessionState(playing) {
+    if (!('mediaSession' in navigator)) return;
+    try {
+      navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
+    } catch (e) {}
+  }
+
+  function setMediaSessionPosition(durationSec, positionSec) {
+    if (!('mediaSession' in navigator) || !('setPositionState' in navigator.mediaSession)) return;
+    if (!isFinite(durationSec) || durationSec <= 0) return;
+    const pos = Math.max(0, Math.min(positionSec || 0, durationSec));
+    try {
+      navigator.mediaSession.setPositionState({ duration: durationSec, playbackRate: 1, position: pos });
+    } catch (e) {}
+  }
+
+  function mediaPlay() {
+    state.firstInteraction = true;
+    if (!state.current) { fetchTrack(state.vibe); return; }
+    if (sdkActive() && spotify.player) {
+      try { spotify.player.resume(); } catch (e) {}
+      return;
+    }
+    if (el.player && el.player.paused) {
+      const p = el.player.play();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    }
+  }
+
+  function mediaPause() {
+    state.firstInteraction = true;
+    if (sdkActive() && spotify.player) {
+      try { spotify.player.pause(); } catch (e) {}
+      return;
+    }
+    if (el.player && !el.player.paused) {
+      el.player.pause();
+    }
+  }
+
+  function applyMediaSessionHandlers() {
+    if (!('mediaSession' in navigator)) return;
+    const handlers = {
+      play: mediaPlay,
+      pause: mediaPause,
+      nexttrack: () => { state.firstInteraction = true; fetchTrack(state.vibe); },
+      previoustrack: () => { state.firstInteraction = true; fetchTrack(state.vibe); },
+    };
+    for (const [action, fn] of Object.entries(handlers)) {
+      try { navigator.mediaSession.setActionHandler(action, fn); } catch (e) {}
+    }
+  }
+  applyMediaSessionHandlers();
 
   function progressPosFromEvent(e) {
     const rect = el.progress.getBoundingClientRect();
@@ -2158,6 +2238,7 @@
         spotify.lastState = null;
         document.body.classList.remove('playing');
         stopPositionPolling();
+        setMediaSessionState(false);
         return;
       }
       spotify.lastState = playerState;
@@ -2171,6 +2252,9 @@
         document.body.classList.add('playing');
         startPositionPolling();
       }
+      setMediaSessionState(!playerState.paused);
+      applyMediaSessionHandlers();
+      setMediaSessionPosition((spotify.durationMs || 0) / 1000, (spotify.positionMs || 0) / 1000);
       renderSpotifyProgress();
 
       // detect end-of-track: paused, position 0, and a previous track exists
@@ -2208,6 +2292,7 @@
       const pos = Math.min(spotify.durationMs, (spotify.lastState.position || 0) + elapsed);
       spotify.positionMs = pos;
       renderSpotifyProgress();
+      setMediaSessionPosition(spotify.durationMs / 1000, pos / 1000);
     }, 250);
   }
 
