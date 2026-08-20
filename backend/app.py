@@ -1,9 +1,14 @@
 import glob
+import hashlib
+import hmac
 import json
 import logging
 import os
 import re
+import secrets
 import shutil
+import socket
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -12,7 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 import requests
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -33,6 +38,7 @@ import features as feat  # noqa: E402
 import itunes_client  # noqa: E402
 import scoring  # noqa: E402
 import spotify_library as splib  # noqa: E402
+import spotify_matcher  # noqa: E402
 
 log = logging.getLogger("vibescape")
 if not log.handlers:
@@ -82,6 +88,281 @@ app.add_middleware(
 def _startup():
     ensure_db()
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    _log_lan_bind_info()
+
+
+def _lan_ip() -> Optional[str]:
+    """Best-effort local LAN IP so the operator knows where phones should point."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 53))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except OSError:
+            return None
+
+
+def _log_lan_bind_info() -> None:
+    ip = _lan_ip()
+    port = os.environ.get("VIBESCAPE_PORT", "8000")
+    log.info("VibeScape backend listening on http://0.0.0.0:%s", port)
+    if ip:
+        log.info("LAN URL (share with phones on same WiFi): http://%s:%s/", ip, port)
+
+
+# ---------------- Auth: users + sessions ----------------
+
+
+def _hash_pin(pin: str) -> str:
+    """
+    Salted scrypt hash for a user PIN. Format: 'scrypt$<hex_salt>$<hex_hash>'.
+    Cheap enough for LAN, hard enough to brute-force via network.
+    """
+    if not pin:
+        return ""
+    salt = secrets.token_bytes(16)
+    dk = hashlib.scrypt(pin.encode("utf-8"), salt=salt, n=2 ** 14, r=8, p=1, dklen=32)
+    return "scrypt$" + salt.hex() + "$" + dk.hex()
+
+
+def _verify_pin(pin: str, stored: Optional[str]) -> bool:
+    if not stored:
+        # user has no PIN configured -> any/empty PIN accepted
+        return True
+    if not pin:
+        return False
+    try:
+        scheme, salt_hex, hash_hex = stored.split("$")
+    except ValueError:
+        return False
+    if scheme != "scrypt":
+        return False
+    try:
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(hash_hex)
+    except ValueError:
+        return False
+    dk = hashlib.scrypt(pin.encode("utf-8"), salt=salt, n=2 ** 14, r=8, p=1, dklen=32)
+    return hmac.compare_digest(dk, expected)
+
+
+def _issue_session(conn, user_id: int) -> str:
+    token = secrets.token_hex(32)
+    conn.execute(
+        "INSERT INTO sessions (token, user_id) VALUES (?, ?)",
+        (token, user_id),
+    )
+    conn.commit()
+    return token
+
+
+def _lookup_session(conn, token: str) -> Optional[dict]:
+    if not token:
+        return None
+    row = conn.execute(
+        "SELECT s.token, s.user_id, u.display_name, u.pin_hash, u.spotify_user_id, u.spotify_display_name, u.created_at "
+        "FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?",
+        (token,),
+    ).fetchone()
+    if not row:
+        return None
+    # bump last_used_at, best-effort
+    try:
+        conn.execute("UPDATE sessions SET last_used_at = CURRENT_TIMESTAMP WHERE token = ?", (token,))
+        conn.commit()
+    except Exception:
+        pass
+    return dict(row)
+
+
+def _extract_bearer(auth_header: Optional[str]) -> Optional[str]:
+    if not auth_header:
+        return None
+    parts = auth_header.split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    tok = parts[1].strip()
+    return tok or None
+
+
+def require_user(request: Request, authorization: Optional[str] = Header(None)) -> dict:
+    """
+    FastAPI dependency. Returns the auth session dict {user_id, display_name, ...}
+    or raises 401. Attaches user_id onto request.state for logging.
+    """
+    token = _extract_bearer(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail={"error": "missing_authorization"})
+    conn = get_conn()
+    try:
+        sess = _lookup_session(conn, token)
+    finally:
+        conn.close()
+    if not sess:
+        raise HTTPException(status_code=401, detail={"error": "invalid_session"})
+    request.state.user_id = sess["user_id"]
+    request.state.session_token = token
+    return sess
+
+
+def require_user_stream(request: Request, authorization: Optional[str] = Header(None)) -> dict:
+    """
+    Stream-only variant of require_user. Accepts EITHER:
+      * Authorization: Bearer <session_token>  (normal path, curl/tooling)
+      * ?token=<session_token>                 (fallback for <audio>, which
+                                                cannot set custom headers)
+    Do NOT use this on any endpoint other than /api/stream/*. The query-string
+    fallback is a controlled compromise for browser <audio> tags — other
+    endpoints should keep header-only auth so tokens don't leak into
+    server logs / referer / URL-shaped caches.
+    """
+    token = _extract_bearer(authorization)
+    if not token:
+        token = (request.query_params.get("token") or "").strip() or None
+    if not token:
+        raise HTTPException(status_code=401, detail={"error": "missing_authorization"})
+    conn = get_conn()
+    try:
+        sess = _lookup_session(conn, token)
+    finally:
+        conn.close()
+    if not sess:
+        raise HTTPException(status_code=401, detail={"error": "invalid_session"})
+    request.state.user_id = sess["user_id"]
+    request.state.session_token = token
+    return sess
+
+
+class SignupBody(BaseModel):
+    display_name: str
+    pin: Optional[str] = None
+
+
+class LoginBody(BaseModel):
+    user_id: int
+    pin: Optional[str] = None
+
+
+class SpotifyLinkBody(BaseModel):
+    spotify_user_id: str
+    spotify_display_name: Optional[str] = None
+
+
+@app.get("/api/users")
+def list_users():
+    """Public: profile picker. Does NOT expose pin_hash."""
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT id, display_name, pin_hash, spotify_display_name "
+            "FROM users ORDER BY id"
+        ).fetchall()
+    finally:
+        conn.close()
+    return [
+        {
+            "user_id": r["id"],
+            "display_name": r["display_name"],
+            "has_pin": bool(r["pin_hash"]),
+            "spotify_display_name": r["spotify_display_name"],
+        }
+        for r in rows
+    ]
+
+
+@app.post("/api/auth/signup")
+def auth_signup(body: SignupBody):
+    name = (body.display_name or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail={"error": "display_name required"})
+    pin_hash = _hash_pin(body.pin) if body.pin else None
+    conn = get_conn()
+    try:
+        try:
+            cur = conn.execute(
+                "INSERT INTO users (display_name, pin_hash) VALUES (?, ?)",
+                (name, pin_hash),
+            )
+            conn.commit()
+            user_id = int(cur.lastrowid)
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail={"error": "display_name_taken"})
+        token = _issue_session(conn, user_id)
+    finally:
+        conn.close()
+    return {
+        "user_id": user_id,
+        "display_name": name,
+        "session_token": token,
+        "has_pin": bool(pin_hash),
+    }
+
+
+@app.post("/api/auth/login")
+def auth_login(body: LoginBody):
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT id, display_name, pin_hash FROM users WHERE id = ?",
+            (body.user_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail={"error": "user_not_found"})
+        if row["pin_hash"] and not _verify_pin(body.pin or "", row["pin_hash"]):
+            raise HTTPException(status_code=401, detail={"error": "bad_pin"})
+        token = _issue_session(conn, int(row["id"]))
+    finally:
+        conn.close()
+    return {
+        "user_id": int(row["id"]),
+        "display_name": row["display_name"],
+        "session_token": token,
+        "has_pin": bool(row["pin_hash"]),
+    }
+
+
+@app.post("/api/auth/logout", status_code=204)
+def auth_logout(sess: dict = Depends(require_user)):
+    conn = get_conn()
+    try:
+        conn.execute("DELETE FROM sessions WHERE token = ?", (sess["token"],))
+        conn.commit()
+    finally:
+        conn.close()
+    return Response(status_code=204)
+
+
+@app.get("/api/auth/me")
+def auth_me(sess: dict = Depends(require_user)):
+    return {
+        "user_id": sess["user_id"],
+        "display_name": sess["display_name"],
+        "has_pin": bool(sess.get("pin_hash")),
+        "spotify_connected": bool(sess.get("spotify_user_id")),
+        "spotify_display_name": sess.get("spotify_display_name"),
+        "created_at": sess.get("created_at"),
+    }
+
+
+@app.post("/api/auth/spotify-link")
+def auth_spotify_link(body: SpotifyLinkBody, sess: dict = Depends(require_user)):
+    if not body.spotify_user_id:
+        raise HTTPException(status_code=422, detail={"error": "spotify_user_id required"})
+    conn = get_conn()
+    try:
+        conn.execute(
+            "UPDATE users SET spotify_user_id = ?, spotify_display_name = ? WHERE id = ?",
+            (body.spotify_user_id, body.spotify_display_name, sess["user_id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "spotify_user_id": body.spotify_user_id, "spotify_display_name": body.spotify_display_name}
 
 
 def _row_to_dict(row):
@@ -122,9 +403,10 @@ def list_tracks(
     limit: int = 20,
     mood: Optional[str] = None,
     shuffle: bool = False,
+    sess: dict = Depends(require_user),
 ):
-    where = ["vibe_score BETWEEN ? AND ?"]
-    params: list = [vibe_min, vibe_max]
+    where = ["user_id = ?", "vibe_score BETWEEN ? AND ?"]
+    params: list = [sess["user_id"], vibe_min, vibe_max]
     if mood:
         where.append("mood = ?")
         params.append(mood)
@@ -148,6 +430,7 @@ def random_track(
     vibe: float = Query(..., ge=0, le=100),
     tolerance: float = 12,
     exclude_ids: Optional[str] = None,
+    sess: dict = Depends(require_user),
 ):
     exclude: list = []
     if exclude_ids:
@@ -165,8 +448,8 @@ def random_track(
         for attempt in range(2):
             tol = tolerance + (10 if attempt else 0)
             lo, hi = vibe - tol, vibe + tol
-            sql = f"SELECT {TRACK_SELECT} FROM tracks WHERE vibe_score BETWEEN ? AND ?"
-            params: list = [lo, hi]
+            sql = f"SELECT {TRACK_SELECT} FROM tracks WHERE user_id = ? AND vibe_score BETWEEN ? AND ?"
+            params: list = [sess["user_id"], lo, hi]
             if exclude:
                 placeholders = ",".join("?" * len(exclude))
                 sql += f" AND apple_id NOT IN ({placeholders})"
@@ -192,11 +475,12 @@ def spotify_config():
 
 
 @app.get("/api/track/{apple_id}/spotify")
-def get_track_spotify(apple_id: int):
+def get_track_spotify(apple_id: int, sess: dict = Depends(require_user)):
     conn = get_conn()
     try:
         row = conn.execute(
-            "SELECT spotify_id FROM tracks WHERE apple_id = ?", (apple_id,)
+            "SELECT spotify_id FROM tracks WHERE apple_id = ? AND user_id = ?",
+            (apple_id, sess["user_id"]),
         ).fetchone()
     finally:
         conn.close()
@@ -365,11 +649,12 @@ def _stream_audio_row(row, request: Request):
 
 
 @app.get("/api/stream/spotify/{spotify_id}")
-def stream_track_by_spotify(spotify_id: str, request: Request):
+def stream_track_by_spotify(spotify_id: str, request: Request, sess: dict = Depends(require_user_stream)):
     conn = get_conn()
     try:
         row = conn.execute(
-            "SELECT audio_path FROM tracks WHERE spotify_id = ?", (spotify_id,)
+            "SELECT audio_path FROM tracks WHERE spotify_id = ? AND user_id = ?",
+            (spotify_id, sess["user_id"]),
         ).fetchone()
     finally:
         conn.close()
@@ -377,20 +662,22 @@ def stream_track_by_spotify(spotify_id: str, request: Request):
 
 
 @app.get("/api/stream/{track_key}")
-def stream_track(track_key: str, request: Request):
+def stream_track(track_key: str, request: Request, sess: dict = Depends(require_user_stream)):
     conn = get_conn()
     try:
         row = None
         try:
             apple_id_int = int(track_key)
             row = conn.execute(
-                "SELECT audio_path FROM tracks WHERE apple_id = ?", (apple_id_int,)
+                "SELECT audio_path FROM tracks WHERE apple_id = ? AND user_id = ?",
+                (apple_id_int, sess["user_id"]),
             ).fetchone()
         except ValueError:
             pass
         if not row:
             row = conn.execute(
-                "SELECT audio_path FROM tracks WHERE spotify_id = ?", (track_key,)
+                "SELECT audio_path FROM tracks WHERE spotify_id = ? AND user_id = ?",
+                (track_key, sess["user_id"]),
             ).fetchone()
     finally:
         conn.close()
@@ -454,19 +741,22 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return v
 
 
-def _recompute_axes_and_zscores(conn) -> dict:
+def _recompute_axes_and_zscores(conn, user_id: Optional[int] = None) -> dict:
     """
-    For every track that has stored features, recompute activation/valence
-    from scoring.compute_axes(), then compute library-wide z-scored
-    activation_relative and update the row. Returns summary stats.
-
-    Runs synchronously against `conn`. Cheap: pure DB + math, no audio.
+    For every track that has stored features (optionally scoped to one
+    user), recompute activation/valence from scoring.compute_axes(), then
+    compute library-wide z-scored activation_relative and update the row.
+    Returns summary stats. Cheap: pure DB + math, no audio.
     """
-    rows = conn.execute("SELECT id, tempo, energy, energy_mean, energy_std, brightness, "
-                        "tempo_stability, onset_rate, bandwidth, rolloff, "
-                        "spectral_contrast, flatness, zcr, timbre_variability, "
-                        "valence_mode, tonnetz_std, acousticness, mfcc_json, "
-                        "chroma_mean_json FROM tracks").fetchall()
+    base_select = ("SELECT id, tempo, energy, energy_mean, energy_std, brightness, "
+                   "tempo_stability, onset_rate, bandwidth, rolloff, "
+                   "spectral_contrast, flatness, zcr, timbre_variability, "
+                   "valence_mode, tonnetz_std, acousticness, mfcc_json, "
+                   "chroma_mean_json FROM tracks")
+    if user_id is not None:
+        rows = conn.execute(base_select + " WHERE user_id = ?", (user_id,)).fetchall()
+    else:
+        rows = conn.execute(base_select).fetchall()
 
     activations: list[float] = []
     per_row: list[tuple[int, float, float]] = []
@@ -519,36 +809,43 @@ def _recompute_axes_and_zscores(conn) -> dict:
 
 
 @app.post("/api/recompute-scores")
-def api_recompute_scores():
+def api_recompute_scores(sess: dict = Depends(require_user)):
     """
-    Re-run scoring.compute_axes on every track using persisted features,
-    then z-score-normalize activation into activation_relative and mirror
-    into vibe_score. Cheap: no audio re-analysis.
+    Re-run scoring.compute_axes on the caller's tracks using persisted
+    features, then z-score-normalize activation into activation_relative
+    and mirror into vibe_score. Cheap: no audio re-analysis. Per-user
+    scoped: only touches rows belonging to the caller.
     """
     conn = get_conn()
     try:
-        summary = _recompute_axes_and_zscores(conn)
+        summary = _recompute_axes_and_zscores(conn, user_id=sess["user_id"])
     finally:
         conn.close()
     return summary
 
 
 @app.get("/api/tracks/{track_key}/features")
-def get_track_features(track_key: str):
+def get_track_features(track_key: str, sess: dict = Depends(require_user)):
     """
     Return the full stored feature blob plus derived axes for a track,
-    keyed by spotify_id (string) or apple_id (numeric string).
+    keyed by spotify_id (string) or apple_id (numeric string). Per-user.
     """
     conn = get_conn()
     try:
         row = None
         try:
             apple_id_int = int(track_key)
-            row = conn.execute("SELECT * FROM tracks WHERE apple_id = ?", (apple_id_int,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM tracks WHERE apple_id = ? AND user_id = ?",
+                (apple_id_int, sess["user_id"]),
+            ).fetchone()
         except ValueError:
             pass
         if not row:
-            row = conn.execute("SELECT * FROM tracks WHERE spotify_id = ?", (track_key,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM tracks WHERE spotify_id = ? AND user_id = ?",
+                (track_key, sess["user_id"]),
+            ).fetchone()
     finally:
         conn.close()
 
@@ -624,29 +921,98 @@ def _bearer_token(auth_header: Optional[str]) -> str:
 
 
 @app.get("/api/spotify/library")
-def spotify_library(authorization: Optional[str] = Header(None)):
-    token = _bearer_token(authorization)
+def spotify_library(
+    spotify_authorization: Optional[str] = Header(None, alias="X-Spotify-Authorization"),
+    authorization: Optional[str] = Header(None),
+    sess: dict = Depends(require_user),
+):
+    # The VibeScape session token comes in Authorization: Bearer ...
+    # The Spotify access token comes in X-Spotify-Authorization: Bearer ...
+    # (Legacy: if X-Spotify-Authorization is missing, fall back to the
+    # Authorization header — but that only works when VibeScape auth is
+    # disabled, which is not the case in multi-user mode. We keep the
+    # fallback for smoother migration; the frontend should send the
+    # dedicated header.)
+    token = _extract_bearer(spotify_authorization) or _extract_bearer(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail={"error": "missing_spotify_authorization"})
     try:
         liked = splib.get_liked_count(token)
         top = splib.get_top_tracks_count(token)
         playlists_raw = splib.get_playlists(token, max_items=200)
+        # Fetch the caller's Spotify user id so we can identify which
+        # playlists are theirs (the only ones /items reliably returns 200
+        # for after the Nov 2024 API lockdown). Fall back gracefully.
+        my_spotify_id: Optional[str] = None
+        try:
+            me = splib._get(f"{splib.BASE}/me", token)
+            my_spotify_id = me.get("id")
+        except Exception as e:
+            log.debug("could not resolve /v1/me for manifest owner-check: %s", e)
     except splib.SpotifyAuthError:
         return JSONResponse(status_code=401, content={"error": "spotify_token_expired"})
     except splib.SpotifyAPIError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+    def _coerce_total(v) -> int:
+        try:
+            if v is None or v == "":
+                return 0
+            return int(v)
+        except (TypeError, ValueError):
+            return 0
+
     playlists = []
+    to_resolve: list[str] = []  # playlists whose track_count came back empty/0
     for p in playlists_raw:
         if not p:
             continue
-        owner = (p.get("owner") or {}).get("display_name") or (p.get("owner") or {}).get("id") or ""
+        owner_obj = p.get("owner") or {}
+        owner_id = owner_obj.get("id") or ""
+        owner_name = owner_obj.get("display_name") or owner_id or ""
         tracks_info = p.get("tracks") or {}
+        total = _coerce_total(tracks_info.get("total"))
+        pid = p.get("id")
+        is_owned_by_caller = bool(my_spotify_id and owner_id == my_spotify_id)
         playlists.append({
-            "id": p.get("id"),
+            "id": pid,
             "name": p.get("name"),
-            "track_count": int(tracks_info.get("total") or 0),
-            "owner": owner,
+            "track_count": total,
+            "owner": owner_name,
+            "owned_by_me": is_owned_by_caller,
         })
+        # /me/playlists sometimes returns tracks.total as "" (empty string)
+        # post Nov 2024 API changes. Only resolve via /items for playlists
+        # the caller OWNS — third-party / editorial playlists return 403
+        # on /items after the lockdown, so hitting them just burns rate
+        # limit and spams warning logs for expected failures. If we can't
+        # confirm ownership (my_spotify_id unknown), fall back to the
+        # optimistic path and let the try/except quietly drop 403s.
+        if total == 0 and pid and (is_owned_by_caller or my_spotify_id is None):
+            to_resolve.append(pid)
+
+    # Resolve real track counts via /items?limit=1&fields=total on
+    # playlists we own. Failures are silent — UI falls back to 0.
+    if to_resolve:
+        for pid in to_resolve:
+            try:
+                data = splib._get(f"{splib.BASE}/playlists/{pid}/items", token,
+                                  {"limit": 1, "fields": "total"})
+                real_total = _coerce_total(data.get("total"))
+                if real_total > 0:
+                    for entry in playlists:
+                        if entry["id"] == pid:
+                            entry["track_count"] = real_total
+                            break
+            except splib.SpotifyAuthError:
+                return JSONResponse(status_code=401,
+                                    content={"error": "spotify_token_expired"})
+            except splib.SpotifyAPIError as e:
+                # 403 (deprecated / third-party lockdown) or other — expected
+                # in post-Nov-2024 API. Log at debug to avoid warning-log spam.
+                log.debug("manifest resolve for %s failed silently: %s", pid, e)
+                continue
+
     return {
         "liked_count": liked,
         "top_tracks_count": top,
@@ -655,25 +1021,46 @@ def spotify_library(authorization: Optional[str] = Header(None)):
 
 
 @app.post("/api/ingest/clear")
-def ingest_clear():
+def ingest_clear(sess: dict = Depends(require_user)):
+    """Clear only the caller's tracks. Audio files are content-addressed
+    by spotify_id and shared across users; only unlink files that no
+    other user still references."""
     conn = get_conn()
     try:
-        n = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
-        conn.execute("DELETE FROM tracks")
+        n = conn.execute(
+            "SELECT COUNT(*) FROM tracks WHERE user_id = ?", (sess["user_id"],)
+        ).fetchone()[0]
+        # Grab the caller's audio_path list before delete so we can consider
+        # unlinking files not referenced by any surviving row.
+        my_paths = [r[0] for r in conn.execute(
+            "SELECT audio_path FROM tracks WHERE user_id = ? AND audio_path IS NOT NULL",
+            (sess["user_id"],),
+        ).fetchall()]
+        conn.execute("DELETE FROM tracks WHERE user_id = ?", (sess["user_id"],))
         conn.commit()
+
+        # After delete: which paths are still referenced by someone else?
+        removed_files = 0
+        for p in my_paths:
+            if not p:
+                continue
+            other = conn.execute(
+                "SELECT 1 FROM tracks WHERE audio_path = ? LIMIT 1", (p,),
+            ).fetchone()
+            if other:
+                continue
+            resolved = _resolve_audio_path(p)
+            if resolved and resolved.exists() and resolved.is_file():
+                try:
+                    resolved.unlink()
+                    removed_files += 1
+                except OSError as e:
+                    log.warning("failed to unlink %s: %s", resolved, e)
     finally:
         conn.close()
 
-    removed_files = 0
-    if AUDIO_DIR.exists():
-        for f in AUDIO_DIR.glob("*"):
-            if f.is_file():
-                try:
-                    f.unlink()
-                    removed_files += 1
-                except OSError as e:
-                    log.warning("failed to unlink %s: %s", f, e)
-    log.info("ingest/clear removed %d tracks, %d audio files", n, removed_files)
+    log.info("ingest/clear user=%s removed %d tracks, %d audio files",
+             sess["user_id"], n, removed_files)
     return {"cleared": int(n), "audio_files_removed": removed_files}
 
 
@@ -686,6 +1073,51 @@ class IngestSources(BaseModel):
 class IngestRequest(BaseModel):
     access_token: str
     sources: IngestSources
+
+
+class PublicPlaylistIngestRequest(BaseModel):
+    # Either shape is accepted:
+    #   {"playlist_url": "https://open.spotify.com/playlist/..."}
+    #   {"playlist_id":  "37i9dQZF1DXcBWIGoYBM5M"}
+    # Optional: the caller's Spotify OAuth access token. If provided we use
+    # it for Spotify API calls (works for any playlist the user can see);
+    # if omitted we fall back to the app's client-credentials token, which
+    # since Nov 2024 is 403-forbidden for essentially all playlists.
+    # The token is used only for the lifetime of this request/job — never
+    # persisted server-side.
+    playlist_url: Optional[str] = None
+    playlist_id: Optional[str] = None
+    access_token: Optional[str] = None
+
+
+# Cache the client-credentials app token in-process. Spotify tokens are valid
+# for ~3600s; we refresh on any 401 or when the cached copy is close to expiry.
+_APP_TOKEN_LOCK = threading.Lock()
+_APP_TOKEN_STATE: dict = {"token": None, "expires_at": 0.0}
+
+
+def _get_app_token(force_refresh: bool = False) -> str:
+    """Return a cached client-credentials token, refreshing when stale."""
+    import time as _time
+    with _APP_TOKEN_LOCK:
+        now = _time.time()
+        tok = _APP_TOKEN_STATE.get("token")
+        exp = float(_APP_TOKEN_STATE.get("expires_at") or 0.0)
+        if tok and not force_refresh and now < (exp - 60):
+            return tok
+        client_id = getattr(app_config, "SPOTIFY_CLIENT_ID", "") if app_config else ""
+        client_secret = getattr(app_config, "SPOTIFY_CLIENT_SECRET", "") if app_config else ""
+        if not client_id or not client_secret:
+            raise HTTPException(
+                status_code=500,
+                detail={"error": "spotify_app_credentials_missing"},
+            )
+        # spotify_matcher.get_client_credentials_token returns the token string
+        # only; we don't know the expiry precisely. Assume ~3600s standard.
+        new_tok = spotify_matcher.get_client_credentials_token(client_id, client_secret)
+        _APP_TOKEN_STATE["token"] = new_tok
+        _APP_TOKEN_STATE["expires_at"] = now + 3300.0
+        return new_tok
 
 
 def _itunes_lookup_by_isrc(isrc: str) -> Optional[dict]:
@@ -759,7 +1191,14 @@ def _bump(job_id: str, key: str, amount: int = 1):
         job[key] = int(job.get(key, 0)) + amount
 
 
-def _process_track(conn, track: dict, job_id: str) -> str:
+def _is_cancelled(job_id: str) -> bool:
+    """Check whether the caller requested cancellation of this ingest job."""
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        return bool(job and job.get("cancel_requested"))
+
+
+def _process_track(conn, track: dict, job_id: str, user_id: int) -> str:
     spotify_id = track.get("id")
     if not spotify_id:
         return "skip:no_id"
@@ -777,10 +1216,13 @@ def _process_track(conn, track: dict, job_id: str) -> str:
     preview_url = track.get("preview_url")
 
     _update_job(job_id, current_track=f"{name} - {artist_name}")
-    log.info("[ingest] track=%r artist=%r spotify_preview=%s isrc=%s",
-             name, artist_name, bool(preview_url), isrc or "-")
+    log.info("[ingest] user=%s track=%r artist=%r spotify_preview=%s isrc=%s",
+             user_id, name, artist_name, bool(preview_url), isrc or "-")
 
-    existing = conn.execute("SELECT id FROM tracks WHERE spotify_id = ?", (spotify_id,)).fetchone()
+    existing = conn.execute(
+        "SELECT id FROM tracks WHERE spotify_id = ? AND user_id = ?",
+        (spotify_id, user_id),
+    ).fetchone()
     if existing:
         return "skip:already_ingested"
 
@@ -820,9 +1262,29 @@ def _process_track(conn, track: dict, job_id: str) -> str:
         log.info("[ingest]   -> no_preview (spotify+itunes both failed)")
         return "skip:no_preview"
 
+    # If another user already downloaded this spotify_id, reuse their
+    # local file instead of hitting the network (audio is content-addressed
+    # by spotify_id, so ownership is not audio-specific).
+    shared_row = conn.execute(
+        "SELECT audio_path FROM tracks WHERE spotify_id = ? AND audio_path IS NOT NULL LIMIT 1",
+        (spotify_id,),
+    ).fetchone()
+    shared_local: Optional[str] = None
+    if shared_row and shared_row["audio_path"]:
+        p = _resolve_audio_path(shared_row["audio_path"])
+        if p and p.exists() and p.is_file():
+            shared_local = str(p)
+            log.info("[ingest]   reusing existing local audio (shared): %s", shared_row["audio_path"])
+
     tmp_path = None
+    _cleanup_tmp = False
     try:
-        tmp_path = _download(audio_url, audio_ext)
+        if shared_local:
+            tmp_path = shared_local
+            _cleanup_tmp = False
+        else:
+            tmp_path = _download(audio_url, audio_ext)
+            _cleanup_tmp = True
         f = feat.extract(tmp_path)
         axes = scoring.compute_axes(f)
         activation = axes["activation"]
@@ -830,20 +1292,25 @@ def _process_track(conn, track: dict, job_id: str) -> str:
         mood = scoring.mood_label(activation, valence)
 
         AUDIO_DIR.mkdir(parents=True, exist_ok=True)
-        target_name = f"{spotify_id}{audio_ext}"
-        target = AUDIO_DIR / target_name
-        try:
-            shutil.copyfile(tmp_path, target)
-            audio_rel = f"data/audio/{target_name}"
-        except OSError as e:
-            log.warning("failed to save audio for %s: %s", spotify_id, e)
-            audio_rel = None
+        if shared_local:
+            # Reuse the existing shared audio_path directly; no copy needed.
+            audio_rel = shared_row["audio_path"]
+        else:
+            target_name = f"{spotify_id}{audio_ext}"
+            target = AUDIO_DIR / target_name
+            try:
+                shutil.copyfile(tmp_path, target)
+                audio_rel = f"data/audio/{target_name}"
+            except OSError as e:
+                log.warning("failed to save audio for %s: %s", spotify_id, e)
+                audio_rel = None
 
         merged_preview_url = preview_url or (itunes_result.get("previewUrl") if itunes_result else None)
         merged_genre = (itunes_result or {}).get("primaryGenreName")
         merged_track_view_url = (itunes_result or {}).get("trackViewUrl")
 
         track_data = {
+            "user_id": user_id,
             "apple_id": apple_id,
             "spotify_id": spotify_id,
             "isrc": isrc,
@@ -886,7 +1353,7 @@ def _process_track(conn, track: dict, job_id: str) -> str:
         _upsert(conn, track_data)
         return f"ok:{source}"
     finally:
-        if tmp_path and os.path.exists(tmp_path):
+        if tmp_path and _cleanup_tmp and os.path.exists(tmp_path):
             try:
                 os.remove(tmp_path)
             except OSError:
@@ -895,6 +1362,7 @@ def _process_track(conn, track: dict, job_id: str) -> str:
 
 def _upsert(conn, td: dict) -> None:
     cols = [
+        "user_id",
         "apple_id", "spotify_id", "isrc", "title", "artist", "album", "genre",
         "artwork_url", "preview_url", "track_view_url", "duration_ms",
         "tempo", "energy", "brightness", "zcr", "mfcc_json",
@@ -907,12 +1375,19 @@ def _upsert(conn, td: dict) -> None:
     ]
     values = [td.get(c) for c in cols]
     existing = None
-    if td.get("spotify_id"):
-        row = conn.execute("SELECT id FROM tracks WHERE spotify_id = ?", (td["spotify_id"],)).fetchone()
+    uid = td.get("user_id")
+    if uid is not None and td.get("spotify_id"):
+        row = conn.execute(
+            "SELECT id FROM tracks WHERE spotify_id = ? AND user_id = ?",
+            (td["spotify_id"], uid),
+        ).fetchone()
         if row:
             existing = row[0]
-    if existing is None and td.get("apple_id"):
-        row = conn.execute("SELECT id FROM tracks WHERE apple_id = ?", (td["apple_id"],)).fetchone()
+    if existing is None and uid is not None and td.get("apple_id"):
+        row = conn.execute(
+            "SELECT id FROM tracks WHERE apple_id = ? AND user_id = ?",
+            (td["apple_id"], uid),
+        ).fetchone()
         if row:
             existing = row[0]
 
@@ -948,12 +1423,37 @@ def _collect_tracks(token: str, sources: IngestSources) -> list[dict]:
     return out
 
 
-def _run_ingest_job(job_id: str, token: str, sources: IngestSources):
+def _run_ingest_job(job_id: str, token: str, sources: IngestSources, user_id: int):
     try:
         _update_job(job_id, status="running", current_track="collecting library…")
+        log.info("[ingest job=%s user=%s] starting collect: liked=%s top=%s playlists=%s "
+                 "token_len=%d token_head=%s token_tail=%s",
+                 job_id, user_id,
+                 sources.liked, sources.top_tracks,
+                 (sources.playlist_ids or []),
+                 len(token or ""),
+                 (token or "")[:12],
+                 (token or "")[-6:] if token else "")
+
+        # Preflight: probe /v1/me to distinguish "token is bad" from "endpoint
+        # is bad". If /me returns 200, the token is fine and any downstream
+        # 401 is endpoint-specific — bubble a clearer error.
+        try:
+            me = splib._get(f"{splib.BASE}/me", token)
+            log.info("[ingest job=%s] /v1/me OK id=%s display=%s product=%s",
+                     job_id, me.get("id"), me.get("display_name"), me.get("product"))
+        except splib.SpotifyAuthError:
+            log.warning("[ingest job=%s] /v1/me returned 401 — token itself is bad", job_id)
+            _update_job(job_id, status="error", error_message="spotify_token_expired")
+            return
+        except Exception as e:
+            log.warning("[ingest job=%s] /v1/me preflight failed: %s", job_id, e)
+
         try:
             tracks = _collect_tracks(token, sources)
         except splib.SpotifyAuthError:
+            log.warning("[ingest job=%s] _collect_tracks raised SpotifyAuthError "
+                        "(but /me was OK — endpoint-specific 401?)", job_id)
             _update_job(job_id, status="error", error_message="spotify_token_expired")
             return
         except splib.SpotifyAPIError as e:
@@ -964,9 +1464,14 @@ def _run_ingest_job(job_id: str, token: str, sources: IngestSources):
 
         conn = get_conn()
         try:
+            cancelled = False
             for track in tracks:
+                if _is_cancelled(job_id):
+                    log.info("[ingest job=%s] cancel_requested — stopping loop", job_id)
+                    cancelled = True
+                    break
                 try:
-                    result = _process_track(conn, track, job_id)
+                    result = _process_track(conn, track, job_id, user_id)
                     if result == "ok:spotify":
                         _bump(job_id, "matched_spotify", 1)
                     elif result == "ok:itunes":
@@ -985,25 +1490,30 @@ def _run_ingest_job(job_id: str, token: str, sources: IngestSources):
         finally:
             conn.close()
 
-        # library-wide z-score recompute so the vibe slider reflects the
-        # actual distribution of the (now larger) library.
+        # library-wide z-score recompute (per-user) so the vibe slider
+        # reflects the actual distribution of the (now larger) library.
+        # Runs even on cancel so activation_relative reflects what did land.
         try:
             conn2 = get_conn()
             try:
-                _recompute_axes_and_zscores(conn2)
+                _recompute_axes_and_zscores(conn2, user_id=user_id)
             finally:
                 conn2.close()
         except Exception as e:
             log.exception("post-ingest recompute failed: %s", e)
 
-        _update_job(job_id, status="complete", current_track=None)
+        if cancelled:
+            _update_job(job_id, status="cancelled", current_track=None,
+                        note="Cancelled by user")
+        else:
+            _update_job(job_id, status="complete", current_track=None)
     except Exception as e:
         log.exception("ingest job crashed: %s", e)
         _update_job(job_id, status="error", error_message=f"{e.__class__.__name__}: {e}")
 
 
 @app.post("/api/ingest/spotify", status_code=202)
-def ingest_spotify(req: IngestRequest):
+def ingest_spotify(req: IngestRequest, sess: dict = Depends(require_user)):
     if not req.access_token:
         raise HTTPException(status_code=422, detail="access_token required")
     if not (req.sources.liked or req.sources.top_tracks or req.sources.playlist_ids):
@@ -1012,6 +1522,7 @@ def ingest_spotify(req: IngestRequest):
     with JOBS_LOCK:
         JOBS[job_id] = {
             "status": "pending",
+            "user_id": sess["user_id"],
             "current_track": None,
             "total": 0,
             "processed": 0,
@@ -1019,24 +1530,353 @@ def ingest_spotify(req: IngestRequest):
             "preview_only": 0,
             "no_preview": 0,
             "skipped": 0,
+            "cancel_requested": False,
             "error_message": None,
         }
     t = threading.Thread(
         target=_run_ingest_job,
-        args=(job_id, req.access_token, req.sources),
+        args=(job_id, req.access_token, req.sources, sess["user_id"]),
         daemon=True,
     )
     t.start()
     return {"job_id": job_id}
 
 
+def _run_public_playlist_job(job_id: str, playlist_id: str, user_id: int,
+                             user_token: Optional[str] = None,
+                             followed_note: Optional[str] = None):
+    """
+    Background job for /api/ingest/spotify-public. Uses the caller's Spotify
+    OAuth token when supplied (works for arbitrary public playlists that
+    the user follows or can follow), else falls back to the app's
+    client-credentials token (largely broken since Nov 2024 but preserved
+    for API completeness). Reuses the same _process_track pipeline as
+    OAuth ingest — tracks land under `user_id`.
+
+    If the tracks endpoint returns 403 with a user token, we attempt to
+    silently follow the playlist ({"public": false}) — Spotify then
+    unlocks the tracks endpoint. Follow policy: leave followed (matches
+    user intent; frontend surfaces the note).
+
+    The user's OAuth token is used in-memory only; nothing is persisted.
+    """
+    try:
+        _update_job(job_id, status="running", current_track=f"loading playlist {playlist_id}…")
+        if followed_note:
+            _update_job(job_id, note=followed_note)
+
+        use_user_token = bool(user_token)
+        try:
+            fetch_token = user_token if use_user_token else _get_app_token()
+        except HTTPException as e:
+            _update_job(job_id, status="error",
+                        error_message=str(e.detail if hasattr(e, "detail") else e))
+            return
+
+        def _do_fetch(tok: str) -> list[dict]:
+            return splib.fetch_public_playlist_tracks(playlist_id, tok)
+
+        try:
+            tracks = _do_fetch(fetch_token)
+        except splib.PlaylistNotFoundError:
+            _update_job(job_id, status="error", error_message="playlist_not_found")
+            return
+        except splib.PlaylistPrivateError:
+            # 403 on /tracks. With a user token, try the follow-then-retry
+            # workaround. With app token, this is genuinely inaccessible.
+            if not use_user_token:
+                _update_job(job_id, status="error", error_message="playlist_private")
+                return
+            log.info("[public-playlist] user=%s playlist=%s: /tracks 403, attempting follow-then-retry",
+                     user_id, playlist_id)
+            try:
+                follow_result = splib.follow_playlist(playlist_id, user_token, public=False)
+            except splib.SpotifyAuthError:
+                _update_job(job_id, status="error",
+                            error_message="spotify_token_expired")
+                return
+            except Exception as e:
+                log.exception("[public-playlist] follow crashed: %s", e)
+                _update_job(job_id, status="error", error_message="playlist_private")
+                return
+            if follow_result == "scope":
+                _update_job(job_id, status="error",
+                            error_message="spotify_scope_upgrade_required")
+                return
+            if follow_result != "ok":
+                _update_job(job_id, status="error", error_message="playlist_private")
+                return
+            log.info("[public-playlist] user=%s playlist=%s: followed, retrying /tracks",
+                     user_id, playlist_id)
+            note = ("Followed playlist to enable ingest — "
+                    "visible in your Spotify library.")
+            _update_job(job_id, note=note)
+            try:
+                tracks = _do_fetch(user_token)
+            except splib.PlaylistPrivateError:
+                # Follow succeeded but tracks still 403 → genuinely restricted.
+                _update_job(job_id, status="error", error_message="playlist_private")
+                return
+            except splib.PlaylistNotFoundError:
+                _update_job(job_id, status="error", error_message="playlist_not_found")
+                return
+            except splib.SpotifyAuthError:
+                _update_job(job_id, status="error",
+                            error_message="spotify_token_expired")
+                return
+            except splib.SpotifyAPIError as e:
+                _update_job(job_id, status="error",
+                            error_message=f"spotify_api_error: {e}")
+                return
+        except splib.SpotifyAuthError:
+            if use_user_token:
+                _update_job(job_id, status="error", error_message="spotify_token_expired")
+                return
+            try:
+                fetch_token = _get_app_token(force_refresh=True)
+                tracks = _do_fetch(fetch_token)
+            except Exception as e2:
+                _update_job(job_id, status="error",
+                            error_message=f"spotify_api_error: {e2}")
+                return
+        except splib.SpotifyAPIError as e:
+            _update_job(job_id, status="error",
+                        error_message=f"spotify_api_error: {e}")
+            return
+
+        # De-dupe within the fetch (Spotify sometimes returns dupes in playlists).
+        seen: set[str] = set()
+        unique_tracks: list[dict] = []
+        for t in tracks:
+            tid = t.get("id")
+            if not tid or tid in seen:
+                continue
+            seen.add(tid)
+            unique_tracks.append(t)
+
+        _update_job(job_id, total=len(unique_tracks))
+
+        conn = get_conn()
+        try:
+            cancelled = False
+            for track in unique_tracks:
+                if _is_cancelled(job_id):
+                    log.info("[public-playlist job=%s] cancel_requested — stopping loop", job_id)
+                    cancelled = True
+                    break
+                try:
+                    result = _process_track(conn, track, job_id, user_id)
+                    if result == "ok:spotify":
+                        _bump(job_id, "matched_spotify", 1)
+                    elif result == "ok:itunes":
+                        _bump(job_id, "preview_only", 1)
+                    elif result == "skip:no_preview":
+                        _bump(job_id, "no_preview", 1)
+                    else:
+                        _bump(job_id, "skipped", 1)
+                except Exception as e:
+                    log.exception("public playlist track ingest failed: %s", e)
+                    _bump(job_id, "skipped", 1)
+                _bump(job_id, "processed", 1)
+        finally:
+            conn.close()
+
+        # Per-user z-score refresh after growing the library. Runs even on
+        # cancel so activation_relative reflects what did land.
+        try:
+            conn2 = get_conn()
+            try:
+                _recompute_axes_and_zscores(conn2, user_id=user_id)
+            finally:
+                conn2.close()
+        except Exception as e:
+            log.exception("post-ingest recompute (public playlist) failed: %s", e)
+
+        if cancelled:
+            # Preserve any existing followed_note; add a cancelled note only
+            # if there isn't already a meaningful one.
+            with JOBS_LOCK:
+                existing_note = (JOBS.get(job_id) or {}).get("note")
+            new_note = existing_note or "Cancelled by user"
+            _update_job(job_id, status="cancelled", current_track=None, note=new_note)
+        else:
+            _update_job(job_id, status="complete", current_track=None)
+    except Exception as e:
+        log.exception("public playlist job crashed: %s", e)
+        _update_job(job_id, status="error", error_message=f"{e.__class__.__name__}: {e}")
+
+
+@app.post("/api/ingest/spotify-public", status_code=202)
+def ingest_spotify_public(req: PublicPlaylistIngestRequest,
+                         sess: dict = Depends(require_user)):
+    """
+    Ingest a public Spotify playlist by URL or ID. If the caller sends
+    their Spotify OAuth `access_token` in the body we use it (works for
+    arbitrary public playlists that the user can see, including friends'
+    shared playlists). Otherwise falls back to the app's client-credentials
+    token, which since Nov 2024 is 403-forbidden for essentially all
+    playlists — kept for API completeness.
+
+    New tracks are scoped to the caller's user_id. The Spotify OAuth token
+    is used only for this request/job — never persisted.
+    """
+    raw = req.playlist_url or req.playlist_id or ""
+    if not raw:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "playlist_url or playlist_id required"},
+        )
+    playlist_id = splib.parse_playlist_id(raw)
+    if not playlist_id:
+        raise HTTPException(status_code=400, detail={"error": "invalid_playlist_url"})
+
+    user_token = (req.access_token or "").strip() or None
+    use_user_token = bool(user_token)
+    followed_note: Optional[str] = None
+
+    # Preflight: (1) confirm the playlist exists via metadata,
+    #            (2) probe /tracks to see if we can actually read it
+    #                (metadata succeeding does NOT imply tracks are readable
+    #                 — confirmed live post Nov 2024),
+    #            (3) if 403 with a user token, attempt silent follow +
+    #                re-probe.
+    try:
+        preflight_token = user_token if use_user_token else _get_app_token()
+
+        # (1) metadata
+        r_meta = requests.get(
+            f"https://api.spotify.com/v1/playlists/{playlist_id}",
+            headers={"Authorization": f"Bearer {preflight_token}"},
+            params={"fields": "id,name,tracks(total)"},
+            timeout=15,
+        )
+        if r_meta.status_code == 404:
+            raise HTTPException(status_code=404, detail={"error": "playlist_not_found"})
+        if r_meta.status_code == 400:
+            raise HTTPException(status_code=404, detail={"error": "playlist_not_found"})
+        if r_meta.status_code == 401:
+            if use_user_token:
+                raise HTTPException(status_code=401,
+                                    detail={"error": "spotify_token_expired"})
+            raise HTTPException(status_code=403, detail={"error": "playlist_private"})
+        if r_meta.status_code == 403:
+            raise HTTPException(status_code=403, detail={"error": "playlist_private"})
+        if r_meta.status_code >= 400:
+            raise HTTPException(status_code=502,
+                                detail={"error": f"spotify_api_error: {r_meta.status_code}"})
+
+        # (2) probe tracks
+        tracks_status = splib.probe_playlist_tracks(playlist_id, preflight_token)
+        if tracks_status == 404:
+            raise HTTPException(status_code=404, detail={"error": "playlist_not_found"})
+        if tracks_status == 401:
+            if use_user_token:
+                raise HTTPException(status_code=401,
+                                    detail={"error": "spotify_token_expired"})
+            raise HTTPException(status_code=403, detail={"error": "playlist_private"})
+        if tracks_status == 403:
+            if not use_user_token:
+                # App-token path: nothing we can do, Nov 2024 lockdown.
+                raise HTTPException(status_code=403, detail={"error": "playlist_private"})
+            # (3) user-token 403: try follow-then-retry.
+            log.info("[public-playlist preflight] user=%s playlist=%s: /tracks 403, attempting follow",
+                     sess["user_id"], playlist_id)
+            try:
+                follow_result = splib.follow_playlist(playlist_id, user_token, public=False)
+            except splib.SpotifyAuthError:
+                raise HTTPException(status_code=401,
+                                    detail={"error": "spotify_token_expired"})
+            except requests.RequestException as e:
+                raise HTTPException(status_code=502,
+                                    detail={"error": f"spotify_unreachable: {e}"})
+            if follow_result == "scope":
+                raise HTTPException(status_code=401,
+                                    detail={"error": "spotify_scope_upgrade_required"})
+            if follow_result != "ok":
+                raise HTTPException(status_code=403,
+                                    detail={"error": "playlist_private"})
+            # Re-probe after follow.
+            reprobe = splib.probe_playlist_tracks(playlist_id, user_token)
+            if reprobe != 200:
+                # Follow succeeded but tracks still not accessible — genuine.
+                raise HTTPException(status_code=403,
+                                    detail={"error": "playlist_private"})
+            followed_note = ("Followed playlist to enable ingest — "
+                             "visible in your Spotify library.")
+            log.info("[public-playlist preflight] user=%s playlist=%s: follow+reprobe OK",
+                     sess["user_id"], playlist_id)
+        elif tracks_status >= 400:
+            raise HTTPException(status_code=502,
+                                detail={"error": f"spotify_api_error: {tracks_status}"})
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail={"error": f"spotify_unreachable: {e}"})
+
+    job_id = uuid.uuid4().hex
+    with JOBS_LOCK:
+        JOBS[job_id] = {
+            "status": "pending",
+            "user_id": sess["user_id"],
+            "current_track": None,
+            "playlist_id": playlist_id,
+            "source": "public_playlist",
+            "auth_mode": "user_oauth" if use_user_token else "app_token",
+            "note": followed_note,
+            "total": 0,
+            "processed": 0,
+            "matched_spotify": 0,
+            "preview_only": 0,
+            "no_preview": 0,
+            "skipped": 0,
+            "cancel_requested": False,
+            "error_message": None,
+        }
+    t = threading.Thread(
+        target=_run_public_playlist_job,
+        args=(job_id, playlist_id, sess["user_id"], user_token, followed_note),
+        daemon=True,
+    )
+    t.start()
+    return {"job_id": job_id, "playlist_id": playlist_id, "note": followed_note}
+
+
 @app.get("/api/ingest/status/{job_id}")
-def ingest_status(job_id: str):
+def ingest_status(job_id: str, sess: dict = Depends(require_user)):
     with JOBS_LOCK:
         job = JOBS.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="job not found")
+        if int(job.get("user_id") or 0) != int(sess["user_id"]):
+            raise HTTPException(status_code=404, detail="job not found")
         return dict(job)
+
+
+@app.delete("/api/ingest/status/{job_id}", status_code=204)
+def ingest_cancel(job_id: str, sess: dict = Depends(require_user)):
+    """
+    Request cancellation of an in-flight ingest job. Sets a flag the
+    background runner polls between tracks; the runner exits cleanly on
+    the next boundary and transitions the job to status='cancelled'.
+    Tracks already inserted stay in the DB, audio files already saved
+    stay on disk, and post-ingest z-score still runs so
+    activation_relative reflects what did land.
+
+    Idempotent: DELETE on an already-cancelled/completed/errored job
+    returns 204 without side effects. Returns 404 if the job doesn't
+    exist or belongs to another user (identical response to hide
+    existence of other users' jobs).
+    """
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        if int(job.get("user_id") or 0) != int(sess["user_id"]):
+            raise HTTPException(status_code=404, detail="job not found")
+        # No-op on already-terminal jobs — still return 204 for idempotency.
+        if job.get("status") in ("complete", "error", "cancelled"):
+            return Response(status_code=204)
+        job["cancel_requested"] = True
+    log.info("[ingest] user=%s requested cancel for job=%s", sess["user_id"], job_id)
+    return Response(status_code=204)
 
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"

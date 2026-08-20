@@ -27,3 +27,17 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# ML pipeline artifacts
+ml/data/previews/
+ml/data/*.log
+ml/data/*.mp3
+ml/data/verify_preview.mp3
+ml/data/mel_cache/
+ml/data/spotify_tracks.csv
+ml/data/manifest.csv
+ml/data/*.csv.tmp
+ml/data/*.compact.tmp
+ml/models/*.ckpt
+ml/models/*.pt
+ml/experiments/

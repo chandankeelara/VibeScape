@@ -73,6 +73,33 @@
     debugFeatAcousticness: $('debugFeatAcousticness'),
     debugFeatTempo: $('debugFeatTempo'),
     debugFeatEnergy: $('debugFeatEnergy'),
+    // Auth overlay + user menu
+    authOverlay: $('authOverlay'),
+    authViewPicker: $('authViewPicker'),
+    authViewPin: $('authViewPin'),
+    authViewCreate: $('authViewCreate'),
+    authPickerLoading: $('authPickerLoading'),
+    authProfilesGrid: $('authProfilesGrid'),
+    authPickerEmpty: $('authPickerEmpty'),
+    btnAuthCreate: $('btnAuthCreate'),
+    btnAuthPinBack: $('btnAuthPinBack'),
+    btnAuthCreateBack: $('btnAuthCreateBack'),
+    authPinAvatar: $('authPinAvatar'),
+    authPinName: $('authPinName'),
+    authPinForm: $('authPinForm'),
+    authPinInput: $('authPinInput'),
+    authCreateForm: $('authCreateForm'),
+    authCreateName: $('authCreateName'),
+    authCreatePin: $('authCreatePin'),
+    authCreatePinConfirm: $('authCreatePinConfirm'),
+    authCreatePinConfirmField: $('authCreatePinConfirmField'),
+    userMenu: $('userMenu'),
+    btnUserMenu: $('btnUserMenu'),
+    userMenuPopover: $('userMenuPopover'),
+    userAvatar: $('userAvatar'),
+    userName: $('userName'),
+    userMenuName: $('userMenuName'),
+    btnUserSignOut: $('btnUserSignOut'),
     debugPanel: $('debugPanel'),
     debugUser: $('debugUser'),
     debugExpiry: $('debugExpiry'),
@@ -91,11 +118,21 @@
     btnSyncCancel: $('btnSyncCancel'),
     btnSyncStart: $('btnSyncStart'),
     btnSyncRetry: $('btnSyncRetry'),
+    syncTabs: $('syncTabs'),
+    syncTabLibrary: $('syncTabLibrary'),
+    syncTabUrl: $('syncTabUrl'),
     syncViewLoading: $('syncViewLoading'),
     syncViewError: $('syncViewError'),
     syncViewSelect: $('syncViewSelect'),
+    syncViewUrl: $('syncViewUrl'),
     syncViewProgress: $('syncViewProgress'),
     syncViewComplete: $('syncViewComplete'),
+    syncUrlInput: $('syncUrlInput'),
+    syncUrlHint: $('syncUrlHint'),
+    syncUrlSignedIn: $('syncUrlSignedIn'),
+    syncUrlSignedOut: $('syncUrlSignedOut'),
+    btnUrlSpotifySignIn: $('btnUrlSpotifySignIn'),
+    btnUserAddPlaylist: $('btnUserAddPlaylist'),
     syncErrorMsg: $('syncErrorMsg'),
     syncLiked: $('syncLiked'),
     syncTop: $('syncTop'),
@@ -115,8 +152,11 @@
     syncModalFooter: $('syncModalFooter')
   };
 
-  const SPOTIFY_SCOPE = 'streaming user-read-email user-read-private user-library-read playlist-read-private playlist-read-collaborative user-top-read';
-  const SPOTIFY_SCOPE_VERSION = 2;
+  // v3: added `playlist-modify-private` — required to silently follow public
+  // playlists server-side before fetching their tracks (Spotify's `/playlists/{id}/tracks`
+  // returns 403 for third-party playlists otherwise, even if marked Public).
+  const SPOTIFY_SCOPE = 'streaming user-read-email user-read-private user-library-read playlist-read-private playlist-read-collaborative user-top-read playlist-modify-private';
+  const SPOTIFY_SCOPE_VERSION = 3;
 
   const MOODS = [
     { name: 'sleep',  min: 0,  max: 20,  a: [76, 91, 138],  b: [91, 127, 189] },
@@ -166,6 +206,7 @@
     refreshToken: '',
     expiresAt: 0,
     displayName: '',
+    spotifyUserId: '',
     isPremium: false,
     player: null,
     deviceId: '',
@@ -175,13 +216,38 @@
     positionMs: 0,
     durationMs: 0,
     positionAt: 0,
-    pollTimer: null,
-    verifierKey: 'spotify_pkce_verifier',
-    tokenKey: 'spotify_access_token',
-    refreshKey: 'spotify_refresh_token',
-    expiryKey: 'spotify_token_expiry',
-    profileKey: 'spotify_profile',
-    scopeVersionKey: 'spotify_scope_version'
+    pollTimer: null
+  };
+
+  // Per-VibeScape-user Spotify token key convention. Namespaced by user_id so
+  // multiple profiles on the same browser don't stomp each other's Spotify
+  // session. If auth.user is null (edge case: pre-login) we fall back to a
+  // shared '_anon' namespace; those entries get cleared when a user logs in.
+  function spotifyKeys() {
+    const uid = (auth.user && auth.user.user_id) ? auth.user.user_id : '_anon';
+    return {
+      verifierKey:      `spotify_${uid}_pkce_verifier`,
+      tokenKey:         `spotify_${uid}_access_token`,
+      refreshKey:       `spotify_${uid}_refresh_token`,
+      expiryKey:        `spotify_${uid}_token_expiry`,
+      profileKey:       `spotify_${uid}_profile`,
+      scopeVersionKey:  `spotify_${uid}_scope_version`
+    };
+  }
+
+  // ===== VibeScape session auth =====
+  const auth = {
+    token: '',           // vibescape_session_token
+    user: null,          // { user_id, display_name, has_pin, spotify_connected, created_at }
+    booted: false,       // set once auth flow has completed (either login OR guest? — currently login required)
+    tokenKey: 'vibescape_session_token',
+    userIdKey: 'vibescape_user_id',
+    // Picker UI state
+    picker: {
+      users: [],
+      selected: null,    // user object being PIN-prompted
+      view: 'picker'     // picker | pin | create
+    }
   };
 
   const sync = {
@@ -190,8 +256,23 @@
     fetching: false,
     jobId: null,
     pollTimer: null,
-    stage: 'idle' // idle | loading | error | select | progress | complete
+    stage: 'idle', // idle | loading | error | select | url | progress | complete
+    tab: 'library', // 'library' | 'url'
+    urlValid: false,
+    // The last successfully-added URL, used to short-circuit re-submits
+    lastUrl: '',
+    // Track whether we've surfaced the backend's `note` field yet — the note
+    // can arrive on the 202 response OR mid-flight in a status poll; either
+    // way we only want to show it once per job.
+    noteShown: false,
+    // Remember auth mode from status poll (`user_oauth` | `app_token`) for
+    // the debug panel section.
+    authMode: ''
   };
+  // Extracts a 22-char base62 Spotify playlist ID from either the full open.spotify.com
+  // URL or the spotify: URI scheme, tolerating query strings and `intl-*` locale segments.
+  const SPOTIFY_PLAYLIST_URL_RE = /(?:^|\/|:)playlist(?::|\/)([A-Za-z0-9]{22})(?:$|[/?#])/;
+  const SPOTIFY_BARE_ID_RE = /^[A-Za-z0-9]{22}$/;
 
   function moodFor(vibe) {
     for (const m of MOODS) if (vibe >= m.min && vibe < m.max) return m;
@@ -371,6 +452,421 @@
     }
   }
 
+  // ============== Auth wrapper + 401 interceptor ==============
+  // Wraps fetch() for all authenticated backend calls. Adds Bearer header,
+  // intercepts 401 by clearing session + showing the picker + toasting.
+  // Endpoints that should NOT go through this: /api/health, /api/spotify/config,
+  // /callback, /api/users, /api/auth/*. Those pass through raw fetch().
+  // <audio> elements cannot send Authorization headers with their src fetch.
+  // Append the session token as a query param so backend can authorize.
+  // Session-backend needs to accept `?token=<vibescape_session>` on /api/stream/*.
+  function authedStreamUrl(applePath) {
+    const base = API_BASE + applePath;
+    if (!auth.token) return base;
+    return base + (base.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(auth.token);
+  }
+
+  async function fetchWithAuth(path, options) {
+    options = options || {};
+    const headers = new Headers(options.headers || {});
+    if (auth.token) headers.set('Authorization', 'Bearer ' + auth.token);
+    const url = path.startsWith('http') ? path : (API_BASE + path);
+    const r = await fetch(url, Object.assign({}, options, { headers }));
+    if (r.status === 401 && auth.token) {
+      // Session expired or revoked — force re-auth
+      console.warn('[VibeScape] 401 from', path, '— clearing session');
+      handleSessionExpired();
+    }
+    return r;
+  }
+
+  function handleSessionExpired() {
+    // Called on any 401 from an authenticated endpoint. Wipes session,
+    // stops playback, shows picker. Idempotent — safe to call multiple times.
+    if (!auth.token) return;
+    auth.token = '';
+    auth.user = null;
+    auth.booted = false;
+    localStorage.removeItem(auth.tokenKey);
+    localStorage.removeItem(auth.userIdKey);
+    try { stopPlayback(); } catch (_) {}
+    updateUserMenu();
+    toast('Session expired. Sign in again.', 'error');
+    showAuthOverlay();
+  }
+
+  // ============== Auth flow ==============
+  function initialsFor(name) {
+    if (!name) return '?';
+    const parts = String(name).trim().split(/\s+/);
+    if (!parts.length) return '?';
+    if (parts.length === 1) return parts[0].slice(0, 1).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  }
+
+  function updateUserMenu() {
+    if (!el.userMenu) return;
+    if (auth.user) {
+      el.userMenu.hidden = false;
+      const name = auth.user.display_name || 'user';
+      el.userName.textContent = name;
+      el.userMenuName.textContent = name;
+      el.userAvatar.textContent = initialsFor(name);
+    } else {
+      el.userMenu.hidden = true;
+    }
+  }
+
+  function setAuthView(name) {
+    auth.picker.view = name;
+    if (el.authViewPicker) el.authViewPicker.hidden = name !== 'picker';
+    if (el.authViewPin) el.authViewPin.hidden = name !== 'pin';
+    if (el.authViewCreate) el.authViewCreate.hidden = name !== 'create';
+  }
+
+  function showAuthOverlay() {
+    if (!el.authOverlay) return;
+    el.authOverlay.hidden = false;
+    document.body.classList.add('auth-locked');
+    setAuthView('picker');
+    fetchProfileList();
+  }
+
+  function hideAuthOverlay() {
+    if (!el.authOverlay) return;
+    el.authOverlay.hidden = true;
+    document.body.classList.remove('auth-locked');
+  }
+
+  async function fetchProfileList() {
+    if (!el.authProfilesGrid) return;
+    if (el.authPickerLoading) el.authPickerLoading.hidden = false;
+    if (el.authProfilesGrid) el.authProfilesGrid.hidden = true;
+    if (el.authPickerEmpty) el.authPickerEmpty.hidden = true;
+    try {
+      const r = await fetch(API_BASE + '/api/users');
+      if (!r.ok) throw new Error('users list failed ' + r.status);
+      const users = await r.json();
+      auth.picker.users = Array.isArray(users) ? users : [];
+      renderProfileList();
+    } catch (e) {
+      console.warn('[VibeScape] fetch users failed:', e);
+      if (el.authPickerLoading) el.authPickerLoading.hidden = true;
+      if (el.authPickerEmpty) {
+        el.authPickerEmpty.hidden = false;
+        el.authPickerEmpty.querySelector('.modal-hint').textContent = 'Could not load profiles. Is the backend running?';
+      }
+    }
+  }
+
+  function renderProfileList() {
+    if (!el.authProfilesGrid) return;
+    el.authProfilesGrid.innerHTML = '';
+    if (el.authPickerLoading) el.authPickerLoading.hidden = true;
+    if (!auth.picker.users.length) {
+      if (el.authPickerEmpty) el.authPickerEmpty.hidden = false;
+      el.authProfilesGrid.hidden = true;
+      return;
+    }
+    if (el.authPickerEmpty) el.authPickerEmpty.hidden = true;
+    el.authProfilesGrid.hidden = false;
+    auth.picker.users.forEach((u) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'auth-profile-card';
+      const av = document.createElement('span');
+      av.className = 'auth-profile-avatar';
+      av.textContent = initialsFor(u.display_name);
+      btn.appendChild(av);
+      const nm = document.createElement('span');
+      nm.className = 'auth-profile-name';
+      nm.textContent = u.display_name || 'unnamed';
+      btn.appendChild(nm);
+      if (u.has_pin) {
+        const lock = document.createElement('span');
+        lock.className = 'auth-profile-lock';
+        lock.innerHTML = '<svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><span>PIN</span>';
+        btn.appendChild(lock);
+        btn.setAttribute('aria-label', 'Sign in as ' + u.display_name + ' (PIN required)');
+      } else {
+        btn.setAttribute('aria-label', 'Sign in as ' + u.display_name);
+      }
+      btn.addEventListener('click', () => selectProfile(u));
+      el.authProfilesGrid.appendChild(btn);
+    });
+  }
+
+  function selectProfile(u) {
+    auth.picker.selected = u;
+    if (u.has_pin) {
+      setAuthView('pin');
+      el.authPinName.textContent = u.display_name || 'unnamed';
+      el.authPinAvatar.textContent = initialsFor(u.display_name);
+      el.authPinInput.value = '';
+      el.authPinInput.classList.remove('auth-pin-shake');
+      setTimeout(() => { try { el.authPinInput.focus(); } catch (_) {} }, 60);
+    } else {
+      loginUser(u.user_id, null);
+    }
+  }
+
+  async function loginUser(userId, pin) {
+    const submitBtn = document.getElementById('btnAuthPinSubmit');
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+      const body = { user_id: userId };
+      if (pin) body.pin = pin;
+      const r = await fetch(API_BASE + '/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (r.status === 401) {
+        // Wrong PIN — shake, clear, refocus
+        el.authPinInput.value = '';
+        el.authPinInput.classList.remove('auth-pin-shake');
+        // force reflow so animation restarts
+        void el.authPinInput.offsetWidth;
+        el.authPinInput.classList.add('auth-pin-shake');
+        toast('Wrong PIN. Try again.', 'error');
+        setTimeout(() => { try { el.authPinInput.focus(); } catch (_) {} }, 40);
+        return;
+      }
+      if (r.status === 404) {
+        toast('Profile not found. Refreshing list.', 'error');
+        setAuthView('picker');
+        fetchProfileList();
+        return;
+      }
+      if (!r.ok) throw new Error('login failed ' + r.status);
+      const j = await r.json();
+      completeLogin(j);
+    } catch (e) {
+      console.warn('[VibeScape] login error:', e);
+      toast('Could not sign in. Check the backend.', 'error');
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  }
+
+  function completeLogin(payload) {
+    // payload: { user_id, display_name, session_token, has_pin, ... }
+    auth.token = payload.session_token || '';
+    auth.user = {
+      user_id: payload.user_id,
+      display_name: payload.display_name,
+      has_pin: !!payload.has_pin,
+      spotify_connected: !!payload.spotify_connected
+    };
+    localStorage.setItem(auth.tokenKey, auth.token);
+    localStorage.setItem(auth.userIdKey, String(auth.user.user_id));
+    updateUserMenu();
+    hideAuthOverlay();
+    // Boot the rest of the app now that we have a session
+    bootAuthenticatedApp();
+  }
+
+  async function submitCreate(ev) {
+    ev.preventDefault();
+    const name = (el.authCreateName.value || '').trim();
+    const pin = (el.authCreatePin.value || '').trim();
+    const pin2 = (el.authCreatePinConfirm.value || '').trim();
+    if (!name) {
+      el.authCreateName.classList.add('auth-input-error');
+      return;
+    }
+    el.authCreateName.classList.remove('auth-input-error');
+    if (pin) {
+      if (!/^\d{4}$/.test(pin)) {
+        el.authCreatePin.classList.add('auth-input-error');
+        toast('PIN must be exactly 4 digits.', 'error');
+        return;
+      }
+      if (pin !== pin2) {
+        el.authCreatePinConfirm.classList.add('auth-input-error');
+        toast('PINs do not match.', 'error');
+        return;
+      }
+    }
+    el.authCreatePin.classList.remove('auth-input-error');
+    el.authCreatePinConfirm.classList.remove('auth-input-error');
+
+    const btn = document.getElementById('btnAuthCreateSubmit');
+    if (btn) btn.disabled = true;
+    try {
+      const body = { display_name: name };
+      if (pin) body.pin = pin;
+      const r = await fetch(API_BASE + '/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (r.status === 409) {
+        el.authCreateName.classList.add('auth-input-error');
+        toast('That name is taken — try another.', 'error');
+        return;
+      }
+      if (!r.ok) throw new Error('signup failed ' + r.status);
+      const j = await r.json();
+      completeLogin(j);
+    } catch (e) {
+      console.warn('[VibeScape] signup error:', e);
+      toast('Could not create profile. Try again.', 'error');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function signOutOfVibeScape() {
+    const wasSignedIn = !!auth.token;
+    // Best-effort logout — even if it fails, wipe local state
+    if (auth.token) {
+      try {
+        await fetch(API_BASE + '/api/auth/logout', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + auth.token }
+        });
+      } catch (_) {}
+    }
+    // Also stop main + Spotify playback and clear in-memory state
+    try { stopPlayback(); } catch (_) {}
+    try {
+      if (spotify.player) { spotify.player.disconnect(); spotify.player = null; }
+    } catch (_) {}
+    spotify.accessToken = '';
+    spotify.refreshToken = '';
+    spotify.expiresAt = 0;
+    spotify.displayName = '';
+    spotify.spotifyUserId = '';
+    spotify.isPremium = false;
+    spotify.deviceId = '';
+    spotify.lastState = null;
+    updateSpotifyUI();
+    // Clear session
+    auth.token = '';
+    auth.user = null;
+    auth.booted = false; // allow re-boot on next login
+    localStorage.removeItem(auth.tokenKey);
+    localStorage.removeItem(auth.userIdKey);
+    // Reset in-memory library state so the next user doesn't see stale data
+    state.current = null;
+    state.recent = [];
+    state.featureCache = {};
+    if (el.recentTrail) { el.recentTrail.hidden = true; el.recentTrail.innerHTML = ''; }
+    el.title.textContent = 'Move the slider to begin';
+    el.artist.textContent = '—';
+    if (el.album) el.album.textContent = '';
+    if (el.artistSep) el.artistSep.hidden = true;
+    if (el.genreLine) el.genreLine.hidden = true;
+    if (el.artImg) el.artImg.removeAttribute('src');
+    if (el.art) el.art.classList.add('empty');
+    setSourcePill(null);
+    updateVerifyChip(null);
+    updateMetricsChip(null);
+    updateUserMenu();
+    closeUserMenu();
+    if (wasSignedIn) toast('Signed out of VibeScape.', 'success');
+    showAuthOverlay();
+  }
+
+  // Try to hydrate from a stored session token. Returns true if we're auth'd.
+  async function hydrateSessionFromStorage() {
+    const tok = localStorage.getItem(auth.tokenKey) || '';
+    if (!tok) return false;
+    try {
+      const r = await fetch(API_BASE + '/api/auth/me', {
+        headers: { 'Authorization': 'Bearer ' + tok }
+      });
+      if (r.status === 401 || r.status === 404) {
+        localStorage.removeItem(auth.tokenKey);
+        localStorage.removeItem(auth.userIdKey);
+        return false;
+      }
+      if (!r.ok) throw new Error('me failed ' + r.status);
+      const j = await r.json();
+      auth.token = tok;
+      auth.user = {
+        user_id: j.user_id,
+        display_name: j.display_name,
+        has_pin: !!j.has_pin,
+        spotify_connected: !!j.spotify_connected,
+        created_at: j.created_at
+      };
+      localStorage.setItem(auth.userIdKey, String(auth.user.user_id));
+      updateUserMenu();
+      return true;
+    } catch (e) {
+      console.warn('[VibeScape] hydrate session failed:', e);
+      return false;
+    }
+  }
+
+  // User-menu dropdown
+  const userMenuState = { open: false };
+  function openUserMenu() {
+    if (!el.userMenuPopover) return;
+    userMenuState.open = true;
+    el.userMenuPopover.hidden = false;
+    el.userMenuPopover.setAttribute('aria-hidden', 'false');
+    el.btnUserMenu.setAttribute('aria-expanded', 'true');
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        el.userMenuPopover.classList.add('user-menu-open');
+      });
+    });
+  }
+  function closeUserMenu() {
+    if (!el.userMenuPopover || !userMenuState.open) return;
+    userMenuState.open = false;
+    el.userMenuPopover.classList.remove('user-menu-open');
+    el.userMenuPopover.setAttribute('aria-hidden', 'true');
+    el.btnUserMenu.setAttribute('aria-expanded', 'false');
+    setTimeout(() => {
+      if (!userMenuState.open) el.userMenuPopover.hidden = true;
+    }, 200);
+  }
+  function toggleUserMenu() {
+    if (userMenuState.open) closeUserMenu(); else openUserMenu();
+  }
+
+  // Wire auth UI events (fire even before hydration because elements exist)
+  if (el.btnAuthCreate) el.btnAuthCreate.addEventListener('click', () => {
+    setAuthView('create');
+    setTimeout(() => { try { el.authCreateName.focus(); } catch (_) {} }, 60);
+  });
+  if (el.btnAuthPinBack) el.btnAuthPinBack.addEventListener('click', () => setAuthView('picker'));
+  if (el.btnAuthCreateBack) el.btnAuthCreateBack.addEventListener('click', () => setAuthView('picker'));
+  if (el.authPinForm) el.authPinForm.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const pin = (el.authPinInput.value || '').trim();
+    if (!/^\d{4}$/.test(pin)) {
+      el.authPinInput.classList.remove('auth-pin-shake');
+      void el.authPinInput.offsetWidth;
+      el.authPinInput.classList.add('auth-pin-shake');
+      return;
+    }
+    if (auth.picker.selected) loginUser(auth.picker.selected.user_id, pin);
+  });
+  if (el.authCreatePin) el.authCreatePin.addEventListener('input', () => {
+    // Show confirm field only when user starts typing a PIN
+    const has = (el.authCreatePin.value || '').length > 0;
+    if (el.authCreatePinConfirmField) el.authCreatePinConfirmField.hidden = !has;
+  });
+  if (el.authCreateForm) el.authCreateForm.addEventListener('submit', submitCreate);
+  if (el.btnUserMenu) el.btnUserMenu.addEventListener('click', toggleUserMenu);
+  if (el.btnUserSignOut) el.btnUserSignOut.addEventListener('click', () => {
+    closeUserMenu();
+    signOutOfVibeScape();
+  });
+  // Click-outside closes user menu
+  document.addEventListener('mousedown', (ev) => {
+    if (!userMenuState.open) return;
+    const t = ev.target;
+    if (el.userMenuPopover && el.userMenuPopover.contains(t)) return;
+    if (el.btnUserMenu && el.btnUserMenu.contains(t)) return;
+    closeUserMenu();
+  });
+
   function pushRecent(track) {
     if (!track || !track.apple_id) return;
     // Dedup: if same apple_id already present, remove old entry so this becomes freshest
@@ -473,7 +969,7 @@
     el.meta.classList.add('loading');
 
     try {
-      const r = await fetch(API_BASE + '/api/tracks/random?' + params.toString());
+      const r = await fetchWithAuth('/api/tracks/random?' + params.toString());
       if (token !== state.fetchToken) return;
 
       if (r.status === 404) {
@@ -580,7 +1076,7 @@
       el.progressThumb.style.left = '0%';
       setSourcePill('preview');
 
-      el.player.src = API_BASE + '/api/stream/' + encodeURIComponent(t.apple_id);
+      el.player.src = authedStreamUrl('/api/stream/' + encodeURIComponent(t.apple_id));
       el.player.volume = 0.8;
 
       const p = el.player.play();
@@ -1150,16 +1646,19 @@
   }
 
   function restoreSpotifySession() {
-    const tok = localStorage.getItem(spotify.tokenKey);
-    const exp = parseInt(localStorage.getItem(spotify.expiryKey) || '0', 10);
-    const refresh = localStorage.getItem(spotify.refreshKey) || '';
-    const profileRaw = localStorage.getItem(spotify.profileKey) || '';
+    const k = spotifyKeys();
+    const tok = localStorage.getItem(k.tokenKey);
+    const exp = parseInt(localStorage.getItem(k.expiryKey) || '0', 10);
+    const refresh = localStorage.getItem(k.refreshKey) || '';
+    const profileRaw = localStorage.getItem(k.profileKey) || '';
     if (!tok || !exp) return false;
     // Force re-signin if scope version is missing or older than current
-    const storedScopeVersion = parseInt(localStorage.getItem(spotify.scopeVersionKey) || '0', 10);
+    const storedScopeVersion = parseInt(localStorage.getItem(k.scopeVersionKey) || '0', 10);
     if (!storedScopeVersion || storedScopeVersion < SPOTIFY_SCOPE_VERSION) {
       clearSpotifySession();
-      toast('Spotify scopes updated — please sign in again to enable library sync.', 'info');
+      toast('Spotify sign-in refresh needed to enable playlist link import.', 'info', {
+        action: { label: 'Sign in', onClick: () => beginSpotifyLogin() }
+      });
       return false;
     }
     if (Date.now() >= exp - 60_000) {
@@ -1181,6 +1680,7 @@
         const p = JSON.parse(profileRaw);
         spotify.displayName = p.display_name || 'Connected';
         spotify.isPremium = p.product === 'premium';
+        spotify.spotifyUserId = p.spotify_user_id || '';
       } catch (e) {}
     }
     updateSpotifyUI();
@@ -1202,14 +1702,20 @@
       el.spSigned.hidden = true;
       closeDebugPanel();
     }
+    // If the sync modal's URL tab is currently visible, keep its Spotify-gated
+    // state fresh (input vs sign-in prompt).
+    if (sync.open && sync.stage === 'url' && typeof refreshUrlViewState === 'function') {
+      refreshUrlViewState();
+    }
   }
 
   function clearSpotifySession() {
-    localStorage.removeItem(spotify.tokenKey);
-    localStorage.removeItem(spotify.refreshKey);
-    localStorage.removeItem(spotify.expiryKey);
-    localStorage.removeItem(spotify.profileKey);
-    localStorage.removeItem(spotify.scopeVersionKey);
+    const k = spotifyKeys();
+    localStorage.removeItem(k.tokenKey);
+    localStorage.removeItem(k.refreshKey);
+    localStorage.removeItem(k.expiryKey);
+    localStorage.removeItem(k.profileKey);
+    localStorage.removeItem(k.scopeVersionKey);
     spotify.accessToken = '';
     spotify.refreshToken = '';
     spotify.expiresAt = 0;
@@ -1226,7 +1732,7 @@
 
   async function buildSpotifyAuthUrl() {
     const verifier = randomString(64);
-    localStorage.setItem(spotify.verifierKey, verifier);
+    localStorage.setItem(spotifyKeys().verifierKey, verifier);
     const challengeBytes = await sha256(verifier);
     const challenge = base64UrlEncode(challengeBytes);
     const params = new URLSearchParams({
@@ -1485,7 +1991,8 @@
   }
 
   async function exchangeCodeForToken(code) {
-    const verifier = localStorage.getItem(spotify.verifierKey) || '';
+    const k = spotifyKeys();
+    const verifier = localStorage.getItem(k.verifierKey) || '';
     const body = new URLSearchParams({
       grant_type: 'authorization_code',
       code: code,
@@ -1507,12 +2014,14 @@
       spotify.accessToken = j.access_token || '';
       spotify.refreshToken = j.refresh_token || '';
       spotify.expiresAt = Date.now() + ((j.expires_in || 3600) * 1000);
-      localStorage.setItem(spotify.tokenKey, spotify.accessToken);
-      if (spotify.refreshToken) localStorage.setItem(spotify.refreshKey, spotify.refreshToken);
-      localStorage.setItem(spotify.expiryKey, String(spotify.expiresAt));
-      localStorage.setItem(spotify.scopeVersionKey, String(SPOTIFY_SCOPE_VERSION));
-      localStorage.removeItem(spotify.verifierKey);
+      localStorage.setItem(k.tokenKey, spotify.accessToken);
+      if (spotify.refreshToken) localStorage.setItem(k.refreshKey, spotify.refreshToken);
+      localStorage.setItem(k.expiryKey, String(spotify.expiresAt));
+      localStorage.setItem(k.scopeVersionKey, String(SPOTIFY_SCOPE_VERSION));
+      localStorage.removeItem(k.verifierKey);
       await fetchSpotifyProfile();
+      // Link Spotify identity to VibeScape user server-side
+      linkSpotifyToVibeScape().catch(() => {});
       initSpotifyAfterAuth();
     } catch (e) {
       toast('Spotify token exchange error.', 'error');
@@ -1537,9 +2046,10 @@
       spotify.accessToken = j.access_token || '';
       if (j.refresh_token) spotify.refreshToken = j.refresh_token;
       spotify.expiresAt = Date.now() + ((j.expires_in || 3600) * 1000);
-      localStorage.setItem(spotify.tokenKey, spotify.accessToken);
-      localStorage.setItem(spotify.refreshKey, spotify.refreshToken);
-      localStorage.setItem(spotify.expiryKey, String(spotify.expiresAt));
+      const k = spotifyKeys();
+      localStorage.setItem(k.tokenKey, spotify.accessToken);
+      localStorage.setItem(k.refreshKey, spotify.refreshToken);
+      localStorage.setItem(k.expiryKey, String(spotify.expiresAt));
       await fetchSpotifyProfile();
       return true;
     } catch (e) {
@@ -1559,11 +2069,30 @@
       const j = await r.json();
       spotify.displayName = j.display_name || j.id || 'Connected';
       spotify.isPremium = j.product === 'premium';
-      localStorage.setItem(spotify.profileKey, JSON.stringify({
+      spotify.spotifyUserId = j.id || '';
+      localStorage.setItem(spotifyKeys().profileKey, JSON.stringify({
         display_name: spotify.displayName,
-        product: j.product || ''
+        product: j.product || '',
+        spotify_user_id: spotify.spotifyUserId
       }));
     } catch (e) { console.warn('Spotify /v1/me error:', e); }
+  }
+
+  async function linkSpotifyToVibeScape() {
+    if (!auth.token) return;
+    if (!spotify.spotifyUserId && !spotify.displayName) return;
+    try {
+      await fetchWithAuth('/api/auth/spotify-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          spotify_user_id: spotify.spotifyUserId || '',
+          spotify_display_name: spotify.displayName || ''
+        })
+      });
+    } catch (e) {
+      console.warn('[VibeScape] spotify-link failed:', e);
+    }
   }
 
   function initSpotifyAfterAuth() {
@@ -1603,6 +2132,10 @@
 
     player.addListener('ready', ({ device_id }) => {
       spotify.deviceId = device_id;
+      // Immediately transfer playback to our SDK device so /me/player/play
+      // has a valid active target. Without this, Spotify treats another
+      // client (phone/desktop/other tab) as active and returns 404.
+      transferPlayback(device_id);
     });
     player.addListener('not_ready', () => {
       spotify.deviceId = '';
@@ -1685,49 +2218,114 @@
     }
   }
 
+  // PUT /me/player to declare our SDK device as the active playback target.
+  // Called once when SDK 'ready' fires and defensively on 404 from /player/play
+  // (another Spotify client may have stolen the active-device slot).
+  async function transferPlayback(deviceId) {
+    if (!deviceId || !spotify.accessToken) return false;
+    try {
+      const r = await fetch('https://api.spotify.com/v1/me/player', {
+        method: 'PUT',
+        headers: {
+          'Authorization': 'Bearer ' + spotify.accessToken,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ device_ids: [deviceId], play: false })
+      });
+      // 204 = transferred, 202 = accepted (queued), both fine
+      if (r.ok || r.status === 204 || r.status === 202) return true;
+      console.warn('[VibeScape] transferPlayback failed:', r.status);
+      return false;
+    } catch (e) {
+      console.warn('[VibeScape] transferPlayback error:', e);
+      return false;
+    }
+  }
+
+  function fallbackToPreview(reason) {
+    if (!state.current) return;
+    setSourcePill('preview');
+    el.player.src = authedStreamUrl('/api/stream/' + encodeURIComponent(state.current.apple_id));
+    const p = el.player.play();
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+    if (reason) console.warn('[VibeScape] Spotify → preview fallback:', reason);
+  }
+
+  // Single PUT /me/player/play call — pulled out so the retry-after-transfer
+  // path doesn't have to duplicate the fetch body.
+  async function _doSpotifyPlay(spotifyId) {
+    return fetch('https://api.spotify.com/v1/me/player/play?device_id=' + encodeURIComponent(spotify.deviceId), {
+      method: 'PUT',
+      headers: {
+        'Authorization': 'Bearer ' + spotify.accessToken,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ uris: ['spotify:track:' + spotifyId] })
+    });
+  }
+
   async function spotifyPlayTrack(spotifyId) {
     if (!spotify.deviceId || !spotify.accessToken) return;
     if (Date.now() >= spotify.expiresAt - 60_000) {
       const ok = await refreshSpotifyToken();
       if (!ok) return;
     }
+    // Defensive re-transfer before each play — cheap (single PUT) and
+    // guarantees our device is active even if another client stole context
+    // since the last play.
+    await transferPlayback(spotify.deviceId);
     try {
-      const r = await fetch('https://api.spotify.com/v1/me/player/play?device_id=' + encodeURIComponent(spotify.deviceId), {
-        method: 'PUT',
-        headers: {
-          'Authorization': 'Bearer ' + spotify.accessToken,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ uris: ['spotify:track:' + spotifyId] })
-      });
+      let r = await _doSpotifyPlay(spotifyId);
       if (r.status === 401) {
+        // Token expired mid-flight; refresh + retry once
         const ok = await refreshSpotifyToken();
-        if (ok) {
-          await fetch('https://api.spotify.com/v1/me/player/play?device_id=' + encodeURIComponent(spotify.deviceId), {
-            method: 'PUT',
-            headers: {
-              'Authorization': 'Bearer ' + spotify.accessToken,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ uris: ['spotify:track:' + spotifyId] })
-          });
+        if (ok) r = await _doSpotifyPlay(spotifyId);
+      }
+      if (r.status === 404) {
+        // Device gone — try one more transfer + retry
+        console.warn('[VibeScape] play 404 — retrying after transfer');
+        const transferred = await transferPlayback(spotify.deviceId);
+        if (transferred) {
+          // Small delay lets Spotify propagate the transfer server-side before we
+          // hit /play again. Empirically 250-400ms is enough on most networks.
+          await new Promise((res) => setTimeout(res, 300));
+          r = await _doSpotifyPlay(spotifyId);
         }
-      } else if (r.status === 403 || r.status === 404) {
+        if (r.status === 404) {
+          // Still 404 after re-transfer — device permanently lost or backend
+          // refuses. Fall back to preview and surface an actionable toast.
+          fallbackToPreview('play 404 twice');
+          toast("Spotify playback couldn't take over. Pause Spotify on other devices, then try again.", 'warning', {
+            action: {
+              label: 'Retry',
+              onClick: async () => {
+                await transferPlayback(spotify.deviceId);
+                if (state.current && state.current.spotify_id) {
+                  setSourcePill('spotify');
+                  spotifyPlayTrack(state.current.spotify_id);
+                }
+              }
+            }
+          });
+          return;
+        }
+      }
+      if (r.status === 403) {
+        // 403 is a policy/entitlement error (non-Premium, region-restricted,
+        // etc.) — genuine "can't play" case, drop to preview permanently for
+        // this session.
         toast('Spotify playback unavailable — falling back to preview.', 'warning');
         spotify.isPremium = false;
-        setSourcePill('preview');
-        el.player.src = API_BASE + '/api/stream/' + encodeURIComponent(state.current.apple_id);
-        const p = el.player.play();
-        if (p && typeof p.catch === 'function') p.catch(() => {});
+        fallbackToPreview('403');
+        return;
+      }
+      if (!r.ok && r.status !== 204) {
+        console.warn('[VibeScape] unexpected play status:', r.status);
       }
     } catch (e) {
+      console.warn('[VibeScape] spotifyPlayTrack error:', e);
       toast('Spotify play error — falling back to preview.', 'warning');
-      if (state.current) {
-        setSourcePill('preview');
-        el.player.src = API_BASE + '/api/stream/' + encodeURIComponent(state.current.apple_id);
-        const p = el.player.play();
-        if (p && typeof p.catch === 'function') p.catch(() => {});
-      }
+      fallbackToPreview('exception');
     }
   }
 
@@ -1777,9 +2375,13 @@
 
   function renderDebugPanel() {
     if (!el.debugPanel) return;
+    // Append last-known ingest auth_mode (user_oauth | app_token) if we have
+    // one from a recent job status poll — useful for debugging why a public
+    // playlist ingest picked one path or the other.
+    const authModeSuffix = sync.authMode ? ` · ingest: ${sync.authMode}` : '';
     el.debugUser.textContent = spotify.displayName
-      ? `${spotify.displayName}${spotify.isPremium ? ' · premium' : ' · free'}`
-      : '(not signed in)';
+      ? `${spotify.displayName}${spotify.isPremium ? ' · premium' : ' · free'}${authModeSuffix}`
+      : ('(not signed in)' + authModeSuffix);
     el.debugExpiry.textContent = fmtRelativeExpiry(spotify.expiresAt);
     el.debugScopes.textContent = SPOTIFY_SCOPE.split(/\s+/).join('\n');
     el.debugToken.textContent = spotify.accessToken || '(no token)';
@@ -2181,7 +2783,7 @@
     if (!key) return null;
     if (state.featureCache[key]) return state.featureCache[key];
     try {
-      const r = await fetch(API_BASE + '/api/tracks/' + encodeURIComponent(key) + '/features');
+      const r = await fetchWithAuth('/api/tracks/' + encodeURIComponent(key) + '/features');
       if (r.status === 404) {
         state.featureCache[key] = { __missing: true };
         return state.featureCache[key];
@@ -2366,11 +2968,18 @@
       loading: el.syncViewLoading,
       error: el.syncViewError,
       select: el.syncViewSelect,
+      url: el.syncViewUrl,
       progress: el.syncViewProgress,
       complete: el.syncViewComplete
     };
     Object.values(map).forEach((v) => { if (v) v.hidden = true; });
     if (map[name]) map[name].hidden = false;
+
+    // Tabs are visible only on the two "picker" stages (select + url) — hidden
+    // once we're in progress / complete / error / loading. Keeps the modal
+    // focused during ingest.
+    const showTabs = (name === 'select' || name === 'url' || name === 'loading');
+    if (el.syncTabs) el.syncTabs.hidden = !showTabs;
 
     // Footer variants
     el.syncModalFooter.hidden = false;
@@ -2379,6 +2988,13 @@
       el.btnSyncStart.textContent = 'Sync selected';
       el.btnSyncCancel.textContent = 'Cancel';
       el.syncFooterMeta.hidden = false;
+    } else if (name === 'url') {
+      el.btnSyncStart.hidden = false;
+      el.btnSyncStart.textContent = 'Add playlist';
+      el.btnSyncStart.disabled = !sync.urlValid;
+      el.btnSyncCancel.textContent = 'Cancel';
+      el.syncFooterMeta.hidden = false;
+      el.syncFooterMeta.textContent = sync.urlValid ? 'Ready to add' : 'Paste a playlist link';
     } else if (name === 'progress') {
       el.btnSyncStart.hidden = true;
       el.btnSyncCancel.textContent = 'Cancel';
@@ -2400,14 +3016,116 @@
     }
   }
 
-  function openSyncModal() {
-    if (!spotify.accessToken) return;
+  // Extract a playlist ID from a URL, URI, or bare ID string. Returns null if invalid.
+  function parsePlaylistId(raw) {
+    if (!raw) return null;
+    const s = String(raw).trim();
+    if (!s) return null;
+    if (SPOTIFY_BARE_ID_RE.test(s)) return s;
+    const m = s.match(SPOTIFY_PLAYLIST_URL_RE);
+    return m ? m[1] : null;
+  }
+
+  // Swap the URL tab body between the signed-in (paste input) and signed-out
+  // (Spotify sign-in prompt) states. Called on tab open + whenever Spotify
+  // session changes (login / logout / expiry).
+  function refreshUrlViewState() {
+    if (!el.syncUrlSignedIn || !el.syncUrlSignedOut) return;
+    const signedIn = !!spotify.accessToken;
+    el.syncUrlSignedIn.hidden = !signedIn;
+    el.syncUrlSignedOut.hidden = signedIn;
+    // When switching TO signed-out, force Add button off + hint text neutral
+    if (!signedIn && sync.stage === 'url') {
+      sync.urlValid = false;
+      if (el.btnSyncStart) {
+        el.btnSyncStart.hidden = true; // no primary action available without Spotify
+      }
+      if (el.syncFooterMeta) el.syncFooterMeta.textContent = 'Spotify sign-in required';
+    } else if (signedIn && sync.stage === 'url') {
+      if (el.btnSyncStart) el.btnSyncStart.hidden = false;
+      updateUrlHint();
+    }
+  }
+
+  function updateUrlHint() {
+    if (!el.syncUrlInput || !el.syncUrlHint) return;
+    const raw = el.syncUrlInput.value || '';
+    const wrap = el.syncUrlInput.closest('.url-input-wrap');
+    if (!raw.trim()) {
+      sync.urlValid = false;
+      el.syncUrlHint.textContent = 'Paste a playlist link to continue';
+      el.syncUrlHint.dataset.state = 'empty';
+      if (wrap) wrap.dataset.state = 'empty';
+    } else {
+      const id = parsePlaylistId(raw);
+      if (id) {
+        sync.urlValid = true;
+        el.syncUrlHint.textContent = 'Looks good — playlist ' + id;
+        el.syncUrlHint.dataset.state = 'valid';
+        if (wrap) wrap.dataset.state = 'valid';
+      } else {
+        sync.urlValid = false;
+        el.syncUrlHint.textContent = 'Not a Spotify playlist URL';
+        el.syncUrlHint.dataset.state = 'invalid';
+        if (wrap) wrap.dataset.state = 'invalid';
+      }
+    }
+    // Reflect valid-state on the footer Add button + meta when URL tab active
+    if (sync.stage === 'url') {
+      if (el.btnSyncStart) el.btnSyncStart.disabled = !sync.urlValid;
+      if (el.syncFooterMeta) el.syncFooterMeta.textContent = sync.urlValid ? 'Ready to add' : 'Paste a playlist link';
+    }
+  }
+
+  function setSyncTab(tab) {
+    sync.tab = tab;
+    if (el.syncTabLibrary) el.syncTabLibrary.setAttribute('aria-selected', tab === 'library' ? 'true' : 'false');
+    if (el.syncTabUrl) el.syncTabUrl.setAttribute('aria-selected', tab === 'url' ? 'true' : 'false');
+    if (tab === 'library') {
+      // Show library view — either fetch or already-fetched
+      if (sync.library) {
+        renderLibrary(sync.library);
+        setSyncView('select');
+        updateSyncFooter();
+      } else {
+        // Only fetch if Spotify is connected; otherwise show a friendly hint
+        if (spotify.accessToken) {
+          setSyncView('loading');
+          fetchLibrary();
+        } else {
+          setSyncView('error');
+          if (el.syncErrorMsg) el.syncErrorMsg.textContent = 'Sign in with Spotify to sync your library. Or use "Add public playlist" instead.';
+        }
+      }
+    } else {
+      setSyncView('url');
+      refreshUrlViewState();
+      updateUrlHint();
+      // Focus the input on tab switch (only if signed in — otherwise the
+      // input isn't visible)
+      if (spotify.accessToken) {
+        setTimeout(() => { try { el.syncUrlInput && el.syncUrlInput.focus(); } catch (_) {} }, 60);
+      }
+    }
+  }
+
+  // opts: { defaultTab: 'library' | 'url' } — overrides the auto-pick
+  function openSyncModal(opts) {
+    // Requires a VibeScape session but NOT Spotify — the URL-paste tab works
+    // for non-Spotify users too.
+    if (!auth.token) return;
+    opts = opts || {};
     sync.open = true;
     el.syncModal.hidden = false;
     el.syncModal.setAttribute('aria-hidden', 'false');
     document.body.classList.add('modal-open');
-    setSyncView('loading');
-    fetchLibrary();
+    // Reset URL input on every open so stale state doesn't confuse next use
+    if (el.syncUrlInput) el.syncUrlInput.value = '';
+    sync.urlValid = false;
+    // Smart default: if Spotify-connected, land on library sync;
+    // otherwise land on URL paste (their only option).
+    const defaultTab = opts.defaultTab || (spotify.accessToken ? 'library' : 'url');
+    setSyncTab(defaultTab);
   }
 
   function closeSyncModal() {
@@ -2419,7 +3137,12 @@
     // reset library so next open refetches
     sync.library = null;
     sync.jobId = null;
+    sync.tab = 'library'; // next open re-runs the smart default picker
+    sync.urlValid = false;
+    sync.noteShown = false;
+    sync.authMode = '';
     if (el.syncPlaylistList) el.syncPlaylistList.innerHTML = '';
+    if (el.syncUrlInput) el.syncUrlInput.value = '';
   }
 
   async function fetchLibrary() {
@@ -2427,8 +3150,11 @@
     sync.fetching = true;
     setSyncView('loading');
     try {
-      const r = await fetch(API_BASE + '/api/spotify/library', {
-        headers: { 'Authorization': 'Bearer ' + spotify.accessToken }
+      // /api/spotify/library needs both: VibeScape session (fetchWithAuth adds
+      // it as Authorization: Bearer) AND the Spotify access token (passed via
+      // X-Spotify-Authorization: Bearer <token> — session-backend contract).
+      const r = await fetchWithAuth('/api/spotify/library', {
+        headers: { 'X-Spotify-Authorization': 'Bearer ' + spotify.accessToken }
       });
       if (!r.ok) throw new Error('bad status ' + r.status);
       const j = await r.json();
@@ -2514,7 +3240,7 @@
     updateSyncProgress({ processed: 0, total: sel.total || 0, matched_spotify: 0, preview_only: 0, skipped: 0, current_track: 'Starting…' });
 
     try {
-      const r = await fetch(API_BASE + '/api/ingest/spotify', {
+      const r = await fetchWithAuth('/api/ingest/spotify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2537,6 +3263,99 @@
     }
   }
 
+  async function startPublicPlaylistIngest() {
+    const raw = (el.syncUrlInput && el.syncUrlInput.value || '').trim();
+    const id = parsePlaylistId(raw);
+    if (!id) {
+      // Should not happen — button is disabled — but guard anyway
+      updateUrlHint();
+      return;
+    }
+    // Payload: send playlist_url + playlist_id (backend accepts either).
+    // Also forward the user's Spotify OAuth token when available — Spotify
+    // killed app-level access to public playlists in Nov 2024, so the backend
+    // needs a user token to actually read the playlist. Absence is allowed
+    // (backend will 403 on most real playlists, which is the honest outcome).
+    const body = {};
+    if (/^https?:|^spotify:/.test(raw)) body.playlist_url = raw;
+    body.playlist_id = id;
+    if (spotify.accessToken) body.access_token = spotify.accessToken;
+
+    setSyncView('progress');
+    updateSyncProgress({ processed: 0, total: 0, matched_spotify: 0, preview_only: 0, no_preview: 0, skipped: 0, current_track: 'Starting…' });
+
+    try {
+      const r = await fetchWithAuth('/api/ingest/spotify-public', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      // Domain-specific error codes per backend contract
+      if (r.status === 400) {
+        const j = await r.json().catch(() => ({}));
+        el.syncErrorMsg.textContent = 'Invalid playlist URL. Double-check the link.';
+        console.warn('[VibeScape] invalid_playlist_url:', j);
+        setSyncView('url');
+        // reflect an inline error
+        const wrap = el.syncUrlInput && el.syncUrlInput.closest('.url-input-wrap');
+        if (wrap) wrap.dataset.state = 'invalid';
+        if (el.syncUrlHint) { el.syncUrlHint.textContent = 'Invalid playlist URL. Double-check the link.'; el.syncUrlHint.dataset.state = 'invalid'; }
+        return;
+      }
+      if (r.status === 401) {
+        // Backend emits two distinct 401 codes:
+        //   spotify_token_expired         — user's OAuth token is stale/revoked
+        //   spotify_scope_upgrade_required — token valid but missing v3 scope
+        //                                    (needs consent screen for playlist-modify-private)
+        const j = await r.json().catch(() => ({}));
+        const errCode = (j && (j.detail && j.detail.error || j.error)) || '';
+        console.warn('[VibeScape] 401 from public-ingest:', errCode || '(no code)', j);
+        // Clear the stale/insufficient Spotify session so the UI reflects reality
+        try { clearSpotifySession(); } catch (_) {}
+        if (errCode === 'spotify_scope_upgrade_required') {
+          toast('Please sign in with Spotify again to grant the new permission (needed to add playlists by link).', 'error', {
+            action: { label: 'Sign in', onClick: () => beginSpotifyLogin() }
+          });
+        } else {
+          // spotify_token_expired OR unknown/legacy 401 — treat as expired
+          toast('Your Spotify session expired. Sign in with Spotify again.', 'error', {
+            action: { label: 'Sign in', onClick: () => beginSpotifyLogin() }
+          });
+        }
+        setSyncView('url');
+        return;
+      }
+      if (r.status === 404) {
+        toast('Playlist not found. Is the ID correct?', 'error');
+        setSyncView('url');
+        return;
+      }
+      if (r.status === 403) {
+        toast("This playlist isn't public. Only public playlists can be added this way.", 'error');
+        setSyncView('url');
+        return;
+      }
+      if (!r.ok) throw new Error('public ingest start failed ' + r.status);
+      const j = await r.json();
+      sync.jobId = j.job_id || '';
+      if (!sync.jobId) throw new Error('no job id');
+      sync.lastUrl = raw;
+      // Backend may include a `note` explaining preflight actions (e.g., the
+      // silent follow to unlock playlist track access). Surface it once.
+      if (j.note) {
+        toast(j.note, 'info');
+        sync.noteShown = true;
+      } else {
+        sync.noteShown = false;
+      }
+      startSyncPolling();
+    } catch (e) {
+      console.warn('[VibeScape] public playlist ingest error:', e);
+      toast('Could not add playlist. Try again.', 'error');
+      setSyncView('url');
+    }
+  }
+
   function startSyncPolling() {
     stopSyncPolling();
     sync.pollTimer = setInterval(pollSyncStatus, 1000);
@@ -2554,10 +3373,22 @@
   async function pollSyncStatus() {
     if (!sync.jobId) return;
     try {
-      const r = await fetch(API_BASE + '/api/ingest/status/' + encodeURIComponent(sync.jobId));
+      const r = await fetchWithAuth('/api/ingest/status/' + encodeURIComponent(sync.jobId));
       if (!r.ok) return;
       const s = await r.json();
       updateSyncProgress(s);
+      // Surface a job-level note the first time it appears (handles the case
+      // where the silent-follow happened INSIDE the job runner rather than at
+      // preflight — 202 wouldn't have carried it).
+      if (s.note && !sync.noteShown) {
+        toast(s.note, 'info');
+        sync.noteShown = true;
+      }
+      // Remember auth_mode for the debug panel section
+      if (s.auth_mode && s.auth_mode !== sync.authMode) {
+        sync.authMode = s.auth_mode;
+        if (debugPanel && debugPanel.open) renderDebugPanel();
+      }
       if (s.status === 'complete') {
         stopSyncPolling();
         const summary = `Spotify ${s.matched_spotify || 0} · iTunes ${s.preview_only || 0} · no source ${s.no_preview || 0} · skipped ${s.skipped || 0} of ${s.total || 0}.`;
@@ -2590,7 +3421,7 @@
   async function cancelSyncJob() {
     if (sync.jobId) {
       try {
-        await fetch(API_BASE + '/api/ingest/status/' + encodeURIComponent(sync.jobId), {
+        await fetchWithAuth('/api/ingest/status/' + encodeURIComponent(sync.jobId), {
           method: 'DELETE'
         });
       } catch (e) { /* backend handles cleanup even if this fails */ }
@@ -2600,7 +3431,40 @@
 
   // Wire modal events
   if (el.btnSpotifySync) {
-    el.btnSpotifySync.addEventListener('click', openSyncModal);
+    el.btnSpotifySync.addEventListener('click', () => openSyncModal());
+  }
+  if (el.btnUserAddPlaylist) {
+    el.btnUserAddPlaylist.addEventListener('click', () => {
+      closeUserMenu();
+      openSyncModal({ defaultTab: 'url' });
+    });
+  }
+  if (el.syncTabLibrary) {
+    el.syncTabLibrary.addEventListener('click', () => setSyncTab('library'));
+  }
+  if (el.syncTabUrl) {
+    el.syncTabUrl.addEventListener('click', () => setSyncTab('url'));
+  }
+  if (el.btnUrlSpotifySignIn) {
+    el.btnUrlSpotifySignIn.addEventListener('click', () => {
+      // Same flow as the header sign-in button; the modal stays open and
+      // updateSpotifyUI's hook will swap the URL view to the input state
+      // once the OAuth token bridge fires.
+      beginSpotifyLogin();
+    });
+  }
+  if (el.syncUrlInput) {
+    el.syncUrlInput.addEventListener('input', updateUrlHint);
+    el.syncUrlInput.addEventListener('paste', () => {
+      // paste event fires before .value updates; defer one tick
+      setTimeout(updateUrlHint, 0);
+    });
+    el.syncUrlInput.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' && sync.urlValid && sync.stage === 'url') {
+        ev.preventDefault();
+        startPublicPlaylistIngest();
+      }
+    });
   }
   if (el.btnSyncClose) {
     el.btnSyncClose.addEventListener('click', () => {
@@ -2621,13 +3485,19 @@
     });
   }
   if (el.btnSyncRetry) {
-    el.btnSyncRetry.addEventListener('click', () => fetchLibrary());
+    el.btnSyncRetry.addEventListener('click', () => {
+      // Retry maps to whichever tab is active
+      if (sync.tab === 'url') setSyncTab('url');
+      else fetchLibrary();
+    });
   }
   if (el.btnSyncStart) {
     el.btnSyncStart.addEventListener('click', () => {
       if (sync.stage === 'complete') {
         closeSyncModal();
         fetchTrack(state.vibe);
+      } else if (sync.stage === 'url') {
+        startPublicPlaylistIngest();
       } else {
         startSync();
       }
@@ -2669,16 +3539,37 @@
     setTimeout(() => consumeOAuthPayload(pendingAtBoot), 0);
   }
 
+  // Pre-auth shell setup — safe to run even without a session, only touches DOM
   updateSliderVisual(state.vibe);
   applyAccent(state.vibe);
   el.art.classList.add('empty');
   updateVerifyChip(null);
   updateMetricsChip(null);
-  checkHealth();
-  loadSpotifyConfig().then(async () => {
+  updateUserMenu();
+  checkHealth(); // unauthenticated, safe
+
+  // Split boot: run Spotify + track loads ONLY after we have a session
+  async function bootAuthenticatedApp() {
+    if (auth.booted) return;
+    auth.booted = true;
+    // Spotify config is public; safe to call unauthenticated but do it here
+    // so the OAuth-return path also gets set up post-login.
+    await loadSpotifyConfig();
     // If we returned from Spotify via same-window redirect, exchange the code
     // BEFORE trying to restore a stale session.
     const handled = await handleRedirectReturn();
     if (!handled) restoreSpotifySession();
-  });
+  }
+
+  // Try to hydrate an existing session from localStorage; if success, boot
+  // the app. Otherwise show the profile picker.
+  (async () => {
+    const authed = await hydrateSessionFromStorage();
+    if (authed) {
+      hideAuthOverlay();
+      bootAuthenticatedApp();
+    } else {
+      showAuthOverlay();
+    }
+  })();
 })();

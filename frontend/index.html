@@ -12,12 +12,104 @@
 </head>
 <body>
 
+<div class="auth-overlay" id="authOverlay" role="dialog" aria-modal="true" aria-labelledby="authOverlayTitle" hidden>
+  <div class="auth-overlay-backdrop"></div>
+  <div class="auth-card" role="document">
+    <header class="auth-card-header">
+      <div class="auth-brand">
+        <span class="wm-dot" aria-hidden="true"></span>
+        <span class="auth-brand-name">VibeScape</span>
+      </div>
+      <h1 class="auth-card-title" id="authOverlayTitle">Who&rsquo;s listening?</h1>
+    </header>
+
+    <div class="auth-view auth-view-picker" id="authViewPicker">
+      <div class="auth-loading" id="authPickerLoading">
+        <div class="modal-spinner" aria-hidden="true"></div>
+        <p class="modal-hint">Loading profiles&hellip;</p>
+      </div>
+      <div class="auth-profiles" id="authProfilesGrid" hidden></div>
+      <div class="auth-empty" id="authPickerEmpty" hidden>
+        <p class="modal-hint">No profiles yet. Create the first one to get started.</p>
+      </div>
+      <div class="auth-picker-footer">
+        <button class="auth-btn auth-btn-secondary" id="btnAuthCreate" type="button">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <span>Create new profile</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="auth-view auth-view-pin" id="authViewPin" hidden>
+      <button class="auth-back" id="btnAuthPinBack" type="button" aria-label="Back to profiles">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+        <span>Back</span>
+      </button>
+      <div class="auth-pin-body">
+        <div class="auth-pin-avatar" id="authPinAvatar" aria-hidden="true">?</div>
+        <p class="auth-pin-name" id="authPinName">&mdash;</p>
+        <p class="modal-hint">Enter your 4-digit PIN</p>
+        <form class="auth-pin-form" id="authPinForm">
+          <input class="auth-pin-input" id="authPinInput" type="password" inputmode="numeric" pattern="\d{4}" maxlength="4" autocomplete="one-time-code" aria-label="4-digit PIN" required />
+          <button class="auth-btn auth-btn-primary" id="btnAuthPinSubmit" type="submit">Sign in</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="auth-view auth-view-create" id="authViewCreate" hidden>
+      <button class="auth-back" id="btnAuthCreateBack" type="button" aria-label="Back to profiles">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+        <span>Back</span>
+      </button>
+      <div class="auth-create-body">
+        <p class="modal-hint">Add a new profile to VibeScape. Each profile has its own library and Spotify link.</p>
+        <form class="auth-create-form" id="authCreateForm">
+          <label class="auth-field">
+            <span class="auth-field-label">Display name</span>
+            <input class="auth-input" id="authCreateName" type="text" required minlength="1" maxlength="40" autocomplete="off" spellcheck="false" placeholder="e.g. chandan" />
+          </label>
+          <label class="auth-field">
+            <span class="auth-field-label">PIN (optional, 4 digits)</span>
+            <input class="auth-input" id="authCreatePin" type="password" inputmode="numeric" pattern="\d{4}" maxlength="4" autocomplete="new-password" placeholder="Leave blank for no PIN" />
+          </label>
+          <label class="auth-field" id="authCreatePinConfirmField" hidden>
+            <span class="auth-field-label">Confirm PIN</span>
+            <input class="auth-input" id="authCreatePinConfirm" type="password" inputmode="numeric" pattern="\d{4}" maxlength="4" autocomplete="new-password" placeholder="Re-enter PIN" />
+          </label>
+          <button class="auth-btn auth-btn-primary" id="btnAuthCreateSubmit" type="submit">Create profile</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
 <header class="topbar">
   <div class="wordmark">
     <span class="wm-dot"></span>
     <span>VibeScape</span>
   </div>
   <div class="spotify-area" id="spotifyArea">
+    <div class="user-menu" id="userMenu" hidden>
+      <button class="user-pill" id="btnUserMenu" type="button" aria-label="Account menu" aria-haspopup="menu" aria-expanded="false">
+        <span class="user-avatar" id="userAvatar" aria-hidden="true">?</span>
+        <span class="user-name" id="userName">&mdash;</span>
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="user-menu-popover" id="userMenuPopover" role="menu" aria-hidden="true" hidden>
+        <div class="user-menu-header">
+          <div class="user-menu-name" id="userMenuName">&mdash;</div>
+          <div class="user-menu-hint">signed in on this device</div>
+        </div>
+        <button class="user-menu-item" id="btnUserAddPlaylist" type="button" role="menuitem">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          <span>Add public playlist</span>
+        </button>
+        <button class="user-menu-item user-menu-danger" id="btnUserSignOut" type="button" role="menuitem">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          <span>Sign out of VibeScape</span>
+        </button>
+      </div>
+    </div>
     <button class="help-btn" id="btnHelp" type="button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" aria-haspopup="dialog" aria-expanded="false">?</button>
     <button class="sp-btn" id="btnSpotifySignIn" type="button">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.59 14.42a.62.62 0 0 1-.86.21c-2.36-1.44-5.33-1.77-8.83-.97a.62.62 0 1 1-.28-1.22c3.83-.87 7.13-.49 9.77 1.12.3.18.39.57.2.86zm1.23-2.74a.78.78 0 0 1-1.07.26c-2.7-1.66-6.82-2.14-10.02-1.17a.78.78 0 1 1-.45-1.5c3.66-1.1 8.2-.57 11.29 1.33.37.23.49.71.25 1.08zm.11-2.85c-3.24-1.92-8.59-2.1-11.68-1.16a.94.94 0 1 1-.54-1.8c3.55-1.07 9.45-.86 13.19 1.36a.94.94 0 0 1-.97 1.6z"/></svg>
@@ -254,6 +346,17 @@
       </button>
     </header>
 
+    <div class="sync-tabs" id="syncTabs" role="tablist">
+      <button class="sync-tab" id="syncTabLibrary" type="button" role="tab" aria-selected="true" aria-controls="syncViewSelect" data-tab="library">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/></svg>
+        <span>Sync my library</span>
+      </button>
+      <button class="sync-tab" id="syncTabUrl" type="button" role="tab" aria-selected="false" aria-controls="syncViewUrl" data-tab="url">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+        <span>Add public playlist</span>
+      </button>
+    </div>
+
     <div class="modal-body" id="syncModalBody">
       <div class="modal-view modal-view-loading" id="syncViewLoading">
         <div class="modal-spinner" aria-hidden="true"></div>
@@ -265,7 +368,34 @@
         <button class="modal-btn modal-btn-secondary" id="btnSyncRetry" type="button">Retry</button>
       </div>
 
-      <div class="modal-view modal-view-select" id="syncViewSelect" hidden>
+      <div class="modal-view modal-view-url" id="syncViewUrl" hidden role="tabpanel" aria-labelledby="syncTabUrl">
+        <!-- Signed-in-with-Spotify state: paste input -->
+        <div class="url-signed-in" id="syncUrlSignedIn">
+          <p class="modal-hint">Paste a link to any public Spotify playlist. Its tracks get added to your library.</p>
+          <div class="url-field">
+            <label class="url-input-wrap">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="url-input-icon"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              <input class="url-input" id="syncUrlInput" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://open.spotify.com/playlist/..." aria-label="Spotify playlist URL" />
+            </label>
+            <div class="url-hint" id="syncUrlHint" data-state="empty">Paste a playlist link to continue</div>
+          </div>
+          <p class="url-note">Using your Spotify token to fetch the playlist. Only public playlists work.</p>
+        </div>
+        <!-- Signed-out-of-Spotify state: prompt -->
+        <div class="url-signed-out" id="syncUrlSignedOut" hidden>
+          <div class="url-signed-out-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.59 14.42a.62.62 0 0 1-.86.21c-2.36-1.44-5.33-1.77-8.83-.97a.62.62 0 1 1-.28-1.22c3.83-.87 7.13-.49 9.77 1.12.3.18.39.57.2.86zm1.23-2.74a.78.78 0 0 1-1.07.26c-2.7-1.66-6.82-2.14-10.02-1.17a.78.78 0 1 1-.45-1.5c3.66-1.1 8.2-.57 11.29 1.33.37.23.49.71.25 1.08zm.11-2.85c-3.24-1.92-8.59-2.1-11.68-1.16a.94.94 0 1 1-.54-1.8c3.55-1.07 9.45-.86 13.19 1.36a.94.94 0 0 1-.97 1.6z"/></svg>
+          </div>
+          <p class="modal-title-mini">Sign in with Spotify to enable playlist URL sync</p>
+          <p class="modal-hint">Public playlist access requires a linked account &mdash; Spotify killed anonymous access in late 2024.</p>
+          <button class="modal-btn modal-btn-primary url-signin-btn" id="btnUrlSpotifySignIn" type="button">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.59 14.42a.62.62 0 0 1-.86.21c-2.36-1.44-5.33-1.77-8.83-.97a.62.62 0 1 1-.28-1.22c3.83-.87 7.13-.49 9.77 1.12.3.18.39.57.2.86zm1.23-2.74a.78.78 0 0 1-1.07.26c-2.7-1.66-6.82-2.14-10.02-1.17a.78.78 0 1 1-.45-1.5c3.66-1.1 8.2-.57 11.29 1.33.37.23.49.71.25 1.08zm.11-2.85c-3.24-1.92-8.59-2.1-11.68-1.16a.94.94 0 1 1-.54-1.8c3.55-1.07 9.45-.86 13.19 1.36a.94.94 0 0 1-.97 1.6z"/></svg>
+            <span>Sign in with Spotify</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="modal-view modal-view-select" id="syncViewSelect" hidden role="tabpanel" aria-labelledby="syncTabLibrary">
         <div class="sync-section">
           <label class="sync-row" for="syncLiked">
             <input class="sync-check" type="checkbox" id="syncLiked" data-kind="liked" checked />
