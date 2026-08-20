@@ -1,131 +1,43 @@
+import importlib.util
 import os
 import sqlite3
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(ROOT, "data")
 DB_PATH = os.path.join(DATA_DIR, "vibescape.db")
-SCHEMA_PATH = os.path.join(ROOT, "schema.sql")
 
-
-def _table_info(conn, table):
-    return conn.execute(f"PRAGMA table_info({table})").fetchall()
-
-
-def _needs_rebuild(conn) -> bool:
-    info = _table_info(conn, "tracks")
-    if not info:
-        return False
-    cols = {row[1]: row for row in info}
-    if "id" not in cols:
-        return True
-    apple = cols.get("apple_id")
-    if apple and apple[5] == 1:
-        return True
-    return False
-
-
-def _dedupe_spotify_ids(conn) -> None:
-    conn.execute(
-        """
-        UPDATE tracks SET spotify_id = NULL
-        WHERE spotify_id IS NOT NULL
-          AND rowid NOT IN (
-              SELECT MIN(rowid) FROM tracks
-              WHERE spotify_id IS NOT NULL
-              GROUP BY spotify_id
-          )
-        """
-    )
-    conn.commit()
-
-
-def _rebuild_tracks(conn) -> None:
-    _dedupe_spotify_ids(conn)
-    conn.execute("BEGIN")
-    try:
-        conn.execute("ALTER TABLE tracks RENAME TO tracks_old")
-        conn.execute(
-            """
-            CREATE TABLE tracks (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                apple_id      INTEGER UNIQUE,
-                spotify_id    TEXT UNIQUE,
-                isrc          TEXT,
-                title         TEXT NOT NULL,
-                artist        TEXT NOT NULL,
-                album         TEXT,
-                genre         TEXT,
-                artwork_url   TEXT,
-                preview_url   TEXT,
-                track_view_url TEXT,
-                duration_ms   INTEGER,
-                tempo         REAL,
-                energy        REAL,
-                brightness    REAL,
-                zcr           REAL,
-                mfcc_json     TEXT,
-                vibe_score    REAL NOT NULL,
-                mood          TEXT,
-                audio_path    TEXT,
-                classification_source TEXT,
-                created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        old_cols = {row[1] for row in _table_info(conn, "tracks_old")}
-        carry = [c for c in [
-            "apple_id", "spotify_id", "isrc", "title", "artist", "album", "genre",
-            "artwork_url", "preview_url", "track_view_url", "duration_ms",
-            "tempo", "energy", "brightness", "zcr", "mfcc_json",
-            "vibe_score", "mood", "audio_path", "classification_source", "created_at",
-        ] if c in old_cols]
-        col_list = ", ".join(carry)
-        conn.execute(f"INSERT INTO tracks ({col_list}) SELECT {col_list} FROM tracks_old")
-        conn.execute("DROP TABLE tracks_old")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_tracks_vibe ON tracks(vibe_score)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_tracks_mood ON tracks(mood)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_tracks_apple_id ON tracks(apple_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_tracks_spotify_id ON tracks(spotify_id)")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-
-
-def _migrate(conn: sqlite3.Connection) -> None:
-    for stmt in (
-        "ALTER TABLE tracks ADD COLUMN audio_path TEXT",
-        "ALTER TABLE tracks ADD COLUMN spotify_id TEXT",
-        "ALTER TABLE tracks ADD COLUMN classification_source TEXT",
-    ):
-        try:
-            conn.execute(stmt)
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass
-    if _needs_rebuild(conn):
-        _rebuild_tracks(conn)
+# Load backend/db.py by path so we don't shadow (or collide with) our own
+# `db` module name once ingest/ is on sys.path alongside backend/.
+_BACKEND_DB_PATH = os.path.join(ROOT, "backend", "db.py")
+_spec = importlib.util.spec_from_file_location("_vibescape_backend_db", _BACKEND_DB_PATH)
+_backend_db = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_backend_db)
 
 
 def get_conn() -> sqlite3.Connection:
     os.makedirs(DATA_DIR, exist_ok=True)
+    _backend_db.ensure_db()
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
-        conn.executescript(f.read())
-    _migrate(conn)
     return conn
 
 
-def upsert_track(conn: sqlite3.Connection, track_data: dict) -> None:
-    cols = [
-        "apple_id", "spotify_id", "isrc", "title", "artist", "album", "genre",
-        "artwork_url", "preview_url", "track_view_url", "duration_ms",
-        "tempo", "energy", "brightness", "zcr", "mfcc_json",
-        "vibe_score", "mood", "audio_path", "classification_source",
-    ]
-    values = [track_data.get(c) for c in cols]
+_TRACK_COLS = [
+    "apple_id", "spotify_id", "isrc", "title", "artist", "album", "genre",
+    "artwork_url", "preview_url", "track_view_url", "duration_ms",
+    "tempo", "energy", "brightness", "zcr", "mfcc_json",
+    "vibe_score", "mood", "audio_path", "classification_source",
+]
 
+
+def upsert_track(conn: sqlite3.Connection, track_data: dict, user_id: int | None = None,
+                 source: str = "manual") -> int:
+    """
+    Upsert a row into the global tracks table (dedup by spotify_id then
+    apple_id). If user_id is provided, also link the caller into
+    user_tracks. Returns the tracks.id.
+    """
+    values = [track_data.get(c) for c in _TRACK_COLS]
     spotify_id = track_data.get("spotify_id")
     apple_id = track_data.get("apple_id")
 
@@ -140,14 +52,24 @@ def upsert_track(conn: sqlite3.Connection, track_data: dict) -> None:
             existing_id = row[0]
 
     if existing_id is None:
-        placeholders = ", ".join(["?"] * len(cols))
-        sql = f"INSERT INTO tracks ({', '.join(cols)}) VALUES ({placeholders})"
-        conn.execute(sql, values)
+        placeholders = ", ".join(["?"] * len(_TRACK_COLS))
+        cur = conn.execute(
+            f"INSERT INTO tracks ({', '.join(_TRACK_COLS)}) VALUES ({placeholders})",
+            values,
+        )
+        track_id = int(cur.lastrowid)
     else:
-        set_clause = ", ".join([f"{c} = ?" for c in cols])
-        sql = f"UPDATE tracks SET {set_clause} WHERE id = ?"
-        conn.execute(sql, values + [existing_id])
+        set_clause = ", ".join([f"{c} = ?" for c in _TRACK_COLS])
+        conn.execute(f"UPDATE tracks SET {set_clause} WHERE id = ?", values + [existing_id])
+        track_id = int(existing_id)
+
+    if user_id is not None:
+        conn.execute(
+            "INSERT OR IGNORE INTO user_tracks (user_id, track_id, source) VALUES (?, ?, ?)",
+            (user_id, track_id, source),
+        )
     conn.commit()
+    return track_id
 
 
 def track_exists_by_spotify_id(conn: sqlite3.Connection, spotify_id: str) -> bool:
