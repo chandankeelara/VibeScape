@@ -149,7 +149,27 @@
     syncStatSkipped: $('syncStatSkipped'),
     syncCompleteSummary: $('syncCompleteSummary'),
     syncFooterMeta: $('syncFooterMeta'),
-    syncModalFooter: $('syncModalFooter')
+    syncModalFooter: $('syncModalFooter'),
+    videoStage: $('videoStage'),
+    videoFrame: document.querySelector('.video-frame'),
+    videoSkeleton: $('videoSkeleton'),
+    videoEmpty: $('videoEmpty'),
+    videoEmptyMsg: $('videoEmptyMsg'),
+    videoEmptyCode: $('videoEmptyCode'),
+    videoOpenYt: $('videoOpenYt'),
+    ytPlayerMount: $('ytPlayer'),
+    videoSearchFromEmpty: $('videoSearchFromEmpty'),
+    videoEditBtn: $('videoEditBtn'),
+    videoSearchPanel: $('videoSearchPanel'),
+    videoSearchClose: $('videoSearchClose'),
+    videoSearchForm: $('videoSearchForm'),
+    videoSearchInput: $('videoSearchInput'),
+    videoSearchSubmit: $('videoSearchSubmit'),
+    videoSearchResults: $('videoSearchResults'),
+    modeToggle: $('modeToggle'),
+    modeAudio: $('modeAudio'),
+    modeVideo: $('modeVideo'),
+    modeVideoTip: $('modeVideoTip')
   };
 
   // v3: added `playlist-modify-private` — required to silently follow public
@@ -217,6 +237,19 @@
     durationMs: 0,
     positionAt: 0,
     pollTimer: null
+  };
+
+  const video = {
+    mode: 'audio',
+    modeKey: 'vibescape.playbackMode',
+    player: null,
+    ready: false,
+    apiRequested: false,
+    apiReady: false,
+    pendingVideoId: null,
+    currentVideoId: null,
+    pollTimer: null,
+    lookupInFlight: null
   };
 
   // Per-VibeScape-user Spotify token key convention. Namespaced by user_id so
@@ -1008,6 +1041,7 @@
   function loadTrack(t) {
     // Loading a new track always cancels any classification-audio verify session
     if (verify.active) stopVerify({ resume: false });
+    if (videoSearch.open) closeVideoSearchPanel();
     state.current = t;
     pushRecent(t);
     updateVerifyChip(t);
@@ -1054,6 +1088,21 @@
     // Rerender recent trail so the currently-playing track drops out of it
     renderRecentTrail();
 
+    updateModeToggleDisabled();
+
+    if (isVideoMode()) {
+      try { el.player.pause(); } catch (_) {}
+      el.player.removeAttribute('src');
+      el.player.load();
+      if (spotify.player) { try { spotify.player.pause(); } catch (_) {} }
+      setSourcePill(null);
+      el.tCur.textContent = '0:00';
+      el.progressFill.style.width = '0%';
+      el.progressThumb.style.left = '0%';
+      loadVideoForCurrentTrack();
+      return;
+    }
+
     const useSpotify = sdkActive() && !!t.spotify_id;
 
     if (useSpotify) {
@@ -1097,6 +1146,7 @@
     if (spotify.player) {
       try { spotify.player.pause(); } catch (e) {}
     }
+    stopYouTube();
     document.body.classList.remove('playing');
     el.tCur.textContent = '0:00';
     el.progressFill.style.width = '0%';
@@ -1398,6 +1448,19 @@
       fetchTrack(state.vibe);
       return;
     }
+    if (isVideoMode()) {
+      if (!video.player || !video.ready) {
+        loadVideoForCurrentTrack();
+        return;
+      }
+      try {
+        const YTS = window.YT && YT.PlayerState;
+        const s = video.player.getPlayerState();
+        if (YTS && s === YTS.PLAYING) video.player.pauseVideo();
+        else video.player.playVideo();
+      } catch (_) {}
+      return;
+    }
     if (sdkActive() && spotify.lastState !== null) {
       try { spotify.player.togglePlay(); } catch (e) {}
       return;
@@ -1411,6 +1474,7 @@
   }
 
   el.player.addEventListener('play', () => {
+    if (isVideoMode()) { try { el.player.pause(); } catch (_) {} return; }
     document.body.classList.add('playing');
     startGlowAnalyser();
     setMediaSessionState(true);
@@ -1418,6 +1482,7 @@
     setMediaSessionPosition(el.player.duration, el.player.currentTime);
   });
   el.player.addEventListener('playing', () => {
+    if (isVideoMode()) { try { el.player.pause(); } catch (_) {} return; }
     document.body.classList.add('playing');
     startGlowAnalyser();
     setMediaSessionState(true);
@@ -1425,11 +1490,13 @@
     setMediaSessionPosition(el.player.duration, el.player.currentTime);
   });
   el.player.addEventListener('pause', () => {
+    if (isVideoMode()) return;
     if (!sdkActive()) document.body.classList.remove('playing');
     stopGlowAnalyser();
     if (!sdkActive()) setMediaSessionState(false);
   });
   el.player.addEventListener('ended', () => {
+    if (isVideoMode()) return;
     document.body.classList.remove('playing');
     stopGlowAnalyser();
     setGlowAlpha(0.65);
@@ -1443,6 +1510,7 @@
   });
   el.player.addEventListener('timeupdate', () => {
     if (state.isSeeking) return;
+    if (isVideoMode()) return;
     if (sdkActive() && spotify.lastState) return;
     const dur = el.player.duration;
     const cur = el.player.currentTime;
@@ -1469,6 +1537,561 @@
     state.firstInteraction = true;
     fetchTrack(state.vibe);
   });
+
+  // ===== Video mode (YouTube IFrame API) =====
+  function isVideoMode() { return video.mode === 'video'; }
+
+  function loadYouTubeApi() {
+    if (video.apiRequested) return;
+    video.apiRequested = true;
+    window.onYouTubeIframeAPIReady = () => {
+      video.apiReady = true;
+      createYouTubePlayer();
+    };
+    const s = document.createElement('script');
+    s.src = 'https://www.youtube.com/iframe_api';
+    s.async = true;
+    document.head.appendChild(s);
+  }
+
+  function createYouTubePlayer() {
+    if (video.player || !video.apiReady || !el.ytPlayerMount) return;
+    try {
+      video.player = new YT.Player('ytPlayer', {
+        width: '100%',
+        height: '100%',
+        playerVars: { playsinline: 1, rel: 0, modestbranding: 1, iv_load_policy: 3 },
+        events: {
+          onReady: onYouTubeReady,
+          onStateChange: onYouTubeStateChange,
+          onError: onYouTubeError
+        }
+      });
+    } catch (e) {
+      console.warn('[VibeScape] YT.Player create failed:', e);
+    }
+  }
+
+  function onYouTubeReady() {
+    video.ready = true;
+    if (video.pendingVideoId) {
+      const vid = video.pendingVideoId;
+      video.pendingVideoId = null;
+      cueOrPlayVideoId(vid);
+    }
+  }
+
+  function onYouTubeStateChange(ev) {
+    const s = ev.data;
+    const YTS = window.YT && YT.PlayerState;
+    if (!YTS) return;
+    if (s === YTS.PLAYING) {
+      if (isVideoMode()) {
+        document.body.classList.add('playing');
+        setMediaSessionState(true);
+        applyMediaSessionHandlers();
+        startYouTubePositionPolling();
+        try {
+          const dur = video.player.getDuration() || 0;
+          const cur = video.player.getCurrentTime() || 0;
+          if (dur > 0) el.tTot.textContent = fmtTime(dur);
+          el.tCur.textContent = fmtTime(cur);
+          setMediaSessionPosition(dur, cur);
+        } catch (_) {}
+      }
+    } else if (s === YTS.PAUSED || s === YTS.BUFFERING) {
+      if (isVideoMode()) {
+        document.body.classList.remove('playing');
+        setMediaSessionState(false);
+        stopYouTubePositionPolling();
+      }
+    } else if (s === YTS.ENDED) {
+      if (isVideoMode()) {
+        document.body.classList.remove('playing');
+        setMediaSessionState(false);
+        stopYouTubePositionPolling();
+        fetchTrack(state.vibe);
+      }
+    }
+  }
+
+  const YT_ERROR_MSG = {
+    2:   'Invalid video reference',
+    5:   'HTML5 player error — try refreshing',
+    100: 'Video removed or made private',
+    101: 'The uploader disabled embedding',
+    150: 'The uploader disabled embedding',
+  };
+
+  function onYouTubeError(ev) {
+    const code = ev && ev.data;
+    console.warn('[VibeScape] YouTube player error:', code);
+    const msg = YT_ERROR_MSG[code] || 'Video unavailable';
+    showVideoUnavailable({ message: msg, code, videoId: video.currentVideoId });
+  }
+
+  function startYouTubePositionPolling() {
+    stopYouTubePositionPolling();
+    video.pollTimer = setInterval(() => {
+      if (!video.player || !isVideoMode()) return;
+      try {
+        const dur = video.player.getDuration() || 0;
+        const cur = video.player.getCurrentTime() || 0;
+        if (dur > 0) {
+          const pct = Math.min(100, (cur / dur) * 100);
+          el.progressFill.style.width = pct + '%';
+          el.progressThumb.style.left = pct + '%';
+          el.tCur.textContent = fmtTime(cur);
+          el.tTot.textContent = fmtTime(dur);
+          el.progress.setAttribute('aria-valuenow', String(Math.round(pct)));
+          el.progress.setAttribute('aria-valuetext', fmtTime(cur) + ' of ' + fmtTime(dur));
+          setMediaSessionPosition(dur, cur);
+        }
+      } catch (_) {}
+    }, 400);
+  }
+
+  function stopYouTubePositionPolling() {
+    if (video.pollTimer) {
+      clearInterval(video.pollTimer);
+      video.pollTimer = null;
+    }
+  }
+
+  function cueOrPlayVideoId(id) {
+    if (!video.player || !video.ready) {
+      video.pendingVideoId = id;
+      return;
+    }
+    video.currentVideoId = id;
+    showVideoReady();
+    try {
+      if (state.firstInteraction) {
+        video.player.loadVideoById(id);
+      } else {
+        video.player.cueVideoById(id);
+      }
+    } catch (e) {
+      console.warn('[VibeScape] loadVideoById failed:', e);
+    }
+  }
+
+  function pauseYouTube() {
+    stopYouTubePositionPolling();
+    if (!video.player) return;
+    try { video.player.pauseVideo(); } catch (_) {}
+  }
+
+  function stopYouTube() {
+    stopYouTubePositionPolling();
+    if (!video.player) return;
+    try { video.player.stopVideo(); } catch (_) {}
+    video.currentVideoId = null;
+  }
+
+  function showVideoLoading() {
+    if (el.videoFrame) el.videoFrame.classList.remove('is-ready');
+    if (el.videoSkeleton) el.videoSkeleton.hidden = false;
+    if (el.videoEmpty) el.videoEmpty.hidden = true;
+    if (el.videoEditBtn) el.videoEditBtn.hidden = true;
+  }
+  function showVideoReady() {
+    if (el.videoFrame) el.videoFrame.classList.add('is-ready');
+    if (el.videoSkeleton) el.videoSkeleton.hidden = true;
+    if (el.videoEmpty) el.videoEmpty.hidden = true;
+    if (el.videoEditBtn) el.videoEditBtn.hidden = false;
+  }
+  function showVideoUnavailable(opts) {
+    opts = opts || {};
+    if (el.videoFrame) el.videoFrame.classList.remove('is-ready');
+    if (el.videoSkeleton) el.videoSkeleton.hidden = true;
+    if (el.videoEmpty) el.videoEmpty.hidden = false;
+    if (el.videoEditBtn) el.videoEditBtn.hidden = true;
+    if (el.videoEmptyMsg) el.videoEmptyMsg.textContent = opts.message || 'No video for this track';
+    if (el.videoEmptyCode) {
+      if (opts.code != null) {
+        el.videoEmptyCode.textContent = 'YouTube error ' + opts.code;
+        el.videoEmptyCode.hidden = false;
+      } else {
+        el.videoEmptyCode.textContent = '';
+        el.videoEmptyCode.hidden = true;
+      }
+    }
+    if (el.videoOpenYt) {
+      if (opts.videoId) {
+        el.videoOpenYt.href = 'https://www.youtube.com/watch?v=' + encodeURIComponent(opts.videoId);
+        el.videoOpenYt.hidden = false;
+      } else {
+        el.videoOpenYt.removeAttribute('href');
+        el.videoOpenYt.hidden = true;
+      }
+    }
+    stopYouTube();
+  }
+
+  async function resolveYouTubeIdForTrack(t) {
+    if (!t) return null;
+    if (t.youtube_id) return t.youtube_id;
+    if (t.youtube_id === null && t.youtube_queried_at) return null;
+    if (!t.id) return null;
+    if (video.lookupInFlight && video.lookupInFlight.trackId === t.id) {
+      return video.lookupInFlight.promise;
+    }
+    const promise = (async () => {
+      try {
+        const r = await fetchWithAuth('/api/tracks/' + encodeURIComponent(t.id) + '/youtube');
+        if (!r.ok) return null;
+        const body = await r.json();
+        const yid = body && body.youtube_id ? body.youtube_id : null;
+        if (state.current && state.current.id === t.id) {
+          state.current.youtube_id = yid;
+          state.current.youtube_queried_at = Date.now();
+        }
+        return yid;
+      } catch (e) {
+        console.warn('[VibeScape] youtube lookup failed:', e);
+        return null;
+      }
+    })();
+    video.lookupInFlight = { trackId: t.id, promise };
+    try { return await promise; }
+    finally { if (video.lookupInFlight && video.lookupInFlight.trackId === t.id) video.lookupInFlight = null; }
+  }
+
+  async function loadVideoForCurrentTrack() {
+    const t = state.current;
+    if (!t) { showVideoUnavailable(); return; }
+    showVideoLoading();
+    const yid = await resolveYouTubeIdForTrack(t);
+    if (state.current !== t) return;
+    updateModeToggleDisabled();
+    if (!yid) {
+      showVideoUnavailable();
+      return;
+    }
+    if (!video.apiRequested) loadYouTubeApi();
+    if (!video.player) {
+      video.pendingVideoId = yid;
+      return;
+    }
+    cueOrPlayVideoId(yid);
+  }
+
+  const videoSearch = {
+    open: false,
+    forTrackId: null,
+    fetchToken: 0,
+    lastQuery: '',
+    submitting: false
+  };
+
+  function defaultVideoSearchQuery(t) {
+    if (!t) return '';
+    const title = (t.title || '').trim();
+    const artist = (t.artist || '').trim();
+    return [title, artist].filter(Boolean).join(' ');
+  }
+
+  function openVideoSearchPanel(prefillQuery) {
+    if (!el.videoSearchPanel || !state.current) return;
+    videoSearch.open = true;
+    videoSearch.forTrackId = state.current.id || null;
+    el.videoSearchPanel.hidden = false;
+    requestAnimationFrame(() => el.videoSearchPanel.classList.add('is-open'));
+    const q = prefillQuery != null ? prefillQuery : defaultVideoSearchQuery(state.current);
+    if (el.videoSearchInput) {
+      el.videoSearchInput.value = q;
+      setTimeout(() => {
+        try { el.videoSearchInput.focus(); el.videoSearchInput.select(); } catch (_) {}
+      }, 30);
+    }
+    renderVideoSearchState('idle');
+    if (q && q.trim()) runVideoSearch(q.trim());
+  }
+
+  function closeVideoSearchPanel() {
+    if (!el.videoSearchPanel) return;
+    videoSearch.open = false;
+    videoSearch.fetchToken++;
+    el.videoSearchPanel.classList.remove('is-open');
+    el.videoSearchPanel.hidden = true;
+  }
+
+  function renderVideoSearchState(kind, extra) {
+    if (!el.videoSearchResults) return;
+    el.videoSearchResults.innerHTML = '';
+    if (kind === 'idle') return;
+    const wrap = document.createElement('div');
+    wrap.className = 'video-search-state';
+    if (kind === 'loading') {
+      const sp = document.createElement('div');
+      sp.className = 'modal-spinner';
+      sp.setAttribute('aria-hidden', 'true');
+      const msg = document.createElement('p');
+      msg.className = 'modal-hint';
+      msg.textContent = 'Searching…';
+      wrap.appendChild(sp);
+      wrap.appendChild(msg);
+    } else if (kind === 'empty') {
+      const msg = document.createElement('p');
+      msg.className = 'modal-hint';
+      msg.textContent = 'No results. Try different keywords.';
+      wrap.appendChild(msg);
+    } else if (kind === 'error') {
+      const msg = document.createElement('p');
+      msg.className = 'modal-hint';
+      msg.textContent = (extra && extra.message) || 'Search failed. Try again.';
+      wrap.appendChild(msg);
+    }
+    el.videoSearchResults.appendChild(wrap);
+  }
+
+  function renderVideoSearchResults(results) {
+    if (!el.videoSearchResults) return;
+    el.videoSearchResults.innerHTML = '';
+    results.forEach((r) => {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'video-search-result';
+      row.setAttribute('role', 'option');
+      row.dataset.youtubeId = r.youtube_id || '';
+
+      const thumb = document.createElement('div');
+      thumb.className = 'video-search-thumb';
+      if (r.thumbnail_url) {
+        const img = document.createElement('img');
+        img.src = r.thumbnail_url;
+        img.alt = '';
+        img.loading = 'lazy';
+        img.referrerPolicy = 'no-referrer';
+        thumb.appendChild(img);
+      } else {
+        const ph = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        ph.setAttribute('viewBox', '0 0 24 24');
+        ph.setAttribute('width', '20');
+        ph.setAttribute('height', '20');
+        ph.setAttribute('fill', 'none');
+        ph.setAttribute('stroke', 'currentColor');
+        ph.setAttribute('stroke-width', '1.5');
+        ph.innerHTML = '<rect x="2" y="6" width="20" height="12" rx="2"/><polygon points="10 9 15 12 10 15 10 9"/>';
+        thumb.appendChild(ph);
+      }
+      if (r.duration != null && isFinite(r.duration)) {
+        const dur = document.createElement('span');
+        dur.className = 'video-search-thumb-duration';
+        dur.textContent = fmtTime(r.duration);
+        thumb.appendChild(dur);
+      }
+
+      const meta = document.createElement('div');
+      meta.className = 'video-search-meta';
+      const title = document.createElement('p');
+      title.className = 'video-search-result-title';
+      title.textContent = r.title || '—';
+      const chan = document.createElement('p');
+      chan.className = 'video-search-result-channel';
+      chan.textContent = r.channel || '—';
+      meta.appendChild(title);
+      meta.appendChild(chan);
+
+      row.appendChild(thumb);
+      row.appendChild(meta);
+      row.addEventListener('click', () => selectVideoSearchResult(r, row));
+      el.videoSearchResults.appendChild(row);
+    });
+  }
+
+  async function runVideoSearch(query) {
+    const t = state.current;
+    if (!t || !t.id) return;
+    videoSearch.lastQuery = query;
+    const token = ++videoSearch.fetchToken;
+    renderVideoSearchState('loading');
+    try {
+      const url = '/api/tracks/' + encodeURIComponent(t.id) + '/youtube/search'
+        + '?q=' + encodeURIComponent(query) + '&limit=5';
+      const r = await fetchWithAuth(url);
+      if (token !== videoSearch.fetchToken || !videoSearch.open) return;
+      if (!r.ok) {
+        renderVideoSearchState('error');
+        return;
+      }
+      const body = await r.json();
+      const results = (body && Array.isArray(body.results)) ? body.results : [];
+      if (!results.length) renderVideoSearchState('empty');
+      else renderVideoSearchResults(results);
+    } catch (e) {
+      if (token !== videoSearch.fetchToken || !videoSearch.open) return;
+      renderVideoSearchState('error');
+    }
+  }
+
+  async function selectVideoSearchResult(result, rowEl) {
+    if (videoSearch.submitting) return;
+    const t = state.current;
+    if (!t || !t.id || !result || !result.youtube_id) return;
+    videoSearch.submitting = true;
+    if (rowEl) rowEl.setAttribute('aria-busy', 'true');
+    try {
+      const r = await fetchWithAuth('/api/tracks/' + encodeURIComponent(t.id) + '/youtube', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ youtube_id: result.youtube_id })
+      });
+      if (!r.ok) {
+        if (window.toast) toast('Could not save video override.', 'error');
+        return;
+      }
+      const body = await r.json().catch(() => ({}));
+      const newId = (body && body.youtube_id) || result.youtube_id;
+      if (state.current && state.current.id === t.id) {
+        state.current.youtube_id = newId;
+      }
+      closeVideoSearchPanel();
+      if (isVideoMode()) {
+        showVideoLoading();
+        if (!video.apiRequested) loadYouTubeApi();
+        if (!video.player) {
+          video.pendingVideoId = newId;
+        } else {
+          cueOrPlayVideoId(newId);
+        }
+      }
+      updateModeToggleDisabled();
+    } catch (e) {
+      if (window.toast) toast('Could not save video override.', 'error');
+    } finally {
+      videoSearch.submitting = false;
+      if (rowEl) rowEl.removeAttribute('aria-busy');
+    }
+  }
+
+  function pauseAllAudioSources() {
+    try { el.player.pause(); } catch (_) {}
+    if (spotify.player) {
+      try { spotify.player.pause(); } catch (_) {}
+    }
+    stopGlowAnalyser();
+  }
+
+  function setPlaybackMode(next, opts) {
+    opts = opts || {};
+    const prev = video.mode;
+    if (next !== 'audio' && next !== 'video') return;
+    if (next === prev && !opts.force) { updateModeToggleUi(); return; }
+    video.mode = next;
+    try { localStorage.setItem(video.modeKey, next); } catch (_) {}
+    document.body.classList.toggle('mode-video', next === 'video');
+    if (el.videoStage) {
+      el.videoStage.hidden = next !== 'video';
+      el.videoStage.setAttribute('aria-hidden', next === 'video' ? 'false' : 'true');
+    }
+    if (next !== 'video' && videoSearch.open) closeVideoSearchPanel();
+    updateModeToggleUi();
+    if (next === 'video') {
+      pauseAllAudioSources();
+      loadVideoForCurrentTrack();
+    } else {
+      pauseYouTube();
+      document.body.classList.remove('playing');
+      if (state.current && opts.resumeAudio !== false && state.firstInteraction) {
+        const t = state.current;
+        const useSpotify = sdkActive() && !!t.spotify_id;
+        if (useSpotify) {
+          try { spotifyPlayTrack(t.spotify_id); } catch (_) {}
+        } else {
+          try {
+            if (!el.player.src) {
+              el.player.src = authedStreamUrl('/api/stream/' + encodeURIComponent(t.apple_id));
+            }
+            const p = el.player.play();
+            if (p && typeof p.catch === 'function') p.catch(() => {});
+          } catch (_) {}
+        }
+      }
+    }
+  }
+
+  function updateModeToggleUi() {
+    if (!el.modeAudio || !el.modeVideo) return;
+    const isVideo = isVideoMode();
+    el.modeAudio.classList.toggle('is-active', !isVideo);
+    el.modeVideo.classList.toggle('is-active', isVideo);
+    el.modeAudio.setAttribute('aria-checked', String(!isVideo));
+    el.modeVideo.setAttribute('aria-checked', String(isVideo));
+  }
+
+  function updateModeToggleDisabled() {
+    if (!el.modeVideo) return;
+    const t = state.current;
+    const knownNoVideo = !!(t && t.youtube_id === null && t.youtube_queried_at);
+    if (knownNoVideo) {
+      el.modeVideo.setAttribute('aria-disabled', 'true');
+      if (isVideoMode()) setPlaybackMode('audio');
+    } else {
+      el.modeVideo.removeAttribute('aria-disabled');
+    }
+  }
+
+  if (el.modeAudio) {
+    el.modeAudio.addEventListener('click', () => {
+      state.firstInteraction = true;
+      setPlaybackMode('audio');
+    });
+  }
+  if (el.modeVideo) {
+    el.modeVideo.addEventListener('click', () => {
+      if (el.modeVideo.getAttribute('aria-disabled') === 'true') return;
+      state.firstInteraction = true;
+      setPlaybackMode('video');
+    });
+  }
+
+  if (el.videoEditBtn) {
+    el.videoEditBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      openVideoSearchPanel();
+    });
+  }
+  if (el.videoSearchFromEmpty) {
+    el.videoSearchFromEmpty.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      openVideoSearchPanel();
+    });
+  }
+  if (el.videoSearchClose) {
+    el.videoSearchClose.addEventListener('click', () => closeVideoSearchPanel());
+  }
+  if (el.videoSearchForm) {
+    el.videoSearchForm.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      const q = (el.videoSearchInput && el.videoSearchInput.value || '').trim();
+      if (!q) return;
+      runVideoSearch(q);
+    });
+  }
+  document.addEventListener('mousedown', (ev) => {
+    if (!videoSearch.open) return;
+    if (!el.videoSearchPanel) return;
+    const t = ev.target;
+    if (el.videoSearchPanel.contains(t)) return;
+    if (el.videoEditBtn && el.videoEditBtn.contains(t)) return;
+    if (el.videoSearchFromEmpty && el.videoSearchFromEmpty.contains(t)) return;
+    closeVideoSearchPanel();
+  });
+
+  (function initPlaybackMode() {
+    let saved = 'audio';
+    try { saved = localStorage.getItem(video.modeKey) || 'audio'; } catch (_) {}
+    video.mode = saved === 'video' ? 'video' : 'audio';
+    document.body.classList.toggle('mode-video', video.mode === 'video');
+    if (el.videoStage) {
+      el.videoStage.hidden = video.mode !== 'video';
+      el.videoStage.setAttribute('aria-hidden', video.mode === 'video' ? 'false' : 'true');
+    }
+    updateModeToggleUi();
+    if (video.mode === 'video') loadYouTubeApi();
+  })();
 
   function updateMediaSessionMetadata(t) {
     if (!('mediaSession' in navigator) || !t) return;
@@ -1504,6 +2127,14 @@
   function mediaPlay() {
     state.firstInteraction = true;
     if (!state.current) { fetchTrack(state.vibe); return; }
+    if (isVideoMode()) {
+      if (video.player && video.ready) {
+        try { video.player.playVideo(); } catch (_) {}
+      } else {
+        loadVideoForCurrentTrack();
+      }
+      return;
+    }
     if (sdkActive() && spotify.player) {
       try { spotify.player.resume(); } catch (e) {}
       return;
@@ -1516,6 +2147,10 @@
 
   function mediaPause() {
     state.firstInteraction = true;
+    if (isVideoMode()) {
+      pauseYouTube();
+      return;
+    }
     if (sdkActive() && spotify.player) {
       try { spotify.player.pause(); } catch (e) {}
       return;
@@ -1546,6 +2181,17 @@
     return frac;
   }
   function seekTo(frac) {
+    if (isVideoMode() && video.player && video.ready) {
+      let dur = 0;
+      try { dur = video.player.getDuration() || 0; } catch (_) {}
+      if (dur > 0) {
+        try { video.player.seekTo(frac * dur, true); } catch (_) {}
+      }
+      el.progressFill.style.width = (frac * 100) + '%';
+      el.progressThumb.style.left = (frac * 100) + '%';
+      el.tCur.textContent = fmtTime(dur * frac);
+      return;
+    }
     if (sdkActive() && spotify.lastState) {
       const dur = spotify.durationMs || 0;
       if (dur > 0) {
@@ -1604,11 +2250,17 @@
 
   // Progress keyboard seek (item #8) — handles ← → ±5s, Home/End 0/100%, PgUp/PgDn ±15s
   function currentPlaybackDurationSec() {
+    if (isVideoMode() && video.player && video.ready) {
+      try { const d = video.player.getDuration() || 0; if (d > 0) return d; } catch (_) {}
+    }
     if (sdkActive() && spotify.lastState) return (spotify.durationMs || 0) / 1000;
     const d = el.player.duration;
     return isFinite(d) && d > 0 ? d : 0;
   }
   function currentPlaybackPositionSec() {
+    if (isVideoMode() && video.player && video.ready) {
+      try { return video.player.getCurrentTime() || 0; } catch (_) {}
+    }
     if (sdkActive() && spotify.lastState) return spotify.positionMs / 1000;
     return el.player.currentTime || 0;
   }
@@ -2252,10 +2904,12 @@
         document.body.classList.add('playing');
         startPositionPolling();
       }
-      setMediaSessionState(!playerState.paused);
-      applyMediaSessionHandlers();
-      setMediaSessionPosition((spotify.durationMs || 0) / 1000, (spotify.positionMs || 0) / 1000);
-      renderSpotifyProgress();
+      if (!isVideoMode()) {
+        setMediaSessionState(!playerState.paused);
+        applyMediaSessionHandlers();
+        setMediaSessionPosition((spotify.durationMs || 0) / 1000, (spotify.positionMs || 0) / 1000);
+        renderSpotifyProgress();
+      }
 
       // detect end-of-track: paused, position 0, and a previous track exists
       const prevTracks = (playerState.track_window && playerState.track_window.previous_tracks) || [];
@@ -2775,6 +3429,21 @@
       return null;
     };
 
+    // ML PREDICTIONS (only shown when the batch predictor has run for this track)
+    const ePred = get('energy_pred');
+    const dPred = get('danceability_pred');
+    const vPred = get('valence_pred');
+    const vibeML = get('vibe_score_ml');
+    const modelV = get('model_version');
+    if (ePred !== null || dPred !== null || vPred !== null) {
+      const ml = makeGroup('ML predictions' + (modelV ? ' (' + modelV + ')' : ''));
+      if (ePred !== null) ml.appendChild(makeRow('energy_pred', ePred, { bar: true, barValue: ePred, decimals: 3 }));
+      if (dPred !== null) ml.appendChild(makeRow('danceability_pred', dPred, { bar: true, barValue: dPred, decimals: 3 }));
+      if (vPred !== null) ml.appendChild(makeRow('valence_pred', vPred, { bar: true, barValue: vPred, decimals: 3 }));
+      if (vibeML !== null) ml.appendChild(makeRow('vibe_score_ml', vibeML, { bar: true, barValue: vibeML, decimals: 3, annot: '0.55E + 0.45D' }));
+      el.metricsContent.appendChild(ml);
+    }
+
     // DERIVED (all on 0-100 or 0-1; pct01 auto-detects)
     const derived = makeGroup('Derived axes');
     derived.appendChild(makeRow('activation', get('activation'), { bar: true, barValue: get('activation'), decimals: 1 }));
@@ -3022,6 +3691,7 @@
   // Escape + Ctrl+Shift+D shortcut (+ ? for help, Ctrl+Shift+M for metrics)
   document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') {
+      if (videoSearch.open) { ev.preventDefault(); closeVideoSearchPanel(); return; }
       if (metricsPanel.open) { ev.preventDefault(); closeMetricsPanel(); return; }
       if (debugPanel.open) { ev.preventDefault(); closeDebugPanel(); return; }
       if (helpPop.open) { ev.preventDefault(); closeHelpPopover(); return; }

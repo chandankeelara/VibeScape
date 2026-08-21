@@ -1,0 +1,47 @@
+seed: 42
+deterministic: true
+
+data:
+  csv_path: ml/data/spotify_tracks.csv
+  manifest_path: ml/data/manifest.csv
+  previews_dir: ml/data/previews
+  sample_rate: 24000
+  max_duration_s: 30
+  crop_duration_s: 10
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+  group_col: artists
+  num_workers: 2
+  persistent_workers: true
+  pin_memory: true
+
+augment:
+  gain_db: 3.0
+
+model:
+  pretrained_name: m-a-p/MERT-v1-95M
+  head_hidden: 256
+  dropout: 0.2
+  targets: [danceability, energy, valence]
+
+optim:
+  lr_head: 1.0e-4
+  lr_encoder: 1.0e-5
+  weight_decay: 1.0e-2
+  warmup_steps: 100
+
+trainer:
+  batch_size: 4
+  grad_accum: 8
+  max_epochs: 3
+  patience: 2
+  precision: 16-mixed
+  freeze_encoder_epochs: 1
+  gradient_clip_val: 1.0
+
+paths:
+  experiments_dir: ml/experiments
+  mlflow_dir: ml/experiments/mlruns
+  models_dir: ml/models
+  best_ckpt: ml/models/mert_v1_smoke.ckpt

@@ -20,8 +20,24 @@ VIBE_DANCE_W = 0.45
 
 
 def _load_audio(path: str, sr: int) -> np.ndarray:
-    y, _ = librosa.load(path, sr=sr, mono=True)
-    return y.astype(np.float32)
+    try:
+        y, _ = librosa.load(path, sr=sr, mono=True)
+        return y.astype(np.float32)
+    except Exception:
+        return _load_audio_ffmpeg(path, sr)
+
+
+def _load_audio_ffmpeg(path: str, sr: int) -> np.ndarray:
+    """Fallback loader using ffmpeg. Handles m4a/aac/opus containers that
+    libsndfile can't open natively (imageio-ffmpeg ships the binary)."""
+    import subprocess
+    import imageio_ffmpeg
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    cmd = [ffmpeg, "-i", str(path), "-f", "s16le", "-ac", "1", "-ar", str(sr),
+           "-loglevel", "error", "-"]
+    proc = subprocess.run(cmd, capture_output=True, check=True)
+    pcm = np.frombuffer(proc.stdout, dtype=np.int16)
+    return (pcm.astype(np.float32) / 32768.0)
 
 
 class Predictor:
