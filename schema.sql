@@ -65,6 +65,9 @@ CREATE TABLE IF NOT EXISTS tracks (
     audio_path    TEXT,
     classification_source TEXT,
 
+    youtube_id         TEXT,
+    youtube_queried_at TIMESTAMP,
+
     -- future ML model outputs (nullable, filled by ml/ pipeline)
     energy_pred      REAL,
     danceability_pred REAL,

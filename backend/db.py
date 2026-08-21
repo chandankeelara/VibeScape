@@ -576,6 +576,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE tracks ADD COLUMN classification_source TEXT",
         "ALTER TABLE tracks ADD COLUMN chroma_mean_json TEXT",
         "ALTER TABLE tracks ADD COLUMN user_id INTEGER",
+        "ALTER TABLE tracks ADD COLUMN youtube_id TEXT",
+        "ALTER TABLE tracks ADD COLUMN youtube_queried_at TIMESTAMP",
+        "ALTER TABLE tracks ADD COLUMN energy_pred REAL",
+        "ALTER TABLE tracks ADD COLUMN danceability_pred REAL",
+        "ALTER TABLE tracks ADD COLUMN valence_pred REAL",
+        "ALTER TABLE tracks ADD COLUMN vibe_score_ml REAL",
+        "ALTER TABLE tracks ADD COLUMN model_version TEXT",
     ]
     for c in _EXTENDED_COLUMNS:
         stmts.append(f"ALTER TABLE tracks ADD COLUMN {c} REAL")

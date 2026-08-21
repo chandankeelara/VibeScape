@@ -8,6 +8,9 @@ data/*.db.*
 data/*.log
 data/*.log.err
 data/recompute_progress.json
+# YouTube session cookies — treat as secrets
+data/yt_cookies*.txt
+data/yt_*.txt
 
 # Python
 __pycache__/
