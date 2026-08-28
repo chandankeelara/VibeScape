@@ -1,0 +1,66 @@
+# Files to skip when running `gcloud run deploy --source .`
+# Independent of .gitignore so we can KEEP config.py and data/vibescape.db
+# (both COPY'd in Dockerfile), while excluding heavyweight dev artifacts.
+
+# Git internals
+.git/
+.gitignore
+.gcloudignore
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python bytecode / virtualenvs
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+venv/
+.venv/
+
+# Local secrets & agent state
+.env
+.env.local
+.env.*.local
+.claude/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Dev-only assets not needed by the image
+_yt_match_test.py
+scripts/_*.ps1
+scripts/_*.py
+
+# Large dev-only data
+data/audio/
+data/*.log
+data/*.log.err
+data/*.err.log
+data/*.out.log
+data/_*.js
+data/_*.py
+data/_*.txt
+data/recompute_progress.json
+data/yt_cookies*.txt
+data/yt_*.txt
+data/*.presprint
+data/*.pre-user-tracks-*
+data/vibescape_prod.db
+data/vibescape.db.*
+
+# ML pipeline (not needed by playback-only prod image)
+ml/data/
+ml/models/*.ckpt
+ml/models/*.pt
+ml/experiments/
+ml/experiments/mlruns/
+
+# Deploy scaffolding for OTHER targets
+fly.toml

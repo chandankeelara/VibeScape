@@ -681,11 +681,16 @@ def _backfill_classification_source(conn: sqlite3.Connection) -> int:
 
 
 def ensure_db():
-    # Bootstrap uses the same backend as runtime queries. For sqlite this
-    # is equivalent to the previous sqlite3.connect(DB_PATH); for
-    # DB_BACKEND=turso this connects to the remote libSQL instance so
-    # schema/migrations run there. The parent dir mkdir is still cheap on
-    # the sqlite path and a no-op-safe on turso (path may not exist).
+    # On Turso, the schema is managed out-of-band by
+    # scripts/migrate_to_turso_http.py. Running the sqlite-only migration
+    # ladder here (ADD COLUMN user_id, then _rebuild_tracks_legacy_composite)
+    # DESTROYS the modern global-tracks shape and rewrites it as the legacy
+    # per-user shape without energy_pred / language / youtube_id / etc.
+    # Skip the whole ensure_db path when we're pointed at a remote libSQL
+    # instance — callers just need a live connection.
+    backend = (os.environ.get("DB_BACKEND") or "sqlite").strip().lower()
+    if backend in ("turso", "libsql"):
+        return
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = db_client.create_connection()
     try:
