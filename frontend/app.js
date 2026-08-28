@@ -29,6 +29,26 @@
     meta: document.querySelector('.meta'),
     btnHelp: $('btnHelp'),
     helpPopover: $('helpPopover'),
+    titleVibe: $('titleVibe'),
+    titleLang: $('titleLang'),
+    titleSdkOnly: $('titleSdkOnly'),
+    queueSidebar: $('queueSidebar'),
+    queueList: $('queueList'),
+    queueEmpty: $('queueEmpty'),
+    queueCount: $('queueCount'),
+    queueClear: $('queueClear'),
+    queueRecsList: $('queueRecsList'),
+    queueRecsEmpty: $('queueRecsEmpty'),
+    queueRecsLoading: $('queueRecsLoading'),
+    searchBar: $('searchBar'),
+    searchInputWrap: $('searchInputWrap'),
+    searchInput: $('searchInput'),
+    searchClear: $('btnSearchClear'),
+    searchDropdown: $('searchDropdown'),
+    searchEmpty: $('searchEmpty'),
+    searchLoading: $('searchLoading'),
+    searchResults: $('searchResults'),
+    searchNone: $('searchNone'),
     progress: $('progress'),
     progressFill: $('progressFill'),
     progressThumb: $('progressThumb'),
@@ -143,10 +163,10 @@
     syncProgressPct: $('syncProgressPct'),
     syncProgressCounts: $('syncProgressCounts'),
     syncCurrentTrack: $('syncCurrentTrack'),
-    syncStatMatched: $('syncStatMatched'),
-    syncStatPreview: $('syncStatPreview'),
+    syncStatNew: $('syncStatNew'),
+    syncStatLinked: $('syncStatLinked'),
+    syncStatAlready: $('syncStatAlready'),
     syncStatNoPreview: $('syncStatNoPreview'),
-    syncStatSkipped: $('syncStatSkipped'),
     syncCompleteSummary: $('syncCompleteSummary'),
     syncFooterMeta: $('syncFooterMeta'),
     syncModalFooter: $('syncModalFooter'),
@@ -198,6 +218,14 @@
     // Feature blobs keyed by apple_id (fallback: spotify_id). Populated lazily
     // when the metrics panel opens for a track. Never cleared during a session.
     featureCache: {},
+    // User-managed play queue. Populated only via search "+ queue" and the
+    // recommendations panel — never auto-filled. Advance-to-next consumes
+    // queue[0] when non-empty; otherwise falls back to /api/tracks/random.
+    queue: [],
+    // Cached recommendations for the currently playing track. Rendered in
+    // the right sidebar. Refreshes on each loadTrack; anchor identity is
+    // tracked to avoid duplicate fetches.
+    recs: { anchorKey: null, list: [], loading: false, reqToken: 0 },
     // Filter model — wide-open defaults; only appended to /api/tracks/random
     // when non-default. Backend ignores unknown params, safe to send early.
     filters: {
@@ -545,6 +573,9 @@
       el.userName.textContent = name;
       el.userMenuName.textContent = name;
       el.userAvatar.textContent = initialsFor(name);
+      // Admin button visibility (chandan-only).
+      const btnAdmin = document.getElementById('btnUserAdmin');
+      if (btnAdmin) btnAdmin.hidden = !auth.user.is_admin;
     } else {
       el.userMenu.hidden = true;
     }
@@ -683,13 +714,14 @@
   }
 
   function completeLogin(payload) {
-    // payload: { user_id, display_name, session_token, has_pin, ... }
+    // payload: { user_id, display_name, session_token, has_pin, is_admin, ... }
     auth.token = payload.session_token || '';
     auth.user = {
       user_id: payload.user_id,
       display_name: payload.display_name,
       has_pin: !!payload.has_pin,
-      spotify_connected: !!payload.spotify_connected
+      spotify_connected: !!payload.spotify_connected,
+      is_admin: !!payload.is_admin
     };
     localStorage.setItem(auth.tokenKey, auth.token);
     localStorage.setItem(auth.userIdKey, String(auth.user.user_id));
@@ -785,12 +817,17 @@
     state.current = null;
     state.recent = [];
     state.featureCache = {};
+    state.queue = [];
+    state.recs = { anchorKey: null, list: [], loading: false, reqToken: 0 };
+    try { renderQueue(); } catch (_) {}
+    try { renderRecs(); } catch (_) {}
     if (el.recentTrail) { el.recentTrail.hidden = true; el.recentTrail.innerHTML = ''; }
     el.title.textContent = 'Move the slider to begin';
     el.artist.textContent = '—';
     if (el.album) el.album.textContent = '';
     if (el.artistSep) el.artistSep.hidden = true;
     if (el.genreLine) el.genreLine.hidden = true;
+    clearTitleMeta();
     if (el.artImg) el.artImg.removeAttribute('src');
     if (el.art) el.art.classList.add('empty');
     setSourcePill(null);
@@ -823,7 +860,8 @@
         display_name: j.display_name,
         has_pin: !!j.has_pin,
         spotify_connected: !!j.spotify_connected,
-        created_at: j.created_at
+        created_at: j.created_at,
+        is_admin: !!j.is_admin
       };
       localStorage.setItem(auth.userIdKey, String(auth.user.user_id));
       updateUserMenu();
@@ -1016,6 +1054,7 @@
         if (el.artistSep) el.artistSep.hidden = true;
         if (el.genreLine) el.genreLine.hidden = true;
         if (el.chipGenre) el.chipGenre.hidden = true;
+        clearTitleMeta();
         state.current = null;
         setSourcePill(null);
         stopPlayback();
@@ -1073,6 +1112,15 @@
     if (el.album) el.album.textContent = t.album || '';
     if (el.artistSep) el.artistSep.hidden = !t.album;
 
+    // Inline predicted vibe + mood next to the title. Mirrors the search
+    // dropdown row so users see the same "feel at a glance" info in both
+    // surfaces. Hidden when the track has no ML/formula vibe yet.
+    updateTitleMeta(t);
+
+    // Refresh sidebar recommendations for the new anchor. Fire-and-forget;
+    // guarded by request-token inside so stale results are dropped.
+    try { loadRecommendationsFor(t); } catch (_) {}
+
     updateMediaSessionMetadata(t);
 
     // Genre whisper line (item #14) — replaces the chip when present.
@@ -1105,6 +1153,24 @@
 
     const useSpotify = sdkActive() && !!t.spotify_id;
 
+    // Metadata-only tracks have no local audio (audio_path is NULL). The
+    // <audio> stream would 404. Refuse up-front unless SDK is active — a
+    // clear toast is friendlier than a silent-failure network error.
+    if (!useSpotify && isMetadataOnly(t)) {
+      try { el.player.pause(); } catch (_) {}
+      el.player.removeAttribute('src');
+      el.player.load();
+      document.body.classList.remove('playing');
+      const total = t.duration_ms ? t.duration_ms / 1000 : 30;
+      el.tTot.textContent = fmtTime(total);
+      el.tCur.textContent = '0:00';
+      el.progressFill.style.width = '0%';
+      el.progressThumb.style.left = '0%';
+      setSourcePill(null);
+      toast('This track requires Spotify Premium to play (no preview available).', 'warning');
+      return;
+    }
+
     if (useSpotify) {
       try { el.player.pause(); } catch (e) {}
       el.player.removeAttribute('src');
@@ -1127,7 +1193,11 @@
       el.progressThumb.style.left = '0%';
       setSourcePill('preview');
 
-      el.player.src = authedStreamUrl('/api/stream/' + encodeURIComponent(t.apple_id));
+      // Prefer apple_id (present for iTunes-sourced tracks) but fall back to
+      // spotify_id when apple_id is null — happens for search-added tracks
+      // processed via the ML-only path (no iTunes term-search).
+      const streamKey = (t.apple_id != null ? t.apple_id : t.spotify_id) || '';
+      el.player.src = authedStreamUrl('/api/stream/' + encodeURIComponent(streamKey));
       el.player.volume = 0.8;
 
       const p = el.player.play();
@@ -1501,7 +1571,7 @@
     stopGlowAnalyser();
     setGlowAlpha(0.65);
     setMediaSessionState(false);
-    fetchTrack(state.vibe);
+    advanceToNext();
   });
   el.player.addEventListener('loadedmetadata', () => {
     if (isFinite(el.player.duration) && el.player.duration > 0) {
@@ -1530,12 +1600,10 @@
     togglePlay();
   });
   el.btnNext.addEventListener('click', () => {
-    state.firstInteraction = true;
-    fetchTrack(state.vibe);
+    advanceToNext();
   });
   el.btnPrev.addEventListener('click', () => {
-    state.firstInteraction = true;
-    fetchTrack(state.vibe);
+    advanceToNext();
   });
 
   // ===== Video mode (YouTube IFrame API) =====
@@ -1610,7 +1678,7 @@
         document.body.classList.remove('playing');
         setMediaSessionState(false);
         stopYouTubePositionPolling();
-        fetchTrack(state.vibe);
+        advanceToNext();
       }
     }
   }
@@ -2002,7 +2070,8 @@
         } else {
           try {
             if (!el.player.src) {
-              el.player.src = authedStreamUrl('/api/stream/' + encodeURIComponent(t.apple_id));
+              const streamKey = (t.apple_id != null ? t.apple_id : t.spotify_id) || '';
+              el.player.src = authedStreamUrl('/api/stream/' + encodeURIComponent(streamKey));
             }
             const p = el.player.play();
             if (p && typeof p.catch === 'function') p.catch(() => {});
@@ -2165,8 +2234,8 @@
     const handlers = {
       play: mediaPlay,
       pause: mediaPause,
-      nexttrack: () => { state.firstInteraction = true; fetchTrack(state.vibe); },
-      previoustrack: () => { state.firstInteraction = true; fetchTrack(state.vibe); },
+      nexttrack: () => { advanceToNext(); },
+      previoustrack: () => { advanceToNext(); },
     };
     for (const [action, fn] of Object.entries(handlers)) {
       try { navigator.mediaSession.setActionHandler(action, fn); } catch (e) {}
@@ -2321,12 +2390,10 @@
       togglePlay();
     } else if (e.key === 'ArrowRight') {
       e.preventDefault();
-      state.firstInteraction = true;
-      fetchTrack(state.vibe);
+      advanceToNext();
     } else if (e.key === 'ArrowLeft') {
       e.preventDefault();
-      state.firstInteraction = true;
-      fetchTrack(state.vibe);
+      advanceToNext();
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       shiftVibe(+5);
@@ -2739,7 +2806,13 @@
         body: body.toString()
       });
       if (!r.ok) {
-        toast('Spotify token exchange failed.', 'error');
+        let detail = '';
+        try {
+          const body = await r.clone().text();
+          detail = ' [' + r.status + '] ' + body.slice(0, 200);
+        } catch (_) {}
+        console.error('[VibeScape] Spotify token exchange failed', r.status, detail, 'redirect_uri sent:', spotify.redirectUri);
+        toast('Spotify token exchange failed.' + detail, 'error');
         return;
       }
       const j = await r.json();
@@ -2916,7 +2989,7 @@
       if (playerState.paused && playerState.position === 0 && prevTracks.length > 0) {
         setTimeout(() => {
           if (spotify.lastState && spotify.lastState.paused && spotify.lastState.position === 0) {
-            fetchTrack(state.vibe);
+            advanceToNext();
           }
         }, 500);
       }
@@ -2984,7 +3057,8 @@
   function fallbackToPreview(reason) {
     if (!state.current) return;
     setSourcePill('preview');
-    el.player.src = authedStreamUrl('/api/stream/' + encodeURIComponent(state.current.apple_id));
+    const streamKey = (state.current.apple_id != null ? state.current.apple_id : state.current.spotify_id) || '';
+    el.player.src = authedStreamUrl('/api/stream/' + encodeURIComponent(streamKey));
     const p = el.player.play();
     if (p && typeof p.catch === 'function') p.catch(() => {});
     if (reason) console.warn('[VibeScape] Spotify → preview fallback:', reason);
@@ -3688,9 +3762,603 @@
     closeMetricsPanel();
   });
 
+  // ===== Persistent search bar (library + Spotify catalog) =====
+  // `dropdownOpen` tracks whether the results dropdown is visible. The input
+  // itself is always mounted above the stage; the dropdown floats over it.
+  const search = {
+    dropdownOpen: false,
+    query: '',
+    reqToken: 0,
+    debounceTimer: null,
+    lastResults: { library: [], spotify: [], spotifyErr: null }
+  };
+
+  function escapeHtml(str) {
+    return String(str == null ? '' : str)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  // Compute the predicted vibe (0-100 int) for a track row. Prefers the ML
+  // prediction (stored 0-1) and falls back to the formula-based vibe_score
+  // (already 0-100). Returns null if neither is populated.
+  function trackVibe(t) {
+    if (!t) return null;
+    // Metadata-only tracks have a placeholder vibe_score (50) so the NOT NULL
+    // constraint is satisfied. That number isn't a real prediction — suppress
+    // the pill so users don't see misleading "vibe 50" chips on unanalyzed songs.
+    if (t.classification_source === 'metadata_only') return null;
+    const ml = t.vibe_score_ml;
+    if (ml != null && !isNaN(ml)) return Math.round(Math.max(0, Math.min(100, ml * 100)));
+    const raw = t.vibe_score;
+    if (raw != null && !isNaN(raw)) return Math.round(Math.max(0, Math.min(100, raw)));
+    return null;
+  }
+
+  // Snap the app's global vibe slider to the given track's vibe. Used when
+  // the user picks a specific track from search — we want the ambient state
+  // (colour accent, slider position, subsequent random-track vibe range) to
+  // follow the just-played song, not stay wherever the user left it.
+  function setVibeFromTrack(t) {
+    const v = trackVibe(t);
+    if (v == null) return;
+    state.vibe = v;
+    if (el.slider) el.slider.value = String(v);
+    try { updateSliderVisual(v); } catch (_) {}
+    try { applyAccent(v); } catch (_) {}
+  }
+
+  // Human-readable name for ISO 639-1 codes Whisper returns. Anything not
+  // in the map falls back to the uppercased code (e.g. "SW", "AF").
+  const LANG_NAMES = {
+    en: 'English', es: 'Spanish', fr: 'French', de: 'German', it: 'Italian',
+    pt: 'Portuguese', ru: 'Russian', ja: 'Japanese', ko: 'Korean', zh: 'Chinese',
+    ar: 'Arabic', hi: 'Hindi', bn: 'Bengali', pa: 'Punjabi', ta: 'Tamil',
+    te: 'Telugu', ml: 'Malayalam', kn: 'Kannada', mr: 'Marathi', gu: 'Gujarati',
+    ur: 'Urdu', tr: 'Turkish', vi: 'Vietnamese', th: 'Thai', id: 'Indonesian',
+    ms: 'Malay', tl: 'Filipino', nl: 'Dutch', sv: 'Swedish', no: 'Norwegian',
+    da: 'Danish', fi: 'Finnish', pl: 'Polish', cs: 'Czech', el: 'Greek',
+    he: 'Hebrew', fa: 'Persian', uk: 'Ukrainian', ro: 'Romanian', hu: 'Hungarian'
+  };
+  function languageLabel(code) {
+    if (!code) return '';
+    const key = String(code).toLowerCase().trim();
+    return LANG_NAMES[key] || key.toUpperCase();
+  }
+
+  // Metadata-only tracks have title/artist/artwork but no local audio and no
+  // ML analysis. Playable only through the Spotify Web Playback SDK.
+  function isMetadataOnly(t) {
+    return !!(t && t.classification_source === 'metadata_only');
+  }
+  // HTML for the small sdk-only badge — reused by search rows, queue rows,
+  // and recs rows. Empty string when the track has a normal audio path.
+  function sdkOnlyBadgeHtml(t) {
+    if (!isMetadataOnly(t)) return '';
+    return '<span class="sdk-only-badge" title="No local audio — playable only via Spotify Premium">sdk-only</span>';
+  }
+
+  function updateTitleMeta(t) {
+    if (!el.titleVibe && !el.titleLang && !el.titleSdkOnly) return;
+    const v = trackVibe(t);
+    if (el.titleVibe) {
+      if (v != null) {
+        el.titleVibe.textContent = 'vibe ' + v;
+        el.titleVibe.hidden = false;
+        el.titleVibe.setAttribute('data-vibe', String(v));
+      } else {
+        el.titleVibe.hidden = true;
+      }
+    }
+    if (el.titleLang) {
+      const raw = t && t.language ? String(t.language) : '';
+      const label = languageLabel(raw);
+      if (label) {
+        el.titleLang.textContent = label;
+        el.titleLang.hidden = false;
+        el.titleLang.setAttribute('data-lang', String(raw).toLowerCase());
+        const conf = t && t.language_confidence;
+        if (conf != null && !isNaN(conf)) {
+          el.titleLang.title = 'predicted language: ' + label +
+            ' (confidence ' + Math.round(Math.max(0, Math.min(1, conf)) * 100) + '%)';
+        } else {
+          el.titleLang.title = 'predicted language: ' + label;
+        }
+      } else {
+        el.titleLang.hidden = true;
+      }
+    }
+    if (el.titleSdkOnly) {
+      el.titleSdkOnly.hidden = !isMetadataOnly(t);
+    }
+  }
+  function clearTitleMeta() {
+    if (el.titleVibe) el.titleVibe.hidden = true;
+    if (el.titleLang) el.titleLang.hidden = true;
+    if (el.titleSdkOnly) el.titleSdkOnly.hidden = true;
+  }
+
+  function setSearchStage(name) {
+    if (el.searchEmpty) el.searchEmpty.hidden = name !== 'empty';
+    if (el.searchLoading) el.searchLoading.hidden = name !== 'loading';
+    if (el.searchResults) el.searchResults.hidden = name !== 'results';
+    if (el.searchNone) el.searchNone.hidden = name !== 'none';
+  }
+
+  function showSearchDropdown() {
+    if (!el.searchDropdown) return;
+    if (!search.dropdownOpen) {
+      el.searchDropdown.hidden = false;
+      search.dropdownOpen = true;
+      if (el.searchInput) el.searchInput.setAttribute('aria-expanded', 'true');
+    }
+  }
+
+  function hideSearchDropdown() {
+    if (!el.searchDropdown) return;
+    if (search.dropdownOpen) {
+      el.searchDropdown.hidden = true;
+      search.dropdownOpen = false;
+      if (el.searchInput) el.searchInput.setAttribute('aria-expanded', 'false');
+    }
+    if (search.debounceTimer) { clearTimeout(search.debounceTimer); search.debounceTimer = null; }
+  }
+
+  function clearSearchInput({ blur } = { blur: false }) {
+    if (el.searchInput) {
+      el.searchInput.value = '';
+      if (blur) { try { el.searchInput.blur(); } catch (_) {} }
+    }
+    if (el.searchInputWrap) el.searchInputWrap.classList.remove('has-query');
+    if (el.searchClear) el.searchClear.hidden = true;
+    search.query = '';
+    search.lastResults = { library: [], spotify: [], spotifyErr: null };
+    hideSearchDropdown();
+  }
+
+  function focusSearchInput() {
+    if (!el.searchInput) return;
+    try { el.searchInput.focus(); el.searchInput.select(); } catch (_) {}
+    // If there's an existing query, re-show the dropdown so results are visible.
+    if ((el.searchInput.value || '').trim()) showSearchDropdown();
+  }
+
+  function renderSearchResults() {
+    if (!el.searchResults) return;
+    const lib = search.lastResults.library || [];
+    const sp = search.lastResults.spotify || [];
+    const spotifySignedIn = !!(spotify && spotify.accessToken);
+    const spErr = search.lastResults.spotifyErr;
+
+    if (!lib.length && !sp.length && !spErr) {
+      setSearchStage('none');
+      return;
+    }
+    setSearchStage('results');
+
+    const parts = [];
+
+    // Library section
+    parts.push('<div class="search-section">');
+    parts.push('<div class="search-section-title"><span>Your library</span>' +
+      (lib.length ? ('<span class="search-section-hint">' + lib.length + ' match' + (lib.length === 1 ? '' : 'es') + '</span>') : '') +
+      '</div>');
+    if (lib.length) {
+      lib.forEach((t) => {
+        const key = t.spotify_id || t.apple_id || '';
+        const title = escapeHtml(t.title || '(unknown)');
+        const artist = escapeHtml(t.artist || '');
+        const album = escapeHtml(t.album || '');
+        const art = t.artwork_url ? '<img class="search-item-art" src="' + escapeHtml(t.artwork_url) + '" alt="" loading="lazy" />' : '<div class="search-item-art"></div>';
+        const sub = artist + (album && artist ? ' &middot; ' : '') + album;
+        const vibe = trackVibe(t);
+        const vibeChip = vibe != null
+          ? '<span class="search-item-vibe" data-vibe="' + vibe + '" title="predicted vibe">vibe ' + vibe + '</span>'
+          : '';
+        const sdkBadge = sdkOnlyBadgeHtml(t);
+        const keyEsc = escapeHtml(String(key));
+        parts.push(
+          '<div class="search-item" data-action="play-library" data-key="' + keyEsc + '" tabindex="0" role="button">' +
+          art +
+          '<div class="search-item-body">' +
+            '<div class="search-item-title-row">' +
+              '<span class="search-item-title">' + title + '</span>' +
+              vibeChip +
+              sdkBadge +
+            '</div>' +
+            '<div class="search-item-sub">' + sub + '</div>' +
+          '</div>' +
+          '<button class="search-item-queue" type="button" data-action="queue-library" data-key="' + keyEsc + '" aria-label="Add to queue" title="Add to queue">' +
+            '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' +
+          '</button>' +
+          '</div>'
+        );
+      });
+    } else {
+      parts.push('<div class="search-item-status">No matches in your library.</div>');
+    }
+    parts.push('</div>');
+
+    // Spotify section
+    parts.push('<div class="search-section">');
+    parts.push('<div class="search-section-title"><span>From Spotify</span>' +
+      (spotifySignedIn ? '' : '<span class="search-section-hint">Sign in with Spotify to enable</span>') +
+      '</div>');
+    if (!spotifySignedIn) {
+      parts.push('<div class="search-item-status">Spotify catalog search is disabled until you sign in.</div>');
+    } else if (spErr) {
+      parts.push('<div class="search-item-status is-error">' + escapeHtml(spErr) + '</div>');
+    } else if (!sp.length) {
+      parts.push('<div class="search-item-status">No matches on Spotify.</div>');
+    } else {
+      sp.forEach((t) => {
+        const sid = escapeHtml(String(t.spotify_id || ''));
+        const title = escapeHtml(t.title || '(unknown)');
+        const artist = escapeHtml(t.artist || '');
+        const album = escapeHtml(t.album || '');
+        const art = t.artwork_url ? '<img class="search-item-art" src="' + escapeHtml(t.artwork_url) + '" alt="" loading="lazy" />' : '<div class="search-item-art"></div>';
+        const sub = artist + (album && artist ? ' &middot; ' : '') + album;
+        const inLib = !!t.in_library;
+        const vibe = trackVibe(t);
+        const vibeChip = vibe != null
+          ? '<span class="search-item-vibe" data-vibe="' + vibe + '" title="predicted vibe">vibe ' + vibe + '</span>'
+          : '';
+        const sdkBadge = sdkOnlyBadgeHtml(t);
+        const badge = inLib
+          ? '<span class="search-item-badge is-lib">in library</span>'
+          : '<button class="search-item-add" type="button" data-action="add-spotify" data-spotify-id="' + sid + '">' +
+              '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' +
+              '<span>Add</span>' +
+            '</button>';
+        // Queue button — shown for every Spotify result. For not-in-library
+        // tracks the click ingests silently and adds to queue without
+        // auto-playing (distinct from the "Add" button which ingests + plays).
+        const queueBtn = '<button class="search-item-queue" type="button" data-action="queue-spotify" data-spotify-id="' + sid + '" aria-label="Add to queue" title="Add to queue">' +
+          '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' +
+          '</button>';
+        const clickAction = inLib ? 'play-spotify' : '';
+        const itemAttrs = clickAction
+          ? ' data-action="' + clickAction + '" data-spotify-id="' + sid + '"'
+          : ' data-action="noop"';
+        parts.push(
+          '<div class="search-item"' + itemAttrs + '>' +
+          art +
+          '<div class="search-item-body">' +
+            '<div class="search-item-title-row">' +
+              '<span class="search-item-title">' + title + '</span>' +
+              vibeChip +
+              sdkBadge +
+            '</div>' +
+            '<div class="search-item-sub">' + sub + '</div>' +
+          '</div>' +
+          queueBtn +
+          badge +
+          '</div>'
+        );
+      });
+    }
+    parts.push('</div>');
+
+    el.searchResults.innerHTML = parts.join('');
+  }
+
+  async function runSearch(query) {
+    const q = (query || '').trim();
+    search.query = q;
+    if (!q) {
+      hideSearchDropdown();
+      return;
+    }
+    showSearchDropdown();
+    setSearchStage('loading');
+    const reqToken = ++search.reqToken;
+
+    // Library search (always). Spotify search only if signed in.
+    const libP = fetchWithAuth('/api/tracks/search?q=' + encodeURIComponent(q) + '&limit=15')
+      .then(async (r) => {
+        if (!r.ok) return { tracks: [] };
+        try { return await r.json(); } catch (_) { return { tracks: [] }; }
+      })
+      .catch(() => ({ tracks: [] }));
+
+    let spP;
+    if (spotify && spotify.accessToken) {
+      spP = fetchWithAuth('/api/spotify/search?q=' + encodeURIComponent(q) + '&limit=10', {
+        headers: { 'X-Spotify-Authorization': 'Bearer ' + spotify.accessToken }
+      }).then(async (r) => {
+        if (r.status === 401) return { _err: 'Spotify session expired — reconnect Spotify.' };
+        if (!r.ok) {
+          let msg = 'Spotify search failed.';
+          try {
+            const j = await r.json();
+            if (j && j.detail && j.detail.message) msg = 'Spotify: ' + j.detail.message;
+          } catch (_) {}
+          return { _err: msg };
+        }
+        try { return await r.json(); } catch (_) { return { tracks: [] }; }
+      }).catch(() => ({ _err: 'Spotify search failed.' }));
+    } else {
+      spP = Promise.resolve({ tracks: [] });
+    }
+
+    const [libR, spR] = await Promise.all([libP, spP]);
+    if (reqToken !== search.reqToken) return;
+
+    search.lastResults.library = (libR && libR.tracks) || [];
+    search.lastResults.spotify = (spR && spR.tracks) || [];
+    search.lastResults.spotifyErr = (spR && spR._err) || null;
+    renderSearchResults();
+  }
+
+  function scheduleSearch(query) {
+    if (search.debounceTimer) clearTimeout(search.debounceTimer);
+    search.debounceTimer = setTimeout(() => runSearch(query), 220);
+  }
+
+  function playLibraryByKey(key) {
+    if (!key) return;
+    // Library results carry the full track shape from _row_to_dict; find it
+    // in the cached list rather than refetching.
+    const lib = search.lastResults.library || [];
+    const found = lib.find((t) => String(t.spotify_id || '') === String(key) || String(t.apple_id || '') === String(key));
+    if (!found) {
+      toast('Could not open that track.', 'error');
+      return;
+    }
+    clearSearchInput({ blur: true });
+    setVibeFromTrack(found);
+    loadTrack(found);
+    // Autoplay: mirror the pattern used elsewhere when a track is user-picked
+    try { state.firstInteraction = true; } catch (_) {}
+    try {
+      if (el.player && typeof el.player.play === 'function') {
+        // loadTrack already wires the audio src via its own path
+      }
+    } catch (_) {}
+  }
+
+  async function playSpotifyIdInLibrary(sid) {
+    if (!sid) return;
+    // Use the idempotent ingest/single endpoint. It handles three cases:
+    //   1. Track already linked to user → returns the row instantly.
+    //   2. Track exists globally but not linked → links user_tracks + returns row.
+    //   3. Track doesn't exist → runs the ingest pipeline + returns row.
+    // Case (2) is what fires when the "in library" badge was wrong (e.g., the
+    // track sits in the global tracks table because another user has it, but
+    // this user's user_tracks link is missing). Case (3) is safe fallback.
+    try {
+      const body = { spotify_id: sid };
+      if (spotify && spotify.accessToken) body.access_token = spotify.accessToken;
+      const r = await fetchWithAuth('/api/ingest/single', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (r.ok) {
+        const j = await r.json();
+        if (j && j.track) {
+          clearSearchInput({ blur: true });
+          setVibeFromTrack(j.track);
+          loadTrack(j.track);
+          return;
+        }
+      }
+    } catch (_) {}
+    toast('Could not open that track.', 'error');
+  }
+
+  async function addSpotifyTrack(sid, btn) {
+    if (!sid) return;
+    if (btn) {
+      btn.classList.add('is-busy');
+      btn.disabled = true;
+      const span = btn.querySelector('span');
+      if (span) span.textContent = 'Adding…';
+    }
+    try {
+      const body = { spotify_id: sid };
+      if (spotify && spotify.accessToken) body.access_token = spotify.accessToken;
+      const r = await fetchWithAuth('/api/ingest/single', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!r.ok) {
+        let msg = 'Could not add track.';
+        try {
+          const j = await r.json();
+          if (j && j.detail) {
+            if (j.detail.error === 'no_preview_available') msg = 'No preview available for that track.';
+            else if (j.detail.error === 'spotify_token_expired') msg = 'Spotify session expired.';
+            else if (j.detail.message) msg = j.detail.message;
+            else if (typeof j.detail === 'string') msg = j.detail;
+          }
+        } catch (_) {}
+        toast(msg, 'error');
+        if (btn) {
+          btn.classList.remove('is-busy');
+          btn.disabled = false;
+          const span = btn.querySelector('span');
+          if (span) span.textContent = 'Add';
+        }
+        return;
+      }
+      const j = await r.json();
+      toast('Added to your library.', 'success');
+      // Update local state: mark in_library on the cached result and re-render.
+      const spList = search.lastResults.spotify || [];
+      spList.forEach((t) => { if (t.spotify_id === sid) t.in_library = true; });
+      // Merge the new track into library results too, at the top.
+      if (j && j.track) {
+        const lib = search.lastResults.library || [];
+        if (!lib.find((t) => t.spotify_id === sid)) {
+          search.lastResults.library = [j.track, ...lib];
+        }
+      }
+      renderSearchResults();
+      // Auto-play the just-added track.
+      if (j && j.track) {
+        clearSearchInput({ blur: true });
+        setVibeFromTrack(j.track);
+        loadTrack(j.track);
+      }
+    } catch (e) {
+      toast('Could not add track: ' + (e && e.message ? e.message : String(e)), 'error');
+      if (btn) {
+        btn.classList.remove('is-busy');
+        btn.disabled = false;
+        const span = btn.querySelector('span');
+        if (span) span.textContent = 'Add';
+      }
+    }
+  }
+
+  if (el.searchClear) el.searchClear.addEventListener('click', () => {
+    clearSearchInput({ blur: false });
+    // Keep focus on the input after clearing so user can immediately type again.
+    if (el.searchInput) { try { el.searchInput.focus(); } catch (_) {} }
+  });
+  if (el.searchInput) {
+    el.searchInput.addEventListener('input', (ev) => {
+      const q = ev.target.value || '';
+      if (el.searchInputWrap) el.searchInputWrap.classList.toggle('has-query', q.length > 0);
+      if (el.searchClear) el.searchClear.hidden = q.length === 0;
+      if (q.length === 0) {
+        hideSearchDropdown();
+      } else {
+        showSearchDropdown();
+        setSearchStage('loading');
+      }
+      scheduleSearch(q);
+    });
+    el.searchInput.addEventListener('focus', () => {
+      const q = (el.searchInput.value || '').trim();
+      if (q) showSearchDropdown();
+    });
+    el.searchInput.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        clearSearchInput({ blur: true });
+      }
+    });
+  }
+  // Click-outside closes the dropdown (input stays where it is; just hides
+  // the results panel). Keep it open on any click inside .search-bar.
+  document.addEventListener('mousedown', (ev) => {
+    if (!search.dropdownOpen) return;
+    const t = ev.target;
+    if (el.searchBar && el.searchBar.contains(t)) return;
+    hideSearchDropdown();
+  });
+  if (el.searchResults) {
+    el.searchResults.addEventListener('click', (ev) => {
+      // Nested buttons first — stop propagation so the outer row click doesn't
+      // also fire.
+      const addBtn = ev.target.closest && ev.target.closest('[data-action="add-spotify"]');
+      if (addBtn) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        addSpotifyTrack(addBtn.getAttribute('data-spotify-id') || '', addBtn);
+        return;
+      }
+      const queueLibBtn = ev.target.closest && ev.target.closest('[data-action="queue-library"]');
+      if (queueLibBtn) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        queueLibraryByKey(queueLibBtn.getAttribute('data-key') || '');
+        return;
+      }
+      const queueSpBtn = ev.target.closest && ev.target.closest('[data-action="queue-spotify"]');
+      if (queueSpBtn) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        queueSpotifyId(queueSpBtn.getAttribute('data-spotify-id') || '', queueSpBtn);
+        return;
+      }
+      const item = ev.target.closest && ev.target.closest('.search-item[data-action]');
+      if (!item) return;
+      const action = item.getAttribute('data-action');
+      if (action === 'play-library') {
+        playLibraryByKey(item.getAttribute('data-key') || '');
+      } else if (action === 'play-spotify') {
+        playSpotifyIdInLibrary(item.getAttribute('data-spotify-id') || '');
+      }
+    });
+  }
+
+  // Queue-add handlers used by the search dropdown "+ queue" buttons.
+  function queueLibraryByKey(key) {
+    if (!key) return;
+    const lib = search.lastResults.library || [];
+    const t = lib.find((x) => String(x.spotify_id || '') === String(key) || String(x.apple_id || '') === String(key));
+    if (!t) { toast('Could not queue that track.', 'error'); return; }
+    if (addToQueue(t)) toast('Added to queue.', 'success');
+  }
+
+  async function queueSpotifyId(sid, btn) {
+    if (!sid) return;
+    // If the track is already in library (either in the cached Spotify search
+    // result marked in_library, or already surfaced in the library section),
+    // we can add it to the queue directly using the cached row.
+    const spList = search.lastResults.spotify || [];
+    const spCached = spList.find((x) => x.spotify_id === sid);
+    const libCached = (search.lastResults.library || []).find((x) => x.spotify_id === sid);
+    if (libCached) { if (addToQueue(libCached)) toast('Added to queue.', 'success'); return; }
+    if (spCached && spCached.in_library) {
+      // We only have the Spotify-shaped row (title/artist/vibe) — enough
+      // to render in the queue. loadTrack will fetch/play when it advances.
+      if (addToQueue(spCached)) toast('Added to queue.', 'success');
+      return;
+    }
+    // Not in library — silently ingest and then queue the returned row.
+    if (btn) { btn.classList.add('is-busy'); btn.disabled = true; }
+    try {
+      const body = { spotify_id: sid };
+      if (spotify && spotify.accessToken) body.access_token = spotify.accessToken;
+      const r = await fetchWithAuth('/api/ingest/single', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!r.ok) {
+        let msg = 'Could not queue track.';
+        try {
+          const j = await r.json();
+          if (j && j.detail) {
+            if (j.detail.error === 'no_preview_available') msg = 'No preview available for that track.';
+            else if (j.detail.message) msg = j.detail.message;
+          }
+        } catch (_) {}
+        toast(msg, 'error');
+        return;
+      }
+      const j = await r.json();
+      if (j && j.track) {
+        if (addToQueue(j.track)) toast('Added to queue.', 'success');
+        // Mark cached Spotify result as in_library so subsequent renders
+        // are consistent with the DB.
+        spList.forEach((x) => { if (x.spotify_id === sid) x.in_library = true; });
+        renderSearchResults();
+      }
+    } catch (e) {
+      toast('Could not queue track.', 'error');
+    } finally {
+      if (btn) { btn.classList.remove('is-busy'); btn.disabled = false; }
+    }
+  }
+
   // Escape + Ctrl+Shift+D shortcut (+ ? for help, Ctrl+Shift+M for metrics)
   document.addEventListener('keydown', (ev) => {
+    // Ctrl/Cmd+K focuses the persistent search input from anywhere.
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'k' || ev.key === 'K')) {
+      ev.preventDefault();
+      focusSearchInput();
+      return;
+    }
     if (ev.key === 'Escape') {
+      // Search dropdown handled by the input's own keydown when focused;
+      // this catches the case where dropdown is open but focus is elsewhere.
+      if (search.dropdownOpen) { ev.preventDefault(); hideSearchDropdown(); return; }
       if (videoSearch.open) { ev.preventDefault(); closeVideoSearchPanel(); return; }
       if (metricsPanel.open) { ev.preventDefault(); closeMetricsPanel(); return; }
       if (debugPanel.open) { ev.preventDefault(); closeDebugPanel(); return; }
@@ -3714,6 +4382,237 @@
       toggleHelpPopover();
     }
   });
+
+  // ===== Play queue + recommendations sidebar =====
+  // Queue is user-managed only — never auto-fills. Added to via search
+  // "+ queue" buttons and the recommendations panel. Advance-to-next
+  // consumes queue[0]; when empty, falls back to random pick at the
+  // current vibe (existing behaviour).
+
+  function trackKeyOf(t) {
+    if (!t) return '';
+    return String(t.spotify_id || t.apple_id || '');
+  }
+
+  function queueContains(key) {
+    if (!key) return false;
+    return state.queue.some((t) => trackKeyOf(t) === key);
+  }
+
+  function addToQueue(t) {
+    if (!t) return false;
+    const key = trackKeyOf(t);
+    if (!key) return false;
+    if (queueContains(key)) {
+      toast('Already in your queue.', 'info');
+      return false;
+    }
+    state.queue.push(t);
+    renderQueue();
+    return true;
+  }
+
+  function removeFromQueue(idx) {
+    if (idx < 0 || idx >= state.queue.length) return;
+    state.queue.splice(idx, 1);
+    renderQueue();
+  }
+
+  function clearQueue() {
+    if (!state.queue.length) return;
+    state.queue = [];
+    renderQueue();
+  }
+
+  function jumpToQueueItem(idx) {
+    if (idx < 0 || idx >= state.queue.length) return;
+    // Drop everything above idx, then advance-to-next consumes idx.
+    state.queue.splice(0, idx);
+    advanceToNext();
+  }
+
+  function advanceToNext() {
+    state.firstInteraction = true;
+    if (state.queue.length > 0) {
+      const next = state.queue.shift();
+      renderQueue();
+      setVibeFromTrack(next);
+      loadTrack(next);
+      return;
+    }
+    fetchTrack(state.vibe);
+  }
+
+  function renderQueue() {
+    if (!el.queueList || !el.queueEmpty) return;
+    const q = state.queue;
+    if (!q.length) {
+      el.queueList.hidden = true;
+      el.queueList.innerHTML = '';
+      el.queueEmpty.hidden = false;
+      if (el.queueCount) { el.queueCount.hidden = true; el.queueCount.textContent = '0'; }
+      if (el.queueClear) el.queueClear.hidden = true;
+      return;
+    }
+    el.queueEmpty.hidden = true;
+    el.queueList.hidden = false;
+    if (el.queueCount) { el.queueCount.hidden = false; el.queueCount.textContent = String(q.length); }
+    if (el.queueClear) el.queueClear.hidden = false;
+    el.queueList.innerHTML = q.map((t, i) => renderQueueRow(t, i, 'queue')).join('');
+  }
+
+  function renderQueueRow(t, idx, kind) {
+    const title = escapeHtml(t.title || '(unknown)');
+    const artist = escapeHtml(t.artist || '');
+    const album = escapeHtml(t.album || '');
+    const sub = artist + (album && artist ? ' &middot; ' : '') + album;
+    const art = t.artwork_url
+      ? '<img class="queue-item-art" src="' + escapeHtml(t.artwork_url) + '" alt="" loading="lazy" />'
+      : '<div class="queue-item-art"></div>';
+    const vibe = trackVibe(t);
+    const vibeHtml = vibe != null
+      ? '<span class="queue-item-vibe">vibe ' + vibe + '</span>'
+      : '';
+    const lang = languageLabel(t.language || '');
+    const langHtml = lang ? '<span class="queue-item-lang">' + escapeHtml(lang) + '</span>' : '';
+    const sdkHtml = sdkOnlyBadgeHtml(t);
+    const meta = (vibeHtml || langHtml || sdkHtml) ? '<div class="queue-item-meta">' + vibeHtml + langHtml + sdkHtml + '</div>' : '';
+
+    const dataKey = escapeHtml(trackKeyOf(t));
+    const actionAttrs = kind === 'queue'
+      ? ' data-action="jump" data-idx="' + idx + '"'
+      : ' data-action="play-rec" data-key="' + dataKey + '"';
+    // Right-side button: remove-from-queue OR add-to-queue depending on kind.
+    const rightBtn = kind === 'queue'
+      ? '<button class="queue-item-btn" type="button" data-action="remove" data-idx="' + idx + '" aria-label="Remove from queue" title="Remove">' +
+          '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+        '</button>'
+      : '<button class="queue-item-btn is-add" type="button" data-action="add-rec" data-key="' + dataKey + '" aria-label="Add to queue" title="Add to queue">' +
+          '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' +
+        '</button>';
+    return (
+      '<li class="queue-item"' + actionAttrs + ' tabindex="0">' +
+      art +
+      '<div class="queue-item-body">' +
+        '<div class="queue-item-title">' + title + '</div>' +
+        '<div class="queue-item-sub">' + sub + '</div>' +
+        meta +
+      '</div>' +
+      '<div class="queue-item-actions">' + rightBtn + '</div>' +
+      '</li>'
+    );
+  }
+
+  // ---- Recommendations ----
+
+  async function loadRecommendationsFor(t) {
+    if (!el.queueRecsList) return;
+    const key = trackKeyOf(t);
+    if (!key) {
+      // No anchor — show idle state.
+      state.recs.anchorKey = null;
+      state.recs.list = [];
+      if (el.queueRecsList) { el.queueRecsList.hidden = true; el.queueRecsList.innerHTML = ''; }
+      if (el.queueRecsLoading) el.queueRecsLoading.hidden = true;
+      if (el.queueRecsEmpty) el.queueRecsEmpty.hidden = false;
+      return;
+    }
+    if (state.recs.anchorKey === key && state.recs.list.length) {
+      // Same anchor, already cached — nothing to do.
+      return;
+    }
+    state.recs.anchorKey = key;
+    state.recs.loading = true;
+    if (el.queueRecsEmpty) el.queueRecsEmpty.hidden = true;
+    if (el.queueRecsList) { el.queueRecsList.hidden = true; el.queueRecsList.innerHTML = ''; }
+    if (el.queueRecsLoading) el.queueRecsLoading.hidden = false;
+    const reqToken = ++state.recs.reqToken;
+
+    try {
+      const r = await fetchWithAuth('/api/tracks/' + encodeURIComponent(key) + '/similar?limit=8');
+      if (reqToken !== state.recs.reqToken) return;
+      if (!r.ok) throw new Error('similar_fetch_failed');
+      const j = await r.json();
+      state.recs.list = (j && j.tracks) || [];
+    } catch (_) {
+      if (reqToken !== state.recs.reqToken) return;
+      state.recs.list = [];
+    } finally {
+      if (reqToken === state.recs.reqToken) {
+        state.recs.loading = false;
+        if (el.queueRecsLoading) el.queueRecsLoading.hidden = true;
+        renderRecs();
+      }
+    }
+  }
+
+  function renderRecs() {
+    if (!el.queueRecsList) return;
+    const list = state.recs.list;
+    if (!list.length) {
+      el.queueRecsList.hidden = true;
+      el.queueRecsList.innerHTML = '';
+      if (el.queueRecsEmpty) {
+        const empty = el.queueRecsEmpty;
+        empty.hidden = false;
+        // Swap in a "nothing similar" message if there was an anchor.
+        const hint = empty.querySelector('.queue-empty-hint');
+        if (hint) {
+          hint.textContent = state.recs.anchorKey
+            ? 'No similar tracks in your library yet.'
+            : 'Play a track to see similar songs from your library.';
+        }
+      }
+      return;
+    }
+    if (el.queueRecsEmpty) el.queueRecsEmpty.hidden = true;
+    el.queueRecsList.hidden = false;
+    el.queueRecsList.innerHTML = list.map((t, i) => renderQueueRow(t, i, 'rec')).join('');
+  }
+
+  // Delegated click handling for both lists.
+  function onQueueSidebarClick(ev) {
+    const btn = ev.target.closest && ev.target.closest('button[data-action]');
+    if (btn) {
+      const action = btn.getAttribute('data-action');
+      if (action === 'remove') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        removeFromQueue(parseInt(btn.getAttribute('data-idx'), 10));
+        return;
+      }
+      if (action === 'add-rec') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const key = btn.getAttribute('data-key') || '';
+        const t = (state.recs.list || []).find((x) => trackKeyOf(x) === key);
+        if (t) {
+          if (addToQueue(t)) toast('Added to queue.', 'success');
+        }
+        return;
+      }
+    }
+    const row = ev.target.closest && ev.target.closest('.queue-item[data-action]');
+    if (!row) return;
+    const action = row.getAttribute('data-action');
+    if (action === 'jump') {
+      jumpToQueueItem(parseInt(row.getAttribute('data-idx'), 10));
+    } else if (action === 'play-rec') {
+      const key = row.getAttribute('data-key') || '';
+      const t = (state.recs.list || []).find((x) => trackKeyOf(x) === key);
+      if (t) {
+        setVibeFromTrack(t);
+        loadTrack(t);
+      }
+    }
+  }
+
+  if (el.queueSidebar) el.queueSidebar.addEventListener('click', onQueueSidebarClick);
+  if (el.queueClear) el.queueClear.addEventListener('click', clearQueue);
+
+  // Initial paint
+  renderQueue();
+  renderRecs();
 
   // ===== Library sync modal =====
 
@@ -3992,7 +4891,7 @@
     const sel = collectSyncSelection();
     if (!sel.liked && !sel.top && sel.playlist_ids.length === 0) return;
     setSyncView('progress');
-    updateSyncProgress({ processed: 0, total: sel.total || 0, matched_spotify: 0, preview_only: 0, skipped: 0, current_track: 'Starting…' });
+    updateSyncProgress({ processed: 0, total: sel.total || 0, newly_analyzed: 0, linked_from_global: 0, already_in_library: 0, no_preview: 0, current_track: 'Starting…' });
 
     try {
       const r = await fetchWithAuth('/api/ingest/spotify', {
@@ -4037,7 +4936,7 @@
     if (spotify.accessToken) body.access_token = spotify.accessToken;
 
     setSyncView('progress');
-    updateSyncProgress({ processed: 0, total: 0, matched_spotify: 0, preview_only: 0, no_preview: 0, skipped: 0, current_track: 'Starting…' });
+    updateSyncProgress({ processed: 0, total: 0, newly_analyzed: 0, linked_from_global: 0, already_in_library: 0, no_preview: 0, current_track: 'Starting…' });
 
     try {
       const r = await fetchWithAuth('/api/ingest/spotify-public', {
@@ -4146,7 +5045,16 @@
       }
       if (s.status === 'complete') {
         stopSyncPolling();
-        const summary = `Spotify ${s.matched_spotify || 0} · iTunes ${s.preview_only || 0} · no source ${s.no_preview || 0} · skipped ${s.skipped || 0} of ${s.total || 0}.`;
+        // Four-bucket summary: new / linked / already yours / no preview.
+        const nNew     = s.newly_analyzed     || 0;
+        const nLinked  = s.linked_from_global || 0;
+        const nAlready = s.already_in_library || 0;
+        const nDropped = s.no_preview         || 0;
+        const total    = s.total              || 0;
+        const landed   = nNew + nLinked + nAlready;
+        const summary =
+          `${landed} of ${total} in your library — ` +
+          `${nNew} new, ${nLinked} linked from global, ${nAlready} already yours, ${nDropped} no preview.`;
         el.syncCompleteSummary.textContent = summary;
         setSyncView('complete');
       } else if (s.status === 'error') {
@@ -4167,10 +5075,10 @@
     el.syncProgressPct.textContent = pct + '%';
     el.syncProgressCounts.textContent = `${processed} / ${total}`;
     el.syncCurrentTrack.textContent = s.current_track || '—';
-    el.syncStatMatched.textContent = String(s.matched_spotify || 0);
-    el.syncStatPreview.textContent = String(s.preview_only || 0);
-    if (el.syncStatNoPreview) el.syncStatNoPreview.textContent = String(s.no_preview || 0);
-    el.syncStatSkipped.textContent = String(s.skipped || 0);
+    if (el.syncStatNew)       el.syncStatNew.textContent       = String(s.newly_analyzed     || 0);
+    if (el.syncStatLinked)    el.syncStatLinked.textContent    = String(s.linked_from_global || 0);
+    if (el.syncStatAlready)   el.syncStatAlready.textContent   = String(s.already_in_library || 0);
+    if (el.syncStatNoPreview) el.syncStatNoPreview.textContent = String(s.no_preview         || 0);
   }
 
   async function cancelSyncJob() {
@@ -4286,13 +5194,12 @@
   // Parent-window boot: arm the storage bridge listener immediately so we
   // never miss a popup write, even if the user is quick.
   ensureOAuthBridgeListener();
-  // Also consume any bridge entry that was written BEFORE we started listening
-  // (e.g., popup wrote and closed while parent app.js was still parsing).
+  // Also read (but do NOT consume yet) any bridge entry written BEFORE we
+  // started listening. We defer the exchange to bootAuthenticatedApp because
+  // the mobile same-window flow returns to a fresh page load, and firing
+  // consumeOAuthPayload before loadSpotifyConfig completes means client_id
+  // is empty → Spotify returns invalid_client.
   const pendingAtBoot = readAndClearBridge();
-  if (pendingAtBoot) {
-    // Slight defer so exchangeCodeForToken doesn't race with loadSpotifyConfig
-    setTimeout(() => consumeOAuthPayload(pendingAtBoot), 0);
-  }
 
   // Pre-auth shell setup — safe to run even without a session, only touches DOM
   updateSliderVisual(state.vibe);
@@ -4310,10 +5217,168 @@
     // Spotify config is public; safe to call unauthenticated but do it here
     // so the OAuth-return path also gets set up post-login.
     await loadSpotifyConfig();
+    // Consume any pre-boot bridge entry now that spotify.clientId is loaded.
+    if (pendingAtBoot) {
+      await consumeOAuthPayload(pendingAtBoot);
+    }
     // If we returned from Spotify via same-window redirect, exchange the code
     // BEFORE trying to restore a stale session.
     const handled = await handleRedirectReturn();
     if (!handled) restoreSpotifySession();
+  }
+
+  // ============ Admin panel (chandan-only) ============
+  const adminEl = {
+    overlay: document.getElementById('adminOverlay'),
+    backdrop: document.getElementById('adminBackdrop'),
+    close: document.getElementById('btnAdminClose'),
+    loading: document.getElementById('adminLoading'),
+    list: document.getElementById('adminUsersList'),
+    body: document.getElementById('adminBody'),
+    detail: document.getElementById('adminDetail'),
+    detailBody: document.getElementById('adminDetailBody'),
+    back: document.getElementById('btnAdminBack'),
+  };
+
+  function openAdmin() {
+    if (!adminEl.overlay) return;
+    if (!auth.user || !auth.user.is_admin) {
+      toast('Admin panel is restricted.', 'error');
+      return;
+    }
+    adminEl.overlay.hidden = false;
+    adminEl.detail.hidden = true;
+    adminEl.body.hidden = false;
+    closeUserMenu();
+    loadAdminUsers();
+  }
+
+  function closeAdmin() {
+    if (adminEl.overlay) adminEl.overlay.hidden = true;
+  }
+
+  async function loadAdminUsers() {
+    adminEl.loading.hidden = false;
+    adminEl.list.hidden = true;
+    adminEl.list.innerHTML = '';
+    try {
+      const r = await fetchWithAuth('/api/admin/users');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      renderAdminUsers(j.users || []);
+    } catch (e) {
+      adminEl.list.innerHTML = '<div class="admin-loading">Failed to load users: ' + escapeHtml(String(e)) + '</div>';
+      adminEl.list.hidden = false;
+    } finally {
+      adminEl.loading.hidden = true;
+    }
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function renderAdminUsers(users) {
+    adminEl.list.innerHTML = '';
+    users.forEach((u) => {
+      const row = document.createElement('div');
+      row.className = 'admin-user-row';
+      const badge = u.is_admin ? '<span class="admin-user-badge">admin</span>' : '';
+      const spName = u.spotify_display_name ? ' · Spotify: ' + escapeHtml(u.spotify_display_name) : '';
+      const created = u.created_at ? new Date(u.created_at).toLocaleDateString() : '—';
+      row.innerHTML = `
+        <div class="admin-user-info">
+          <div class="admin-user-name">${escapeHtml(u.display_name)} ${badge}</div>
+          <div class="admin-user-meta">id ${u.user_id} · created ${created}${spName}</div>
+        </div>
+        <div class="admin-user-count">${u.track_count} tracks</div>
+        <div class="admin-actions">
+          <button class="admin-btn" data-action="stats" data-uid="${u.user_id}">Stats</button>
+          <button class="admin-btn admin-btn-danger" data-action="delete" data-uid="${u.user_id}" ${u.is_admin ? 'disabled' : ''}>Delete</button>
+        </div>
+      `;
+      adminEl.list.appendChild(row);
+    });
+    adminEl.list.hidden = false;
+
+    adminEl.list.querySelectorAll('[data-action="stats"]').forEach((btn) => {
+      btn.addEventListener('click', () => loadAdminStats(parseInt(btn.dataset.uid, 10)));
+    });
+    adminEl.list.querySelectorAll('[data-action="delete"]').forEach((btn) => {
+      btn.addEventListener('click', () => confirmDeleteUser(parseInt(btn.dataset.uid, 10)));
+    });
+  }
+
+  async function loadAdminStats(userId) {
+    adminEl.body.hidden = true;
+    adminEl.detail.hidden = false;
+    adminEl.detailBody.innerHTML = '<div class="admin-loading">Loading stats…</div>';
+    try {
+      const r = await fetchWithAuth('/api/admin/users/' + userId + '/stats');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const s = await r.json();
+      renderAdminStats(s);
+    } catch (e) {
+      adminEl.detailBody.innerHTML = '<div class="admin-loading">Failed to load: ' + escapeHtml(String(e)) + '</div>';
+    }
+  }
+
+  function renderAdminStats(s) {
+    const fmt = (n, d = 2) => (n == null ? '—' : (Math.round(n * Math.pow(10, d)) / Math.pow(10, d)).toString());
+    const moods = (s.by_mood || []).map(m =>
+      `<span class="admin-chip">${escapeHtml(m.mood)}<span class="admin-chip-count">${m.count}</span></span>`
+    ).join('');
+    const sources = (s.by_source || []).map(m =>
+      `<span class="admin-chip">${escapeHtml(m.source)}<span class="admin-chip-count">${m.count}</span></span>`
+    ).join('');
+    const artists = (s.top_artists || []).map(m =>
+      `<span class="admin-chip">${escapeHtml(m.artist)}<span class="admin-chip-count">${m.count}</span></span>`
+    ).join('');
+
+    adminEl.detailBody.innerHTML = `
+      <h3 style="margin:0 0 4px;font-size:16px;">${escapeHtml(s.display_name)}</h3>
+      <p style="margin:0;color:rgba(255,255,255,0.5);font-size:12px;">id ${s.user_id} · ${s.spotify_display_name ? 'Spotify: ' + escapeHtml(s.spotify_display_name) : 'no Spotify link'}</p>
+      <div class="admin-stat-grid">
+        <div class="admin-stat-card"><div class="admin-stat-label">Tracks</div><div class="admin-stat-value">${s.track_count}</div></div>
+        <div class="admin-stat-card"><div class="admin-stat-label">Avg vibe (ML)</div><div class="admin-stat-value">${fmt(s.avg_vibe_ml)}</div></div>
+        <div class="admin-stat-card"><div class="admin-stat-label">Avg activation</div><div class="admin-stat-value">${fmt(s.avg_activation, 1)}</div></div>
+      </div>
+      <div class="admin-section-title">Moods</div>
+      <div class="admin-chip-row">${moods || '<span class="admin-chip">none</span>'}</div>
+      <div class="admin-section-title">Classification sources</div>
+      <div class="admin-chip-row">${sources || '<span class="admin-chip">none</span>'}</div>
+      <div class="admin-section-title">Top artists</div>
+      <div class="admin-chip-row">${artists || '<span class="admin-chip">none</span>'}</div>
+    `;
+  }
+
+  async function confirmDeleteUser(userId) {
+    if (!window.confirm('Delete user #' + userId + '? Their PIN + library link will be removed. Global tracks stay. This cannot be undone.')) return;
+    try {
+      const r = await fetchWithAuth('/api/admin/users/' + userId, { method: 'DELETE' });
+      if (!r.ok && r.status !== 204) {
+        let msg = 'HTTP ' + r.status;
+        try { const j = await r.json(); if (j && j.detail && j.detail.error) msg = j.detail.error; } catch (_) {}
+        throw new Error(msg);
+      }
+      toast('User deleted.', 'success');
+      loadAdminUsers();
+    } catch (e) {
+      toast('Delete failed: ' + e.message, 'error');
+    }
+  }
+
+  if (adminEl.overlay) {
+    const btnAdmin = document.getElementById('btnUserAdmin');
+    if (btnAdmin) btnAdmin.addEventListener('click', openAdmin);
+    if (adminEl.close) adminEl.close.addEventListener('click', closeAdmin);
+    if (adminEl.backdrop) adminEl.backdrop.addEventListener('click', closeAdmin);
+    if (adminEl.back) adminEl.back.addEventListener('click', () => {
+      adminEl.detail.hidden = true;
+      adminEl.body.hidden = false;
+    });
   }
 
   // Try to hydrate an existing session from localStorage; if success, boot

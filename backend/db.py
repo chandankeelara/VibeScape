@@ -583,6 +583,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE tracks ADD COLUMN valence_pred REAL",
         "ALTER TABLE tracks ADD COLUMN vibe_score_ml REAL",
         "ALTER TABLE tracks ADD COLUMN model_version TEXT",
+        "ALTER TABLE tracks ADD COLUMN language TEXT",
+        "ALTER TABLE tracks ADD COLUMN language_confidence REAL",
+        "ALTER TABLE tracks ADD COLUMN language_top3_json TEXT",
+        "ALTER TABLE tracks ADD COLUMN language_model_version TEXT",
+        "ALTER TABLE tracks ADD COLUMN language_predicted_at TIMESTAMP",
     ]
     for c in _EXTENDED_COLUMNS:
         stmts.append(f"ALTER TABLE tracks ADD COLUMN {c} REAL")

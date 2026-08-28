@@ -1,5 +1,8 @@
 # Secrets — NEVER commit
 config.py
+.env
+.env.local
+.env.*.local
 
 # Data — regeneratable, large, or contains user library state
 data/audio/

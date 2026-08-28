@@ -125,9 +125,15 @@ def _paginate(url: str, token: str, params: Optional[dict] = None, max_items: Op
     next_url = url
     next_params = dict(params or {})
     fetched = 0
+    page = 0
     while next_url:
+        page += 1
         data = _get(next_url, token, next_params)
         items = data.get("items") or []
+        total = data.get("total")
+        _log.info("[paginate] page=%d url=%s items=%d total=%s next=%s",
+                  page, next_url.split("?")[0], len(items), total,
+                  "yes" if data.get("next") else "no")
         for it in items:
             yield it
             fetched += 1
@@ -181,11 +187,43 @@ def fetch_playlist_tracks(playlist_id: str, token: str) -> list[dict]:
     # 'items' but each element's nested track object is now 'item' rather
     # than 'track' — _extract_track handles both shapes.
     tracks: list[dict] = []
+    seen_items = 0
+    drop_no_track = 0
+    drop_no_id = 0
+    drop_local = 0
+    seen_ids: set[str] = set()
+    dup_ids = 0
+    first_ids: list[str] = []
     url = f"{BASE}/playlists/{playlist_id}/items"
     for item in _paginate(url, token, {"limit": 50}):
+        seen_items += 1
         t = _extract_track(item)
-        if t and t.get("id") and not t.get("is_local"):
-            tracks.append(t)
+        if not t:
+            drop_no_track += 1
+            continue
+        if not t.get("id"):
+            drop_no_id += 1
+            if drop_no_id <= 3:
+                _log.info("[playlist=%s] dropped no-id item type=%s keys=%s sample=%r",
+                          playlist_id, t.get("type"), list(t.keys())[:8],
+                          {k: t.get(k) for k in ("id", "name", "type", "uri") if k in t})
+            continue
+        if t.get("is_local"):
+            drop_local += 1
+            continue
+        tid = t.get("id")
+        if tid in seen_ids:
+            dup_ids += 1
+        else:
+            seen_ids.add(tid)
+        if len(first_ids) < 20:
+            first_ids.append(str(tid))
+        tracks.append(t)
+    _log.info("[playlist=%s] fetch summary: seen=%d kept=%d unique_ids=%d dup_ids=%d "
+              "drop_no_track=%d drop_no_id=%d drop_local=%d",
+              playlist_id, seen_items, len(tracks), len(seen_ids), dup_ids,
+              drop_no_track, drop_no_id, drop_local)
+    _log.info("[playlist=%s] first 20 spotify_ids: %s", playlist_id, first_ids)
     return tracks
 
 

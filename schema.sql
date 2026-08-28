@@ -75,6 +75,13 @@ CREATE TABLE IF NOT EXISTS tracks (
     vibe_score_ml    REAL,
     model_version    TEXT,
 
+    -- language detection (filled by Whisper via modal_app.predict_language_from_url)
+    language              TEXT,
+    language_confidence   REAL,
+    language_top3_json    TEXT,
+    language_model_version TEXT,
+    language_predicted_at  TIMESTAMP,
+
     features_extracted_at TIMESTAMP,
     ml_predicted_at       TIMESTAMP,
     created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -86,6 +93,7 @@ CREATE INDEX IF NOT EXISTS idx_tracks_vibe ON tracks(vibe_score);
 CREATE INDEX IF NOT EXISTS idx_tracks_mood ON tracks(mood);
 CREATE INDEX IF NOT EXISTS idx_tracks_activation     ON tracks(activation);
 CREATE INDEX IF NOT EXISTS idx_tracks_activation_rel ON tracks(activation_relative);
+CREATE INDEX IF NOT EXISTS idx_tracks_language       ON tracks(language);
 
 CREATE TABLE IF NOT EXISTS user_tracks (
     user_id     INTEGER NOT NULL REFERENCES users(id)  ON DELETE CASCADE,
