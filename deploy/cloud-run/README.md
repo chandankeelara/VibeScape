@@ -53,7 +53,15 @@ done
 
 ## Deploy
 
-From the repo root:
+The wrapper script does everything: build, deploy, health-check, prune.
+
+```powershell
+.\deploy\cloud-run\deploy.ps1                # deploy + cleanup
+.\deploy\cloud-run\deploy.ps1 -SkipCleanup   # deploy only
+```
+
+Or run the underlying gcloud command directly (skips health check +
+cleanup):
 
 ```bash
 gcloud run deploy vibescape \
@@ -66,9 +74,28 @@ gcloud run deploy vibescape \
   --min-instances 0 \
   --max-instances 3 \
   --timeout 300 \
-  --set-env-vars "VIBESCAPE_ML_MODE=modal,DB_BACKEND=turso,SPOTIFY_REDIRECT_URI=https://vibescape-<HASH>-uc.a.run.app/callback" \
+  --set-env-vars "VIBESCAPE_ML_MODE=modal,DB_BACKEND=turso,SPOTIFY_REDIRECT_URI=https://vibescape-241988497106.us-central1.run.app/callback" \
   --set-secrets "SPOTIFY_CLIENT_ID=SPOTIFY_CLIENT_ID:latest,SPOTIFY_CLIENT_SECRET=SPOTIFY_CLIENT_SECRET:latest,MODAL_TOKEN_ID=MODAL_TOKEN_ID:latest,MODAL_TOKEN_SECRET=MODAL_TOKEN_SECRET:latest,TURSO_DATABASE_URL=TURSO_DATABASE_URL:latest,TURSO_AUTH_TOKEN=TURSO_AUTH_TOKEN:latest"
 ```
+
+## Post-deploy cleanup
+
+Cloud Run keeps every revision, Artifact Registry keeps every image, and
+Secret Manager keeps every version — old ones accumulate silently and
+will eventually push you over free-tier limits (0.5 GB image storage,
+6 active secret versions).
+
+`deploy.ps1` calls `cleanup.ps1` automatically after a green health
+check. To run cleanup on its own:
+
+```powershell
+.\deploy\cloud-run\cleanup.ps1
+.\deploy\cloud-run\cleanup.ps1 -KeepRevisions 3 -KeepImages 3
+```
+
+Defaults keep the 2 newest Cloud Run revisions, the 2 newest container
+images, and 1 (latest) version of each Secret Manager secret. Everything
+older is destroyed.
 
 The first `gcloud run deploy --source .` uploads the repo to Cloud Build,
 which reads `Dockerfile`, builds the image, pushes to Artifact Registry,
