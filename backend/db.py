@@ -1,8 +1,17 @@
 import os
 import shutil
 import sqlite3
+import sys
 import time
 from pathlib import Path
+
+# db_client sits next to this file in backend/. When the app runs from
+# WORKDIR=/app/backend the module is importable directly; when db.py is
+# imported as backend.db (e.g. from tests), fall back to the package path.
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+import db_client  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "data" / "vibescape.db"
@@ -672,8 +681,13 @@ def _backfill_classification_source(conn: sqlite3.Connection) -> int:
 
 
 def ensure_db():
+    # Bootstrap uses the same backend as runtime queries. For sqlite this
+    # is equivalent to the previous sqlite3.connect(DB_PATH); for
+    # DB_BACKEND=turso this connects to the remote libSQL instance so
+    # schema/migrations run there. The parent dir mkdir is still cheap on
+    # the sqlite path and a no-op-safe on turso (path may not exist).
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = db_client.create_connection()
     try:
         _bootstrap_and_migrate(conn)
     finally:
@@ -700,8 +714,13 @@ def _bootstrap_and_migrate(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
+# Runtime connection factory used by FastAPI request handlers.
+#
+# Delegates to db_client.create_connection(), which picks between local
+# sqlite3 and a libsql-client-backed adapter based on the DB_BACKEND env
+# var. The returned object still exposes the same .execute() / .commit()
+# / .rollback() / .close() surface + row_factory=sqlite3.Row semantics,
+# so callers in backend/app.py continue to work unchanged.
 def get_conn():
     ensure_db()
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return db_client.create_connection()
