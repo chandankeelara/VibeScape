@@ -49,8 +49,21 @@ body {
   overflow: hidden;
   overscroll-behavior: none;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  /* Right column houses the queue + recommendations sidebar. Fixed 320px
+     on desktop; the topbar + search-bar span both columns so their max-width
+     alignment stays untouched. */
+  grid-template-columns: minmax(0, 1fr) 320px;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+.topbar, .search-bar { grid-column: 1 / -1; }
+main.stage { grid-column: 1; grid-row: 3; }
+.queue-sidebar { grid-column: 2; grid-row: 3; }
+/* Narrow viewports: hide the sidebar rather than trying to redesign for
+   phones — user explicitly said desktop-only for now. */
+@media (max-width: 900px) {
+  body { grid-template-columns: minmax(0, 1fr); }
+  .queue-sidebar { display: none; }
 }
 
 button { font-family: inherit; }
@@ -762,8 +775,20 @@ body.mode-video .art-glow { opacity: calc(var(--art-glow-alpha, 0.65) * 0.55); }
   min-width: 0;
 }
 .meta.loading { opacity: 0.6; }
-.title {
+/* Title row: song name + predicted vibe/mood pills inline. Pills sit
+   immediately after the title so the "what is this song" identity reads
+   as a single line. Wraps on narrow viewports so nothing gets clipped. */
+.title-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
   margin: 0 0 4px;
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+.title {
+  margin: 0;
   font-size: clamp(18px, 2.6dvh, 28px);
   line-height: 1.15;
   font-weight: 600;
@@ -771,7 +796,54 @@ body.mode-video .art-glow { opacity: calc(var(--art-glow-alpha, 0.65) * 0.55); }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+  flex: 0 1 auto;
 }
+/* Inline vibe pill next to the title. Same visual language as the search
+   dropdown's .search-item-vibe so the two surfaces feel unified. Slightly
+   taller (20px vs 18px) here to sit comfortably next to the larger title
+   type. */
+.title-vibe {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 9px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10.5px;
+  font-weight: 500;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--vibe-accent) 12%, transparent);
+  border: 1px solid color-mix(in oklab, var(--vibe-accent) 32%, var(--border));
+  color: color-mix(in oklab, var(--vibe-accent) 78%, var(--text));
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  white-space: nowrap;
+  transition: color 400ms var(--ease), background 400ms var(--ease), border-color 400ms var(--ease);
+}
+.title-vibe[hidden] { display: none; }
+/* Inline predicted-language label — sits next to the vibe pill. Sans-serif
+   Title Case so it feels like a word/name, not a code. Muted neutral tint
+   so it doesn't compete with the vibe-accented vibe pill; the vibe drives
+   the row's colour identity, language is a secondary signal. */
+.title-lang {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 9px;
+  font-size: 10.5px;
+  font-weight: 500;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--surface-2) 55%, transparent);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  letter-spacing: 0.01em;
+  flex-shrink: 0;
+  white-space: nowrap;
+  cursor: help;
+}
+.title-lang[hidden] { display: none; }
 .sub {
   display: inline-flex;
   align-items: center;
@@ -2624,6 +2696,7 @@ body.auth-locked .recent-trail,
 body.auth-locked .debug-panel,
 body.auth-locked .help-popover,
 body.auth-locked .metrics-panel,
+body.auth-locked .search-bar,
 body.auth-locked .modal { visibility: hidden; }
 .auth-overlay-backdrop {
   position: absolute;
@@ -3055,4 +3128,736 @@ body.auth-locked .modal { visibility: hidden; }
 @media (max-width: 640px) {
   .user-name { max-width: 90px; }
   .user-pill { max-width: 150px; }
+}
+
+/* ============ Admin panel ============ */
+.admin-overlay {
+  position: fixed; inset: 0; z-index: 200;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+}
+.admin-backdrop {
+  position: absolute; inset: 0;
+  background: rgba(4, 4, 8, 0.72);
+  backdrop-filter: blur(6px);
+}
+.admin-card {
+  position: relative;
+  width: min(720px, 100%);
+  max-height: 84vh;
+  display: flex; flex-direction: column;
+  background: #101015;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+  box-shadow: 0 30px 90px rgba(0,0,0,0.5);
+  overflow: hidden;
+}
+.admin-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; padding: 18px 22px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.admin-title { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: 0.2px; }
+.admin-subtitle { margin: 4px 0 0; font-size: 12px; color: rgba(255,255,255,0.55); line-height: 1.45; }
+.admin-close {
+  background: transparent; border: none; color: rgba(255,255,255,0.5);
+  padding: 6px; border-radius: 8px; cursor: pointer; transition: color 0.15s, background 0.15s;
+}
+.admin-close:hover { color: white; background: rgba(255,255,255,0.06); }
+.admin-body, .admin-detail {
+  overflow-y: auto; padding: 14px 18px 18px;
+  flex: 1;
+}
+.admin-loading { text-align: center; padding: 40px 0; color: rgba(255,255,255,0.5); font-size: 13px; }
+.admin-users { display: flex; flex-direction: column; gap: 8px; }
+.admin-user-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center; gap: 14px;
+  padding: 12px 14px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px;
+  transition: background 0.12s, border-color 0.12s;
+}
+.admin-user-row:hover { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.1); }
+.admin-user-info { min-width: 0; }
+.admin-user-name { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.admin-user-badge {
+  font-size: 10px; letter-spacing: 0.6px; text-transform: uppercase;
+  padding: 2px 6px; border-radius: 4px;
+  background: rgba(120, 200, 120, 0.15); color: rgb(120, 220, 120);
+  border: 1px solid rgba(120, 200, 120, 0.3);
+}
+.admin-user-meta { margin-top: 4px; font-size: 11px; color: rgba(255,255,255,0.5); }
+.admin-user-count { font-size: 12px; color: rgba(255,255,255,0.65); font-variant-numeric: tabular-nums; }
+.admin-actions { display: flex; gap: 6px; }
+.admin-btn {
+  padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.85);
+  font-size: 12px; cursor: pointer; transition: background 0.12s, border-color 0.12s;
+}
+.admin-btn:hover { background: rgba(255,255,255,0.09); border-color: rgba(255,255,255,0.18); }
+.admin-btn-danger { color: rgb(255, 130, 130); border-color: rgba(255, 90, 90, 0.25); }
+.admin-btn-danger:hover { background: rgba(255, 60, 60, 0.12); border-color: rgba(255, 90, 90, 0.5); }
+.admin-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.admin-back {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 10px; border-radius: 6px;
+  background: transparent; border: none; color: rgba(255,255,255,0.65);
+  font-size: 12px; cursor: pointer; margin-bottom: 12px;
+}
+.admin-back:hover { color: white; }
+.admin-stat-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+  margin: 14px 0 20px;
+}
+.admin-stat-card {
+  padding: 12px 14px; background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06); border-radius: 10px;
+}
+.admin-stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; color: rgba(255,255,255,0.45); }
+.admin-stat-value { font-size: 20px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.admin-section-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; color: rgba(255,255,255,0.55); margin: 18px 0 8px; }
+.admin-chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.admin-chip {
+  padding: 4px 10px; border-radius: 12px;
+  background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);
+  font-size: 12px; color: rgba(255,255,255,0.8);
+}
+.admin-chip-count { color: rgba(255,255,255,0.5); margin-left: 4px; font-variant-numeric: tabular-nums; }
+
+/* Force [hidden] to win over the display: flex above. */
+.admin-overlay[hidden] { display: none !important; }
+.admin-detail[hidden], .admin-body[hidden], .admin-loading[hidden], .admin-users[hidden] { display: none !important; }
+
+/* ============== Persistent search bar ============== */
+/* Sits between .topbar and .stage as its own grid row. The input is always
+   mounted; the dropdown below is absolutely positioned so it floats over the
+   stage without pushing the art down or growing the page. */
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+.search-bar {
+  position: relative;
+  z-index: 3;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: clamp(4px, 0.8dvh, 10px) var(--pad-x) 0;
+  display: flex;
+  justify-content: center;
+}
+.search-bar[hidden] { display: none; }
+.search-bar-inner {
+  position: relative;
+  width: 100%;
+  max-width: min(760px, 100%);
+}
+
+/* Input shell — the "hero" search input. Taller than the previous overlay
+   (56px vs 40px) to feel first-class. Same focus treatment as .url-input-wrap. */
+.search-input-wrap {
+  display: flex; align-items: center; gap: 12px;
+  height: 56px;
+  padding: 0 14px 0 18px;
+  background: color-mix(in oklab, var(--surface) 82%, transparent);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  transition: border-color 200ms var(--ease), background 200ms var(--ease), box-shadow 200ms var(--ease);
+}
+.search-input-wrap:focus-within {
+  border-color: color-mix(in oklab, var(--vibe-accent) 55%, var(--border-strong));
+  background: color-mix(in oklab, var(--surface) 94%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--vibe-accent) 22%, transparent),
+              0 12px 32px -18px rgba(0,0,0,0.55);
+}
+.search-input-icon { color: var(--text-3); flex-shrink: 0; transition: color 200ms var(--ease); }
+.search-input-wrap:focus-within .search-input-icon { color: var(--text); }
+.search-input {
+  flex: 1; min-width: 0;
+  padding: 6px 0;
+  background: transparent;
+  border: none; outline: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  letter-spacing: -0.005em;
+}
+.search-input::placeholder { color: var(--text-3); }
+.search-input::-webkit-search-cancel-button { display: none; }
+/* Ctrl+K affordance — visible when input is empty AND unfocused. Fades out
+   on focus OR when a query exists. Same <kbd> chip pattern as help popover. */
+.search-hint-kbd {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  opacity: 1;
+  transition: opacity 160ms var(--ease);
+  pointer-events: none;
+}
+.search-input-wrap:focus-within .search-hint-kbd,
+.search-input-wrap.has-query .search-hint-kbd {
+  opacity: 0;
+  pointer-events: none;
+}
+/* Clear-X — appears only when there's a query, replaces the Ctrl+K chip's slot. */
+.search-clear {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: transparent; color: var(--text-3);
+  cursor: pointer; flex-shrink: 0;
+  transition: color 200ms var(--ease), background 200ms var(--ease);
+}
+.search-clear:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+.search-clear:focus-visible {
+  outline: none;
+  color: var(--text);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--vibe-accent) 55%, transparent);
+}
+.search-clear[hidden] { display: none; }
+
+/* Dropdown — absolutely positioned directly below the input, matches
+   .modal-card treatment (glass + shadow). Sits above the stage, below auth-overlay. */
+.search-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 4;
+  max-height: min(520px, calc(100dvh - 220px));
+  display: flex; flex-direction: column;
+  background: color-mix(in oklab, var(--surface) 94%, transparent);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 30px 80px -24px rgba(0,0,0,0.7),
+              0 0 0 1px rgba(255,255,255,0.03) inset;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  overflow: hidden;
+  padding: 6px 6px 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  animation: searchDropdownIn 160ms var(--ease);
+}
+.search-dropdown[hidden] { display: none; }
+@keyframes searchDropdownIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.search-empty, .search-loading, .search-none {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px;
+  padding: 40px 20px;
+  text-align: center;
+}
+.search-loading[hidden], .search-empty[hidden], .search-none[hidden], .search-results[hidden] {
+  display: none !important;
+}
+.search-results { display: flex; flex-direction: column; gap: 2px; }
+.search-section { display: flex; flex-direction: column; }
+.search-section + .search-section { margin-top: 4px; }
+.search-section-title {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 12px 6px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-3);
+}
+.search-section-title .search-section-hint {
+  font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+  font-size: 11px; text-transform: none; letter-spacing: 0;
+  color: var(--text-3); font-weight: 400;
+}
+.search-section-title .search-section-hint a {
+  color: var(--vibe-accent); text-decoration: none;
+}
+.search-section-title .search-section-hint a:hover { text-decoration: underline; }
+
+.search-item {
+  display: grid;
+  grid-template-columns: 40px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  width: 100%;
+  transition: background 160ms var(--ease), border-color 160ms var(--ease);
+}
+button.search-item, .search-item[data-action="play-library"], .search-item[data-action="play-spotify"] {
+  cursor: pointer;
+}
+button.search-item:hover, button.search-item:focus-visible,
+.search-item[data-action="play-library"]:hover, .search-item[data-action="play-library"]:focus-visible,
+.search-item[data-action="play-spotify"]:hover, .search-item[data-action="play-spotify"]:focus-visible {
+  background: color-mix(in oklab, var(--vibe-accent) 6%, rgba(255,255,255,0.03));
+  border-color: color-mix(in oklab, var(--vibe-accent) 24%, var(--border));
+  outline: none;
+}
+button.search-item:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--vibe-accent) 45%, transparent);
+}
+/* Non-interactive row (Spotify result that has an inline Add button as the
+   only action). Suppress cursor and hover shifts — the row itself isn't
+   clickable, only the Add button is. */
+.search-item[data-action="noop"] {
+  cursor: default;
+}
+.search-item[disabled] { opacity: 0.55; cursor: default; }
+.search-item-art {
+  width: 40px; height: 40px; border-radius: 6px;
+  background: color-mix(in oklab, var(--surface-2) 80%, transparent);
+  object-fit: cover; display: block; flex-shrink: 0;
+}
+.search-item-body { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+/* Title row = song name + the small vibe meta chip sitting immediately
+   after it. Title ellipsizes; the chip stays fixed on the right. */
+.search-item-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.search-item-title {
+  font-size: 13px; font-weight: 500; color: var(--text);
+  letter-spacing: -0.005em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.search-item-sub {
+  font-size: 11px; color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Badge = passive status. Height locked to 22px to match the Add button
+   so left/right sections visually balance across rows. */
+.search-item-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 10px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--surface-2) 60%, transparent);
+  border: 1px solid var(--border);
+  color: var(--text-3);
+  text-transform: uppercase; letter-spacing: 0.06em;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.search-item-badge.is-lib {
+  color: color-mix(in oklab, var(--vibe-accent) 80%, var(--text));
+  border-color: color-mix(in oklab, var(--vibe-accent) 40%, var(--border));
+  background: color-mix(in oklab, var(--vibe-accent) 12%, transparent);
+}
+/* Add = active affordance. Same 22px height as the badge, slightly stronger
+   text weight and accent-tinted border so it reads as tappable. */
+.search-item-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--vibe-accent) 32%, var(--border-strong));
+  background: color-mix(in oklab, var(--vibe-accent) 8%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+  transition: background 160ms var(--ease), border-color 160ms var(--ease), color 160ms var(--ease);
+}
+.search-item-add:hover {
+  background: color-mix(in oklab, var(--vibe-accent) 16%, transparent);
+  border-color: color-mix(in oklab, var(--vibe-accent) 50%, var(--border-strong));
+}
+.search-item-add:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--vibe-accent) 55%, transparent);
+}
+.search-item-add[disabled] {
+  opacity: 0.6; cursor: default;
+}
+.search-item-add.is-busy { opacity: 0.6; cursor: progress; }
+
+/* "+ queue" icon button — smaller, neutral, sits before the row-level
+   badge/add action. Reveals on row hover so idle rows stay uncluttered. */
+.search-item-queue {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 160ms var(--ease), color 160ms var(--ease),
+              background 160ms var(--ease), border-color 160ms var(--ease);
+}
+.search-item:hover .search-item-queue,
+.search-item:focus-within .search-item-queue,
+.search-item-queue:focus-visible { opacity: 1; }
+.search-item-queue:hover {
+  color: color-mix(in oklab, var(--vibe-accent) 80%, var(--text));
+  background: color-mix(in oklab, var(--vibe-accent) 10%, transparent);
+  border-color: color-mix(in oklab, var(--vibe-accent) 40%, var(--border-strong));
+}
+.search-item-queue:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--vibe-accent) 55%, transparent);
+}
+.search-item-queue[disabled] { opacity: 0.5; cursor: default; }
+.search-item-queue.is-busy { opacity: 0.5; cursor: progress; }
+
+/* Adjust the grid so both the vibe pill (inside title-row) and the two
+   trailing action slots (queue button + badge/add) all get space. Now
+   4 columns: art / body / queue / badge. */
+.search-item { grid-template-columns: 40px 1fr auto auto; }
+
+/* Predicted vibe meta-chip — sits immediately after the song title so
+   users can see the predicted "feel" at a glance while scanning results.
+   Deliberately smaller than the badge/add button (18px vs 22px) so it
+   reads as inline metadata belonging to the title line, not a peer of
+   the row-level status pill. */
+.search-item-vibe {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9.5px;
+  font-weight: 500;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--vibe-accent) 10%, transparent);
+  border: 1px solid color-mix(in oklab, var(--vibe-accent) 28%, var(--border));
+  color: color-mix(in oklab, var(--vibe-accent) 75%, var(--text));
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* Metadata-only badge — flags tracks that have title/artist/artwork but no
+   local audio (no ML analysis, no <audio> stream). Playable only via the
+   Spotify Web Playback SDK. Dashed border + muted tint reads as "provisional"
+   metadata, distinct from the accent-tinted vibe pill. Sized 16px to match
+   queue-item-vibe on tight rows; scales via context. */
+.sdk-only-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 6px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 500;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--surface-2) 55%, transparent);
+  border: 1px dashed var(--border-strong);
+  color: var(--text-3);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: help;
+}
+.sdk-only-badge[hidden] { display: none; }
+/* Title-row variant sits next to the larger title type — bumped up to 20px
+   so it aligns visually with .title-vibe / .title-lang siblings. */
+.title-row .sdk-only-badge {
+  height: 20px;
+  padding: 0 9px;
+  font-size: 10px;
+}
+
+.search-item-status {
+  font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+  font-size: 12px;
+  color: var(--text-3);
+  padding: 6px 12px 4px;
+}
+.search-item-status.is-error { color: #ef6161; }
+
+@media (max-width: 640px) {
+  /* Ctrl+K is desktop-only; hide the affordance on mobile. */
+  .search-hint-kbd { display: none; }
+  .search-bar { padding: clamp(2px, 0.5dvh, 6px) var(--pad-x) 0; }
+  .search-input-wrap { height: 48px; padding: 0 12px 0 14px; gap: 10px; }
+  .search-input { font-size: 14px; }
+  .search-dropdown { max-height: min(60dvh, 460px); border-radius: var(--radius-sm); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .search-dropdown { animation: none; }
+}
+
+/* ============== Queue + recommendations sidebar ============== */
+.queue-sidebar {
+  min-width: 0;
+  min-height: 0;
+  padding: clamp(4px, 1dvh, 12px) clamp(8px, 1.6vw, 16px) clamp(8px, 1.4dvh, 16px) 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+}
+.queue-section {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in oklab, var(--surface) 78%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.queue-section-queue { flex: 0 1 auto; max-height: 55%; }
+.queue-section-recs  { flex: 1 1 auto; min-height: 120px; }
+.queue-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.queue-section-title {
+  margin: 0;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.queue-section-count {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--vibe-accent) 14%, transparent);
+  border: 1px solid color-mix(in oklab, var(--vibe-accent) 32%, var(--border));
+  color: color-mix(in oklab, var(--vibe-accent) 82%, var(--text));
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+.queue-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-3);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 160ms var(--ease), border-color 160ms var(--ease);
+}
+.queue-clear:hover { color: var(--text); border-color: color-mix(in oklab, var(--vibe-accent) 40%, var(--border-strong)); }
+
+/* Empty / loading placeholders */
+.queue-empty,
+.queue-recs-empty,
+.queue-recs-loading {
+  padding: 20px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+}
+.queue-empty[hidden],
+.queue-recs-empty[hidden],
+.queue-recs-loading[hidden] { display: none; }
+.queue-empty-msg {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-2);
+  font-weight: 500;
+}
+.queue-empty-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.4;
+}
+
+/* Scrollable lists */
+.queue-list,
+.queue-recs-list {
+  margin: 0;
+  padding: 4px 4px 6px;
+  list-style: none;
+  counter-reset: qi;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+}
+.queue-list[hidden],
+.queue-recs-list[hidden] { display: none; }
+
+/* Row layout. Number (or drag-position) + art + body + actions. */
+.queue-item {
+  counter-increment: qi;
+  display: grid;
+  grid-template-columns: 18px 34px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 160ms var(--ease), border-color 160ms var(--ease);
+}
+.queue-item::before {
+  content: counter(qi);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--text-3);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.queue-item:hover,
+.queue-item:focus-visible {
+  background: color-mix(in oklab, var(--vibe-accent) 6%, transparent);
+  border-color: color-mix(in oklab, var(--vibe-accent) 22%, var(--border));
+  outline: none;
+}
+.queue-item-art {
+  width: 34px; height: 34px;
+  border-radius: 5px;
+  background: color-mix(in oklab, var(--surface-2) 80%, transparent);
+  object-fit: cover;
+  display: block;
+}
+.queue-item-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.queue-item-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  letter-spacing: -0.005em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.queue-item-sub {
+  font-size: 10.5px;
+  color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.queue-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+}
+.queue-item-vibe {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 6px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--vibe-accent) 10%, transparent);
+  border: 1px solid color-mix(in oklab, var(--vibe-accent) 26%, var(--border));
+  color: color-mix(in oklab, var(--vibe-accent) 75%, var(--text));
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.queue-item-lang {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 6px;
+  font-size: 9.5px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--surface-2) 55%, transparent);
+  border: 1px solid var(--border);
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+/* Row actions (remove / add-to-queue). Small icon buttons that only
+   "declare intent" via a hover reveal on the row. */
+.queue-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 160ms var(--ease);
+}
+.queue-item:hover .queue-item-actions,
+.queue-item:focus-within .queue-item-actions { opacity: 1; }
+.queue-item-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px; height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: color 160ms var(--ease), background 160ms var(--ease), border-color 160ms var(--ease);
+}
+.queue-item-btn:hover {
+  color: var(--text);
+  background: rgba(255,255,255,0.05);
+  border-color: color-mix(in oklab, var(--vibe-accent) 40%, var(--border-strong));
+}
+.queue-item-btn.is-add {
+  color: color-mix(in oklab, var(--vibe-accent) 75%, var(--text));
+  border-color: color-mix(in oklab, var(--vibe-accent) 32%, var(--border-strong));
+}
+.queue-item-btn.is-add:hover {
+  background: color-mix(in oklab, var(--vibe-accent) 14%, transparent);
+}
+
+/* Currently-playing hint on recs (when the anchor track is showing) */
+.queue-recs-anchor {
+  padding: 4px 12px 8px;
+  font-size: 10.5px;
+  color: var(--text-3);
+  border-bottom: 1px solid var(--border);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.queue-recs-anchor em {
+  font-family: 'Instrument Serif', 'Times New Roman', serif;
+  font-style: italic;
+  color: var(--text-2);
+  font-size: 1.1em;
 }

@@ -13,8 +13,17 @@ import sys
 import tempfile
 import threading
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+# Load .env before any env-var reads (config.py, ADMIN_USER_ID, VIBESCAPE_ML_MODE).
+# No-op on platforms where python-dotenv isn't installed or no .env exists.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except ImportError:
+    pass
 
 import asyncio
 import requests
@@ -36,11 +45,17 @@ try:
 except Exception:
     app_config = None
 
-import features as feat  # noqa: E402
+import deezer_client  # noqa: E402
 import itunes_client  # noqa: E402
+import ml_backend  # noqa: E402
 import scoring  # noqa: E402
 import spotify_library as splib  # noqa: E402
 import spotify_matcher  # noqa: E402
+
+# `features` pulls in librosa/numpy — heavy deps not needed in the
+# playback-only prod deployment. Import lazily at call sites that need it
+# (only the ingest hot path, and only when Modal ML backend is unavailable).
+feat = None
 
 log = logging.getLogger("vibescape")
 if not log.handlers:
@@ -76,6 +91,10 @@ TRACK_COLUMNS = [
     "valence_pred",
     "vibe_score_ml",
     "model_version",
+    # Whisper language classifier — nullable when confidence < 0.2 (instrumental
+    # / non-speech tracks) or when the classifier hasn't run yet.
+    "language",
+    "language_confidence",
 ]
 TRACK_SELECT = ", ".join(TRACK_COLUMNS)
 
@@ -258,6 +277,13 @@ class LoginBody(BaseModel):
     pin: Optional[str] = None
 
 
+class SetPinBody(BaseModel):
+    # new_pin: 4 digits. Set to null/empty to remove the PIN.
+    new_pin: Optional[str] = None
+    # current_pin required if the user already has one (auth to change).
+    current_pin: Optional[str] = None
+
+
 class SpotifyLinkBody(BaseModel):
     spotify_user_id: str
     spotify_display_name: Optional[str] = None
@@ -333,6 +359,7 @@ def auth_login(body: LoginBody):
         "display_name": row["display_name"],
         "session_token": token,
         "has_pin": bool(row["pin_hash"]),
+        "is_admin": int(row["id"]) == ADMIN_USER_ID,
     }
 
 
@@ -356,6 +383,7 @@ def auth_me(sess: dict = Depends(require_user)):
         "spotify_connected": bool(sess.get("spotify_user_id")),
         "spotify_display_name": sess.get("spotify_display_name"),
         "created_at": sess.get("created_at"),
+        "is_admin": int(sess["user_id"]) == ADMIN_USER_ID,
     }
 
 
@@ -442,6 +470,145 @@ def list_tracks(
     finally:
         conn.close()
     return [_row_to_dict(r) for r in rows]
+
+
+@app.get("/api/tracks/search")
+def search_tracks(
+    q: str = Query(..., min_length=1, max_length=200),
+    limit: int = Query(15, ge=1, le=50),
+    sess: dict = Depends(require_user),
+):
+    """
+    Case-insensitive substring search over the caller's library, matching
+    title, artist, or album. Ordered by title prefix hit first, then
+    generic hits. Returns full track rows so results are directly playable.
+    """
+    query = (q or "").strip()
+    if not query:
+        return {"tracks": []}
+
+    like = f"%{query}%"
+    prefix = f"{query}%"
+    select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
+    sql = (
+        f"SELECT {select} FROM tracks t "
+        f"JOIN user_tracks ut ON ut.track_id = t.id "
+        f"WHERE ut.user_id = ? "
+        f"AND (t.title LIKE ? COLLATE NOCASE "
+        f"     OR t.artist LIKE ? COLLATE NOCASE "
+        f"     OR t.album LIKE ? COLLATE NOCASE) "
+        f"ORDER BY "
+        f"  CASE WHEN t.title LIKE ? COLLATE NOCASE THEN 0 "
+        f"       WHEN t.artist LIKE ? COLLATE NOCASE THEN 1 "
+        f"       ELSE 2 END, "
+        f"  t.title COLLATE NOCASE "
+        f"LIMIT ?"
+    )
+    params = [sess["user_id"], like, like, like, prefix, prefix, limit]
+
+    conn = get_conn()
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    except Exception as e:
+        log.warning("search_tracks failed for q=%r: %s", query, e)
+        rows = []
+    finally:
+        conn.close()
+    return {"tracks": [_row_to_dict(r) for r in rows]}
+
+
+@app.get("/api/tracks/{track_key}/similar")
+def similar_tracks(
+    track_key: str,
+    limit: int = Query(8, ge=1, le=25),
+    sess: dict = Depends(require_user),
+):
+    """
+    Return N tracks from the caller's library most similar to the given
+    track. Similarity = weighted L1 distance across the four ML feature
+    dimensions (vibe_score_ml, energy_pred, danceability_pred,
+    valence_pred), with a small bonus for matching mood. The current
+    track is excluded from results.
+
+    track_key can be a spotify_id (string) or an apple_id (numeric string).
+    """
+    conn = get_conn()
+    try:
+        anchor = None
+        try:
+            apple_id_int = int(track_key)
+            anchor = conn.execute(
+                "SELECT id, apple_id, spotify_id, mood, "
+                "vibe_score, vibe_score_ml, energy_pred, "
+                "danceability_pred, valence_pred "
+                "FROM tracks WHERE apple_id = ?",
+                (apple_id_int,),
+            ).fetchone()
+        except ValueError:
+            pass
+        if not anchor:
+            anchor = conn.execute(
+                "SELECT id, apple_id, spotify_id, mood, "
+                "vibe_score, vibe_score_ml, energy_pred, "
+                "danceability_pred, valence_pred "
+                "FROM tracks WHERE spotify_id = ?",
+                (track_key,),
+            ).fetchone()
+        if not anchor:
+            raise HTTPException(status_code=404, detail={"error": "track_not_found"})
+
+        # Anchor features. If ML predictions haven't run for this track yet,
+        # fall back to the formula vibe (0-100 scaled to 0-1) so we still
+        # get sensible ordering. Missing prediction cols become 0.5 (neutral).
+        def _norm(v, default):
+            if v is None:
+                return default
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return default
+
+        a_vibe = _norm(anchor["vibe_score_ml"], _norm(anchor["vibe_score"], 50.0) / 100.0)
+        a_energy = _norm(anchor["energy_pred"], 0.5)
+        a_dance = _norm(anchor["danceability_pred"], 0.5)
+        a_valence = _norm(anchor["valence_pred"], 0.5)
+        a_mood = anchor["mood"] or ""
+
+        # Weighted L1 in SQL. Weights emphasise the ML vibe (most user-visible
+        # signal), then energy/danceability, then valence. Missing prediction
+        # columns coalesce to 0.5 so those rows land in the middle of the
+        # ranking rather than being excluded entirely. Mood match gives a
+        # discount of 0.15 (roughly one dimension's worth of distance) to
+        # nudge same-mood tracks up the list.
+        select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
+        sql = f"""
+            SELECT {select},
+              (
+                1.5 * ABS(COALESCE(t.vibe_score_ml,        {a_vibe})    - {a_vibe})
+              + 1.0 * ABS(COALESCE(t.energy_pred,         0.5)          - {a_energy})
+              + 1.0 * ABS(COALESCE(t.danceability_pred,   0.5)          - {a_dance})
+              + 0.8 * ABS(COALESCE(t.valence_pred,        0.5)          - {a_valence})
+              - CASE WHEN t.mood = ? THEN 0.15 ELSE 0.0 END
+              ) AS distance
+            FROM tracks t
+            JOIN user_tracks ut ON ut.track_id = t.id
+            WHERE ut.user_id = ?
+              AND t.id != ?
+            ORDER BY distance ASC, t.title COLLATE NOCASE
+            LIMIT ?
+        """
+        rows = conn.execute(sql, (a_mood, sess["user_id"], anchor["id"], limit)).fetchall()
+    finally:
+        conn.close()
+
+    return {
+        "anchor": {
+            "spotify_id": anchor["spotify_id"],
+            "apple_id": anchor["apple_id"],
+            "mood": a_mood,
+        },
+        "tracks": [_row_to_dict(r) for r in rows],
+    }
 
 
 @app.get("/api/tracks/random")
@@ -1310,6 +1477,101 @@ def spotify_library(
     }
 
 
+@app.get("/api/spotify/search")
+def spotify_search(
+    q: str = Query(..., min_length=1, max_length=200),
+    # Spotify /v1/search caps `limit` at 10 as of late 2024 (docs say range 0-10,
+    # default 5). Requesting 11+ returns 400 "Invalid limit".
+    limit: int = Query(10, ge=1, le=10),
+    spotify_authorization: Optional[str] = Header(None, alias="X-Spotify-Authorization"),
+    sess: dict = Depends(require_user),
+):
+    """
+    Search the Spotify catalog on behalf of the signed-in user. Returns a
+    trimmed list of tracks with an `in_library` flag indicating whether
+    the caller has already ingested that spotify_id.
+    """
+    token = _extract_bearer(spotify_authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail={"error": "missing_spotify_authorization"})
+    query = (q or "").strip()
+    if not query:
+        return {"tracks": []}
+
+    try:
+        data = splib._get(
+            f"{splib.BASE}/search",
+            token,
+            {"q": query, "type": "track", "limit": limit},
+        )
+    except splib.SpotifyAuthError:
+        return JSONResponse(status_code=401, content={"error": "spotify_token_expired"})
+    except splib.SpotifyAPIError as e:
+        raise HTTPException(status_code=502, detail={"error": "spotify_api_error", "message": str(e)})
+
+    items = ((data.get("tracks") or {}).get("items")) or []
+    spotify_ids = [it.get("id") for it in items if isinstance(it, dict) and it.get("id")]
+
+    # For each Spotify id we recognise: pull vibe + mood so the frontend can
+    # render "vibe NN" alongside the badge without a second round-trip.
+    lib_meta: dict[str, dict] = {}
+    if spotify_ids:
+        placeholders = ",".join("?" * len(spotify_ids))
+        conn = get_conn()
+        try:
+            rows = conn.execute(
+                f"SELECT t.spotify_id, t.vibe_score, t.vibe_score_ml, "
+                f"       t.mood, t.language, t.language_confidence "
+                f"FROM tracks t "
+                f"JOIN user_tracks ut ON ut.track_id = t.id "
+                f"WHERE ut.user_id = ? AND t.spotify_id IN ({placeholders})",
+                [sess["user_id"], *spotify_ids],
+            ).fetchall()
+            for r in rows:
+                sid = r["spotify_id"]
+                if not sid:
+                    continue
+                lib_meta[sid] = {
+                    "vibe_score": r["vibe_score"],
+                    "vibe_score_ml": r["vibe_score_ml"],
+                    "mood": r["mood"],
+                    "language": r["language"],
+                    "language_confidence": r["language_confidence"],
+                }
+        finally:
+            conn.close()
+
+    out = []
+    for it in items:
+        if not isinstance(it, dict) or not it.get("id"):
+            continue
+        sid = it.get("id")
+        artists = it.get("artists") or []
+        artist_name = ""
+        if artists and isinstance(artists[0], dict):
+            artist_name = artists[0].get("name") or ""
+        album = it.get("album") or {}
+        images = album.get("images") or []
+        artwork_url = images[-1].get("url") if images and isinstance(images[-1], dict) else None
+        meta = lib_meta.get(sid) or {}
+        out.append({
+            "spotify_id": sid,
+            "title": it.get("name") or "",
+            "artist": artist_name,
+            "album": album.get("name") or "",
+            "artwork_url": artwork_url,
+            "preview_url": it.get("preview_url"),
+            "duration_ms": it.get("duration_ms"),
+            "in_library": sid in lib_meta,
+            "vibe_score": meta.get("vibe_score"),
+            "vibe_score_ml": meta.get("vibe_score_ml"),
+            "mood": meta.get("mood"),
+            "language": meta.get("language"),
+            "language_confidence": meta.get("language_confidence"),
+        })
+    return {"tracks": out}
+
+
 @app.post("/api/ingest/clear")
 def ingest_clear(sess: dict = Depends(require_user)):
     """Clear only the caller's library membership. Global tracks that no
@@ -1551,27 +1813,45 @@ def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "
         source = "spotify"
         classification_source = "spotify_preview"
     else:
-        if isrc:
-            itunes_result = _itunes_lookup_by_isrc(isrc)
-            log.info("[ingest]   itunes isrc-lookup isrc=%s -> hit=%s",
-                     isrc, bool(itunes_result and itunes_result.get("previewUrl")))
-            if itunes_result and itunes_result.get("previewUrl"):
-                classification_source = "itunes_isrc"
-        if not (itunes_result and itunes_result.get("previewUrl")):
-            itunes_result = _itunes_search_track(name, artist_name)
-            log.info("[ingest]   itunes term-search %r/%r -> hit=%s",
-                     name, artist_name,
-                     bool(itunes_result and itunes_result.get("previewUrl")))
-            if itunes_result and itunes_result.get("previewUrl"):
-                classification_source = "itunes_term_search"
+        # Cascade: iTunes term-search -> Deezer ISRC -> Deezer term-search.
+        # (iTunes /lookup?isrc= is dead — Apple never officially supported it
+        # and it now returns 0 for every ISRC. Skipping saves ~1s/track.)
+        itunes_result = _itunes_search_track(name, artist_name)
+        log.info("[ingest]   itunes term-search %r/%r -> hit=%s",
+                 name, artist_name,
+                 bool(itunes_result and itunes_result.get("previewUrl")))
         if itunes_result and itunes_result.get("previewUrl"):
+            classification_source = "itunes_term_search"
             audio_url = itunes_result["previewUrl"]
             audio_ext = ".m4a"
             apple_id = itunes_result.get("trackId")
             source = "itunes"
 
+        if not audio_url and isrc:
+            deezer_result = deezer_client.lookup_by_isrc(isrc)
+            log.info("[ingest]   deezer isrc-lookup isrc=%s -> hit=%s",
+                     isrc, bool(deezer_result and deezer_result.get("previewUrl")))
+            if deezer_result and deezer_result.get("previewUrl"):
+                itunes_result = deezer_result  # reuse the merge slot below
+                classification_source = "deezer_isrc"
+                audio_url = deezer_result["previewUrl"]
+                audio_ext = ".mp3"
+                source = "deezer"
+
+        if not audio_url:
+            deezer_result = deezer_client.search_track(name, artist_name)
+            log.info("[ingest]   deezer term-search %r/%r -> hit=%s",
+                     name, artist_name,
+                     bool(deezer_result and deezer_result.get("previewUrl")))
+            if deezer_result and deezer_result.get("previewUrl"):
+                itunes_result = deezer_result  # reuse the merge slot below
+                classification_source = "deezer_search"
+                audio_url = deezer_result["previewUrl"]
+                audio_ext = ".mp3"
+                source = "deezer"
+
     if not audio_url:
-        log.info("[ingest]   -> no_preview (spotify+itunes both failed)")
+        log.info("[ingest]   -> no_preview (spotify+itunes+deezer all failed)")
         return "skip:no_preview"
 
     # If a prior ingest downloaded this spotify_id, reuse the file
@@ -1587,6 +1867,90 @@ def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "
             shared_local = str(p)
             log.info("[ingest]   reusing existing local audio (shared): %s", shared_row["audio_path"])
 
+    # Two-path scoring:
+    #   * ML (Modal in prod OR local GPU in dev): MERT + Whisper via
+    #     ingest/ml_backend.py — env var VIBESCAPE_ML_MODE selects.
+    #   * Librosa fallback: only if the ML backend is 'none' or a call fails.
+    # If neither works we skip the track.
+    ml_preds = None
+    lang_preds = None
+    if ml_backend.is_available():
+        ml_preds = ml_backend.predict_from_url(audio_url)
+        # Language uses the same backend; ok if it fails, DB column stays NULL.
+        lang_preds = ml_backend.predict_language_from_url(audio_url)
+
+    if ml_preds:
+        # MERT-only path. Derive activation/valence/mood from predictions.
+        energy_pred = float(ml_preds.get("energy", 0.0))
+        dance_pred = float(ml_preds.get("danceability", 0.0))
+        valence_pred = float(ml_preds.get("valence", 0.0))
+        vibe_score_ml = float(ml_preds.get("vibe_score", 0.55 * energy_pred + 0.45 * dance_pred))
+        model_version = str(ml_preds.get("model_version") or "mert_v1")
+
+        activation = (0.55 * energy_pred + 0.45 * dance_pred) * 100.0
+        valence = valence_pred * 100.0
+        mood = scoring.mood_label(activation, valence)
+        classification_source = "ml_mert"
+
+        language = None
+        language_confidence = None
+        language_top3_json = None
+        language_model_version = None
+        language_predicted_at = None
+        if lang_preds:
+            top1_prob = float(lang_preds.get("top1_prob", 0.0))
+            # Only persist if we're at least 'uncertain' (top1 >= 0.2). Below
+            # that, Whisper is guessing on non-speech / instrumental audio.
+            if top1_prob >= 0.2:
+                language = lang_preds.get("top1_lang") or None
+                language_confidence = top1_prob
+                language_top3_json = json.dumps({
+                    "top1": [lang_preds.get("top1_lang"), top1_prob],
+                    "top2": [lang_preds.get("top2_lang"), float(lang_preds.get("top2_prob", 0.0))],
+                    "top3": [lang_preds.get("top3_lang"), float(lang_preds.get("top3_prob", 0.0))],
+                })
+                language_model_version = str(lang_preds.get("model_version") or "whisper_small")
+                language_predicted_at = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
+
+        merged_preview_url = preview_url or (itunes_result.get("previewUrl") if itunes_result else None)
+        merged_genre = (itunes_result or {}).get("primaryGenreName")
+        merged_track_view_url = (itunes_result or {}).get("trackViewUrl")
+
+        track_data = {
+            "user_id": user_id,
+            "source": source,
+            "apple_id": apple_id,
+            "spotify_id": spotify_id,
+            "isrc": isrc,
+            "title": name,
+            "artist": artist_name,
+            "album": album_name or (itunes_result or {}).get("collectionName"),
+            "genre": merged_genre,
+            "artwork_url": artwork_url or (itunes_result or {}).get("artworkUrl100"),
+            "preview_url": merged_preview_url,
+            "track_view_url": merged_track_view_url,
+            "duration_ms": duration_ms or (itunes_result or {}).get("trackTimeMillis"),
+            "activation": activation,
+            "valence": valence,
+            "vibe_score": activation,  # backward-compat
+            "mood": mood,
+            "audio_path": None,  # prod doesn't store audio locally
+            "classification_source": classification_source,
+            "energy_pred": energy_pred,
+            "danceability_pred": dance_pred,
+            "valence_pred": valence_pred,
+            "vibe_score_ml": vibe_score_ml,
+            "model_version": model_version,
+            "language": language,
+            "language_confidence": language_confidence,
+            "language_top3_json": language_top3_json,
+            "language_model_version": language_model_version,
+            "language_predicted_at": language_predicted_at,
+        }
+        _upsert(conn, track_data)
+        return f"ok:ml:{source}"
+
+    # Librosa fallback (local dev only — Fly image doesn't ship librosa).
     tmp_path = None
     _cleanup_tmp = False
     try:
@@ -1596,6 +1960,9 @@ def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "
         else:
             tmp_path = _download(audio_url, audio_ext)
             _cleanup_tmp = True
+        global feat
+        if feat is None:
+            import features as feat  # heavy: librosa/numpy
         f = feat.extract(tmp_path)
         axes = scoring.compute_axes(f)
         activation = axes["activation"]
@@ -1604,7 +1971,6 @@ def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "
 
         AUDIO_DIR.mkdir(parents=True, exist_ok=True)
         if shared_local:
-            # Reuse the existing shared audio_path directly; no copy needed.
             audio_rel = shared_row["audio_path"]
         else:
             target_name = f"{spotify_id}{audio_ext}"
@@ -1634,13 +2000,11 @@ def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "
             "preview_url": merged_preview_url,
             "track_view_url": merged_track_view_url,
             "duration_ms": duration_ms or (itunes_result or {}).get("trackTimeMillis"),
-            # legacy scalars
             "tempo": f.get("tempo"),
             "energy": f.get("energy_mean"),
             "brightness": f.get("brightness"),
             "zcr": f.get("zcr"),
             "mfcc_json": json.dumps(f.get("mfcc_mean") or f.get("mfcc") or []),
-            # extended scalars
             "tempo_stability": f.get("tempo_stability"),
             "onset_rate": f.get("onset_rate"),
             "energy_mean": f.get("energy_mean"),
@@ -1654,10 +2018,9 @@ def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "
             "tonnetz_std": f.get("tonnetz_std"),
             "acousticness": f.get("acousticness"),
             "chroma_mean_json": json.dumps(f.get("chroma_mean") or []),
-            # derived axes
             "activation": activation,
             "valence": valence,
-            "vibe_score": activation,  # backward-compat; z-score pass replaces with activation_relative
+            "vibe_score": activation,
             "mood": mood,
             "audio_path": audio_rel,
             "classification_source": classification_source,
@@ -1683,6 +2046,12 @@ def _upsert(conn, td: dict) -> None:
         "chroma_mean_json",
         "activation", "valence", "activation_relative",
         "vibe_score", "mood", "audio_path", "classification_source",
+        # ML prediction columns (populated by the Modal path)
+        "energy_pred", "danceability_pred", "valence_pred",
+        "vibe_score_ml", "model_version",
+        # Language detection columns (populated by the Whisper Modal path)
+        "language", "language_confidence", "language_top3_json",
+        "language_model_version", "language_predicted_at",
     ]
     values = [td.get(c) for c in cols]
     uid = td.get("user_id")
@@ -1782,6 +2151,13 @@ def _run_ingest_job(job_id: str, token: str, sources: IngestSources, user_id: in
             _update_job(job_id, status="error", error_message=f"spotify_api_error: {e}")
             return
 
+        # Log the collect count + a small breakdown by source so we can
+        # trace any unexpected shrinkage between fetch and processing.
+        by_src: dict[str, int] = {}
+        for _t, _src in tracks:
+            by_src[_src] = by_src.get(_src, 0) + 1
+        log.info("[ingest job=%s] _collect_tracks returned total=%d by_source=%s",
+                 job_id, len(tracks), by_src)
         _update_job(job_id, total=len(tracks))
 
         conn = get_conn()
@@ -1794,12 +2170,31 @@ def _run_ingest_job(job_id: str, token: str, sources: IngestSources, user_id: in
                     break
                 try:
                     result = _process_track(conn, track, job_id, user_id, source=src)
-                    if result == "ok:spotify":
-                        _bump(job_id, "matched_spotify", 1)
-                    elif result == "ok:itunes":
-                        _bump(job_id, "preview_only", 1)
+                    # Result strings emitted by _process_track:
+                    #   ok:spotify / ok:itunes / ok:deezer          (librosa branch, fresh)
+                    #   ok:ml:spotify / ok:ml:itunes / ok:ml:deezer (ML branch, fresh)
+                    #   ok:linked_existing                          (global DB dedup hit)
+                    #   skip:no_preview / skip:no_id / skip:already_ingested
+                    #
+                    # Four exclusive buckets (sum == processed):
+                    #   newly_analyzed     — fresh ingest with audio
+                    #   linked_from_global — track existed globally, user_tracks added
+                    #   already_in_library — user already had this exact link
+                    #   no_preview         — dropped (no audio anywhere)
+                    #   skipped            — degenerate: no id / exception
+                    if result and result.startswith("ok:") and result not in ("ok:linked_existing",):
+                        _bump(job_id, "newly_analyzed", 1)
+                        # Legacy counter mirroring so old frontends keep working.
+                        if "spotify" in result:
+                            _bump(job_id, "matched_spotify", 1)
+                        else:
+                            _bump(job_id, "preview_only", 1)
                     elif result == "ok:linked_existing":
-                        _bump(job_id, "matched_spotify", 1)
+                        _bump(job_id, "linked_from_global", 1)
+                        _bump(job_id, "matched_spotify", 1)  # legacy mirror
+                    elif result == "skip:already_ingested":
+                        _bump(job_id, "already_in_library", 1)
+                        _bump(job_id, "skipped", 1)  # legacy mirror
                     elif result == "skip:no_preview":
                         _bump(job_id, "no_preview", 1)
                     else:
@@ -1850,10 +2245,16 @@ def ingest_spotify(req: IngestRequest, sess: dict = Depends(require_user)):
             "current_track": None,
             "total": 0,
             "processed": 0,
+            # Four buckets, mutually exclusive, sum == processed
+            "newly_analyzed": 0,     # fresh ingest with audio (spotify/itunes/deezer)
+            "linked_from_global": 0, # track existed in global DB, added user_tracks link
+            "already_in_library": 0, # user already had this track linked
+            "no_preview": 0,         # dropped — no preview URL from any source
+            "skipped": 0,            # skip:no_id or exceptions
+            # Legacy field names kept for backward compat while frontend
+            # migrates. Mirror newly_analyzed and linked_from_global into these.
             "matched_spotify": 0,
             "preview_only": 0,
-            "no_preview": 0,
-            "skipped": 0,
             "cancel_requested": False,
             "error_message": None,
         }
@@ -1864,6 +2265,125 @@ def ingest_spotify(req: IngestRequest, sess: dict = Depends(require_user)):
     )
     t.start()
     return {"job_id": job_id}
+
+
+class SingleIngestRequest(BaseModel):
+    spotify_id: str
+    # Optional user OAuth token — required for /v1/tracks/{id} on premium/full
+    # metadata. Falls back to app client-credentials token which works for
+    # public track lookups.
+    access_token: Optional[str] = None
+
+
+@app.post("/api/ingest/single")
+async def ingest_single(
+    req: SingleIngestRequest,
+    sess: dict = Depends(require_user),
+):
+    """
+    Ingest a single Spotify track into the caller's library. Idempotent:
+    if the caller already has this track, returns the existing row.
+    Reuses the _process_track pipeline (Modal ML → librosa fallback →
+    iTunes preview lookup) so features/audio path are populated the same
+    way as playlist/liked ingest.
+    """
+    spotify_id = (req.spotify_id or "").strip()
+    if not spotify_id:
+        raise HTTPException(status_code=422, detail={"error": "missing_spotify_id"})
+
+    user_id = sess["user_id"]
+
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            f"SELECT {', '.join('t.' + c for c in TRACK_COLUMNS)} FROM tracks t "
+            f"JOIN user_tracks ut ON ut.track_id = t.id "
+            f"WHERE t.spotify_id = ? AND ut.user_id = ?",
+            (spotify_id, user_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row:
+        return {"status": "already_ingested", "track": _row_to_dict(row)}
+
+    token = (req.access_token or "").strip()
+    if not token:
+        try:
+            token = _get_app_token()
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail={"error": "spotify_token_unavailable", "message": str(e)})
+
+    try:
+        track_obj = await run_in_threadpool(
+            splib._get, f"{splib.BASE}/tracks/{spotify_id}", token
+        )
+    except splib.SpotifyAuthError:
+        return JSONResponse(status_code=401, content={"error": "spotify_token_expired"})
+    except splib.SpotifyAPIError as e:
+        raise HTTPException(status_code=502, detail={"error": "spotify_api_error", "message": str(e)})
+
+    if not isinstance(track_obj, dict) or not track_obj.get("id"):
+        raise HTTPException(status_code=404, detail={"error": "track_not_found"})
+
+    job_id = f"single:{uuid.uuid4().hex}"
+    with JOBS_LOCK:
+        JOBS[job_id] = {
+            "status": "running",
+            "user_id": user_id,
+            "current_track": None,
+            "total": 1,
+            "processed": 0,
+            # Four buckets, mutually exclusive, sum == processed
+            "newly_analyzed": 0,     # fresh ingest with audio (spotify/itunes/deezer)
+            "linked_from_global": 0, # track existed in global DB, added user_tracks link
+            "already_in_library": 0, # user already had this track linked
+            "no_preview": 0,         # dropped — no preview URL from any source
+            "skipped": 0,            # skip:no_id or exceptions
+            # Legacy field names kept for backward compat while frontend
+            # migrates. Mirror newly_analyzed and linked_from_global into these.
+            "matched_spotify": 0,
+            "preview_only": 0,
+            "cancel_requested": False,
+            "error_message": None,
+        }
+    try:
+        def _do_process() -> str:
+            conn = get_conn()
+            try:
+                return _process_track(conn, track_obj, job_id, user_id, source="search")
+            finally:
+                conn.close()
+        result = await run_in_threadpool(_do_process)
+    except Exception as e:
+        log.exception("single ingest failed for %s: %s", spotify_id, e)
+        with JOBS_LOCK:
+            JOBS.pop(job_id, None)
+        raise HTTPException(status_code=500, detail={"error": "ingest_failed", "message": str(e)})
+    finally:
+        with JOBS_LOCK:
+            JOBS.pop(job_id, None)
+
+    if result.startswith("skip:no_preview"):
+        raise HTTPException(status_code=422, detail={"error": "no_preview_available", "result": result})
+    if result.startswith("skip:no_id"):
+        raise HTTPException(status_code=422, detail={"error": "invalid_track", "result": result})
+
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            f"SELECT {', '.join('t.' + c for c in TRACK_COLUMNS)} FROM tracks t "
+            f"JOIN user_tracks ut ON ut.track_id = t.id "
+            f"WHERE t.spotify_id = ? AND ut.user_id = ?",
+            (spotify_id, user_id),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        raise HTTPException(status_code=500, detail={"error": "post_ingest_missing", "result": result})
+    return {"status": "ok", "result": result, "track": _row_to_dict(row)}
 
 
 def _run_public_playlist_job(job_id: str, playlist_id: str, user_id: int,
@@ -1991,12 +2511,20 @@ def _run_public_playlist_job(job_id: str, playlist_id: str, user_id: int,
                     break
                 try:
                     result = _process_track(conn, track, job_id, user_id, source=src_label)
-                    if result == "ok:spotify":
-                        _bump(job_id, "matched_spotify", 1)
-                    elif result == "ok:itunes":
-                        _bump(job_id, "preview_only", 1)
+                    # Same 4-bucket scheme as _run_ingest_job. See the comment
+                    # there for the mapping rationale.
+                    if result and result.startswith("ok:") and result != "ok:linked_existing":
+                        _bump(job_id, "newly_analyzed", 1)
+                        if "spotify" in result:
+                            _bump(job_id, "matched_spotify", 1)
+                        else:
+                            _bump(job_id, "preview_only", 1)
                     elif result == "ok:linked_existing":
-                        _bump(job_id, "matched_spotify", 1)
+                        _bump(job_id, "linked_from_global", 1)
+                        _bump(job_id, "matched_spotify", 1)  # legacy mirror
+                    elif result == "skip:already_ingested":
+                        _bump(job_id, "already_in_library", 1)
+                        _bump(job_id, "skipped", 1)  # legacy mirror
                     elif result == "skip:no_preview":
                         _bump(job_id, "no_preview", 1)
                     else:
@@ -2150,10 +2678,16 @@ def ingest_spotify_public(req: PublicPlaylistIngestRequest,
             "note": followed_note,
             "total": 0,
             "processed": 0,
+            # Four buckets, mutually exclusive, sum == processed
+            "newly_analyzed": 0,     # fresh ingest with audio (spotify/itunes/deezer)
+            "linked_from_global": 0, # track existed in global DB, added user_tracks link
+            "already_in_library": 0, # user already had this track linked
+            "no_preview": 0,         # dropped — no preview URL from any source
+            "skipped": 0,            # skip:no_id or exceptions
+            # Legacy field names kept for backward compat while frontend
+            # migrates. Mirror newly_analyzed and linked_from_global into these.
             "matched_spotify": 0,
             "preview_only": 0,
-            "no_preview": 0,
-            "skipped": 0,
             "cancel_requested": False,
             "error_message": None,
         }
@@ -2203,6 +2737,200 @@ def ingest_cancel(job_id: str, sess: dict = Depends(require_user)):
             return Response(status_code=204)
         job["cancel_requested"] = True
     log.info("[ingest] user=%s requested cancel for job=%s", sess["user_id"], job_id)
+    return Response(status_code=204)
+
+
+# ---------------- Admin (chandan-only) ----------------
+# The user_id of the single admin is stored in an env var so it's
+# configurable per environment. Default = 1 (chandan on prod as of
+# 2026-08-23; verified against the downloaded prod DB).
+ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "1"))
+
+
+def require_admin(sess: dict = Depends(require_user)) -> dict:
+    if int(sess["user_id"]) != ADMIN_USER_ID:
+        raise HTTPException(status_code=403, detail={"error": "admin_only"})
+    return sess
+
+
+@app.get("/api/admin/users")
+def admin_list_users(sess: dict = Depends(require_admin)):
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT u.id, u.display_name, u.spotify_user_id, u.spotify_display_name,
+                   u.created_at,
+                   (u.pin_hash IS NOT NULL) AS has_pin,
+                   COUNT(ut.track_id) AS track_count
+            FROM users u
+            LEFT JOIN user_tracks ut ON ut.user_id = u.id
+            GROUP BY u.id
+            ORDER BY u.id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    return {
+        "users": [
+            {
+                "user_id": int(r["id"]),
+                "display_name": r["display_name"],
+                "spotify_user_id": r["spotify_user_id"],
+                "spotify_display_name": r["spotify_display_name"],
+                "has_pin": bool(r["has_pin"]),
+                "created_at": r["created_at"],
+                "track_count": int(r["track_count"] or 0),
+                "is_admin": int(r["id"]) == ADMIN_USER_ID,
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.get("/api/admin/users/{user_id}/stats")
+def admin_user_stats(user_id: int, sess: dict = Depends(require_admin)):
+    conn = get_conn()
+    try:
+        u = conn.execute(
+            "SELECT id, display_name, spotify_display_name, created_at FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        if not u:
+            raise HTTPException(status_code=404, detail={"error": "user_not_found"})
+
+        total = conn.execute(
+            "SELECT COUNT(*) FROM user_tracks WHERE user_id = ?", (user_id,)
+        ).fetchone()[0]
+
+        by_mood = conn.execute(
+            """
+            SELECT t.mood, COUNT(*) AS n
+            FROM user_tracks ut
+            JOIN tracks t ON t.id = ut.track_id
+            WHERE ut.user_id = ?
+            GROUP BY t.mood
+            ORDER BY n DESC
+            """,
+            (user_id,),
+        ).fetchall()
+
+        by_source = conn.execute(
+            """
+            SELECT t.classification_source, COUNT(*) AS n
+            FROM user_tracks ut
+            JOIN tracks t ON t.id = ut.track_id
+            WHERE ut.user_id = ?
+            GROUP BY t.classification_source
+            ORDER BY n DESC
+            """,
+            (user_id,),
+        ).fetchall()
+
+        top_artists = conn.execute(
+            """
+            SELECT t.artist, COUNT(*) AS n
+            FROM user_tracks ut
+            JOIN tracks t ON t.id = ut.track_id
+            WHERE ut.user_id = ?
+            GROUP BY t.artist
+            ORDER BY n DESC
+            LIMIT 10
+            """,
+            (user_id,),
+        ).fetchall()
+
+        vibe_stats = conn.execute(
+            """
+            SELECT AVG(t.vibe_score_ml) AS avg_ml, AVG(t.activation) AS avg_act,
+                   AVG(t.valence) AS avg_val
+            FROM user_tracks ut
+            JOIN tracks t ON t.id = ut.track_id
+            WHERE ut.user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    return {
+        "user_id": int(u["id"]),
+        "display_name": u["display_name"],
+        "spotify_display_name": u["spotify_display_name"],
+        "created_at": u["created_at"],
+        "track_count": int(total or 0),
+        "by_mood": [{"mood": r["mood"] or "unknown", "count": int(r["n"])} for r in by_mood],
+        "by_source": [
+            {"source": r["classification_source"] or "unknown", "count": int(r["n"])}
+            for r in by_source
+        ],
+        "top_artists": [{"artist": r["artist"], "count": int(r["n"])} for r in top_artists],
+        "avg_vibe_ml": float(vibe_stats["avg_ml"]) if vibe_stats["avg_ml"] is not None else None,
+        "avg_activation": float(vibe_stats["avg_act"]) if vibe_stats["avg_act"] is not None else None,
+        "avg_valence": float(vibe_stats["avg_val"]) if vibe_stats["avg_val"] is not None else None,
+    }
+
+
+@app.get("/api/admin/users/{user_id}/tracks")
+def admin_user_tracks(
+    user_id: int,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    sess: dict = Depends(require_admin),
+):
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT t.id, t.title, t.artist, t.album, t.mood, t.vibe_score_ml,
+                   t.classification_source, ut.added_at, ut.play_count
+            FROM user_tracks ut
+            JOIN tracks t ON t.id = ut.track_id
+            WHERE ut.user_id = ?
+            ORDER BY ut.added_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (user_id, limit, offset),
+        ).fetchall()
+    finally:
+        conn.close()
+    return {
+        "tracks": [
+            {
+                "id": int(r["id"]),
+                "title": r["title"],
+                "artist": r["artist"],
+                "album": r["album"],
+                "mood": r["mood"],
+                "vibe_score_ml": r["vibe_score_ml"],
+                "classification_source": r["classification_source"],
+                "added_at": r["added_at"],
+                "play_count": int(r["play_count"] or 0),
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.delete("/api/admin/users/{user_id}", status_code=204)
+def admin_delete_user(user_id: int, sess: dict = Depends(require_admin)):
+    # Guardrail: admin can't delete themselves.
+    if int(user_id) == ADMIN_USER_ID:
+        raise HTTPException(status_code=400, detail={"error": "cannot_delete_admin"})
+    conn = get_conn()
+    try:
+        exists = conn.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not exists:
+            raise HTTPException(status_code=404, detail={"error": "user_not_found"})
+        # Cascade manually so we don't rely on PRAGMA foreign_keys being on
+        # (SQLite disables it by default per-connection).
+        conn.execute("DELETE FROM user_tracks WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        conn.commit()
+        log.info("[admin] user=%s deleted user_id=%s", sess["user_id"], user_id)
+    finally:
+        conn.close()
     return Response(status_code=204)
 
 

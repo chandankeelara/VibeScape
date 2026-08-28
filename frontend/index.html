@@ -104,6 +104,10 @@
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
           <span>Add public playlist</span>
         </button>
+        <button class="user-menu-item" id="btnUserAdmin" type="button" role="menuitem" hidden>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <span>Admin panel</span>
+        </button>
         <button class="user-menu-item user-menu-danger" id="btnUserSignOut" type="button" role="menuitem">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
           <span>Sign out of VibeScape</span>
@@ -141,6 +145,32 @@
   <div class="help-row"><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>D</kbd></span><span class="label">Spotify debug</span></div>
   <div class="help-row"><span class="keys"><kbd>?</kbd></span><span class="label">toggle this panel</span></div>
 </div>
+
+<section class="search-bar" id="searchBar" role="search" aria-label="Search tracks">
+  <div class="search-bar-inner">
+    <div class="search-input-wrap" id="searchInputWrap">
+      <svg class="search-input-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input class="search-input" id="searchInput" type="search" autocomplete="off" spellcheck="false" placeholder="Search your library and Spotify&hellip;" aria-label="Search query" aria-controls="searchDropdown" aria-expanded="false" />
+      <span class="search-hint-kbd" aria-hidden="true"><kbd>Ctrl</kbd><kbd>K</kbd></span>
+      <button class="search-clear" id="btnSearchClear" type="button" aria-label="Clear search" hidden>
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="search-dropdown" id="searchDropdown" role="listbox" aria-label="Search results" hidden>
+      <div class="search-loading" id="searchLoading" hidden>
+        <div class="modal-spinner" aria-hidden="true"></div>
+        <p class="modal-hint">Searching&hellip;</p>
+      </div>
+      <div class="search-results" id="searchResults" hidden></div>
+      <div class="search-none" id="searchNone" hidden>
+        <p class="modal-hint">No matches. Try a different query.</p>
+      </div>
+      <div class="search-empty" id="searchEmpty" hidden>
+        <p class="modal-hint">Type to search your library. Sign in with Spotify to search the catalog too.</p>
+      </div>
+    </div>
+  </div>
+</section>
 
 <div class="debug-panel" id="debugPanel" role="dialog" aria-modal="false" aria-labelledby="debugPanelTitle" aria-hidden="true" hidden>
   <div class="debug-panel-header">
@@ -282,7 +312,12 @@
 
   <div class="meta-col">
     <section class="meta">
-      <h1 class="title" id="title">Move the slider to begin</h1>
+      <div class="title-row">
+        <h1 class="title" id="title">Move the slider to begin</h1>
+        <span class="title-vibe" id="titleVibe" hidden aria-label="predicted vibe">vibe 50</span>
+        <span class="title-lang" id="titleLang" hidden aria-label="predicted language"></span>
+        <span class="sdk-only-badge" id="titleSdkOnly" hidden title="No local audio — playable only via Spotify Premium">sdk-only</span>
+      </div>
       <div class="sub">
         <span class="artist" id="artist">&mdash;</span>
         <span class="artist-sep" id="artistSep" hidden>&middot;</span>
@@ -380,6 +415,38 @@
 
 </main>
 
+<aside class="queue-sidebar" id="queueSidebar" aria-label="Play queue and recommendations">
+  <section class="queue-section queue-section-queue">
+    <div class="queue-section-head">
+      <h2 class="queue-section-title">Up next</h2>
+      <span class="queue-section-count" id="queueCount" hidden>0</span>
+      <button class="queue-clear" id="queueClear" type="button" aria-label="Clear queue" title="Clear queue" hidden>
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/></svg>
+        <span>clear</span>
+      </button>
+    </div>
+    <div class="queue-empty" id="queueEmpty">
+      <p class="queue-empty-msg">Your queue is empty.</p>
+      <p class="queue-empty-hint">Add tracks from search or the recommendations below.</p>
+    </div>
+    <ol class="queue-list" id="queueList" hidden></ol>
+  </section>
+
+  <section class="queue-section queue-section-recs">
+    <div class="queue-section-head">
+      <h2 class="queue-section-title">Recommended for this track</h2>
+    </div>
+    <div class="queue-recs-empty" id="queueRecsEmpty">
+      <p class="queue-empty-hint">Play a track to see similar songs from your library.</p>
+    </div>
+    <div class="queue-recs-loading" id="queueRecsLoading" hidden>
+      <div class="modal-spinner" aria-hidden="true"></div>
+      <p class="queue-empty-hint">Finding similar songs&hellip;</p>
+    </div>
+    <ol class="queue-recs-list" id="queueRecsList" hidden></ol>
+  </section>
+</aside>
+
 <audio id="player" preload="metadata"></audio>
 <audio id="verifyAudio" preload="none" aria-hidden="true"></audio>
 
@@ -474,10 +541,18 @@
         </div>
         <div class="progress-current" id="syncCurrentTrack">Starting&hellip;</div>
         <div class="progress-stats progress-stats-4">
-          <div><span class="stat-label">Spotify</span><span class="stat-num" id="syncStatMatched">0</span></div>
-          <div><span class="stat-label">iTunes</span><span class="stat-num" id="syncStatPreview">0</span></div>
-          <div><span class="stat-label">no source</span><span class="stat-num" id="syncStatNoPreview">0</span></div>
-          <div><span class="stat-label">skipped</span><span class="stat-num" id="syncStatSkipped">0</span></div>
+          <div title="Freshly analysed with audio (Spotify, iTunes, or Deezer preview)">
+            <span class="stat-label">new</span><span class="stat-num" id="syncStatNew">0</span>
+          </div>
+          <div title="Track already in the global library — just linked to your account">
+            <span class="stat-label">linked</span><span class="stat-num" id="syncStatLinked">0</span>
+          </div>
+          <div title="You already had this track — no action taken">
+            <span class="stat-label">already yours</span><span class="stat-num" id="syncStatAlready">0</span>
+          </div>
+          <div title="Dropped — no preview URL from any source">
+            <span class="stat-label">no preview</span><span class="stat-num" id="syncStatNoPreview">0</span>
+          </div>
         </div>
       </div>
 
@@ -497,6 +572,34 @@
         <button class="modal-btn modal-btn-primary" id="btnSyncStart" type="button" disabled>Sync selected</button>
       </div>
     </footer>
+  </div>
+</div>
+
+<!-- Admin panel (chandan-only). Hidden by default; toggled by JS after
+     /api/auth/me returns is_admin=true. -->
+<div class="admin-overlay" id="adminOverlay" role="dialog" aria-modal="true" aria-labelledby="adminOverlayTitle" hidden>
+  <div class="admin-backdrop" id="adminBackdrop"></div>
+  <div class="admin-card" role="document">
+    <header class="admin-header">
+      <div>
+        <h2 class="admin-title" id="adminOverlayTitle">Admin — users</h2>
+        <p class="admin-subtitle">Visible to <strong>chandan</strong> only. Deleting a user removes their library link and PIN, but keeps global tracks.</p>
+      </div>
+      <button class="admin-close" id="btnAdminClose" type="button" aria-label="Close admin panel">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </header>
+    <div class="admin-body" id="adminBody">
+      <div class="admin-loading" id="adminLoading">Loading users…</div>
+      <div class="admin-users" id="adminUsersList" hidden></div>
+    </div>
+    <div class="admin-detail" id="adminDetail" hidden>
+      <button class="admin-back" id="btnAdminBack" type="button">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        <span>Back to users</span>
+      </button>
+      <div id="adminDetailBody"></div>
+    </div>
   </div>
 </div>
 
