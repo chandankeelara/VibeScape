@@ -7,8 +7,7 @@ RUN pip install --no-cache-dir \
     "uvicorn[standard]>=0.24.0" \
     "requests>=2.31.0" \
     "modal>=0.63.0" \
-    "python-dotenv>=1.0.0" \
-    "libsql-client>=0.3.1"
+    "python-dotenv>=1.0.0"
 
 COPY backend/ /app/backend/
 COPY frontend/ /app/frontend/
