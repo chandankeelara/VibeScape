@@ -4291,3 +4291,48 @@ button.search-item:focus-visible {
 @media (max-width: 640px) {
   html, body { overflow-x: hidden; }
 }
+
+
+/* =====================================================================
+   MOBILE: album art as full-viewport blurred backdrop.
+   The .art rectangle takes ~40% of the mobile viewport just for a
+   photo the user has already seen a thousand times. Instead: use it as
+   an atmospheric background layer via body::before (fixed, blurred,
+   dimmed), hide the .art rectangle, reclaim its vertical space for
+   metadata / controls / vibe grid.
+   The --art-url custom prop is set in app.js loadTrack() alongside
+   el.artImg.src. Desktop rules are unaffected.
+   ===================================================================== */
+@media (max-width: 640px) {
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: var(--art-url, none);
+    background-size: cover;
+    background-position: center;
+    filter: blur(48px) saturate(1.1) brightness(0.42);
+    transform: scale(1.15); /* hide blur-edge feathering */
+    z-index: -2;
+    pointer-events: none;
+    transition: opacity 400ms var(--ease, ease-out);
+  }
+  body::after {
+    /* Second layer for extra readability: vertical gradient darker
+       at the top+bottom edges so header + slider labels stay legible. */
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+      linear-gradient(to bottom,
+        color-mix(in oklab, var(--bg, #08080c) 92%, transparent) 0%,
+        color-mix(in oklab, var(--bg, #08080c) 55%, transparent) 30%,
+        color-mix(in oklab, var(--bg, #08080c) 55%, transparent) 70%,
+        color-mix(in oklab, var(--bg, #08080c) 94%, transparent) 100%);
+    z-index: -1;
+    pointer-events: none;
+  }
+
+  /* Hide the artwork rectangle entirely — the whole viewport is the art now. */
+  .art { display: none !important; }
+}
