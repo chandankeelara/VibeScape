@@ -2979,6 +2979,9 @@
         setMediaSessionState(false);
         return;
       }
+      // Capture prior state BEFORE overwriting so we can detect
+      // "playing -> paused at position 0" as end-of-track.
+      const prevState = spotify.lastState;
       spotify.lastState = playerState;
       spotify.positionMs = playerState.position || 0;
       spotify.durationMs = playerState.duration || spotify.durationMs;
@@ -2997,11 +3000,23 @@
         renderSpotifyProgress();
       }
 
-      // detect end-of-track: paused, position 0, and a previous track exists
-      const prevTracks = (playerState.track_window && playerState.track_window.previous_tracks) || [];
-      if (playerState.paused && playerState.position === 0 && prevTracks.length > 0) {
+      // End-of-track heuristic: we WERE playing something with real
+      // duration + progress, and now we're paused at position 0.
+      // Independent of track_window.previous_tracks (which is often
+      // empty when playing a single URI via spotifyPlayTrack — that
+      // used to make the old prevTracks.length > 0 check silently
+      // skip auto-advance for every track).
+      const wasPlaying = !!(prevState && !prevState.paused
+                            && (prevState.position || 0) > 0
+                            && (prevState.duration || 0) > 0);
+      const endedNow = playerState.paused
+                       && (playerState.position || 0) === 0
+                       && (playerState.duration || 0) > 0;
+      if (wasPlaying && endedNow) {
         setTimeout(() => {
-          if (spotify.lastState && spotify.lastState.paused && spotify.lastState.position === 0) {
+          if (spotify.lastState
+              && spotify.lastState.paused
+              && (spotify.lastState.position || 0) === 0) {
             advanceToNext();
           }
         }, 500);
