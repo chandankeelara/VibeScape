@@ -1118,10 +1118,14 @@
     const img = new Image();
     img.onload = () => {
       el.artImg.src = img.src;
+      // Mirror onto a CSS custom property so mobile can use the artwork
+      // as a blurred atmospheric background via body::before.
+      document.body.style.setProperty('--art-url', "url('" + img.src.replace(/'/g, "\\'") + "')");
     };
     img.onerror = () => {
       el.art.classList.add('empty');
       el.artImg.removeAttribute('src');
+      document.body.style.removeProperty('--art-url');
     };
     img.src = t.artwork_url || '';
 
