@@ -4005,10 +4005,24 @@ button.search-item:focus-visible {
   .btn-ghost svg { width: 22px; height: 22px; }
   .btn-play { width: 60px; height: 60px; }
   .btn-play svg { width: 28px; height: 28px; }
-  /* Mode toggle unpins on mobile (already handled at 640px in the desktop
-     block via .controls flex-wrap); make the pill itself thumb-sized. */
-  .mode-toggle { margin-left: 0; margin-top: 8px; flex-basis: 100%; justify-content: center; padding: 3px; }
-  .mode-btn { height: 32px; padding: 0 14px; font-size: 11px; }
+  /* Mode toggle is a secondary control — a small compact segmented pill
+     on its own row, not full-width. Doesn't compete with the transport
+     controls or vibe hero for attention. Still thumb-friendly at 28px. */
+  .mode-toggle {
+    margin-left: 0;
+    margin-top: 10px;
+    flex-basis: auto;
+    align-self: center;
+    padding: 2px;
+    opacity: 0.72;
+  }
+  .mode-btn {
+    height: 24px;
+    padding: 0 9px;
+    font-size: 10px;
+    gap: 4px;
+  }
+  .mode-btn svg { width: 12px; height: 12px; }
 
   /* --- Vibe --- */
   .vibe { gap: 6px; }
