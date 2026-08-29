@@ -4304,6 +4304,12 @@ button.search-item:focus-visible {
    el.artImg.src. Desktop rules are unaffected.
    ===================================================================== */
 @media (max-width: 640px) {
+  /* Move the base color onto html and make body transparent so the
+     ::before pseudo-element (z-index: -2) is actually visible — otherwise
+     body's own opaque background paints on top of it. */
+  html { background: var(--bg); }
+  body { background: transparent; }
+
   body::before {
     content: '';
     position: fixed;
@@ -4311,28 +4317,57 @@ button.search-item:focus-visible {
     background-image: var(--art-url, none);
     background-size: cover;
     background-position: center;
-    filter: blur(48px) saturate(1.1) brightness(0.42);
-    transform: scale(1.15); /* hide blur-edge feathering */
+    filter: saturate(1.2) brightness(1.0);
+    transform: none;
     z-index: -2;
     pointer-events: none;
     transition: opacity 400ms var(--ease, ease-out);
   }
   body::after {
-    /* Second layer for extra readability: vertical gradient darker
-       at the top+bottom edges so header + slider labels stay legible. */
+    /* Readability scrim — dark enough that white/light text has contrast,
+       light enough that the artwork still comes through as an
+       atmospheric backdrop. */
     content: '';
     position: fixed;
     inset: 0;
     background:
       linear-gradient(to bottom,
-        color-mix(in oklab, var(--bg, #08080c) 92%, transparent) 0%,
-        color-mix(in oklab, var(--bg, #08080c) 55%, transparent) 30%,
-        color-mix(in oklab, var(--bg, #08080c) 55%, transparent) 70%,
-        color-mix(in oklab, var(--bg, #08080c) 94%, transparent) 100%);
+        color-mix(in oklab, var(--bg, #08080c) 78%, transparent) 0%,
+        color-mix(in oklab, var(--bg, #08080c) 55%, transparent) 20%,
+        color-mix(in oklab, var(--bg, #08080c) 55%, transparent) 78%,
+        color-mix(in oklab, var(--bg, #08080c) 82%, transparent) 100%);
     z-index: -1;
     pointer-events: none;
   }
 
   /* Hide the artwork rectangle entirely — the whole viewport is the art now. */
   .art { display: none !important; }
+
+  /* Mobile: drop the chips row entirely. Mood and vibe already show as
+     the vibe hero (big number + label) further down, source/metrics/verify
+     are debug affordances that don't earn their space on a phone. */
+  .chip-mood,
+  .chip-genre,
+  .chip-vibe,
+  .chip-source,
+  .chip-metrics,
+  .chip-verify { display: none !important; }
+  /* Genre still shows via the .genre-line whisper ("in <genre>") right
+     below the artist, so we're not hiding the info — just deduplicating. */
+  .chips:empty { display: none; }
+  .chips { display: none; }
+
+  /* Text-shadow safety net for all mobile text so anything sitting over
+     busy artwork stays readable even where the scrim is weakest. */
+  .title, .sub, .genre-em,
+  .chip, .mode-btn, .filter-chip,
+  .vibe-num, .vibe-mood,
+  .slider-ticks, .slider-ticks span,
+  .tCur, .tTot, #tCur, #tTot,
+  .search-input::placeholder,
+  .user-pill, .sp-name,
+  .btn-ghost, .btn-play,
+  .meta *, .transport *, .vibe *, .topbar *, .chips * {
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+  }
 }
