@@ -12,6 +12,15 @@
 </head>
 <body>
 
+<!--
+  Mobile queue sheet toggle (CSS-only). This is a checkbox-hack — no JS reads or
+  writes it; it exists purely so the mobile-only floating action button can flip
+  .queue-sidebar into a slide-up sheet via the :checked general-sibling combinator
+  in style.css. Desktop CSS never activates the sheet transform so the checkbox
+  state is inert at ≥641px.
+-->
+<input type="checkbox" id="mobileQueueOpen" class="mobile-sheet-toggle" hidden aria-hidden="true" />
+
 <div class="auth-overlay" id="authOverlay" role="dialog" aria-modal="true" aria-labelledby="authOverlayTitle" hidden>
   <div class="auth-overlay-backdrop"></div>
   <div class="auth-card" role="document">
@@ -416,6 +425,15 @@
 </main>
 
 <aside class="queue-sidebar" id="queueSidebar" aria-label="Play queue and recommendations">
+  <!-- Mobile-only sheet header. Hidden on desktop via CSS. The label acts as a
+       close affordance for the queue sheet (paired with #mobileQueueOpen above). -->
+  <div class="mobile-sheet-head" aria-hidden="true">
+    <span class="mobile-sheet-grabber"></span>
+    <span class="mobile-sheet-title">Queue</span>
+    <label class="mobile-sheet-close" for="mobileQueueOpen" aria-label="Close queue sheet">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </label>
+  </div>
   <section class="queue-section queue-section-queue">
     <div class="queue-section-head">
       <h2 class="queue-section-title">Up next</h2>
@@ -446,6 +464,13 @@
     <ol class="queue-recs-list" id="queueRecsList" hidden></ol>
   </section>
 </aside>
+
+<!-- Mobile-only queue affordances. Both hidden on desktop. -->
+<label class="mobile-queue-scrim" for="mobileQueueOpen" aria-hidden="true"></label>
+<label class="mobile-queue-fab" for="mobileQueueOpen" aria-label="Show queue and recommendations" title="Queue">
+  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+  <span class="mobile-queue-fab-count" id="mobileQueueFabCount" hidden></span>
+</label>
 
 <audio id="player" preload="metadata"></audio>
 <audio id="verifyAudio" preload="none" aria-hidden="true"></audio>

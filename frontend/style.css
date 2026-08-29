@@ -3861,3 +3861,419 @@ button.search-item:focus-visible {
   color: var(--text-2);
   font-size: 1.1em;
 }
+
+/* ==========================================================================
+   MOBILE PORTRAIT REFACTOR
+   ==========================================================================
+   All rules below only fire at max-width: 640px. Desktop (>=641px) is
+   completely untouched — verified by only overriding inside media queries.
+
+   Layout strategy for phones (360-430px portrait):
+   - Body grid collapses to single column (queue sidebar becomes a slide-up
+     sheet triggered by a bottom-right FAB using a CSS-only checkbox toggle).
+   - Stage becomes a tight vertical stack: art -> meta -> transport -> vibe.
+   - Art shrinks from clamp(180px, 58dvh, 480px) to a 66vw square capped at
+     42dvh so we always have room for the meta/transport/vibe below without
+     scrolling (100dvh invariant preserved).
+   - All primary interactive controls hit the 44x44 minimum. Circular
+     header icons (sync/debug/signout) get an invisible padding hit-pad so
+     the visual chip stays 24px but the touchable area becomes 40x40.
+   - Modals become near-full-viewport bottom sheets.
+   - env(safe-area-inset-*) is respected for the FAB and the sync sheet.
+
+   The mobile-sheet-toggle checkbox (in <body>) is inert on desktop — no
+   selector below the query line targets its :checked state at >=641px.
+   ========================================================================== */
+
+/* Dedicated element defaults — visible ONLY on mobile portrait.
+   Kept OUTSIDE the media query so [hidden] handling works consistently
+   with the anti-pattern memory note; the display:none default is what
+   makes them invisible on desktop.
+
+   Companion [hidden] rules follow the memory anti-pattern: any class that
+   sets an author `display` value beats UA `[hidden]{display:none}` at
+   equal specificity, so we add explicit paired overrides. */
+.mobile-sheet-toggle { position: absolute; opacity: 0; pointer-events: none; }
+.mobile-queue-fab { display: none; }
+.mobile-queue-fab[hidden] { display: none; }
+.mobile-queue-scrim { display: none; }
+.mobile-queue-scrim[hidden] { display: none; }
+.mobile-sheet-head { display: none; }
+.mobile-sheet-head[hidden] { display: none; }
+
+@media (max-width: 640px) {
+
+  /* --- Body / grid --- */
+  /* Single column. The queue-sidebar row/column mapping stays declared
+     (JS reads it) but we take it out of flow via `display: none` on the
+     grid cell and re-mount it as a fixed slide-up sheet below. */
+  body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+  main.stage { grid-column: 1 / -1; grid-row: 3; }
+
+  /* --- Topbar --- */
+  /* Wordmark stays visible; user-menu/help/sp buttons compact. Everything
+     lives on a single row via flex-wrap: nowrap + individual truncation. */
+  .topbar {
+    padding: calc(env(safe-area-inset-top) + 8px) 12px 6px;
+    gap: 8px;
+    flex-wrap: nowrap;
+  }
+  .wordmark { font-size: 14px; gap: 8px; flex-shrink: 0; }
+  .spotify-area { gap: 6px; min-width: 0; }
+  /* Give header pill/circle buttons a real 40x40 hit area without
+     ballooning the visual chip. Padding wrapper trick: use the button's
+     own box + hairline hit target overlay so touch users always land. */
+  .sp-signout, .sp-sync, .sp-debug {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+  }
+  .sp-signout svg, .sp-sync svg, .sp-debug svg { width: 16px; height: 16px; }
+  .sp-btn { min-height: 40px; padding: 6px 12px; }
+  .user-pill { height: 40px; padding: 4px 12px 4px 6px; }
+  .user-avatar { width: 28px; height: 28px; font-size: 15px; }
+  .user-name { max-width: 80px; font-size: 13px; }
+
+  /* --- Search bar --- */
+  /* Already handled by existing @media (max-width:640px) block at ~3600 —
+     just make sure the input keeps 16px effective font-size to prevent iOS
+     zoom-on-focus (14px CSS × 100% zoom triggers Safari to zoom in). */
+  .search-bar { padding-top: 6px; }
+  .search-input {
+    /* iOS zooms in on inputs with font-size < 16px on focus. Force 16px.
+       Keep visual weight modest via letter-spacing. */
+    font-size: 16px;
+    line-height: 1.2;
+  }
+  .search-input-wrap { height: 48px; }
+
+  /* --- Stage grid --- */
+  /* Stack rows: art / meta / transport / vibe. Row 1 (art) gets whatever
+     dvh remains after the others take their intrinsic heights.
+     We use `auto` rows so nothing wastes space; the stage itself keeps
+     overflow: hidden and the art shrinks to fit. */
+  .stage {
+    padding: 0 14px calc(env(safe-area-inset-bottom) + 10px);
+    row-gap: 10px;
+    grid-template-rows: minmax(0, 1fr) auto auto auto;
+  }
+
+  /* --- Art card --- */
+  /* Smaller than desktop's ~58dvh; 66vw square with a 42dvh ceiling
+     guarantees room for meta+transport+vibe below the fold. */
+  .art-wrap {
+    width: min(66vw, 42dvh);
+    max-width: 320px;
+    align-self: center;
+    justify-self: center;
+  }
+  .art { border-radius: 16px; }
+  .art-glow { border-radius: 22px; }
+
+  /* Video frame inside 16:9 letterbox is naturally correct. Tighten a few
+     absolute widgets so they fit inside the smaller frame. */
+  .video-empty { padding: 12px; gap: 6px; }
+  .video-open-yt { padding: 5px 12px; font-size: 11px; }
+  .video-search-trigger { padding: 5px 12px; font-size: 11px; }
+  .video-edit-btn { width: 36px; height: 36px; opacity: 0.9; top: 6px; right: 6px; }
+
+  /* --- Meta / chips --- */
+  .meta { text-align: center; }
+  .title-row { gap: 8px; }
+  .title { font-size: clamp(18px, 5vw, 22px); line-height: 1.2; }
+  .title-vibe, .title-lang { height: 18px; padding: 0 7px; font-size: 9.5px; }
+  .sub { font-size: 13px; gap: 6px; }
+  .artist { max-width: 62vw; }
+  .album-inline { max-width: 34vw; }
+  .genre-line { font-size: 12px; margin-top: 2px; }
+  .chips { margin-top: 6px; gap: 5px; }
+  .chip-mood, .chip-vibe { height: 24px; padding: 0 10px; font-size: 11px; }
+
+  /* --- Transport --- */
+  /* Bigger touch surface on the progress bar without changing its visual. */
+  .transport { padding: 8px 0 4px; }
+  .progress { padding: 18px 0 10px; touch-action: pan-y; }
+  .progress-track { height: 6px; }
+  .progress-thumb { width: 16px; height: 16px; }
+  .times { font-size: 10.5px; margin-top: 2px; }
+
+  .controls { margin-top: 6px; gap: 20px; }
+  .btn-ghost { width: 48px; height: 48px; }
+  .btn-ghost svg { width: 22px; height: 22px; }
+  .btn-play { width: 60px; height: 60px; }
+  .btn-play svg { width: 28px; height: 28px; }
+  /* Mode toggle unpins on mobile (already handled at 640px in the desktop
+     block via .controls flex-wrap); make the pill itself thumb-sized. */
+  .mode-toggle { margin-left: 0; margin-top: 8px; flex-basis: 100%; justify-content: center; padding: 3px; }
+  .mode-btn { height: 32px; padding: 0 14px; font-size: 11px; }
+
+  /* --- Vibe --- */
+  .vibe { gap: 6px; }
+  .vibe-num { font-size: clamp(44px, 12vw, 64px); line-height: 1.05; }
+  .vibe-hero-stack .vibe-mood { font-size: clamp(15px, 3.4vw, 18px); }
+  .slider-wrap { height: 52px; }
+  .slider-track { height: 12px; }
+  .slider-thumb { width: 30px; height: 30px; }
+  /* Right padding reserves space so the last tick ("beast") stays clear
+     of the bottom-right queue FAB (48px + 14px inset + safe-area). */
+  .ticks {
+    font-size: 10px;
+    padding: 0 calc(env(safe-area-inset-right) + 60px) 0 0;
+  }
+
+  /* --- Sidebar as bottom sheet --- */
+  /* Take the queue out of the grid; re-mount as a fixed slide-up sheet
+     controlled by #mobileQueueOpen (checkbox above the grid). */
+  .queue-sidebar[hidden] { display: none; }
+  .queue-sidebar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    z-index: 90;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-height: min(80dvh, 640px);
+    padding: 4px 12px calc(env(safe-area-inset-bottom) + 16px);
+    background: color-mix(in oklab, var(--surface) 96%, transparent);
+    border-top: 1px solid var(--border-strong);
+    border-top-left-radius: 20px;
+    border-top-right-radius: 20px;
+    box-shadow: 0 -20px 60px -20px rgba(0,0,0,0.7);
+    transform: translateY(100%);
+    transition: transform 260ms var(--ease);
+    overflow: hidden;
+    gap: 10px;
+    /* keep off the grid — Firefox will still auto-assign column if we don't
+       reset both. */
+    grid-column: auto;
+    grid-row: auto;
+  }
+  .mobile-sheet-toggle:checked ~ .queue-sidebar {
+    transform: translateY(0);
+  }
+
+  /* Scrim behind the sheet — click-to-close. */
+  .mobile-queue-scrim[hidden] { display: none; }
+  .mobile-queue-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 89;
+    background: rgba(0,0,0,0.55);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 220ms var(--ease);
+  }
+  .mobile-sheet-toggle:checked ~ .mobile-queue-scrim {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* Sheet header (grabber + title + close). */
+  .mobile-sheet-head[hidden] { display: none; }
+  .mobile-sheet-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 4px 8px 12px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    position: relative;
+  }
+  .mobile-sheet-grabber {
+    position: absolute;
+    top: 6px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 40px;
+    height: 4px;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--text-3) 60%, transparent);
+    pointer-events: none;
+  }
+  .mobile-sheet-title {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-3);
+    padding-top: 8px;
+    flex: 1;
+  }
+  .mobile-sheet-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    margin-top: 4px;
+    border-radius: 50%;
+    border: 1px solid var(--border-strong);
+    background: transparent;
+    color: var(--text-3);
+    cursor: pointer;
+    transition: color 180ms var(--ease), background 180ms var(--ease);
+  }
+  .mobile-sheet-close:hover, .mobile-sheet-close:focus-visible {
+    color: var(--text);
+    background: rgba(255,255,255,0.06);
+    outline: none;
+  }
+
+  /* Queue sections inside the sheet — remove their card chrome so the
+     sheet itself provides the container. */
+  .queue-sidebar .queue-section {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    max-height: none;
+    flex: 0 1 auto;
+  }
+  .queue-sidebar .queue-section-recs { flex: 1 1 auto; min-height: 0; }
+  .queue-section-queue { max-height: 42dvh; }
+
+  /* Bottom-right FAB — the queue open button. Fixed above the safe-area. */
+  .mobile-queue-fab[hidden] { display: none; }
+  .mobile-queue-fab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    right: calc(env(safe-area-inset-right) + 12px);
+    bottom: calc(env(safe-area-inset-bottom) + 12px);
+    z-index: 85;
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: color-mix(in oklab, var(--surface) 90%, transparent);
+    border: 1px solid color-mix(in oklab, var(--vibe-accent) 40%, var(--border-strong));
+    color: var(--text);
+    box-shadow:
+      0 10px 24px -8px rgba(0,0,0,0.6),
+      0 0 0 1px rgba(255,255,255,0.03) inset,
+      0 0 20px -6px color-mix(in oklab, var(--vibe-accent) 45%, transparent);
+    cursor: pointer;
+    transition: transform 180ms var(--ease), background 180ms var(--ease), border-color 180ms var(--ease);
+    -webkit-tap-highlight-color: transparent;
+  }
+  .mobile-queue-fab:hover {
+    background: color-mix(in oklab, var(--vibe-accent) 12%, var(--surface));
+    border-color: color-mix(in oklab, var(--vibe-accent) 55%, var(--border-strong));
+  }
+  .mobile-queue-fab:active { transform: scale(0.96); }
+  .mobile-sheet-toggle:checked ~ .mobile-queue-fab {
+    /* Hide FAB while the sheet is open — the close button inside the
+       sheet takes over. Keep transition so it fades cleanly. */
+    opacity: 0;
+    pointer-events: none;
+    transform: scale(0.9);
+  }
+  .mobile-queue-fab-count {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    background: var(--vibe-accent);
+    color: #fff;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 10px;
+    font-weight: 600;
+    box-shadow: 0 4px 10px -2px rgba(0,0,0,0.5);
+  }
+  .mobile-queue-fab-count[hidden] { display: none; }
+
+  /* --- Modals become bottom sheets on phones --- */
+  /* Sync modal already collapses at 480px; strengthen at 640px so 431-640
+     range also gets the sheet treatment (Pixel 7 Pro width 412 fits). */
+  .modal { padding: 0; align-items: flex-end; }
+  .modal-card {
+    max-width: 100%;
+    width: 100%;
+    max-height: 88dvh;
+    border-radius: 20px 20px 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .modal-header { padding: 14px 16px 10px; padding-top: max(14px, env(safe-area-inset-top)); }
+  .modal-footer { padding-bottom: max(14px, env(safe-area-inset-bottom)); }
+
+  /* --- Auth overlay tightens further at phone widths --- */
+  .auth-overlay { padding: 10px; padding-top: max(10px, env(safe-area-inset-top)); }
+  .auth-card { max-height: calc(100dvh - 20px); border-radius: 18px; }
+  .auth-card-header { padding: 16px 18px 10px; }
+  .auth-view { padding: 14px 16px 18px; }
+  .auth-profiles { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+
+  /* --- Panels (debug / metrics / help) — already handled by their own
+     @media (max-width:480px) blocks at ~2327 / ~2506 / ~2623 in this file.
+     Add safe-area bottom padding so overlong content clears the FAB. --- */
+  .debug-panel, .metrics-panel {
+    left: 8px;
+    right: 8px;
+    width: auto;
+    top: calc(env(safe-area-inset-top) + 60px);
+    max-height: min(72dvh, calc(100dvh - 160px));
+  }
+
+  /* --- Recent trail stays hidden on portrait (already does; belt&braces) --- */
+  .recent-trail { display: none !important; }
+
+  /* --- Toast --- */
+  .toast-container { width: min(calc(100vw - 20px), 480px); top: calc(env(safe-area-inset-top) + 10px); }
+
+  /* --- Auth-locked visibility hides FAB too --- */
+  body.auth-locked .mobile-queue-fab,
+  body.auth-locked .mobile-queue-scrim,
+  body.auth-locked .queue-sidebar { visibility: hidden; }
+
+  /* Prevent iOS text-size inflation on rotation */
+  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+}
+
+/* -------- Even tighter — very small phones (iPhone SE, 360px Androids) -------- */
+@media (max-width: 380px) {
+  .topbar { padding: calc(env(safe-area-inset-top) + 6px) 10px 4px; gap: 6px; }
+  .wordmark span:last-child { display: none; } /* wordmark shrinks to the dot */
+  .stage { padding: 0 12px calc(env(safe-area-inset-bottom) + 8px); row-gap: 8px; }
+  .title { font-size: 17px; }
+  .btn-ghost { width: 44px; height: 44px; }
+  .btn-play { width: 56px; height: 56px; }
+  .art-wrap { width: min(72vw, 38dvh); }
+  .vibe-num { font-size: clamp(40px, 11vw, 56px); }
+  .mobile-queue-fab { width: 44px; height: 44px; }
+  .mobile-queue-fab svg { width: 16px; height: 16px; }
+}
+
+/* -------- Landscape phone with narrow height reuse existing rules; only
+   ensure the FAB doesn't collide with the transport at short heights. -------- */
+@media (max-width: 900px) and (orientation: landscape) and (max-height: 500px) {
+  .mobile-queue-fab { display: none; }
+  .queue-sidebar { display: none; }
+  .mobile-queue-scrim { display: none; }
+}
+
+/* -------- Reduced-motion — kill the sheet slide -------- */
+@media (max-width: 640px) and (prefers-reduced-motion: reduce) {
+  .queue-sidebar,
+  .mobile-queue-scrim,
+  .mobile-queue-fab { transition: none; }
+}
+
+/* -------- Global hairline: prevent horizontal overflow on any viewport.
+   Belt-and-braces against a rogue too-wide child. Desktop layouts already
+   fit at 1440px so this is a no-op there; on mobile it protects against
+   long track titles / URLs escaping. -------- */
+@media (max-width: 640px) {
+  html, body { overflow-x: hidden; }
+}

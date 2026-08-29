@@ -3031,15 +3031,6 @@
       const endedNow = playerState.paused
                        && (playerState.position || 0) === 0
                        && (playerState.duration || 0) > 0;
-      vsDebug('sdk state', {
-        paused: playerState.paused,
-        pos: playerState.position,
-        dur: playerState.duration,
-        prev: (playerState.track_window && playerState.track_window.previous_tracks || []).length,
-        next: (playerState.track_window && playerState.track_window.next_tracks || []).length,
-        wasPlaying,
-        endedNow,
-      });
       if (wasPlaying && endedNow && !spotify.advanceScheduled) {
         // Fallback path: the position-poller preempt should have fired
         // ~1500ms before this. Only runs if the poll interval missed
