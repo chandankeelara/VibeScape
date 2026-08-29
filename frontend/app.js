@@ -2710,9 +2710,24 @@
 
     const url = await buildSpotifyAuthUrl();
 
-    // Try popup first. Sized-window request is more likely to open as a real
-    // popup with a handle we can poll. Named so the callback HTML (either
-    // ours or the future backend redirect) can recognize us via window.name.
+    // Same-window redirect is the primary flow — it survives modern browser
+    // storage partitioning (Firefox strict, Brave shields, Safari ITP,
+    // installed PWAs) that severs the localStorage bridge between a popup
+    // and its opener. Return here after Spotify redirects back to
+    // /?spotify_code=... which handleRedirectReturn picks up.
+    //
+    // The old popup path (window.open + watchPopupForCode + storage-event
+    // bridge) is left in place below `return` so future work can re-enable
+    // it behind an env flag if we want the "modal on desktop" UX back.
+    try {
+      sessionStorage.setItem('spotify_return_to', window.location.pathname + window.location.search + window.location.hash);
+    } catch (_) {}
+    toast('Redirecting to Spotify…', 'info');
+    window.location.assign(url);
+    return;
+
+    // ---- legacy popup path (unreachable — kept for reference) ----
+    // eslint-disable-next-line no-unreachable
     const w = 520, h = 720;
     const left = window.screenX + (window.outerWidth - w) / 2;
     const top = window.screenY + (window.outerHeight - h) / 2;
@@ -2720,8 +2735,6 @@
     let popup = null;
     try { popup = window.open(url, OAUTH_POPUP_NAME, features); } catch (_) { popup = null; }
 
-    // Popup blocked OR opened as a background tab we can't poll — fall back to
-    // same-window redirect. Saves current path so we can restore on return.
     if (!popup || popup.closed || typeof popup.closed === 'undefined') {
       console.warn('[VibeScape] popup unavailable — falling back to same-window redirect');
       try {
