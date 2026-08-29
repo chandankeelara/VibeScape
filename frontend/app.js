@@ -10,6 +10,25 @@
     return '';
   })();
 
+  // Server-driven debug flag. Set by loadClientConfig() on boot from
+  // GET /api/client-config, which reads VIBESCAPE_ENV=dev|prod. Any
+  // vsDebug() call before the fetch resolves silently no-ops.
+  let VS_DEBUG = false;
+  function vsDebug(...args) {
+    if (VS_DEBUG) console.log('[VS]', ...args);
+  }
+  async function loadClientConfig() {
+    try {
+      const r = await fetch(API_BASE + '/api/client-config');
+      if (!r.ok) return;
+      const j = await r.json();
+      VS_DEBUG = !!j.debug;
+      if (VS_DEBUG) console.log('[VS] debug logging enabled (VIBESCAPE_ENV=' + (j.env || '?') + ')');
+    } catch (_) { /* silent */ }
+  }
+  // Fire-and-forget on module load — flag flips as soon as the fetch settles.
+  loadClientConfig();
+
   const $ = (id) => document.getElementById(id);
 
   const el = {
@@ -3012,12 +3031,29 @@
       const endedNow = playerState.paused
                        && (playerState.position || 0) === 0
                        && (playerState.duration || 0) > 0;
-      if (wasPlaying && endedNow) {
+      vsDebug('sdk state', {
+        paused: playerState.paused,
+        pos: playerState.position,
+        dur: playerState.duration,
+        prev: (playerState.track_window && playerState.track_window.previous_tracks || []).length,
+        next: (playerState.track_window && playerState.track_window.next_tracks || []).length,
+        wasPlaying,
+        endedNow,
+      });
+      if (wasPlaying && endedNow && !spotify.advanceScheduled) {
+        // Fallback path: the position-poller preempt should have fired
+        // ~1500ms before this. Only runs if the poll interval missed
+        // (e.g. tab was backgrounded and setInterval was throttled).
+        spotify.advanceScheduled = true;
+        vsDebug('end-of-track fallback — scheduling advanceToNext in 500ms');
         setTimeout(() => {
           if (spotify.lastState
               && spotify.lastState.paused
               && (spotify.lastState.position || 0) === 0) {
+            vsDebug('advanceToNext firing (fallback)');
             advanceToNext();
+          } else {
+            vsDebug('advanceToNext skipped — state changed during 500ms wait');
           }
         }, 500);
       }
@@ -3038,6 +3074,13 @@
     el.progress.setAttribute('aria-valuetext', fmtTime(spotify.positionMs / 1000) + ' of ' + fmtTime(spotify.durationMs / 1000));
   }
 
+  // Preempt-window: fire advanceToNext when the playhead is this many ms
+  // from the end. Spotify's Autoplay engine will otherwise queue and start
+  // its own recommendation the moment the track ends, so VibeScape has to
+  // grab the transition first. 1500 ms is enough headroom for a fresh
+  // spotifyPlayTrack call to reach the SDK before autoplay fires.
+  const SDK_PREEMPT_MS = 1500;
+
   function startPositionPolling() {
     stopPositionPolling();
     spotify.pollTimer = setInterval(() => {
@@ -3048,6 +3091,19 @@
       spotify.positionMs = pos;
       renderSpotifyProgress();
       setMediaSessionPosition(spotify.durationMs / 1000, pos / 1000);
+
+      // Proactive end-of-track preemption. spotify.advanceScheduled is
+      // cleared by loadTrack() every time a new track starts, so this
+      // fires at most once per song.
+      if (!spotify.advanceScheduled
+          && spotify.durationMs > 0
+          && pos >= spotify.durationMs - SDK_PREEMPT_MS) {
+        spotify.advanceScheduled = true;
+        vsDebug('preempt fired', {
+          pos, dur: spotify.durationMs, remaining: spotify.durationMs - pos,
+        });
+        advanceToNext();
+      }
     }, 250);
   }
 
@@ -3107,6 +3163,9 @@
 
   async function spotifyPlayTrack(spotifyId) {
     if (!spotify.deviceId || !spotify.accessToken) return;
+    // Reset the preempt latch — a fresh track resets the "already scheduled
+    // an advance" flag so the next track can preempt too.
+    spotify.advanceScheduled = false;
     if (Date.now() >= spotify.expiresAt - 60_000) {
       const ok = await refreshSpotifyToken();
       if (!ok) return;

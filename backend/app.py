@@ -667,6 +667,20 @@ def spotify_config():
     return {"client_id": client_id or "", "redirect_uri": redirect_uri or ""}
 
 
+@app.get("/api/client-config")
+def client_config():
+    """
+    Runtime config for the browser. Currently just the deployment env,
+    used by app.js to decide whether to emit verbose debug logs.
+    Defaults to 'prod' so prod stays quiet by default; set
+    VIBESCAPE_ENV=dev in a local `.env` to enable debug logs.
+    """
+    env = (os.environ.get("VIBESCAPE_ENV") or "prod").strip().lower()
+    if env not in ("dev", "prod"):
+        env = "prod"
+    return {"env": env, "debug": env == "dev"}
+
+
 @app.get("/api/track/{apple_id}/spotify")
 def get_track_spotify(apple_id: int, sess: dict = Depends(require_user)):
     conn = get_conn()
