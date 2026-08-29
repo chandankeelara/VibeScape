@@ -26,6 +26,21 @@
   --pad-x: clamp(14px, 3vw, 28px);
   --pad-y: clamp(10px, 2dvh, 20px);
   --gap: clamp(10px, 2dvh, 20px);
+  /* Spacing scale — used by the main-section rhythm pass. Sticks to a
+     4-based ramp so all vertical gaps are multiples of the same unit. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  /* Rhythm tokens for grouping within the now-playing card. `tight` = within
+     a group (title -> pills, sub -> genre). `loose` = between groups
+     (identity -> chip actions). `section` = between logical sections
+     (art / meta / transport / vibe). */
+  --rhythm-tight: var(--space-1);
+  --rhythm-loose: var(--space-3);
+  --rhythm-section: clamp(16px, 2.8dvh, 26px);
   transition: --vibe-accent 400ms var(--ease), --vibe-accent-2 400ms var(--ease);
 }
 
@@ -4371,3 +4386,280 @@ button.search-item:focus-visible {
     text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
   }
 }
+/* ==================================================================
+   Now-playing polish pass
+   ------------------------------------------------------------------
+   Two goals:
+   (1) Metadata printing — clean hierarchy so the eye lands on
+       Title -> Artist -> context chips in that order. Title owns its
+       own row so long strings truncate cleanly and never fight the
+       inline pills. The redundant .title-vibe pill next to the title
+       is muted (it duplicates .chip-vibe in the row below).
+   (2) Main-section rhythm — deliberate grouping. Meta rows use tight
+       gaps within an identity group, loose gaps between groups. The
+       stage row-gaps (art -> meta -> transport -> vibe) use a bigger
+       section rhythm so the composition doesn't feel flat.
+   All rules here are additive and override the earlier declarations
+   for the same selectors. Nothing renamed, no JS-facing IDs touched.
+   ================================================================== */
+
+/* Stage: consistent section rhythm. `--gap` was doing double duty as
+   both micro-spacing and section-separator; replace with the explicit
+   --rhythm-section token so gaps read as intentional. */
+.stage {
+  row-gap: var(--rhythm-section);
+}
+
+/* ---------- Title row: force title to its own line ---------- */
+/* The old flex-wrap layout let long titles push the vibe/lang/sdk-only
+   pills onto a second implicit row, which read like a wrap accident
+   rather than a design choice. Force the title to occupy 100% of the
+   flex row so the pills always wrap onto row 2 as a natural inline
+   cluster. Long titles truncate on their own line; pills line up
+   below as a quiet metadata sub-row. */
+.title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px var(--space-2);
+  row-gap: var(--rhythm-tight);
+  margin: 0 0 var(--space-2);
+}
+/* Title spans the full row so pills push into an implicit second row. */
+.title-row > .title {
+  flex: 0 0 100%;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  text-align: center;
+}
+/* Pills are quieter than the primary chips — they're passive metadata,
+   not identity. Height + font-size dropped, contrast dropped. */
+.title-row > .title-vibe {
+  height: 18px;
+  padding: 0 8px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  background: transparent;
+  border-color: color-mix(in oklab, var(--vibe-accent) 28%, var(--border));
+  color: color-mix(in oklab, var(--vibe-accent) 70%, var(--text-2));
+}
+.title-row > .title-lang {
+  height: 18px;
+  padding: 0 8px;
+  font-size: 10px;
+  color: var(--text-3);
+}
+.title-row .sdk-only-badge {
+  height: 18px;
+  padding: 0 8px;
+  font-size: 9.5px;
+}
+
+/* ---------- Title typography ---------- */
+/* Slightly larger clamped size + tighter tracking. Title is the
+   heaviest text on the card; it should read as such. */
+.title {
+  font-size: clamp(20px, 3dvh, 30px);
+  line-height: 1.18;
+  font-weight: 600;
+  letter-spacing: -0.022em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- Sub row (artist · album) ---------- */
+/* Change inline-flex -> flex + center so truncation math works against
+   the container width, not the intrinsic content width. Ditch the
+   viewport-based max-widths — they overflow the meta column on the
+   desktop editorial layout. */
+.sub {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: var(--space-2);
+  font-size: clamp(13px, 1.8dvh, 15px);
+  font-weight: 500;
+  color: var(--text-2);
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+.artist {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.artist-sep {
+  opacity: 0.4;
+  margin: 0;
+  flex: 0 0 auto;
+}
+.album-inline {
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+/* ---------- Genre whisper ---------- */
+/* Tighter to the sub above (single identity group) — 4px. */
+.genre-line {
+  margin: var(--rhythm-tight) 0 0;
+  font-size: clamp(11px, 1.5dvh, 13px);
+  color: var(--text-3);
+  text-align: center;
+  letter-spacing: 0.01em;
+}
+
+/* ---------- Chip row ---------- */
+/* Loose gap above (this is a new group — actions vs identity above).
+   Vertical row-gap for wrapped chip rows so mixed heights don't crowd. */
+.chips {
+  margin-top: var(--rhythm-loose);
+  gap: 6px;
+  row-gap: var(--space-2);
+  align-items: center;
+}
+
+/* ---------- Meta container: consistent inner spacing ---------- */
+/* .meta doesn't have its own gap because its children set their own
+   top margins. Reset the world by giving .meta a flex column with
+   explicit gap. This makes the vertical rhythm predictable regardless
+   of which pills happen to be visible. */
+.meta {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  min-width: 0;
+  max-width: 100%;
+}
+/* Children stretch to fill .meta's width so their own text-align
+   controls horizontal placement — this lets .title truncate properly
+   without shrinking to content-width. */
+.meta > .title-row,
+.meta > .sub,
+.meta > .genre-line,
+.meta > .chips {
+  align-self: stretch;
+  width: 100%;
+  min-width: 0;
+}
+
+/* ---------- Transport group ---------- */
+/* Give the transport a bit more breathing room from meta above. The
+   border-top divider is retained on mobile stacked layout — reads as
+   a section boundary. Padding-top bumped so the times/controls don't
+   cling to the divider. */
+.transport {
+  padding: var(--space-3) 0 var(--space-1);
+}
+.times {
+  margin-top: var(--space-1);
+}
+.controls {
+  margin-top: var(--space-2);
+}
+
+/* ---------- Vibe group ---------- */
+.vibe {
+  gap: var(--space-2);
+}
+
+/* ------------------------------------------------------------------
+   Desktop editorial (>= 1024px) — extend the existing three-column
+   grid with the new rhythm tokens. Left-align everything in the meta
+   column; the title-row grid collapses to a single justify-start.
+   ------------------------------------------------------------------ */
+@media (min-width: 1024px) {
+  .meta-col {
+    gap: var(--rhythm-section);
+  }
+  .meta {
+    text-align: left;
+  }
+  .title-row {
+    justify-content: flex-start;
+    margin: 0 0 var(--space-2);
+  }
+  .title-row > .title { text-align: left; }
+  .sub { justify-content: flex-start; }
+  .genre-line { text-align: left; }
+  .chips { justify-content: flex-start; margin-top: var(--rhythm-loose); }
+
+  /* Title bumps up in weight/size on wide screens. */
+  .title {
+    font-size: clamp(26px, 3.6dvh, 42px);
+    letter-spacing: -0.026em;
+    line-height: 1.14;
+  }
+
+  /* Transport strips its border on desktop — the meta-divider already
+     provides the horizontal rule between meta and transport. */
+  .transport {
+    padding: 0;
+    border-top: none;
+  }
+}
+
+/* ------------------------------------------------------------------
+   Landscape mobile side-by-side (existing side-by-side block already
+   handles this). Just ensure our new title-row grid still left-aligns.
+   ------------------------------------------------------------------ */
+@media (orientation: landscape) and (min-width: 640px) and (max-height: 640px) and (max-width: 1023px) {
+  .title-row { justify-content: flex-start; }
+  .title-row > .title { text-align: left; }
+  .meta { text-align: left; }
+}
+
+/* ------------------------------------------------------------------
+   Mobile portrait polish (<= 640px)
+   Tighter rhythm, but still deliberate. Section gaps compressed by
+   ~30% because vertical real estate is precious on a phone.
+   ------------------------------------------------------------------ */
+@media (max-width: 640px) {
+  :root {
+    --rhythm-section: clamp(12px, 2dvh, 18px);
+    --rhythm-loose: var(--space-2);
+  }
+  .stage {
+    row-gap: var(--rhythm-section);
+    padding-bottom: max(var(--pad-y), env(safe-area-inset-bottom));
+  }
+  /* Title smaller so pills+artist have room. */
+  .title { font-size: clamp(17px, 2.6dvh, 22px); }
+  .sub { font-size: clamp(12px, 1.7dvh, 14px); }
+  /* On mobile the artist alone can carry the sub row — album truncates
+     hard and separator hides gracefully. */
+  .artist { max-width: 100%; }
+  .album-inline { max-width: 55vw; }
+  /* Chip row: keep the primary chips at full weight but let secondary
+     chips shrink slightly so 5-chip rows don't wrap 3-deep. */
+  .chips { row-gap: 6px; gap: 5px; margin-top: var(--space-2); }
+  .chip-mood, .chip-vibe { height: 24px; font-size: 11.5px; padding: 0 11px; }
+  /* Transport tighter but still has a clear divider. */
+  .transport { padding: var(--space-2) 0 var(--space-1); }
+  .controls { margin-top: var(--space-2); gap: 22px; }
+  /* Title-row pill row: keep them compact and center-aligned. */
+  .title-row { margin-bottom: var(--space-1); }
+}
+
+/* Very small phones — 380px and narrower. Kill album on the sub row so
+   only artist survives. */
+@media (max-width: 380px) {
+  .album-inline, .artist-sep { display: none; }
+  .title-row > .title-vibe,
+  .title-row > .title-lang,
+  .title-row > .sdk-only-badge {
+    margin-inline: 2px;
+  }
+}
+
