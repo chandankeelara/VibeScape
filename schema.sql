@@ -1,11 +1,32 @@
+-- Identity: one row per human. spotify_user_id is the canonical identity
+-- key when the user signs in with Spotify; the special row with
+-- display_name='Guest' is a shared demo profile for zero-friction "just
+-- listen" access. PINs / local-only accounts were removed in the unified-
+-- identity refactor -- Spotify is the identity provider from here on.
 CREATE TABLE IF NOT EXISTS users (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
     display_name          TEXT NOT NULL UNIQUE,
-    pin_hash              TEXT,
+    email                 TEXT,     -- for native email/password sign-in
+    password_hash         TEXT,     -- scrypt hash for email/password auth
     spotify_user_id       TEXT,
     spotify_display_name  TEXT,
-    created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    spotify_email         TEXT,
+    spotify_country       TEXT,
+    spotify_product       TEXT,     -- 'premium' | 'free' | 'open'
+    spotify_avatar_url    TEXT,
+    spotify_profile_url   TEXT,
+    created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_login_at         TIMESTAMP
 );
+
+-- One VibeScape user per Spotify account. Partial index so the Guest
+-- user (spotify_user_id NULL) doesn't collide.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_spotify_uid
+    ON users(spotify_user_id) WHERE spotify_user_id IS NOT NULL;
+
+-- One VibeScape user per email address (native email/password sign-in).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email
+    ON users(email) WHERE email IS NOT NULL AND email != '';
 
 CREATE TABLE IF NOT EXISTS sessions (
     token         TEXT PRIMARY KEY,
@@ -84,7 +105,15 @@ CREATE TABLE IF NOT EXISTS tracks (
 
     features_extracted_at TIMESTAMP,
     ml_predicted_at       TIMESTAMP,
-    created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    -- Two-phase ingestion. Sync (online) inserts metadata with status='pending';
+    -- scripts/run_ingest_worker.py (offline) does the preview cascade + ML
+    -- scoring + language detection and flips to 'done' (or 'no_preview' /
+    -- 'failed'). The library / mood-grid queries filter to 'done'.
+    ingestion_status       TEXT DEFAULT 'pending',
+    ingestion_error        TEXT,
+    ingestion_attempted_at TIMESTAMP
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_spotify_id ON tracks(spotify_id) WHERE spotify_id IS NOT NULL;
@@ -94,6 +123,7 @@ CREATE INDEX IF NOT EXISTS idx_tracks_mood ON tracks(mood);
 CREATE INDEX IF NOT EXISTS idx_tracks_activation     ON tracks(activation);
 CREATE INDEX IF NOT EXISTS idx_tracks_activation_rel ON tracks(activation_relative);
 CREATE INDEX IF NOT EXISTS idx_tracks_language       ON tracks(language);
+CREATE INDEX IF NOT EXISTS idx_tracks_ingestion_status ON tracks(ingestion_status);
 
 CREATE TABLE IF NOT EXISTS user_tracks (
     user_id     INTEGER NOT NULL REFERENCES users(id)  ON DELETE CASCADE,

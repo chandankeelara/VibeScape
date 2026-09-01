@@ -597,6 +597,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE tracks ADD COLUMN language_top3_json TEXT",
         "ALTER TABLE tracks ADD COLUMN language_model_version TEXT",
         "ALTER TABLE tracks ADD COLUMN language_predicted_at TIMESTAMP",
+        "ALTER TABLE tracks ADD COLUMN ingestion_status TEXT DEFAULT 'pending'",
+        "ALTER TABLE tracks ADD COLUMN ingestion_error TEXT",
+        "ALTER TABLE tracks ADD COLUMN ingestion_attempted_at TIMESTAMP",
     ]
     for c in _EXTENDED_COLUMNS:
         stmts.append(f"ALTER TABLE tracks ADD COLUMN {c} REAL")
@@ -634,6 +637,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.commit()
 
         _backfill_classification_source(conn)
+        _backfill_ingestion_status(conn)
 
     # Split per-user tracks into global tracks + user_tracks. Must run
     # BEFORE schema.sql executes CREATE UNIQUE INDEX on spotify_id/apple_id,
@@ -652,6 +656,31 @@ def _migrate(conn: sqlite3.Connection) -> None:
             raise RuntimeError(
                 f"split-tracks migration failed; DB unchanged from backup at {backup_path}"
             )
+
+
+def _backfill_ingestion_status(conn: sqlite3.Connection) -> int:
+    """
+    Existing rows predate the two-phase ingest flow. If they already have
+    an activation/vibe_score (i.e. the old inline pipeline actually scored
+    them), mark them 'done' so they show up in the library.
+
+    Important SQLite quirk: `ALTER TABLE ... ADD COLUMN <col> DEFAULT 'pending'`
+    fills every pre-existing row with 'pending', NOT NULL. So the WHERE
+    clause has to match rows that are currently 'pending' *and* look
+    scored, plus any lingering NULLs from paths that skipped the DEFAULT.
+    """
+    try:
+        cur = conn.execute(
+            "UPDATE tracks SET ingestion_status = 'done' "
+            "WHERE (ingestion_status IS NULL OR ingestion_status = 'pending') "
+            "AND (vibe_score IS NOT NULL "
+            "     OR vibe_score_ml IS NOT NULL "
+            "     OR activation IS NOT NULL)"
+        )
+        conn.commit()
+        return cur.rowcount or 0
+    except sqlite3.OperationalError:
+        return 0
 
 
 def _backfill_classification_source(conn: sqlite3.Connection) -> int:
