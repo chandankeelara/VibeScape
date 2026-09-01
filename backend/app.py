@@ -30,7 +30,7 @@ import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -95,6 +95,10 @@ TRACK_COLUMNS = [
     # / non-speech tracks) or when the classifier hasn't run yet.
     "language",
     "language_confidence",
+    # Two-phase ingest state. 'done' = playable, 'pending' = awaiting the
+    # offline worker, 'no_preview' / 'failed' = terminal errors. The
+    # library / mood-grid endpoints filter to 'done'.
+    "ingestion_status",
 ]
 TRACK_SELECT = ", ".join(TRACK_COLUMNS)
 
@@ -147,23 +151,21 @@ def _log_lan_bind_info() -> None:
 # ---------------- Auth: users + sessions ----------------
 
 
-def _hash_pin(pin: str) -> str:
+def _hash_password(password: str) -> str:
     """
-    Salted scrypt hash for a user PIN. Format: 'scrypt$<hex_salt>$<hex_hash>'.
-    Cheap enough for LAN, hard enough to brute-force via network.
+    Salted scrypt hash. Format: 'scrypt$<hex_salt>$<hex_hash>'. Same
+    algorithm used by the (removed) PIN system — scrypt is memory-hard
+    enough to slow down offline attacks against the SQLite dump.
     """
-    if not pin:
-        return ""
+    if not password:
+        raise ValueError("password required")
     salt = secrets.token_bytes(16)
-    dk = hashlib.scrypt(pin.encode("utf-8"), salt=salt, n=2 ** 14, r=8, p=1, dklen=32)
+    dk = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2 ** 14, r=8, p=1, dklen=32)
     return "scrypt$" + salt.hex() + "$" + dk.hex()
 
 
-def _verify_pin(pin: str, stored: Optional[str]) -> bool:
-    if not stored:
-        # user has no PIN configured -> any/empty PIN accepted
-        return True
-    if not pin:
+def _verify_password(password: str, stored: Optional[str]) -> bool:
+    if not stored or not password:
         return False
     try:
         scheme, salt_hex, hash_hex = stored.split("$")
@@ -176,8 +178,27 @@ def _verify_pin(pin: str, stored: Optional[str]) -> bool:
         expected = bytes.fromhex(hash_hex)
     except ValueError:
         return False
-    dk = hashlib.scrypt(pin.encode("utf-8"), salt=salt, n=2 ** 14, r=8, p=1, dklen=32)
+    dk = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2 ** 14, r=8, p=1, dklen=32)
     return hmac.compare_digest(dk, expected)
+
+
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+
+def _normalize_email(raw: str) -> str:
+    return (raw or "").strip().lower()
+
+
+def _display_name_from_email(email: Optional[str]) -> Optional[str]:
+    """
+    Derive a short display name from an email: the local-part truncated
+    to 7 chars, with '...' appended if it was longer. 'chandan@x.com'
+    → 'chandan'; 'chandanke@x.com' → 'chandan...'.
+    """
+    prefix = (email or "").split("@", 1)[0].strip()
+    if not prefix:
+        return None
+    return prefix[:7] + "..." if len(prefix) > 7 else prefix
 
 
 def _issue_session(conn, user_id: int) -> str:
@@ -194,7 +215,9 @@ def _lookup_session(conn, token: str) -> Optional[dict]:
     if not token:
         return None
     row = conn.execute(
-        "SELECT s.token, s.user_id, u.display_name, u.pin_hash, u.spotify_user_id, u.spotify_display_name, u.created_at "
+        "SELECT s.token, s.user_id, u.display_name, u.spotify_user_id, u.spotify_display_name, "
+        "u.spotify_email, u.spotify_country, u.spotify_product, u.spotify_avatar_url, u.spotify_profile_url, "
+        "u.created_at, u.last_login_at "
         "FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?",
         (token,),
     ).fetchone()
@@ -267,99 +290,114 @@ def require_user_stream(request: Request, authorization: Optional[str] = Header(
     return sess
 
 
-class SignupBody(BaseModel):
-    display_name: str
-    pin: Optional[str] = None
-
-
-class LoginBody(BaseModel):
-    user_id: int
-    pin: Optional[str] = None
-
-
-class SetPinBody(BaseModel):
-    # new_pin: 4 digits. Set to null/empty to remove the PIN.
-    new_pin: Optional[str] = None
-    # current_pin required if the user already has one (auth to change).
-    current_pin: Optional[str] = None
-
-
 class SpotifyLinkBody(BaseModel):
     spotify_user_id: str
     spotify_display_name: Optional[str] = None
 
 
-@app.get("/api/users")
-def list_users():
-    """Public: profile picker. Does NOT expose pin_hash."""
-    conn = get_conn()
-    try:
-        rows = conn.execute(
-            "SELECT id, display_name, pin_hash, spotify_display_name "
-            "FROM users ORDER BY id"
-        ).fetchall()
-    finally:
-        conn.close()
-    return [
-        {
-            "user_id": r["id"],
-            "display_name": r["display_name"],
-            "has_pin": bool(r["pin_hash"]),
-            "spotify_display_name": r["spotify_display_name"],
-        }
-        for r in rows
-    ]
+class EmailSignupBody(BaseModel):
+    email: str
+    password: str
+
+
+class EmailLoginBody(BaseModel):
+    email: str
+    password: str
 
 
 @app.post("/api/auth/signup")
-def auth_signup(body: SignupBody):
-    name = (body.display_name or "").strip()
-    if not name:
-        raise HTTPException(status_code=422, detail={"error": "display_name required"})
-    pin_hash = _hash_pin(body.pin) if body.pin else None
+def auth_email_signup(body: EmailSignupBody):
+    """
+    Create a new VibeScape-native user (no Spotify link) with an
+    email + scrypt-hashed password. Seeds the user's library from the
+    admin's tracks so the demo has something to play right away — user
+    can add/remove from there.
+    """
+    email = _normalize_email(body.email)
+    if not email or not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=422, detail={"error": "invalid_email"})
+    if not body.password or len(body.password) < 6:
+        raise HTTPException(status_code=422, detail={"error": "password_too_short"})
+    pw_hash = _hash_password(body.password)
+    display = _display_name_from_email(email) or "listener"
+
     conn = get_conn()
     try:
+        exists = conn.execute(
+            "SELECT 1 FROM users WHERE email = ?", (email,)
+        ).fetchone()
+        if exists:
+            raise HTTPException(status_code=409, detail={"error": "email_taken"})
         try:
+            display = _unique_display_name(conn, display)
             cur = conn.execute(
-                "INSERT INTO users (display_name, pin_hash) VALUES (?, ?)",
-                (name, pin_hash),
+                "INSERT INTO users (display_name, email, password_hash, last_login_at) "
+                "VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                (display, email, pw_hash),
             )
             conn.commit()
             user_id = int(cur.lastrowid)
         except sqlite3.IntegrityError:
-            raise HTTPException(status_code=409, detail={"error": "display_name_taken"})
+            raise HTTPException(status_code=409, detail={"error": "email_taken"})
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO user_tracks (user_id, track_id, source) "
+                "SELECT ?, track_id, 'email_signup_seed' FROM user_tracks WHERE user_id = ?",
+                (user_id, ADMIN_USER_ID),
+            )
+            conn.commit()
+        except Exception as e:
+            log.warning("email signup seed failed for user %s: %s", user_id, e)
         token = _issue_session(conn, user_id)
     finally:
         conn.close()
     return {
         "user_id": user_id,
-        "display_name": name,
+        "display_name": display,
+        "email": email,
         "session_token": token,
-        "has_pin": bool(pin_hash),
+        "spotify_connected": False,
+        "is_premium": False,
+        "is_admin": user_id == ADMIN_USER_ID,
+        "is_guest": False,
     }
 
 
 @app.post("/api/auth/login")
-def auth_login(body: LoginBody):
+def auth_email_login(body: EmailLoginBody):
+    """Password login for VibeScape-native accounts (no Spotify)."""
+    email = _normalize_email(body.email)
+    if not email:
+        raise HTTPException(status_code=422, detail={"error": "invalid_email"})
+    if not body.password:
+        raise HTTPException(status_code=422, detail={"error": "password_required"})
     conn = get_conn()
     try:
         row = conn.execute(
-            "SELECT id, display_name, pin_hash FROM users WHERE id = ?",
-            (body.user_id,),
+            "SELECT id, display_name, email, password_hash, spotify_user_id, spotify_product "
+            "FROM users WHERE email = ?",
+            (email,),
         ).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail={"error": "user_not_found"})
-        if row["pin_hash"] and not _verify_pin(body.pin or "", row["pin_hash"]):
-            raise HTTPException(status_code=401, detail={"error": "bad_pin"})
-        token = _issue_session(conn, int(row["id"]))
+        if not row or not _verify_password(body.password, row["password_hash"]):
+            raise HTTPException(status_code=401, detail={"error": "bad_credentials"})
+        user_id = int(row["id"])
+        conn.execute(
+            "UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (user_id,),
+        )
+        conn.commit()
+        token = _issue_session(conn, user_id)
     finally:
         conn.close()
     return {
-        "user_id": int(row["id"]),
+        "user_id": user_id,
         "display_name": row["display_name"],
+        "email": row["email"],
         "session_token": token,
-        "has_pin": bool(row["pin_hash"]),
-        "is_admin": int(row["id"]) == ADMIN_USER_ID,
+        "spotify_connected": bool(row["spotify_user_id"]),
+        "is_premium": row["spotify_product"] == "premium",
+        "is_admin": user_id == ADMIN_USER_ID,
+        "is_guest": False,
     }
 
 
@@ -376,14 +414,291 @@ def auth_logout(sess: dict = Depends(require_user)):
 
 @app.get("/api/auth/me")
 def auth_me(sess: dict = Depends(require_user)):
+    product = sess.get("spotify_product")
     return {
         "user_id": sess["user_id"],
         "display_name": sess["display_name"],
-        "has_pin": bool(sess.get("pin_hash")),
         "spotify_connected": bool(sess.get("spotify_user_id")),
         "spotify_display_name": sess.get("spotify_display_name"),
+        "spotify_email": sess.get("spotify_email"),
+        "spotify_country": sess.get("spotify_country"),
+        "spotify_product": product,
+        "is_premium": product == "premium",
+        "avatar_url": sess.get("spotify_avatar_url"),
+        "profile_url": sess.get("spotify_profile_url"),
         "created_at": sess.get("created_at"),
+        "last_login_at": sess.get("last_login_at"),
         "is_admin": int(sess["user_id"]) == ADMIN_USER_ID,
+        "is_guest": sess.get("display_name") == "Guest",
+    }
+
+
+class SpotifyOAuthBody(BaseModel):
+    code: str
+    redirect_uri: Optional[str] = None
+
+
+def _spotify_token_exchange(code: str, redirect_uri: str) -> dict:
+    client_id = getattr(app_config, "SPOTIFY_CLIENT_ID", "") if app_config else ""
+    client_secret = getattr(app_config, "SPOTIFY_CLIENT_SECRET", "") if app_config else ""
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=500, detail={"error": "spotify_not_configured"})
+    r = requests.post(
+        "https://accounts.spotify.com/api/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "client_id": client_id,
+            "client_secret": client_secret,
+        },
+        timeout=15,
+    )
+    if r.status_code != 200:
+        log.warning("spotify token exchange failed: %s %s", r.status_code, r.text[:200])
+        raise HTTPException(status_code=400, detail={"error": "spotify_code_invalid"})
+    return r.json()
+
+
+def _spotify_me(access_token: str) -> dict:
+    r = requests.get(
+        "https://api.spotify.com/v1/me",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=15,
+    )
+    if r.status_code != 200:
+        raise HTTPException(status_code=400, detail={"error": "spotify_me_failed"})
+    return r.json()
+
+
+def _unique_display_name(conn, base: str) -> str:
+    """Append a suffix if display_name is taken (users.display_name is UNIQUE)."""
+    base = (base or "").strip() or "Listener"
+    name = base
+    i = 2
+    while conn.execute(
+        "SELECT 1 FROM users WHERE display_name = ?",
+        (name,),
+    ).fetchone():
+        name = f"{base} {i}"
+        i += 1
+        if i > 999:
+            name = f"{base} {secrets.token_hex(3)}"
+            break
+    return name
+
+
+def _pick_display_name_from_spotify(conn, sp_display: Optional[str],
+                                    sp_email: Optional[str],
+                                    sp_id: str) -> str:
+    """
+    Choose a display name for a new Spotify-linked user, preferring the
+    Spotify display_name if it isn't already taken. If it is taken, fall
+    back to the email-derived short name (before the numeric suffix
+    dance in _unique_display_name kicks in) — cleaner than 'Chandan 2'.
+    """
+    def _taken(n: str) -> bool:
+        if not n:
+            return True
+        return bool(conn.execute(
+            "SELECT 1 FROM users WHERE display_name = ?", (n,),
+        ).fetchone())
+
+    if sp_display:
+        candidate = sp_display.strip()
+        if candidate and not _taken(candidate):
+            return candidate
+    from_email = _display_name_from_email(sp_email)
+    if from_email and not _taken(from_email):
+        return from_email
+    id_short = (sp_id or "user")[:7]
+    if id_short and not _taken(id_short):
+        return id_short
+    return _unique_display_name(conn, sp_display or from_email or id_short or "Listener")
+
+
+@app.post("/api/auth/spotify-oauth")
+def auth_spotify_oauth(body: SpotifyOAuthBody):
+    """
+    Log in (or sign up) using a Spotify authorization code. Exchanges the
+    code for tokens, fetches the caller's Spotify identity, and upserts
+    a VibeScape user keyed on spotify_user_id. Returns a session_token
+    payload identical in shape to /api/auth/login.
+    """
+    if not body.code:
+        raise HTTPException(status_code=422, detail={"error": "code required"})
+    redirect_uri = body.redirect_uri or (
+        getattr(app_config, "SPOTIFY_REDIRECT_URI", "") if app_config else ""
+    )
+    if not redirect_uri:
+        raise HTTPException(status_code=422, detail={"error": "redirect_uri required"})
+
+    tokens = _spotify_token_exchange(body.code, redirect_uri)
+    access_token = tokens.get("access_token")
+    if not access_token:
+        raise HTTPException(status_code=400, detail={"error": "spotify_no_access_token"})
+
+    me = _spotify_me(access_token)
+    sp_id = me.get("id")
+    if not sp_id:
+        raise HTTPException(status_code=400, detail={"error": "spotify_no_id"})
+    sp_display = me.get("display_name") or sp_id
+    sp_email = me.get("email")
+    sp_country = me.get("country")
+    sp_product = me.get("product")  # 'premium' | 'free' | 'open'
+    sp_profile_url = ((me.get("external_urls") or {}).get("spotify")) or None
+    images = me.get("images") or []
+    sp_avatar_url = images[0]["url"] if images and images[0].get("url") else None
+
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT id, display_name FROM users WHERE spotify_user_id = ?",
+            (sp_id,),
+        ).fetchone()
+        if row:
+            user_id = int(row["id"])
+            display_name = row["display_name"]
+            conn.execute(
+                "UPDATE users SET spotify_display_name = ?, spotify_email = ?, "
+                "spotify_country = ?, spotify_product = ?, spotify_avatar_url = ?, "
+                "spotify_profile_url = ?, last_login_at = CURRENT_TIMESTAMP "
+                "WHERE id = ?",
+                (sp_display, sp_email, sp_country, sp_product, sp_avatar_url, sp_profile_url, user_id),
+            )
+            conn.commit()
+        else:
+            display_name = _pick_display_name_from_spotify(conn, sp_display, sp_email, sp_id)
+            cur = conn.execute(
+                "INSERT INTO users (display_name, spotify_user_id, spotify_display_name, "
+                "spotify_email, spotify_country, spotify_product, spotify_avatar_url, "
+                "spotify_profile_url, last_login_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                (display_name, sp_id, sp_display, sp_email, sp_country, sp_product,
+                 sp_avatar_url, sp_profile_url),
+            )
+            conn.commit()
+            user_id = int(cur.lastrowid)
+        token = _issue_session(conn, user_id)
+    finally:
+        conn.close()
+
+    return {
+        "user_id": user_id,
+        "display_name": display_name,
+        "session_token": token,
+        "spotify_connected": True,
+        "spotify_display_name": sp_display,
+        "spotify_email": sp_email,
+        "spotify_country": sp_country,
+        "spotify_product": sp_product,
+        "is_premium": sp_product == "premium",
+        "avatar_url": sp_avatar_url,
+        "profile_url": sp_profile_url,
+        "is_admin": user_id == ADMIN_USER_ID,
+        # Pass the raw Spotify access token back so the frontend can call
+        # /v1/me, /v1/me/tracks, etc. without a second consent round-trip.
+        "spotify_access_token": access_token,
+        "spotify_refresh_token": tokens.get("refresh_token"),
+        "spotify_expires_in": tokens.get("expires_in"),
+        "spotify_scope": tokens.get("scope"),
+    }
+
+
+@app.get("/api/demo/moods")
+def demo_moods():
+    """
+    Public endpoint powering the landing-page hero card. Returns one
+    real track per mood band (sleep/chill/steady/hype/beast) from the
+    library, picking the track whose vibe score is closest to the
+    middle of each band and has a non-empty artwork URL. No auth.
+    """
+    vibe_expr = "COALESCE(t.vibe_score_ml * 100.0, t.vibe_score)"
+    bands = [
+        ("sleep",   0.0,  20.0, 10.0),
+        ("chill",  20.0,  40.0, 30.0),
+        ("steady", 40.0,  60.0, 50.0),
+        ("hype",   60.0,  80.0, 70.0),
+        ("beast",  80.0, 100.0, 90.0),
+    ]
+    out = []
+    conn = get_conn()
+    try:
+        for mood, lo, hi, target in bands:
+            row = conn.execute(
+                f"SELECT t.title, t.artist, t.album, t.artwork_url, "
+                f"       {vibe_expr} AS v "
+                f"FROM tracks t "
+                f"WHERE t.ingestion_status = 'done' "
+                f"  AND {vibe_expr} >= ? AND {vibe_expr} < ? "
+                f"  AND t.artwork_url IS NOT NULL AND t.artwork_url != '' "
+                f"ORDER BY ABS({vibe_expr} - ?) LIMIT 1",
+                (lo, hi, target),
+            ).fetchone()
+            if row:
+                out.append({
+                    "mood": mood,
+                    "title": row["title"],
+                    "artist": row["artist"],
+                    "album": row["album"],
+                    "artwork_url": row["artwork_url"],
+                    "vibe": int(round(row["v"] or target)),
+                })
+            else:
+                out.append({
+                    "mood": mood,
+                    "title": None, "artist": None, "album": None,
+                    "artwork_url": None, "vibe": int(target),
+                })
+    finally:
+        conn.close()
+    return {"moods": out}
+
+
+@app.post("/api/auth/guest")
+def auth_guest():
+    """
+    Zero-friction "just listen" mode. Reuses a shared 'Guest' user
+    (creating one on first call) and issues a session token. All guests
+    share the same library — treat this as a demo profile, not a real
+    account.
+    """
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT id, display_name FROM users WHERE display_name = 'Guest'",
+        ).fetchone()
+        if row:
+            user_id = int(row["id"])
+            display_name = row["display_name"]
+        else:
+            cur = conn.execute(
+                "INSERT INTO users (display_name, last_login_at) "
+                "VALUES ('Guest', CURRENT_TIMESTAMP)",
+            )
+            conn.commit()
+            user_id = int(cur.lastrowid)
+            display_name = "Guest"
+            # Seed the guest library with the admin's tracks so "just listen"
+            # actually plays something. Idempotent via INSERT OR IGNORE.
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO user_tracks (user_id, track_id, source) "
+                    "SELECT ?, track_id, 'guest_seed' FROM user_tracks WHERE user_id = ?",
+                    (user_id, ADMIN_USER_ID),
+                )
+                conn.commit()
+            except Exception as e:
+                log.warning("guest seed failed: %s", e)
+        token = _issue_session(conn, user_id)
+    finally:
+        conn.close()
+    return {
+        "user_id": user_id,
+        "display_name": display_name,
+        "session_token": token,
+        "is_admin": False,
+        "is_guest": True,
     }
 
 
@@ -447,7 +762,8 @@ def list_tracks(
     # fall back to the legacy formula-based vibe_score for tracks the
     # predictor hasn't run against yet.
     vibe_expr = "COALESCE(t.vibe_score_ml * 100.0, t.vibe_score)"
-    where = ["ut.user_id = ?", f"{vibe_expr} BETWEEN ? AND ?"]
+    where = ["ut.user_id = ?", "t.ingestion_status = 'done'",
+             f"{vibe_expr} BETWEEN ? AND ?"]
     params: list = [sess["user_id"], vibe_min, vibe_max]
     if mood:
         where.append("t.mood = ?")
@@ -494,6 +810,7 @@ def search_tracks(
         f"SELECT {select} FROM tracks t "
         f"JOIN user_tracks ut ON ut.track_id = t.id "
         f"WHERE ut.user_id = ? "
+        f"AND t.ingestion_status = 'done' "
         f"AND (t.title LIKE ? COLLATE NOCASE "
         f"     OR t.artist LIKE ? COLLATE NOCASE "
         f"     OR t.album LIKE ? COLLATE NOCASE) "
@@ -593,6 +910,7 @@ def similar_tracks(
             FROM tracks t
             JOIN user_tracks ut ON ut.track_id = t.id
             WHERE ut.user_id = ?
+              AND t.ingestion_status = 'done'
               AND t.id != ?
             ORDER BY distance ASC, t.title COLLATE NOCASE
             LIMIT ?
@@ -640,6 +958,7 @@ def random_track(
                 f"SELECT {select} FROM tracks t "
                 f"JOIN user_tracks ut ON ut.track_id = t.id "
                 f"WHERE ut.user_id = ? "
+                f"AND t.ingestion_status = 'done' "
                 f"AND COALESCE(t.vibe_score_ml * 100.0, t.vibe_score) BETWEEN ? AND ?"
             )
             params: list = [sess["user_id"], lo, hi]
@@ -1770,6 +2089,20 @@ def _is_cancelled(job_id: str) -> bool:
 
 
 def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "manual") -> str:
+    """
+    Online fast path used by all /api/ingest/* endpoints. Writes metadata
+    only — the preview cascade, ML scoring, and Whisper language detection
+    all happen later, offline, in scripts/run_ingest_worker.py.
+
+    Returns one of the sync-modal bucket names:
+      - added_to_library     — track was already fully ingested globally,
+                               user_tracks link created (playable now)
+      - already_in_library   — user already had this track linked (no-op)
+      - queued_for_analysis  — new metadata row (or existing pending row)
+                               linked to the user, will appear in library
+                               once the offline worker finishes it
+      - skip:no_id           — track missing spotify_id
+    """
     spotify_id = track.get("id")
     if not spotify_id:
         return "skip:no_id"
@@ -1787,9 +2120,8 @@ def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "
     preview_url = track.get("preview_url")
 
     _update_job(job_id, current_track=f"{name} - {artist_name}")
-    log.info("[ingest] user=%s track=%r artist=%r spotify_preview=%s isrc=%s",
-             user_id, name, artist_name, bool(preview_url), isrc or "-")
 
+    # 1) User already has this track linked → no-op.
     existing_link = conn.execute(
         "SELECT 1 FROM tracks t "
         "JOIN user_tracks ut ON ut.track_id = t.id "
@@ -1797,12 +2129,11 @@ def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "
         (spotify_id, user_id),
     ).fetchone()
     if existing_link:
-        return "skip:already_ingested"
+        return "already_in_library"
 
-    # Track exists globally but this user hasn't linked it yet. Reuse
-    # features + audio, just add the user_tracks row.
+    # 2) Track exists globally → reuse and just add the user_tracks link.
     existing_global = conn.execute(
-        "SELECT id FROM tracks WHERE spotify_id = ?",
+        "SELECT id, ingestion_status FROM tracks WHERE spotify_id = ?",
         (spotify_id,),
     ).fetchone()
     if existing_global:
@@ -1812,26 +2143,73 @@ def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "
             (user_id, int(existing_global["id"]), source),
         )
         conn.commit()
-        return "ok:linked_existing"
+        status = (existing_global["ingestion_status"] or "done")
+        return "added_to_library" if status == "done" else "queued_for_analysis"
+
+    # 3) Brand new to the whole DB: insert metadata-only row with
+    #    ingestion_status='pending'. The offline worker will fill in the
+    #    preview URL cascade + activation/valence/mood + ML + language later.
+    cur = conn.execute(
+        "INSERT INTO tracks "
+        "(spotify_id, isrc, title, artist, album, artwork_url, preview_url, "
+        " duration_ms, ingestion_status) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
+        (spotify_id, isrc, name, artist_name, album_name,
+         artwork_url, preview_url, duration_ms),
+    )
+    track_id = int(cur.lastrowid)
+    conn.execute(
+        "INSERT OR IGNORE INTO user_tracks (user_id, track_id, source) "
+        "VALUES (?, ?, ?)",
+        (user_id, track_id, source),
+    )
+    conn.commit()
+    log.info("[ingest] user=%s queued %r - %r (spotify_id=%s)",
+             user_id, name, artist_name, spotify_id)
+    return "queued_for_analysis"
+
+
+# -----------------------------------------------------------------------------
+# Offline worker pipeline. Called from scripts/run_ingest_worker.py, never from
+# an HTTP request. Takes a `tracks` row that was inserted by _process_track with
+# ingestion_status='pending' and runs the full preview cascade + ML + Whisper.
+# Updates the row in place and flips ingestion_status to 'done' / 'no_preview'
+# / 'failed'.
+# -----------------------------------------------------------------------------
+def _ingest_track_row(conn, row) -> str:
+    """
+    Run the full ingest pipeline on a single pending track row. Returns
+    the terminal ingestion_status ('done' | 'no_preview' | 'failed').
+    """
+    spotify_id = row["spotify_id"]
+    name = row["title"] or "?"
+    artist_name = row["artist"] or "?"
+    album_name = row["album"]
+    artwork_url = row["artwork_url"]
+    duration_ms = row["duration_ms"]
+    isrc = row["isrc"]
+    preview_url = row["preview_url"]
+    track_id = int(row["id"])
+    now_iso = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
+
+    log.info("[worker] user=%s track=%r artist=%r spotify_preview=%s isrc=%s",
+             "-", name, artist_name, bool(preview_url), isrc or "-")
 
     audio_url = None
     audio_ext = ".mp3"
     apple_id = None
     itunes_result = None
-    source = None
+    audio_source = None
     classification_source = "none"
 
     if preview_url:
         audio_url = preview_url
         audio_ext = ".mp3"
-        source = "spotify"
+        audio_source = "spotify"
         classification_source = "spotify_preview"
     else:
-        # Cascade: iTunes term-search -> Deezer ISRC -> Deezer term-search.
-        # (iTunes /lookup?isrc= is dead — Apple never officially supported it
-        # and it now returns 0 for every ISRC. Skipping saves ~1s/track.)
         itunes_result = _itunes_search_track(name, artist_name)
-        log.info("[ingest]   itunes term-search %r/%r -> hit=%s",
+        log.info("[worker]   itunes term-search %r/%r -> hit=%s",
                  name, artist_name,
                  bool(itunes_result and itunes_result.get("previewUrl")))
         if itunes_result and itunes_result.get("previewUrl"):
@@ -1839,37 +2217,43 @@ def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "
             audio_url = itunes_result["previewUrl"]
             audio_ext = ".m4a"
             apple_id = itunes_result.get("trackId")
-            source = "itunes"
+            audio_source = "itunes"
 
         if not audio_url and isrc:
             deezer_result = deezer_client.lookup_by_isrc(isrc)
-            log.info("[ingest]   deezer isrc-lookup isrc=%s -> hit=%s",
+            log.info("[worker]   deezer isrc-lookup isrc=%s -> hit=%s",
                      isrc, bool(deezer_result and deezer_result.get("previewUrl")))
             if deezer_result and deezer_result.get("previewUrl"):
-                itunes_result = deezer_result  # reuse the merge slot below
+                itunes_result = deezer_result
                 classification_source = "deezer_isrc"
                 audio_url = deezer_result["previewUrl"]
                 audio_ext = ".mp3"
-                source = "deezer"
+                audio_source = "deezer"
 
         if not audio_url:
             deezer_result = deezer_client.search_track(name, artist_name)
-            log.info("[ingest]   deezer term-search %r/%r -> hit=%s",
+            log.info("[worker]   deezer term-search %r/%r -> hit=%s",
                      name, artist_name,
                      bool(deezer_result and deezer_result.get("previewUrl")))
             if deezer_result and deezer_result.get("previewUrl"):
-                itunes_result = deezer_result  # reuse the merge slot below
+                itunes_result = deezer_result
                 classification_source = "deezer_search"
                 audio_url = deezer_result["previewUrl"]
                 audio_ext = ".mp3"
-                source = "deezer"
+                audio_source = "deezer"
 
     if not audio_url:
-        log.info("[ingest]   -> no_preview (spotify+itunes+deezer all failed)")
-        return "skip:no_preview"
+        log.info("[worker]   -> no_preview (spotify+itunes+deezer all failed)")
+        conn.execute(
+            "UPDATE tracks SET ingestion_status = 'no_preview', "
+            "ingestion_attempted_at = ?, ingestion_error = NULL, "
+            "classification_source = ? WHERE id = ?",
+            (now_iso, "none", track_id),
+        )
+        conn.commit()
+        return "no_preview"
 
-    # If a prior ingest downloaded this spotify_id, reuse the file
-    # (audio is content-addressed by spotify_id).
+    # Reuse local audio if a previous run already downloaded this spotify_id.
     shared_row = conn.execute(
         "SELECT audio_path FROM tracks WHERE spotify_id = ? AND audio_path IS NOT NULL LIMIT 1",
         (spotify_id,),
@@ -1879,174 +2263,171 @@ def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "
         p = _resolve_audio_path(shared_row["audio_path"])
         if p and p.exists() and p.is_file():
             shared_local = str(p)
-            log.info("[ingest]   reusing existing local audio (shared): %s", shared_row["audio_path"])
 
-    # Two-path scoring:
-    #   * ML (Modal in prod OR local GPU in dev): MERT + Whisper via
-    #     ingest/ml_backend.py — env var VIBESCAPE_ML_MODE selects.
-    #   * Librosa fallback: only if the ML backend is 'none' or a call fails.
-    # If neither works we skip the track.
+    # Two-path scoring: ML (Modal / local GPU) first, librosa fallback.
     ml_preds = None
     lang_preds = None
     if ml_backend.is_available():
-        ml_preds = ml_backend.predict_from_url(audio_url)
-        # Language uses the same backend; ok if it fails, DB column stays NULL.
-        lang_preds = ml_backend.predict_language_from_url(audio_url)
+        try:
+            ml_preds = ml_backend.predict_from_url(audio_url)
+            lang_preds = ml_backend.predict_language_from_url(audio_url)
+        except Exception as e:
+            log.warning("[worker] ml_backend call failed for %s: %s", spotify_id, e)
+            ml_preds = None
+            lang_preds = None
 
-    if ml_preds:
-        # MERT-only path. Derive activation/valence/mood from predictions.
-        energy_pred = float(ml_preds.get("energy", 0.0))
-        dance_pred = float(ml_preds.get("danceability", 0.0))
-        valence_pred = float(ml_preds.get("valence", 0.0))
-        vibe_score_ml = float(ml_preds.get("vibe_score", 0.55 * energy_pred + 0.45 * dance_pred))
-        model_version = str(ml_preds.get("model_version") or "mert_v1")
+    merged_preview_url = preview_url or (itunes_result.get("previewUrl") if itunes_result else None)
+    merged_genre = (itunes_result or {}).get("primaryGenreName")
+    merged_track_view_url = (itunes_result or {}).get("trackViewUrl")
+    merged_album = album_name or (itunes_result or {}).get("collectionName")
+    merged_artwork = artwork_url or (itunes_result or {}).get("artworkUrl100")
+    merged_duration = duration_ms or (itunes_result or {}).get("trackTimeMillis")
 
-        activation = (0.55 * energy_pred + 0.45 * dance_pred) * 100.0
-        valence = valence_pred * 100.0
-        mood = scoring.mood_label(activation, valence)
-        classification_source = "ml_mert"
-
-        language = None
-        language_confidence = None
-        language_top3_json = None
-        language_model_version = None
-        language_predicted_at = None
-        if lang_preds:
-            top1_prob = float(lang_preds.get("top1_prob", 0.0))
-            # Only persist if we're at least 'uncertain' (top1 >= 0.2). Below
-            # that, Whisper is guessing on non-speech / instrumental audio.
-            if top1_prob >= 0.2:
-                language = lang_preds.get("top1_lang") or None
-                language_confidence = top1_prob
-                language_top3_json = json.dumps({
-                    "top1": [lang_preds.get("top1_lang"), top1_prob],
-                    "top2": [lang_preds.get("top2_lang"), float(lang_preds.get("top2_prob", 0.0))],
-                    "top3": [lang_preds.get("top3_lang"), float(lang_preds.get("top3_prob", 0.0))],
-                })
-                language_model_version = str(lang_preds.get("model_version") or "whisper_small")
-                language_predicted_at = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
-
-        merged_preview_url = preview_url or (itunes_result.get("previewUrl") if itunes_result else None)
-        merged_genre = (itunes_result or {}).get("primaryGenreName")
-        merged_track_view_url = (itunes_result or {}).get("trackViewUrl")
-
-        track_data = {
-            "user_id": user_id,
-            "source": source,
-            "apple_id": apple_id,
-            "spotify_id": spotify_id,
-            "isrc": isrc,
-            "title": name,
-            "artist": artist_name,
-            "album": album_name or (itunes_result or {}).get("collectionName"),
-            "genre": merged_genre,
-            "artwork_url": artwork_url or (itunes_result or {}).get("artworkUrl100"),
-            "preview_url": merged_preview_url,
-            "track_view_url": merged_track_view_url,
-            "duration_ms": duration_ms or (itunes_result or {}).get("trackTimeMillis"),
-            "activation": activation,
-            "valence": valence,
-            "vibe_score": activation,  # backward-compat
-            "mood": mood,
-            "audio_path": None,  # prod doesn't store audio locally
-            "classification_source": classification_source,
-            "energy_pred": energy_pred,
-            "danceability_pred": dance_pred,
-            "valence_pred": valence_pred,
-            "vibe_score_ml": vibe_score_ml,
-            "model_version": model_version,
-            "language": language,
-            "language_confidence": language_confidence,
-            "language_top3_json": language_top3_json,
-            "language_model_version": language_model_version,
-            "language_predicted_at": language_predicted_at,
-        }
-        _upsert(conn, track_data)
-        return f"ok:ml:{source}"
-
-    # Librosa fallback (local dev only — Fly image doesn't ship librosa).
-    tmp_path = None
-    _cleanup_tmp = False
     try:
-        if shared_local:
-            tmp_path = shared_local
-            _cleanup_tmp = False
-        else:
-            tmp_path = _download(audio_url, audio_ext)
-            _cleanup_tmp = True
-        global feat
-        if feat is None:
-            import features as feat  # heavy: librosa/numpy
-        f = feat.extract(tmp_path)
-        axes = scoring.compute_axes(f)
-        activation = axes["activation"]
-        valence = axes["valence"]
-        mood = scoring.mood_label(activation, valence)
+        if ml_preds:
+            energy_pred = float(ml_preds.get("energy", 0.0))
+            dance_pred = float(ml_preds.get("danceability", 0.0))
+            valence_pred = float(ml_preds.get("valence", 0.0))
+            vibe_score_ml = float(ml_preds.get("vibe_score", 0.55 * energy_pred + 0.45 * dance_pred))
+            model_version = str(ml_preds.get("model_version") or "mert_v1")
+            activation = (0.55 * energy_pred + 0.45 * dance_pred) * 100.0
+            valence = valence_pred * 100.0
+            mood = scoring.mood_label(activation, valence)
+            classification_source = "ml_mert"
 
-        AUDIO_DIR.mkdir(parents=True, exist_ok=True)
-        if shared_local:
-            audio_rel = shared_row["audio_path"]
-        else:
-            target_name = f"{spotify_id}{audio_ext}"
-            target = AUDIO_DIR / target_name
-            try:
-                shutil.copyfile(tmp_path, target)
-                audio_rel = f"data/audio/{target_name}"
-            except OSError as e:
-                log.warning("failed to save audio for %s: %s", spotify_id, e)
-                audio_rel = None
+            language = None
+            language_confidence = None
+            language_top3_json = None
+            language_model_version = None
+            language_predicted_at = None
+            if lang_preds:
+                top1_prob = float(lang_preds.get("top1_prob", 0.0))
+                if top1_prob >= 0.2:
+                    language = lang_preds.get("top1_lang") or None
+                    language_confidence = top1_prob
+                    language_top3_json = json.dumps({
+                        "top1": [lang_preds.get("top1_lang"), top1_prob],
+                        "top2": [lang_preds.get("top2_lang"), float(lang_preds.get("top2_prob", 0.0))],
+                        "top3": [lang_preds.get("top3_lang"), float(lang_preds.get("top3_prob", 0.0))],
+                    })
+                    language_model_version = str(lang_preds.get("model_version") or "whisper_small")
+                    language_predicted_at = now_iso
 
-        merged_preview_url = preview_url or (itunes_result.get("previewUrl") if itunes_result else None)
-        merged_genre = (itunes_result or {}).get("primaryGenreName")
-        merged_track_view_url = (itunes_result or {}).get("trackViewUrl")
+            conn.execute(
+                "UPDATE tracks SET "
+                "  apple_id = COALESCE(?, apple_id), "
+                "  album = COALESCE(?, album), "
+                "  genre = COALESCE(?, genre), "
+                "  artwork_url = COALESCE(?, artwork_url), "
+                "  preview_url = COALESCE(?, preview_url), "
+                "  track_view_url = COALESCE(?, track_view_url), "
+                "  duration_ms = COALESCE(?, duration_ms), "
+                "  activation = ?, valence = ?, vibe_score = ?, mood = ?, "
+                "  audio_path = NULL, classification_source = ?, "
+                "  energy_pred = ?, danceability_pred = ?, valence_pred = ?, "
+                "  vibe_score_ml = ?, model_version = ?, "
+                "  language = ?, language_confidence = ?, "
+                "  language_top3_json = ?, language_model_version = ?, "
+                "  language_predicted_at = ?, "
+                "  ml_predicted_at = ?, "
+                "  ingestion_status = 'done', ingestion_error = NULL, "
+                "  ingestion_attempted_at = ? "
+                "WHERE id = ?",
+                (apple_id, merged_album, merged_genre, merged_artwork,
+                 merged_preview_url, merged_track_view_url, merged_duration,
+                 activation, valence, activation, mood, classification_source,
+                 energy_pred, dance_pred, valence_pred, vibe_score_ml, model_version,
+                 language, language_confidence, language_top3_json,
+                 language_model_version, language_predicted_at,
+                 now_iso, now_iso, track_id),
+            )
+            conn.commit()
+            return "done"
 
-        track_data = {
-            "user_id": user_id,
-            "source": source,
-            "apple_id": apple_id,
-            "spotify_id": spotify_id,
-            "isrc": isrc,
-            "title": name,
-            "artist": artist_name,
-            "album": album_name or (itunes_result or {}).get("collectionName"),
-            "genre": merged_genre,
-            "artwork_url": artwork_url or (itunes_result or {}).get("artworkUrl100"),
-            "preview_url": merged_preview_url,
-            "track_view_url": merged_track_view_url,
-            "duration_ms": duration_ms or (itunes_result or {}).get("trackTimeMillis"),
-            "tempo": f.get("tempo"),
-            "energy": f.get("energy_mean"),
-            "brightness": f.get("brightness"),
-            "zcr": f.get("zcr"),
-            "mfcc_json": json.dumps(f.get("mfcc_mean") or f.get("mfcc") or []),
-            "tempo_stability": f.get("tempo_stability"),
-            "onset_rate": f.get("onset_rate"),
-            "energy_mean": f.get("energy_mean"),
-            "energy_std": f.get("energy_std"),
-            "bandwidth": f.get("bandwidth"),
-            "rolloff": f.get("rolloff"),
-            "spectral_contrast": f.get("spectral_contrast"),
-            "flatness": f.get("flatness"),
-            "timbre_variability": f.get("timbre_variability"),
-            "valence_mode": f.get("valence_mode"),
-            "tonnetz_std": f.get("tonnetz_std"),
-            "acousticness": f.get("acousticness"),
-            "chroma_mean_json": json.dumps(f.get("chroma_mean") or []),
-            "activation": activation,
-            "valence": valence,
-            "vibe_score": activation,
-            "mood": mood,
-            "audio_path": audio_rel,
-            "classification_source": classification_source,
-        }
-        _upsert(conn, track_data)
-        return f"ok:{source}"
-    finally:
-        if tmp_path and _cleanup_tmp and os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
+        # Librosa fallback (dev only). Downloads audio to a tempfile.
+        tmp_path = None
+        _cleanup_tmp = False
+        try:
+            if shared_local:
+                tmp_path = shared_local
+            else:
+                tmp_path = _download(audio_url, audio_ext)
+                _cleanup_tmp = True
+            global feat
+            if feat is None:
+                import features as feat  # heavy: librosa/numpy
+            f = feat.extract(tmp_path)
+            axes = scoring.compute_axes(f)
+            activation = axes["activation"]
+            valence = axes["valence"]
+            mood = scoring.mood_label(activation, valence)
+
+            AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+            if shared_local:
+                audio_rel = shared_row["audio_path"]
+            else:
+                target_name = f"{spotify_id}{audio_ext}"
+                target = AUDIO_DIR / target_name
+                try:
+                    shutil.copyfile(tmp_path, target)
+                    audio_rel = f"data/audio/{target_name}"
+                except OSError as e:
+                    log.warning("[worker] failed to save audio for %s: %s", spotify_id, e)
+                    audio_rel = None
+
+            conn.execute(
+                "UPDATE tracks SET "
+                "  apple_id = COALESCE(?, apple_id), "
+                "  album = COALESCE(?, album), "
+                "  genre = COALESCE(?, genre), "
+                "  artwork_url = COALESCE(?, artwork_url), "
+                "  preview_url = COALESCE(?, preview_url), "
+                "  track_view_url = COALESCE(?, track_view_url), "
+                "  duration_ms = COALESCE(?, duration_ms), "
+                "  tempo = ?, energy = ?, brightness = ?, zcr = ?, mfcc_json = ?, "
+                "  tempo_stability = ?, onset_rate = ?, energy_mean = ?, energy_std = ?, "
+                "  bandwidth = ?, rolloff = ?, spectral_contrast = ?, flatness = ?, "
+                "  timbre_variability = ?, valence_mode = ?, tonnetz_std = ?, "
+                "  acousticness = ?, chroma_mean_json = ?, "
+                "  activation = ?, valence = ?, vibe_score = ?, mood = ?, "
+                "  audio_path = ?, classification_source = ?, "
+                "  features_extracted_at = ?, "
+                "  ingestion_status = 'done', ingestion_error = NULL, "
+                "  ingestion_attempted_at = ? "
+                "WHERE id = ?",
+                (apple_id, merged_album, merged_genre, merged_artwork,
+                 merged_preview_url, merged_track_view_url, merged_duration,
+                 f.get("tempo"), f.get("energy_mean"), f.get("brightness"),
+                 f.get("zcr"), json.dumps(f.get("mfcc_mean") or f.get("mfcc") or []),
+                 f.get("tempo_stability"), f.get("onset_rate"),
+                 f.get("energy_mean"), f.get("energy_std"),
+                 f.get("bandwidth"), f.get("rolloff"),
+                 f.get("spectral_contrast"), f.get("flatness"),
+                 f.get("timbre_variability"), f.get("valence_mode"),
+                 f.get("tonnetz_std"), f.get("acousticness"),
+                 json.dumps(f.get("chroma_mean") or []),
+                 activation, valence, activation, mood,
+                 audio_rel, classification_source,
+                 now_iso, now_iso, track_id),
+            )
+            conn.commit()
+            return "done"
+        finally:
+            if tmp_path and _cleanup_tmp and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+    except Exception as e:
+        log.exception("[worker] ingest failed for track_id=%s spotify_id=%s: %s",
+                      track_id, spotify_id, e)
+        conn.execute(
+            "UPDATE tracks SET ingestion_status = 'failed', "
+            "ingestion_error = ?, ingestion_attempted_at = ? WHERE id = ?",
+            (f"{e.__class__.__name__}: {e}"[:500], now_iso, track_id),
+        )
+        conn.commit()
+        return "failed"
 
 
 def _upsert(conn, td: dict) -> None:
@@ -2184,33 +2565,17 @@ def _run_ingest_job(job_id: str, token: str, sources: IngestSources, user_id: in
                     break
                 try:
                     result = _process_track(conn, track, job_id, user_id, source=src)
-                    # Result strings emitted by _process_track:
-                    #   ok:spotify / ok:itunes / ok:deezer          (librosa branch, fresh)
-                    #   ok:ml:spotify / ok:ml:itunes / ok:ml:deezer (ML branch, fresh)
-                    #   ok:linked_existing                          (global DB dedup hit)
-                    #   skip:no_preview / skip:no_id / skip:already_ingested
-                    #
-                    # Four exclusive buckets (sum == processed):
-                    #   newly_analyzed     — fresh ingest with audio
-                    #   linked_from_global — track existed globally, user_tracks added
-                    #   already_in_library — user already had this exact link
-                    #   no_preview         — dropped (no audio anywhere)
-                    #   skipped            — degenerate: no id / exception
-                    if result and result.startswith("ok:") and result not in ("ok:linked_existing",):
-                        _bump(job_id, "newly_analyzed", 1)
-                        # Legacy counter mirroring so old frontends keep working.
-                        if "spotify" in result:
-                            _bump(job_id, "matched_spotify", 1)
-                        else:
-                            _bump(job_id, "preview_only", 1)
-                    elif result == "ok:linked_existing":
-                        _bump(job_id, "linked_from_global", 1)
-                        _bump(job_id, "matched_spotify", 1)  # legacy mirror
-                    elif result == "skip:already_ingested":
+                    # _process_track returns one of four bucket names:
+                    #   added_to_library     — global row was 'done', user_tracks linked
+                    #   already_in_library   — user already had this exact link
+                    #   queued_for_analysis  — new metadata inserted OR pending row linked
+                    #   skip:no_id           — degenerate
+                    if result == "added_to_library":
+                        _bump(job_id, "added_to_library", 1)
+                    elif result == "already_in_library":
                         _bump(job_id, "already_in_library", 1)
-                        _bump(job_id, "skipped", 1)  # legacy mirror
-                    elif result == "skip:no_preview":
-                        _bump(job_id, "no_preview", 1)
+                    elif result == "queued_for_analysis":
+                        _bump(job_id, "queued_for_analysis", 1)
                     else:
                         _bump(job_id, "skipped", 1)
                 except splib.SpotifyAuthError:
@@ -2223,9 +2588,10 @@ def _run_ingest_job(job_id: str, token: str, sources: IngestSources, user_id: in
         finally:
             conn.close()
 
-        # library-wide z-score recompute (per-user) so the vibe slider
-        # reflects the actual distribution of the (now larger) library.
-        # Runs even on cancel so activation_relative reflects what did land.
+        # Library-wide z-score recompute (per-user). Only rebalances rows
+        # that actually have a score, so newly queued 'pending' rows are
+        # naturally excluded — they'll fold in on the next sync after the
+        # worker finishes them.
         try:
             conn2 = get_conn()
             try:
@@ -2259,16 +2625,12 @@ def ingest_spotify(req: IngestRequest, sess: dict = Depends(require_user)):
             "current_track": None,
             "total": 0,
             "processed": 0,
-            # Four buckets, mutually exclusive, sum == processed
-            "newly_analyzed": 0,     # fresh ingest with audio (spotify/itunes/deezer)
-            "linked_from_global": 0, # track existed in global DB, added user_tracks link
-            "already_in_library": 0, # user already had this track linked
-            "no_preview": 0,         # dropped — no preview URL from any source
-            "skipped": 0,            # skip:no_id or exceptions
-            # Legacy field names kept for backward compat while frontend
-            # migrates. Mirror newly_analyzed and linked_from_global into these.
-            "matched_spotify": 0,
-            "preview_only": 0,
+            # Four mutually exclusive buckets (sum == processed) matching
+            # the new two-phase ingest flow. See _process_track docstring.
+            "added_to_library": 0,     # global row already done, just linked
+            "already_in_library": 0,   # user already had this exact link
+            "queued_for_analysis": 0,  # new/pending row, worker will finish it
+            "skipped": 0,              # skip:no_id or exceptions
             "cancel_requested": False,
             "error_message": None,
         }
@@ -2349,16 +2711,12 @@ async def ingest_single(
             "current_track": None,
             "total": 1,
             "processed": 0,
-            # Four buckets, mutually exclusive, sum == processed
-            "newly_analyzed": 0,     # fresh ingest with audio (spotify/itunes/deezer)
-            "linked_from_global": 0, # track existed in global DB, added user_tracks link
-            "already_in_library": 0, # user already had this track linked
-            "no_preview": 0,         # dropped — no preview URL from any source
-            "skipped": 0,            # skip:no_id or exceptions
-            # Legacy field names kept for backward compat while frontend
-            # migrates. Mirror newly_analyzed and linked_from_global into these.
-            "matched_spotify": 0,
-            "preview_only": 0,
+            # Four mutually exclusive buckets (sum == processed) matching
+            # the new two-phase ingest flow. See _process_track docstring.
+            "added_to_library": 0,     # global row already done, just linked
+            "already_in_library": 0,   # user already had this exact link
+            "queued_for_analysis": 0,  # new/pending row, worker will finish it
+            "skipped": 0,              # skip:no_id or exceptions
             "cancel_requested": False,
             "error_message": None,
         }
@@ -2379,8 +2737,6 @@ async def ingest_single(
         with JOBS_LOCK:
             JOBS.pop(job_id, None)
 
-    if result.startswith("skip:no_preview"):
-        raise HTTPException(status_code=422, detail={"error": "no_preview_available", "result": result})
     if result.startswith("skip:no_id"):
         raise HTTPException(status_code=422, detail={"error": "invalid_track", "result": result})
 
@@ -2525,22 +2881,13 @@ def _run_public_playlist_job(job_id: str, playlist_id: str, user_id: int,
                     break
                 try:
                     result = _process_track(conn, track, job_id, user_id, source=src_label)
-                    # Same 4-bucket scheme as _run_ingest_job. See the comment
-                    # there for the mapping rationale.
-                    if result and result.startswith("ok:") and result != "ok:linked_existing":
-                        _bump(job_id, "newly_analyzed", 1)
-                        if "spotify" in result:
-                            _bump(job_id, "matched_spotify", 1)
-                        else:
-                            _bump(job_id, "preview_only", 1)
-                    elif result == "ok:linked_existing":
-                        _bump(job_id, "linked_from_global", 1)
-                        _bump(job_id, "matched_spotify", 1)  # legacy mirror
-                    elif result == "skip:already_ingested":
+                    # Same 4-bucket scheme as _run_ingest_job.
+                    if result == "added_to_library":
+                        _bump(job_id, "added_to_library", 1)
+                    elif result == "already_in_library":
                         _bump(job_id, "already_in_library", 1)
-                        _bump(job_id, "skipped", 1)  # legacy mirror
-                    elif result == "skip:no_preview":
-                        _bump(job_id, "no_preview", 1)
+                    elif result == "queued_for_analysis":
+                        _bump(job_id, "queued_for_analysis", 1)
                     else:
                         _bump(job_id, "skipped", 1)
                 except Exception as e:
@@ -2692,16 +3039,12 @@ def ingest_spotify_public(req: PublicPlaylistIngestRequest,
             "note": followed_note,
             "total": 0,
             "processed": 0,
-            # Four buckets, mutually exclusive, sum == processed
-            "newly_analyzed": 0,     # fresh ingest with audio (spotify/itunes/deezer)
-            "linked_from_global": 0, # track existed in global DB, added user_tracks link
-            "already_in_library": 0, # user already had this track linked
-            "no_preview": 0,         # dropped — no preview URL from any source
-            "skipped": 0,            # skip:no_id or exceptions
-            # Legacy field names kept for backward compat while frontend
-            # migrates. Mirror newly_analyzed and linked_from_global into these.
-            "matched_spotify": 0,
-            "preview_only": 0,
+            # Four mutually exclusive buckets (sum == processed) matching
+            # the new two-phase ingest flow. See _process_track docstring.
+            "added_to_library": 0,     # global row already done, just linked
+            "already_in_library": 0,   # user already had this exact link
+            "queued_for_analysis": 0,  # new/pending row, worker will finish it
+            "skipped": 0,              # skip:no_id or exceptions
             "cancel_requested": False,
             "error_message": None,
         }
@@ -2774,8 +3117,8 @@ def admin_list_users(sess: dict = Depends(require_admin)):
         rows = conn.execute(
             """
             SELECT u.id, u.display_name, u.spotify_user_id, u.spotify_display_name,
-                   u.created_at,
-                   (u.pin_hash IS NOT NULL) AS has_pin,
+                   u.spotify_email, u.spotify_country, u.spotify_product,
+                   u.spotify_avatar_url, u.created_at, u.last_login_at,
                    COUNT(ut.track_id) AS track_count
             FROM users u
             LEFT JOIN user_tracks ut ON ut.user_id = u.id
@@ -2792,10 +3135,15 @@ def admin_list_users(sess: dict = Depends(require_admin)):
                 "display_name": r["display_name"],
                 "spotify_user_id": r["spotify_user_id"],
                 "spotify_display_name": r["spotify_display_name"],
-                "has_pin": bool(r["has_pin"]),
+                "spotify_email": r["spotify_email"],
+                "spotify_country": r["spotify_country"],
+                "spotify_product": r["spotify_product"],
+                "avatar_url": r["spotify_avatar_url"],
                 "created_at": r["created_at"],
+                "last_login_at": r["last_login_at"],
                 "track_count": int(r["track_count"] or 0),
                 "is_admin": int(r["id"]) == ADMIN_USER_ID,
+                "is_guest": r["display_name"] == "Guest",
             }
             for r in rows
         ]
@@ -2950,4 +3298,26 @@ def admin_delete_user(user_id: int, sess: dict = Depends(require_admin)):
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 FRONTEND_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@app.get("/", include_in_schema=False)
+def serve_login_page():
+    """Public landing page. login.js redirects to /app if a session exists."""
+    return FileResponse(str(FRONTEND_DIR / "login.html"))
+
+
+@app.get("/app", include_in_schema=False)
+def serve_player_page():
+    """Authenticated player. Client-side auth guard lives in app.js."""
+    return FileResponse(str(FRONTEND_DIR / "index.html"))
+
+
+@app.get("/admin", include_in_schema=False)
+def serve_admin_page():
+    """Admin-only page. Client-side guard in admin.js redirects to /app
+    if /api/auth/me returns is_admin=false; every API call under
+    /api/admin/* is server-side gated via require_admin anyway."""
+    return FileResponse(str(FRONTEND_DIR / "admin.html"))
+
+
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")

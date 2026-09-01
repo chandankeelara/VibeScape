@@ -13,9 +13,20 @@
   // Server-driven debug flag. Set by loadClientConfig() on boot from
   // GET /api/client-config, which reads VIBESCAPE_ENV=dev|prod. Any
   // vsDebug() call before the fetch resolves silently no-ops.
+  //
+  // The env value also drives body[data-env] so CSS can hide dev-only
+  // UI (Spotify debug button, help/? popover, redundant Spotify sign-out
+  // button) in prod, and keyboard shortcut handlers gate off VS_ENV too.
   let VS_DEBUG = false;
+  let VS_ENV = 'prod';
   function vsDebug(...args) {
     if (VS_DEBUG) console.log('[VS]', ...args);
+  }
+  function applyEnvToDom() {
+    // Prefer document.body when it exists, otherwise stash on documentElement
+    // and let the assignment cascade once body is parsed.
+    const target = document.body || document.documentElement;
+    if (target) target.dataset.env = VS_ENV;
   }
   async function loadClientConfig() {
     try {
@@ -23,9 +34,15 @@
       if (!r.ok) return;
       const j = await r.json();
       VS_DEBUG = !!j.debug;
+      VS_ENV = (j.env === 'dev') ? 'dev' : 'prod';
+      applyEnvToDom();
       if (VS_DEBUG) console.log('[VS] debug logging enabled (VIBESCAPE_ENV=' + (j.env || '?') + ')');
     } catch (_) { /* silent */ }
   }
+  // Default to 'prod' on the body immediately so prod-only CSS applies
+  // before the fetch resolves and we don't flash the dev-only buttons.
+  if (document.body) applyEnvToDom();
+  else document.addEventListener('DOMContentLoaded', applyEnvToDom, { once: true });
   // Fire-and-forget on module load — flag flips as soon as the fetch settles.
   loadClientConfig();
 
@@ -86,11 +103,9 @@
     toastContainer: $('toastContainer'),
     player: $('player'),
     btnSpotifySignIn: $('btnSpotifySignIn'),
-    btnSpotifySignOut: $('btnSpotifySignOut'),
     btnSpotifySync: $('btnSpotifySync'),
     btnSpotifyDebug: $('btnSpotifyDebug'),
     spSigned: $('spSigned'),
-    spName: $('spName'),
     chipSource: $('chipSource'),
     btnVerify: $('btnVerify'),
     verifyTip: $('verifyTip'),
@@ -135,7 +150,6 @@
     userMenu: $('userMenu'),
     btnUserMenu: $('btnUserMenu'),
     userMenuPopover: $('userMenuPopover'),
-    userAvatar: $('userAvatar'),
     userName: $('userName'),
     userMenuName: $('userMenuName'),
     btnUserSignOut: $('btnUserSignOut'),
@@ -182,10 +196,9 @@
     syncProgressPct: $('syncProgressPct'),
     syncProgressCounts: $('syncProgressCounts'),
     syncCurrentTrack: $('syncCurrentTrack'),
-    syncStatNew: $('syncStatNew'),
-    syncStatLinked: $('syncStatLinked'),
+    syncStatAdded: $('syncStatAdded'),
     syncStatAlready: $('syncStatAlready'),
-    syncStatNoPreview: $('syncStatNoPreview'),
+    syncStatQueued: $('syncStatQueued'),
     syncCompleteSummary: $('syncCompleteSummary'),
     syncFooterMeta: $('syncFooterMeta'),
     syncModalFooter: $('syncModalFooter'),
@@ -572,7 +585,9 @@
     try { stopPlayback(); } catch (_) {}
     updateUserMenu();
     toast('Session expired. Sign in again.', 'error');
-    showAuthOverlay();
+    // Route back to the landing page rather than showing the overlay in-place;
+    // the landing page will offer Spotify sign-in again.
+    try { window.location.replace('/'); return; } catch (_) {}
   }
 
   // ============== Auth flow ==============
@@ -588,10 +603,14 @@
     if (!el.userMenu) return;
     if (auth.user) {
       el.userMenu.hidden = false;
-      const name = auth.user.display_name || 'user';
+      // Prefer the Spotify display name once it's known — the pill uses
+      // the Spotify design (green + dot) so it visually implies the
+      // connected identity when available. Falls back to the VibeScape
+      // display name before Spotify OAuth finishes.
+      const spotifyName = (typeof spotify !== 'undefined') ? (spotify && spotify.displayName) : '';
+      const name = spotifyName || auth.user.display_name || 'user';
       el.userName.textContent = name;
       el.userMenuName.textContent = name;
-      el.userAvatar.textContent = initialsFor(name);
       // Admin button visibility (chandan-only).
       const btnAdmin = document.getElementById('btnUserAdmin');
       if (btnAdmin) btnAdmin.hidden = !auth.user.is_admin;
@@ -855,7 +874,10 @@
     updateUserMenu();
     closeUserMenu();
     if (wasSignedIn) toast('Signed out of VibeScape.', 'success');
-    showAuthOverlay();
+    // Send the browser back to the landing page. Using location.replace so
+    // /app doesn't linger in history — Back from the landing page shouldn't
+    // return to an authed-looking player screen.
+    try { window.location.replace('/'); return; } catch (_) {}
   }
 
   // Try to hydrate from a stored session token. Returns true if we're auth'd.
@@ -2515,15 +2537,17 @@
     if (spotify.accessToken) {
       el.btnSpotifySignIn.hidden = true;
       el.spSigned.hidden = false;
-      el.spName.textContent = spotify.displayName || 'Connected';
-      el.spName.title = spotify.isPremium
-        ? 'Spotify Premium — full tracks'
-        : 'Free account — preview only';
+      // The Spotify display name is surfaced through the unified user
+      // pill (see updateUserMenu()). No separate #spName pill anymore.
     } else {
       el.btnSpotifySignIn.hidden = false;
       el.spSigned.hidden = true;
       closeDebugPanel();
     }
+    // The unified pill's label prefers spotify.displayName when it exists;
+    // refresh it whenever Spotify state changes so the pill reflects the
+    // Spotify identity as soon as it's known.
+    updateUserMenu();
     // If the sync modal's URL tab is currently visible, keep its Spotify-gated
     // state fresh (input vs sign-in prompt).
     if (sync.open && sync.stage === 'url' && typeof refreshUrlViewState === 'function') {
@@ -3235,21 +3259,6 @@
     state.firstInteraction = true;
     beginSpotifyLogin();
   });
-  el.btnSpotifySignOut.addEventListener('click', () => {
-    console.log('[VibeScape] sign-out clicked; accessToken present:', !!spotify.accessToken);
-    const wasSignedIn = !!spotify.accessToken;
-    try {
-      stopPlayback();
-      clearSpotifySession();
-      stopPositionPolling();
-      setSourcePill(null);
-      if (wasSignedIn) toast('Signed out of Spotify.', 'success');
-    } catch (err) {
-      console.error('[VibeScape] sign-out error:', err);
-      toast('Sign-out error — see console.', 'error');
-    }
-  });
-
   // ===== Debug panel (personal token debug view) =====
 
   const debugPanel = { open: false };
@@ -4446,22 +4455,28 @@
       if (debugPanel.open) { ev.preventDefault(); closeDebugPanel(); return; }
       if (helpPop.open) { ev.preventDefault(); closeHelpPopover(); return; }
     }
-    if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && (ev.key === 'D' || ev.key === 'd')) {
-      ev.preventDefault();
-      toggleDebugPanel();
-      return;
-    }
-    if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && (ev.key === 'M' || ev.key === 'm')) {
-      ev.preventDefault();
-      toggleMetricsPanel();
-      return;
-    }
-    // `?` opens help; ignore when typing in an input/textarea
-    if (ev.key === '?' && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
-      const t = ev.target;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
-      ev.preventDefault();
-      toggleHelpPopover();
+    // Dev-only shortcuts. In prod (VIBESCAPE_ENV=prod, the default) the
+    // Spotify debug panel, the internal metrics panel, and the help
+    // popover are all hidden — so the shortcuts should be too. Keeps
+    // the surface minimal for end users while devs still get the affordance.
+    if (VS_ENV === 'dev') {
+      if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && (ev.key === 'D' || ev.key === 'd')) {
+        ev.preventDefault();
+        toggleDebugPanel();
+        return;
+      }
+      if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && (ev.key === 'M' || ev.key === 'm')) {
+        ev.preventDefault();
+        toggleMetricsPanel();
+        return;
+      }
+      // `?` opens help; ignore when typing in an input/textarea
+      if (ev.key === '?' && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+        const t = ev.target;
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+        ev.preventDefault();
+        toggleHelpPopover();
+      }
     }
   });
 
@@ -4973,7 +4988,7 @@
     const sel = collectSyncSelection();
     if (!sel.liked && !sel.top && sel.playlist_ids.length === 0) return;
     setSyncView('progress');
-    updateSyncProgress({ processed: 0, total: sel.total || 0, newly_analyzed: 0, linked_from_global: 0, already_in_library: 0, no_preview: 0, current_track: 'Starting…' });
+    updateSyncProgress({ processed: 0, total: sel.total || 0, added_to_library: 0, already_in_library: 0, queued_for_analysis: 0, current_track: 'Starting…' });
 
     try {
       const r = await fetchWithAuth('/api/ingest/spotify', {
@@ -5018,7 +5033,7 @@
     if (spotify.accessToken) body.access_token = spotify.accessToken;
 
     setSyncView('progress');
-    updateSyncProgress({ processed: 0, total: 0, newly_analyzed: 0, linked_from_global: 0, already_in_library: 0, no_preview: 0, current_track: 'Starting…' });
+    updateSyncProgress({ processed: 0, total: 0, added_to_library: 0, already_in_library: 0, queued_for_analysis: 0, current_track: 'Starting…' });
 
     try {
       const r = await fetchWithAuth('/api/ingest/spotify-public', {
@@ -5127,16 +5142,25 @@
       }
       if (s.status === 'complete') {
         stopSyncPolling();
-        // Four-bucket summary: new / linked / already yours / no preview.
-        const nNew     = s.newly_analyzed     || 0;
-        const nLinked  = s.linked_from_global || 0;
-        const nAlready = s.already_in_library || 0;
-        const nDropped = s.no_preview         || 0;
-        const total    = s.total              || 0;
-        const landed   = nNew + nLinked + nAlready;
-        const summary =
-          `${landed} of ${total} in your library — ` +
-          `${nNew} new, ${nLinked} linked from global, ${nAlready} already yours, ${nDropped} no preview.`;
+        // Three-bucket summary: added / already yours / queued.
+        // Analysis (preview cascade + ML + Whisper) runs offline via
+        // scripts/run_ingest_worker.py — queued rows will appear in the
+        // library once the worker finishes them.
+        const nAdded   = s.added_to_library    || 0;
+        const nAlready = s.already_in_library  || 0;
+        const nQueued  = s.queued_for_analysis || 0;
+        const total    = s.total               || 0;
+        const playable = nAdded + nAlready;
+        let summary =
+          `${playable} of ${total} playable in your library now — ` +
+          `${nAdded} added, ${nAlready} already yours`;
+        if (nQueued > 0) {
+          summary +=
+            `. ${nQueued} queued for analysis — they'll appear once the ` +
+            `background worker finishes them.`;
+        } else {
+          summary += '.';
+        }
         el.syncCompleteSummary.textContent = summary;
         setSyncView('complete');
       } else if (s.status === 'error') {
@@ -5157,10 +5181,9 @@
     el.syncProgressPct.textContent = pct + '%';
     el.syncProgressCounts.textContent = `${processed} / ${total}`;
     el.syncCurrentTrack.textContent = s.current_track || '—';
-    if (el.syncStatNew)       el.syncStatNew.textContent       = String(s.newly_analyzed     || 0);
-    if (el.syncStatLinked)    el.syncStatLinked.textContent    = String(s.linked_from_global || 0);
-    if (el.syncStatAlready)   el.syncStatAlready.textContent   = String(s.already_in_library || 0);
-    if (el.syncStatNoPreview) el.syncStatNoPreview.textContent = String(s.no_preview         || 0);
+    if (el.syncStatAdded)   el.syncStatAdded.textContent   = String(s.added_to_library     || 0);
+    if (el.syncStatAlready) el.syncStatAlready.textContent = String(s.already_in_library   || 0);
+    if (el.syncStatQueued)  el.syncStatQueued.textContent  = String(s.queued_for_analysis  || 0);
   }
 
   async function cancelSyncJob() {
@@ -5309,169 +5332,21 @@
     if (!handled) restoreSpotifySession();
   }
 
-  // ============ Admin panel (chandan-only) ============
-  const adminEl = {
-    overlay: document.getElementById('adminOverlay'),
-    backdrop: document.getElementById('adminBackdrop'),
-    close: document.getElementById('btnAdminClose'),
-    loading: document.getElementById('adminLoading'),
-    list: document.getElementById('adminUsersList'),
-    body: document.getElementById('adminBody'),
-    detail: document.getElementById('adminDetail'),
-    detailBody: document.getElementById('adminDetailBody'),
-    back: document.getElementById('btnAdminBack'),
-  };
-
-  function openAdmin() {
-    if (!adminEl.overlay) return;
-    if (!auth.user || !auth.user.is_admin) {
-      toast('Admin panel is restricted.', 'error');
-      return;
-    }
-    adminEl.overlay.hidden = false;
-    adminEl.detail.hidden = true;
-    adminEl.body.hidden = false;
-    closeUserMenu();
-    loadAdminUsers();
-  }
-
-  function closeAdmin() {
-    if (adminEl.overlay) adminEl.overlay.hidden = true;
-  }
-
-  async function loadAdminUsers() {
-    adminEl.loading.hidden = false;
-    adminEl.list.hidden = true;
-    adminEl.list.innerHTML = '';
-    try {
-      const r = await fetchWithAuth('/api/admin/users');
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const j = await r.json();
-      renderAdminUsers(j.users || []);
-    } catch (e) {
-      adminEl.list.innerHTML = '<div class="admin-loading">Failed to load users: ' + escapeHtml(String(e)) + '</div>';
-      adminEl.list.hidden = false;
-    } finally {
-      adminEl.loading.hidden = true;
-    }
-  }
-
-  function escapeHtml(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
-
-  function renderAdminUsers(users) {
-    adminEl.list.innerHTML = '';
-    users.forEach((u) => {
-      const row = document.createElement('div');
-      row.className = 'admin-user-row';
-      const badge = u.is_admin ? '<span class="admin-user-badge">admin</span>' : '';
-      const spName = u.spotify_display_name ? ' · Spotify: ' + escapeHtml(u.spotify_display_name) : '';
-      const created = u.created_at ? new Date(u.created_at).toLocaleDateString() : '—';
-      row.innerHTML = `
-        <div class="admin-user-info">
-          <div class="admin-user-name">${escapeHtml(u.display_name)} ${badge}</div>
-          <div class="admin-user-meta">id ${u.user_id} · created ${created}${spName}</div>
-        </div>
-        <div class="admin-user-count">${u.track_count} tracks</div>
-        <div class="admin-actions">
-          <button class="admin-btn" data-action="stats" data-uid="${u.user_id}">Stats</button>
-          <button class="admin-btn admin-btn-danger" data-action="delete" data-uid="${u.user_id}" ${u.is_admin ? 'disabled' : ''}>Delete</button>
-        </div>
-      `;
-      adminEl.list.appendChild(row);
-    });
-    adminEl.list.hidden = false;
-
-    adminEl.list.querySelectorAll('[data-action="stats"]').forEach((btn) => {
-      btn.addEventListener('click', () => loadAdminStats(parseInt(btn.dataset.uid, 10)));
-    });
-    adminEl.list.querySelectorAll('[data-action="delete"]').forEach((btn) => {
-      btn.addEventListener('click', () => confirmDeleteUser(parseInt(btn.dataset.uid, 10)));
-    });
-  }
-
-  async function loadAdminStats(userId) {
-    adminEl.body.hidden = true;
-    adminEl.detail.hidden = false;
-    adminEl.detailBody.innerHTML = '<div class="admin-loading">Loading stats…</div>';
-    try {
-      const r = await fetchWithAuth('/api/admin/users/' + userId + '/stats');
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const s = await r.json();
-      renderAdminStats(s);
-    } catch (e) {
-      adminEl.detailBody.innerHTML = '<div class="admin-loading">Failed to load: ' + escapeHtml(String(e)) + '</div>';
-    }
-  }
-
-  function renderAdminStats(s) {
-    const fmt = (n, d = 2) => (n == null ? '—' : (Math.round(n * Math.pow(10, d)) / Math.pow(10, d)).toString());
-    const moods = (s.by_mood || []).map(m =>
-      `<span class="admin-chip">${escapeHtml(m.mood)}<span class="admin-chip-count">${m.count}</span></span>`
-    ).join('');
-    const sources = (s.by_source || []).map(m =>
-      `<span class="admin-chip">${escapeHtml(m.source)}<span class="admin-chip-count">${m.count}</span></span>`
-    ).join('');
-    const artists = (s.top_artists || []).map(m =>
-      `<span class="admin-chip">${escapeHtml(m.artist)}<span class="admin-chip-count">${m.count}</span></span>`
-    ).join('');
-
-    adminEl.detailBody.innerHTML = `
-      <h3 style="margin:0 0 4px;font-size:16px;">${escapeHtml(s.display_name)}</h3>
-      <p style="margin:0;color:rgba(255,255,255,0.5);font-size:12px;">id ${s.user_id} · ${s.spotify_display_name ? 'Spotify: ' + escapeHtml(s.spotify_display_name) : 'no Spotify link'}</p>
-      <div class="admin-stat-grid">
-        <div class="admin-stat-card"><div class="admin-stat-label">Tracks</div><div class="admin-stat-value">${s.track_count}</div></div>
-        <div class="admin-stat-card"><div class="admin-stat-label">Avg vibe (ML)</div><div class="admin-stat-value">${fmt(s.avg_vibe_ml)}</div></div>
-        <div class="admin-stat-card"><div class="admin-stat-label">Avg activation</div><div class="admin-stat-value">${fmt(s.avg_activation, 1)}</div></div>
-      </div>
-      <div class="admin-section-title">Moods</div>
-      <div class="admin-chip-row">${moods || '<span class="admin-chip">none</span>'}</div>
-      <div class="admin-section-title">Classification sources</div>
-      <div class="admin-chip-row">${sources || '<span class="admin-chip">none</span>'}</div>
-      <div class="admin-section-title">Top artists</div>
-      <div class="admin-chip-row">${artists || '<span class="admin-chip">none</span>'}</div>
-    `;
-  }
-
-  async function confirmDeleteUser(userId) {
-    if (!window.confirm('Delete user #' + userId + '? Their PIN + library link will be removed. Global tracks stay. This cannot be undone.')) return;
-    try {
-      const r = await fetchWithAuth('/api/admin/users/' + userId, { method: 'DELETE' });
-      if (!r.ok && r.status !== 204) {
-        let msg = 'HTTP ' + r.status;
-        try { const j = await r.json(); if (j && j.detail && j.detail.error) msg = j.detail.error; } catch (_) {}
-        throw new Error(msg);
-      }
-      toast('User deleted.', 'success');
-      loadAdminUsers();
-    } catch (e) {
-      toast('Delete failed: ' + e.message, 'error');
-    }
-  }
-
-  if (adminEl.overlay) {
-    const btnAdmin = document.getElementById('btnUserAdmin');
-    if (btnAdmin) btnAdmin.addEventListener('click', openAdmin);
-    if (adminEl.close) adminEl.close.addEventListener('click', closeAdmin);
-    if (adminEl.backdrop) adminEl.backdrop.addEventListener('click', closeAdmin);
-    if (adminEl.back) adminEl.back.addEventListener('click', () => {
-      adminEl.detail.hidden = true;
-      adminEl.body.hidden = false;
-    });
-  }
+  // Admin panel lives at /admin now. The user-menu link (#btnUserAdmin
+  // in index.html) is a plain <a href="/admin"> and is hidden for non-
+  // admin users via updateUserMenu() based on /api/auth/me is_admin.
 
   // Try to hydrate an existing session from localStorage; if success, boot
-  // the app. Otherwise show the profile picker.
+  // the app. Otherwise bounce to the landing page — there's no in-app
+  // sign-in surface anymore (PIN accounts were removed, Spotify + Guest
+  // both live on /).
   (async () => {
     const authed = await hydrateSessionFromStorage();
     if (authed) {
       hideAuthOverlay();
       bootAuthenticatedApp();
     } else {
-      showAuthOverlay();
+      window.location.replace('/');
     }
   })();
 })();

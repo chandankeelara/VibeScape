@@ -86,7 +86,10 @@ img { display: block; max-width: 100%; }
 
 .topbar {
   position: relative;
-  z-index: 2;
+  /* Sits above .search-bar (z-index 3) so the user-menu popover (dropped
+   * from the identity pill) overlays the search-results dropdown when
+   * both happen to be open. */
+  z-index: 10;
   width: 100%;
   max-width: 1200px;
   margin: 0 auto;
@@ -3026,31 +3029,44 @@ body.auth-locked .modal { visibility: hidden; }
   flex-shrink: 0;
 }
 .user-menu[hidden] { display: none; }
+/* Unified identity pill on the navbar. Uses the Spotify pill design
+ * (green with live-status dot) so there's a single user affordance
+ * instead of separate VibeScape + Spotify pills. */
 .user-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 10px 4px 4px;
-  height: 30px;
-  border: 1px solid var(--border-strong);
+  height: 24px;
+  padding: 0 8px 0 10px;
   border-radius: 999px;
-  background: color-mix(in oklab, var(--surface-2) 70%, transparent);
-  color: var(--text);
+  background: color-mix(in oklab, #1db954 14%, var(--surface));
+  color: #1db954;
+  border: 1px solid color-mix(in oklab, #1db954 30%, var(--border-strong));
   cursor: pointer;
   font-family: inherit;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
-  transition: background 180ms var(--ease), border-color 180ms var(--ease), color 180ms var(--ease);
+  transition: background 180ms var(--ease), border-color 180ms var(--ease);
   max-width: 200px;
 }
+.user-pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #1db954;
+  box-shadow: 0 0 6px #1db954;
+  flex-shrink: 0;
+}
 .user-pill:hover {
-  background: color-mix(in oklab, var(--vibe-accent) 8%, color-mix(in oklab, var(--surface-2) 80%, transparent));
-  border-color: color-mix(in oklab, var(--vibe-accent) 30%, var(--border-strong));
+  background: color-mix(in oklab, #1db954 22%, var(--surface));
+  border-color: color-mix(in oklab, #1db954 45%, var(--border-strong));
 }
 .user-pill[aria-expanded="true"] {
-  border-color: color-mix(in oklab, var(--vibe-accent) 40%, var(--border-strong));
-  background: color-mix(in oklab, var(--vibe-accent) 12%, color-mix(in oklab, var(--surface-2) 80%, transparent));
+  background: color-mix(in oklab, #1db954 26%, var(--surface));
+  border-color: color-mix(in oklab, #1db954 55%, var(--border-strong));
 }
+.user-pill svg { opacity: 0.8; }
 .user-avatar {
   display: inline-flex;
   align-items: center;
@@ -4661,5 +4677,21 @@ button.search-item:focus-visible {
   .title-row > .sdk-only-badge {
     margin-inline: 2px;
   }
+}
+
+/* ============== Prod-mode gating ==============
+ * body[data-env] is set by loadClientConfig() in app.js from
+ * GET /api/client-config. In prod we hide dev-only affordances:
+ *   - the "?" keyboard-shortcuts button + its popover
+ *   - the Spotify debug button + the debug panel it opens
+ *   - the redundant Spotify sign-out button (only "Sign out of
+ *     VibeScape" in the user menu remains)
+ * The matching keyboard shortcut handlers gate off VS_ENV too.
+ */
+body[data-env="prod"] #btnHelp,
+body[data-env="prod"] #helpPopover,
+body[data-env="prod"] #btnSpotifyDebug,
+body[data-env="prod"] #debugPanel {
+  display: none !important;
 }
 
