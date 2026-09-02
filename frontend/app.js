@@ -204,6 +204,14 @@
     syncModalFooter: $('syncModalFooter'),
     videoStage: $('videoStage'),
     videoFrame: document.querySelector('.video-frame'),
+    videoDragHandle: $('videoDragHandle'),
+    videoDragSurface: $('videoDragSurface'),
+    videoResizeHandle: $('videoResizeHandle'),
+    videoDockBtn: $('videoDockBtn'),
+    videoBottomBar: $('videoBottomBar'),
+    videoMiniPrev: $('videoMiniPrev'),
+    videoMiniPlay: $('videoMiniPlay'),
+    videoMiniNext: $('videoMiniNext'),
     videoSkeleton: $('videoSkeleton'),
     videoEmpty: $('videoEmpty'),
     videoEmptyMsg: $('videoEmptyMsg'),
@@ -557,6 +565,32 @@
     const base = API_BASE + applePath;
     if (!auth.token) return base;
     return base + (base.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(auth.token);
+  }
+
+  // Point the main <audio> at a track's preview clip, preferring the CDN
+  // preview_url (iTunes/Deezer/Spotify) so we don't burn backend egress on
+  // an audio_path proxy we already have upstream. If the CDN load fails
+  // (link rot, CORS, network), fall back once to /api/stream/{key} so the
+  // locally-downloaded MP3 keeps the track playable.
+  function setPreviewSource(track) {
+    if (!track) return;
+    const streamKey = (track.apple_id != null ? track.apple_id : track.spotify_id) || '';
+    const backendSrc = authedStreamUrl('/api/stream/' + encodeURIComponent(streamKey));
+    const directUrl = track.preview_url;
+    if (!directUrl) {
+      el.player.src = backendSrc;
+      return;
+    }
+    el.player.crossOrigin = 'anonymous';
+    const onError = () => {
+      el.player.removeEventListener('error', onError);
+      console.warn('[VibeScape] preview_url load failed; falling back to /api/stream');
+      try { el.player.src = backendSrc; } catch (_) {}
+      const p = el.player.play();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    };
+    el.player.addEventListener('error', onError, { once: true });
+    el.player.src = directUrl;
   }
 
   async function fetchWithAuth(path, options) {
@@ -1238,11 +1272,7 @@
       el.progressThumb.style.left = '0%';
       setSourcePill('preview');
 
-      // Prefer apple_id (present for iTunes-sourced tracks) but fall back to
-      // spotify_id when apple_id is null — happens for search-added tracks
-      // processed via the ML-only path (no iTunes term-search).
-      const streamKey = (t.apple_id != null ? t.apple_id : t.spotify_id) || '';
-      el.player.src = authedStreamUrl('/api/stream/' + encodeURIComponent(streamKey));
+      setPreviewSource(t);
       el.player.volume = 0.8;
 
       const p = el.player.play();
@@ -1653,6 +1683,241 @@
 
   // ===== Video mode (YouTube IFrame API) =====
   function isVideoMode() { return video.mode === 'video'; }
+
+  // ===== Video-frame drag + resize =====
+  // First drag/resize gesture flips the frame into `is-detached` (position:
+  // fixed), storing its current on-screen rect as the starting point so the
+  // grab feels continuous. Size + position persist in localStorage so the
+  // panel remembers where the user parked it.
+  const VIDEO_FRAME_STORAGE_KEY = 'vs.videoFrame.rect';
+
+  function loadVideoFrameRect() {
+    try {
+      const raw = localStorage.getItem(VIDEO_FRAME_STORAGE_KEY);
+      if (!raw) return null;
+      const r = JSON.parse(raw);
+      if (!r || typeof r.left !== 'number' || typeof r.top !== 'number') return null;
+      return r;
+    } catch (_) { return null; }
+  }
+  function saveVideoFrameRect(rect) {
+    try { localStorage.setItem(VIDEO_FRAME_STORAGE_KEY, JSON.stringify(rect)); } catch (_) {}
+  }
+  function clampVideoFrameRect(rect) {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const minW = 240, minH = 160;
+    const w = Math.max(minW, Math.min(rect.width, vw * 0.96));
+    const h = Math.max(minH, Math.min(rect.height, vh * 0.92));
+    const left = Math.max(0, Math.min(rect.left, vw - w));
+    const top = Math.max(0, Math.min(rect.top, vh - h));
+    return { left, top, width: w, height: h };
+  }
+  function applyDetachedRect(rect) {
+    if (!el.videoFrame || !el.videoStage) return;
+    const clamped = clampVideoFrameRect(rect);
+    el.videoStage.classList.add('is-detached');
+    el.videoFrame.classList.add('is-detached');
+    el.videoFrame.style.left = clamped.left + 'px';
+    el.videoFrame.style.top = clamped.top + 'px';
+    el.videoFrame.style.width = clamped.width + 'px';
+    el.videoFrame.style.height = clamped.height + 'px';
+    return clamped;
+  }
+  function ensureDetached() {
+    if (!el.videoFrame) return null;
+    if (el.videoFrame.classList.contains('is-detached')) {
+      const r = el.videoFrame.getBoundingClientRect();
+      return { left: r.left, top: r.top, width: r.width, height: r.height };
+    }
+    const r = el.videoFrame.getBoundingClientRect();
+    return applyDetachedRect({ left: r.left, top: r.top, width: r.width, height: r.height });
+  }
+
+  function setupVideoFrameDragResize() {
+    if (!el.videoFrame || !el.videoDragHandle || !el.videoResizeHandle) return;
+
+    // Restore last-known rect if the user previously detached.
+    const saved = loadVideoFrameRect();
+    if (saved) applyDetachedRect(saved);
+
+    // Keep the panel on-screen when the viewport shrinks.
+    window.addEventListener('resize', () => {
+      if (!el.videoFrame.classList.contains('is-detached')) return;
+      const r = el.videoFrame.getBoundingClientRect();
+      applyDetachedRect({ left: r.left, top: r.top, width: r.width, height: r.height });
+    });
+
+    // ----- Drag -----
+    // Same handler wired to both the topbar and a transparent overlay that
+    // covers the video area, so the user can grab the panel from anywhere.
+    let drag = null;
+    const attachDrag = (surface) => {
+      if (!surface) return;
+      surface.addEventListener('pointerdown', (ev) => {
+        if (ev.button !== 0) return;
+        // Ignore drags that start on interactive elements (dock button,
+        // future controls). Prevents click-swallowing.
+        if (ev.target.closest('button, a, input')) return;
+        const start = ensureDetached();
+        if (!start) return;
+        drag = {
+          pointerId: ev.pointerId,
+          surface: surface,
+          offsetX: ev.clientX - start.left,
+          offsetY: ev.clientY - start.top,
+          width: start.width,
+          height: start.height,
+        };
+        el.videoFrame.classList.add('is-dragging');
+        try { surface.setPointerCapture(ev.pointerId); } catch (_) {}
+        ev.preventDefault();
+      });
+      surface.addEventListener('pointermove', (ev) => {
+        if (!drag || ev.pointerId !== drag.pointerId) return;
+        const rect = applyDetachedRect({
+          left: ev.clientX - drag.offsetX,
+          top: ev.clientY - drag.offsetY,
+          width: drag.width,
+          height: drag.height,
+        });
+        if (rect) saveVideoFrameRect(rect);
+      });
+      const endDrag = (ev) => {
+        if (!drag || (ev && ev.pointerId !== drag.pointerId)) return;
+        el.videoFrame.classList.remove('is-dragging');
+        try { drag.surface.releasePointerCapture(drag.pointerId); } catch (_) {}
+        drag = null;
+      };
+      surface.addEventListener('pointerup', endDrag);
+      surface.addEventListener('pointercancel', endDrag);
+    };
+    attachDrag(el.videoDragHandle);
+    attachDrag(el.videoDragSurface);
+
+    // ----- Resize (8 directions: 4 edges + 4 corners) -----
+    // Each handle carries a data-resize attribute (n/s/e/w/ne/nw/se/sw)
+    // that says which edges to move. Anchor edges stay put; grab edges
+    // follow the pointer, clamped by min-width/height.
+    const MIN_W = 240, MIN_H = 160;
+    let resize = null;
+    const attachResize = (surface) => {
+      if (!surface) return;
+      const dir = surface.getAttribute('data-resize') || 'se';
+      surface.addEventListener('pointerdown', (ev) => {
+        if (ev.button !== 0) return;
+        const start = ensureDetached();
+        if (!start) return;
+        resize = {
+          pointerId: ev.pointerId,
+          surface: surface,
+          dir: dir,
+          startX: ev.clientX,
+          startY: ev.clientY,
+          left: start.left,
+          top: start.top,
+          right: start.left + start.width,
+          bottom: start.top + start.height,
+        };
+        el.videoFrame.classList.add('is-resizing');
+        try { surface.setPointerCapture(ev.pointerId); } catch (_) {}
+        ev.preventDefault();
+        ev.stopPropagation();
+      });
+      surface.addEventListener('pointermove', (ev) => {
+        if (!resize || ev.pointerId !== resize.pointerId) return;
+        const dx = ev.clientX - resize.startX;
+        const dy = ev.clientY - resize.startY;
+        let left = resize.left;
+        let top = resize.top;
+        let right = resize.right;
+        let bottom = resize.bottom;
+        const d = resize.dir;
+        if (d.indexOf('e') !== -1) right  = Math.max(resize.left + MIN_W, resize.right + dx);
+        if (d.indexOf('w') !== -1) left   = Math.min(resize.right - MIN_W, resize.left + dx);
+        if (d.indexOf('s') !== -1) bottom = Math.max(resize.top + MIN_H, resize.bottom + dy);
+        if (d.indexOf('n') !== -1) top    = Math.min(resize.bottom - MIN_H, resize.top + dy);
+        const rect = applyDetachedRect({
+          left: left,
+          top: top,
+          width: right - left,
+          height: bottom - top,
+        });
+        if (rect) saveVideoFrameRect(rect);
+      });
+      const endResize = (ev) => {
+        if (!resize || (ev && ev.pointerId !== resize.pointerId)) return;
+        el.videoFrame.classList.remove('is-resizing');
+        try { resize.surface.releasePointerCapture(resize.pointerId); } catch (_) {}
+        resize = null;
+      };
+      surface.addEventListener('pointerup', endResize);
+      surface.addEventListener('pointercancel', endResize);
+    };
+    document.querySelectorAll('.video-resize-edge, .video-resize-corner').forEach(attachResize);
+
+    // Explicit dock button — only visible when detached. Clicking it clears
+    // the saved rect and returns the frame to the inline layout inside .art.
+    if (el.videoDockBtn) {
+      el.videoDockBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        el.videoStage.classList.remove('is-detached');
+        el.videoFrame.classList.remove('is-detached');
+        el.videoFrame.style.left = '';
+        el.videoFrame.style.top = '';
+        el.videoFrame.style.width = '';
+        el.videoFrame.style.height = '';
+        try { localStorage.removeItem(VIDEO_FRAME_STORAGE_KEY); } catch (_) {}
+      });
+    }
+  }
+
+  // Re-apply the saved rect on demand (called when video mode becomes
+  // visible, so any race between initial script eval and DOM layout can't
+  // leave the frame in the default position).
+  function reapplyDetachedRectIfSaved() {
+    const saved = loadVideoFrameRect();
+    if (saved) applyDetachedRect(saved);
+  }
+
+  // Mini transport controls inside the detached video panel. Delegate to
+  // the main buttons so all the wiring (Spotify SDK, preview <audio>,
+  // queue advance) stays in one place.
+  function setupVideoMiniControls() {
+    if (el.videoMiniPrev && el.btnPrev) {
+      el.videoMiniPrev.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        el.btnPrev.click();
+      });
+    }
+    if (el.videoMiniNext && el.btnNext) {
+      el.videoMiniNext.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        el.btnNext.click();
+      });
+    }
+    if (el.videoMiniPlay && el.btnPlay) {
+      el.videoMiniPlay.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        el.btnPlay.click();
+      });
+    }
+    // Reflect play/pause state via body.playing (already toggled elsewhere).
+    // A MutationObserver on body class avoids duplicating playback-state
+    // logic across all the places that already flip .playing on/off.
+    const playIcon = el.videoMiniPlay && el.videoMiniPlay.querySelector('.video-mini-play-icon');
+    const pauseIcon = el.videoMiniPlay && el.videoMiniPlay.querySelector('.video-mini-pause-icon');
+    if (!playIcon || !pauseIcon) return;
+    const sync = () => {
+      const playing = document.body.classList.contains('playing');
+      playIcon.hidden = playing;
+      pauseIcon.hidden = !playing;
+    };
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  }
+
 
   function loadYouTubeApi() {
     if (video.apiRequested) return;
@@ -2098,6 +2363,7 @@
     if (el.videoStage) {
       el.videoStage.hidden = next !== 'video';
       el.videoStage.setAttribute('aria-hidden', next === 'video' ? 'false' : 'true');
+      if (next === 'video') reapplyDetachedRectIfSaved();
     }
     if (next !== 'video' && videoSearch.open) closeVideoSearchPanel();
     updateModeToggleUi();
@@ -2115,8 +2381,7 @@
         } else {
           try {
             if (!el.player.src) {
-              const streamKey = (t.apple_id != null ? t.apple_id : t.spotify_id) || '';
-              el.player.src = authedStreamUrl('/api/stream/' + encodeURIComponent(streamKey));
+              setPreviewSource(t);
             }
             const p = el.player.play();
             if (p && typeof p.catch === 'function') p.catch(() => {});
@@ -2167,6 +2432,9 @@
       openVideoSearchPanel();
     });
   }
+
+  setupVideoFrameDragResize();
+  setupVideoMiniControls();
   if (el.videoSearchFromEmpty) {
     el.videoSearchFromEmpty.addEventListener('click', (ev) => {
       ev.stopPropagation();
@@ -2202,6 +2470,7 @@
     if (el.videoStage) {
       el.videoStage.hidden = video.mode !== 'video';
       el.videoStage.setAttribute('aria-hidden', video.mode === 'video' ? 'false' : 'true');
+      if (video.mode === 'video') reapplyDetachedRectIfSaved();
     }
     updateModeToggleUi();
     if (video.mode === 'video') loadYouTubeApi();
@@ -2894,32 +3163,57 @@
   }
 
   async function refreshSpotifyToken() {
-    if (!spotify.refreshToken || !spotify.clientId) return false;
-    const body = new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: spotify.refreshToken,
-      client_id: spotify.clientId
-    });
+    if (!spotify.refreshToken) return false;
+    // Prefer the backend endpoint: it sends client_secret alongside
+    // client_id, which is required to refresh tokens minted via the
+    // server-side Authorization Code flow (login.js path). Direct-to-Spotify
+    // refresh with only client_id works for PKCE-issued tokens; we fall back
+    // to that if the backend refresh isn't available (older deploys).
+    let j = null;
     try {
-      const r = await fetch('https://accounts.spotify.com/api/token', {
+      const r = await fetch(API_BASE + '/api/spotify/refresh', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body.toString()
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: spotify.refreshToken })
       });
-      if (!r.ok) { clearSpotifySession(); return false; }
-      const j = await r.json();
-      spotify.accessToken = j.access_token || '';
-      if (j.refresh_token) spotify.refreshToken = j.refresh_token;
-      spotify.expiresAt = Date.now() + ((j.expires_in || 3600) * 1000);
-      const k = spotifyKeys();
-      localStorage.setItem(k.tokenKey, spotify.accessToken);
-      localStorage.setItem(k.refreshKey, spotify.refreshToken);
-      localStorage.setItem(k.expiryKey, String(spotify.expiresAt));
-      await fetchSpotifyProfile();
-      return true;
-    } catch (e) {
-      return false;
+      if (r.ok) {
+        j = await r.json();
+      } else if (r.status === 400 || r.status === 401) {
+        // refresh_token is bad -- no point falling back to direct call
+        clearSpotifySession();
+        return false;
+      }
+    } catch (_) { /* network -- try direct fallback */ }
+
+    if (!j && spotify.clientId) {
+      const body = new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: spotify.refreshToken,
+        client_id: spotify.clientId
+      });
+      try {
+        const r = await fetch('https://accounts.spotify.com/api/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: body.toString()
+        });
+        if (!r.ok) { clearSpotifySession(); return false; }
+        j = await r.json();
+      } catch (e) {
+        return false;
+      }
     }
+    if (!j || !j.access_token) return false;
+
+    spotify.accessToken = j.access_token;
+    if (j.refresh_token) spotify.refreshToken = j.refresh_token;
+    spotify.expiresAt = Date.now() + ((j.expires_in || 3600) * 1000);
+    const k = spotifyKeys();
+    localStorage.setItem(k.tokenKey, spotify.accessToken);
+    localStorage.setItem(k.refreshKey, spotify.refreshToken);
+    localStorage.setItem(k.expiryKey, String(spotify.expiresAt));
+    await fetchSpotifyProfile();
+    return true;
   }
 
   async function fetchSpotifyProfile() {
@@ -3160,8 +3454,7 @@
   function fallbackToPreview(reason) {
     if (!state.current) return;
     setSourcePill('preview');
-    const streamKey = (state.current.apple_id != null ? state.current.apple_id : state.current.spotify_id) || '';
-    el.player.src = authedStreamUrl('/api/stream/' + encodeURIComponent(streamKey));
+    setPreviewSource(state.current);
     const p = el.player.play();
     if (p && typeof p.catch === 'function') p.catch(() => {});
     if (reason) console.warn('[VibeScape] Spotify → preview fallback:', reason);
@@ -4049,7 +4342,7 @@
         const sdkBadge = sdkOnlyBadgeHtml(t);
         const keyEsc = escapeHtml(String(key));
         parts.push(
-          '<div class="search-item" data-action="play-library" data-key="' + keyEsc + '" tabindex="0" role="button">' +
+          '<div class="search-item" data-action="play-library" data-key="' + keyEsc + '" data-drag-source="search-lib" data-drag-key="' + keyEsc + '" tabindex="0" role="button">' +
           art +
           '<div class="search-item-body">' +
             '<div class="search-item-title-row">' +
@@ -4521,6 +4814,37 @@
     renderQueue();
   }
 
+  // Insert a track at a specific index in the queue. Called by the drag
+  // engine when dropping from a rec / search source. Rejects duplicates
+  // (same policy as addToQueue).
+  function addToQueueAt(t, idx) {
+    if (!t) return false;
+    const key = trackKeyOf(t);
+    if (!key) return false;
+    if (queueContains(key)) {
+      toast('Already in your queue.', 'info');
+      return false;
+    }
+    const q = state.queue;
+    const i = Math.max(0, Math.min(idx | 0, q.length));
+    q.splice(i, 0, t);
+    renderQueue();
+    return true;
+  }
+
+  // Reorder a queue item. `to` is the desired index in the pre-removal list
+  // (i.e., "insert before this row"). Handles the from<to shift internally.
+  function moveInQueue(from, to) {
+    const q = state.queue;
+    if (from < 0 || from >= q.length) return;
+    let target = Math.max(0, Math.min(to | 0, q.length));
+    if (target === from || target === from + 1) return;
+    const [t] = q.splice(from, 1);
+    if (target > from) target -= 1;
+    q.splice(target, 0, t);
+    renderQueue();
+  }
+
   function jumpToQueueItem(idx) {
     if (idx < 0 || idx >= state.queue.length) return;
     // Drop everything above idx, then advance-to-next consumes idx.
@@ -4579,6 +4903,22 @@
     const actionAttrs = kind === 'queue'
       ? ' data-action="jump" data-idx="' + idx + '"'
       : ' data-action="play-rec" data-key="' + dataKey + '"';
+    // Drag source metadata — consumed by the pointer-drag engine below. A
+    // 'queue' row is reorder-only (from index); a 'rec' row inserts a new
+    // track at drop index.
+    const dragAttrs = kind === 'queue'
+      ? ' data-drag-source="queue" data-drag-idx="' + idx + '"'
+      : ' data-drag-source="rec" data-drag-key="' + dataKey + '"';
+    // Grip handle. touch-action: none in CSS so browser doesn't intercept
+    // vertical scroll while the finger is on the handle.
+    const grip =
+      '<button class="queue-item-grip" type="button" data-drag-handle aria-label="Drag to reorder" title="Drag to reorder" tabindex="-1">' +
+        '<svg viewBox="0 0 16 16" width="10" height="14" fill="currentColor" aria-hidden="true">' +
+          '<circle cx="5" cy="4" r="1"/><circle cx="11" cy="4" r="1"/>' +
+          '<circle cx="5" cy="8" r="1"/><circle cx="11" cy="8" r="1"/>' +
+          '<circle cx="5" cy="12" r="1"/><circle cx="11" cy="12" r="1"/>' +
+        '</svg>' +
+      '</button>';
     // Right-side button: remove-from-queue OR add-to-queue depending on kind.
     const rightBtn = kind === 'queue'
       ? '<button class="queue-item-btn" type="button" data-action="remove" data-idx="' + idx + '" aria-label="Remove from queue" title="Remove">' +
@@ -4588,14 +4928,14 @@
           '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' +
         '</button>';
     return (
-      '<li class="queue-item"' + actionAttrs + ' tabindex="0">' +
+      '<li class="queue-item"' + actionAttrs + dragAttrs + ' tabindex="0">' +
       art +
       '<div class="queue-item-body">' +
         '<div class="queue-item-title">' + title + '</div>' +
         '<div class="queue-item-sub">' + sub + '</div>' +
         meta +
       '</div>' +
-      '<div class="queue-item-actions">' + rightBtn + '</div>' +
+      '<div class="queue-item-actions">' + grip + rightBtn + '</div>' +
       '</li>'
     );
   }
@@ -4669,6 +5009,10 @@
 
   // Delegated click handling for both lists.
   function onQueueSidebarClick(ev) {
+    // Grip is a <button> with no data-action. Clicks land here when the user
+    // taps the grip without moving (below drag threshold). Swallow so the row
+    // click handler below doesn't fire jump/play-rec.
+    if (ev.target.closest && ev.target.closest('[data-drag-handle]')) return;
     const btn = ev.target.closest && ev.target.closest('button[data-action]');
     if (btn) {
       const action = btn.getAttribute('data-action');
@@ -4706,6 +5050,262 @@
 
   if (el.queueSidebar) el.queueSidebar.addEventListener('click', onQueueSidebarClick);
   if (el.queueClear) el.queueClear.addEventListener('click', clearQueue);
+
+  // ---- Pointer-based drag engine -------------------------------------------
+  // One engine handles three sources (queue reorder, rec -> queue, search-lib
+  // -> queue) via [data-drag-source] on the row and [data-drag-handle] on the
+  // grip. Uses Pointer Events so touch + mouse share a single code path —
+  // HTML5 DnD is skipped because it doesn't fire on touchscreens.
+  //
+  // Search rows (mouse only) can be dragged from anywhere on the row; queue
+  // and rec rows require pressing the grip so that tapping the row still
+  // triggers jump/play-rec.
+  const drag = {
+    active: false,
+    started: false,
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    sourceEl: null,
+    sourceKind: null,          // 'queue' | 'rec' | 'search-lib'
+    sourceIdx: -1,             // for kind='queue'
+    sourceKey: null,           // for rec/search
+    ghost: null,
+    ghostOffsetY: 0,
+    indicator: null,
+    dropTargetIdx: -1,         // insert-before index into state.queue (-1 = none)
+    ranCleanup: false,
+  };
+  const DRAG_THRESHOLD = 6; // px before mouse drag actually starts
+
+  function findDragSource(target) {
+    if (!target || !target.closest) return null;
+    return target.closest('[data-drag-source]');
+  }
+
+  // Resolve a drag source's identifiers back to a full track object so the
+  // ghost card can render artwork + title without cloning the DOM.
+  function trackFromDragSource(kind, idx, key) {
+    if (kind === 'queue') return state.queue[idx] || null;
+    if (kind === 'rec') {
+      return (state.recs.list || []).find((x) => trackKeyOf(x) === key) || null;
+    }
+    if (kind === 'search-lib') {
+      const lib = (search && search.lastResults && search.lastResults.library) || [];
+      return lib.find((x) => String(x.spotify_id || '') === key || String(x.apple_id || '') === key) || null;
+    }
+    return null;
+  }
+
+  function onPointerDown(ev) {
+    if (drag.active) return;
+    if (ev.button !== undefined && ev.button !== 0) return; // left-click only
+    const isTouch = ev.pointerType === 'touch';
+    const handle = ev.target.closest && ev.target.closest('[data-drag-handle]');
+    const source = findDragSource(ev.target);
+    if (!source) return;
+    const kind = source.getAttribute('data-drag-source');
+    // Touch: require grip for queue/rec rows so tap-to-jump / tap-to-play-rec
+    // still work (no movement threshold on touch — a tap would otherwise start
+    // a drag). Mouse: drag from anywhere on the row; the 6px threshold in
+    // onPointerMove protects the click.
+    if ((kind === 'queue' || kind === 'rec') && isTouch && !handle) return;
+    if (kind === 'search-lib' && isTouch) return; // search view has no visible queue on mobile
+
+    drag.pointerId = ev.pointerId;
+    drag.startX = ev.clientX;
+    drag.startY = ev.clientY;
+    drag.sourceEl = source;
+    drag.sourceKind = kind;
+    drag.sourceIdx = kind === 'queue' ? parseInt(source.getAttribute('data-drag-idx'), 10) : -1;
+    drag.sourceKey = source.getAttribute('data-drag-key') || null;
+    drag.active = true;
+    drag.started = false;
+    drag.ranCleanup = false;
+
+    // Grip drags on touch feel best when they start immediately (no threshold).
+    // Also prevents the browser from starting a scroll gesture before we do.
+    if (handle && isTouch) {
+      ev.preventDefault();
+      beginDrag(ev);
+    }
+    // Mouse: suppress the default text-selection gesture that mousedown
+    // normally kicks off. preventDefault on pointerdown does not block the
+    // subsequent click, so tap-to-jump / tap-to-play-rec still work.
+    if (!isTouch) {
+      ev.preventDefault();
+    }
+
+    document.addEventListener('pointermove', onPointerMove, { passive: false });
+    document.addEventListener('pointerup', onPointerUp, { once: false });
+    document.addEventListener('pointercancel', onPointerCancel, { once: false });
+  }
+
+  function beginDrag(ev) {
+    if (drag.started) return;
+    drag.started = true;
+
+    const src = drag.sourceEl;
+    const rect = src.getBoundingClientRect();
+    // Build a compact fresh ghost card from the source track's data so it
+    // renders identically whether the source is a .queue-item (li, grid) or
+    // a .search-item (div, flex). Cloning was leaking mismatched layouts.
+    const t = trackFromDragSource(drag.sourceKind, drag.sourceIdx, drag.sourceKey);
+    const ghost = document.createElement('div');
+    ghost.className = 'queue-drop-ghost';
+    const artUrl = t && t.artwork_url ? t.artwork_url : '';
+    const title = escapeHtml((t && t.title) || 'Track');
+    const artist = escapeHtml((t && t.artist) || '');
+    ghost.innerHTML =
+      (artUrl
+        ? '<img class="queue-drop-ghost-art" src="' + escapeHtml(artUrl) + '" alt="" />'
+        : '<div class="queue-drop-ghost-art"></div>') +
+      '<div class="queue-drop-ghost-body">' +
+        '<div class="queue-drop-ghost-title">' + title + '</div>' +
+        '<div class="queue-drop-ghost-sub">' + artist + '</div>' +
+      '</div>';
+    const width = Math.min(Math.max(rect.width, 220), 320);
+    ghost.style.width = width + 'px';
+    ghost.style.left = (ev.clientX - width / 2) + 'px';
+    ghost.style.top = (ev.clientY - 24) + 'px';
+    document.body.appendChild(ghost);
+    drag.ghost = ghost;
+    drag.ghostWidth = width;
+    drag.ghostOffsetY = 24;
+
+    src.classList.add('is-dragging');
+    document.body.classList.add('is-dragging-active');
+    // Clear any selection the mousedown may have already started before
+    // the threshold was crossed.
+    try { const s = window.getSelection(); if (s) s.removeAllRanges(); } catch (_) {}
+
+    if (el.queueList) el.queueList.classList.add('is-drop-active');
+
+    const ind = document.createElement('div');
+    ind.className = 'queue-drop-indicator';
+    document.body.appendChild(ind);
+    drag.indicator = ind;
+
+    updateDropTarget(ev.clientX, ev.clientY);
+  }
+
+  function onPointerMove(ev) {
+    if (!drag.active) return;
+    if (!drag.started) {
+      const dx = ev.clientX - drag.startX;
+      const dy = ev.clientY - drag.startY;
+      if ((dx * dx + dy * dy) < (DRAG_THRESHOLD * DRAG_THRESHOLD)) return;
+      beginDrag(ev);
+    }
+    ev.preventDefault();
+    if (drag.ghost) {
+      drag.ghost.style.left = (ev.clientX - drag.ghostWidth / 2) + 'px';
+      drag.ghost.style.top = (ev.clientY - drag.ghostOffsetY) + 'px';
+    }
+    updateDropTarget(ev.clientX, ev.clientY);
+  }
+
+  function updateDropTarget(x, y) {
+    const list = el.queueList;
+    if (!list || list.hidden) {
+      // Queue is empty — allow drop-to-add-at-0 when hovering the empty state.
+      const empty = el.queueEmpty;
+      const box = empty && !empty.hidden ? empty.getBoundingClientRect() : null;
+      if (box && x >= box.left && x <= box.right && y >= box.top && y <= box.bottom) {
+        drag.dropTargetIdx = 0;
+        if (drag.indicator) {
+          drag.indicator.style.left = box.left + 'px';
+          drag.indicator.style.top = (box.top + box.height / 2) + 'px';
+          drag.indicator.style.width = box.width + 'px';
+          drag.indicator.style.opacity = '1';
+        }
+      } else {
+        drag.dropTargetIdx = -1;
+        if (drag.indicator) drag.indicator.style.opacity = '0';
+      }
+      return;
+    }
+    const box = list.getBoundingClientRect();
+    if (x < box.left || x > box.right || y < box.top - 20 || y > box.bottom + 20) {
+      drag.dropTargetIdx = -1;
+      if (drag.indicator) drag.indicator.style.opacity = '0';
+      return;
+    }
+    const rows = list.querySelectorAll('.queue-item');
+    let targetIdx = rows.length;
+    let indicatorY = null;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i].getBoundingClientRect();
+      const mid = r.top + r.height / 2;
+      if (y < mid) {
+        targetIdx = i;
+        indicatorY = r.top;
+        break;
+      }
+    }
+    if (indicatorY == null && rows.length) {
+      indicatorY = rows[rows.length - 1].getBoundingClientRect().bottom;
+    } else if (indicatorY == null) {
+      indicatorY = box.top;
+    }
+    drag.dropTargetIdx = targetIdx;
+    if (drag.indicator) {
+      drag.indicator.style.left = box.left + 'px';
+      drag.indicator.style.top = indicatorY + 'px';
+      drag.indicator.style.width = box.width + 'px';
+      drag.indicator.style.opacity = '1';
+    }
+  }
+
+  function onPointerUp(ev) {
+    if (!drag.active) return;
+    const started = drag.started;
+    const target = drag.dropTargetIdx;
+    const kind = drag.sourceKind;
+    const srcIdx = drag.sourceIdx;
+    const srcKey = drag.sourceKey;
+    cleanupDrag();
+    if (!started || target < 0) return;
+    if (kind === 'queue') {
+      moveInQueue(srcIdx, target);
+    } else if (kind === 'rec') {
+      const t = (state.recs.list || []).find((x) => trackKeyOf(x) === srcKey);
+      if (t && addToQueueAt(t, target)) toast('Added to queue.', 'success');
+    } else if (kind === 'search-lib') {
+      const lib = (search && search.lastResults && search.lastResults.library) || [];
+      const t = lib.find((x) => String(x.spotify_id || '') === srcKey || String(x.apple_id || '') === srcKey);
+      if (t && addToQueueAt(t, target)) toast('Added to queue.', 'success');
+    }
+  }
+
+  function onPointerCancel() {
+    cleanupDrag();
+  }
+
+  function cleanupDrag() {
+    if (drag.ranCleanup) return;
+    drag.ranCleanup = true;
+    document.removeEventListener('pointermove', onPointerMove);
+    document.removeEventListener('pointerup', onPointerUp);
+    document.removeEventListener('pointercancel', onPointerCancel);
+    if (drag.sourceEl) drag.sourceEl.classList.remove('is-dragging');
+    document.body.classList.remove('is-dragging-active');
+    if (drag.ghost && drag.ghost.parentNode) drag.ghost.parentNode.removeChild(drag.ghost);
+    if (drag.indicator && drag.indicator.parentNode) drag.indicator.parentNode.removeChild(drag.indicator);
+    if (el.queueList) el.queueList.classList.remove('is-drop-active');
+    drag.active = false;
+    drag.started = false;
+    drag.pointerId = null;
+    drag.sourceEl = null;
+    drag.sourceKind = null;
+    drag.sourceIdx = -1;
+    drag.sourceKey = null;
+    drag.ghost = null;
+    drag.indicator = null;
+    drag.dropTargetIdx = -1;
+  }
+
+  document.addEventListener('pointerdown', onPointerDown);
 
   // Initial paint
   renderQueue();
