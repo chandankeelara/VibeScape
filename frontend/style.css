@@ -432,6 +432,292 @@ body.mode-video .art-glow { opacity: calc(var(--art-glow-alpha, 0.65) * 0.55); }
   height: 100% !important;
   border: 0;
 }
+
+/* Topbar: doubles as drag handle. Hidden entirely when the frame is
+   docked (inline); appears as a compact toolbar when detached, giving
+   the user a place to grab, a short hint, and the snap-back button. */
+.video-topbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 34px;
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px 0 12px;
+  z-index: 5;
+  cursor: grab;
+  background: linear-gradient(to bottom,
+    rgba(0,0,0,0.72) 0%,
+    rgba(0,0,0,0.48) 60%,
+    rgba(0,0,0,0.0) 100%);
+  color: rgba(255,255,255,0.9);
+  user-select: none;
+}
+.video-frame.is-detached .video-topbar { display: flex; }
+/* Docked mode: keep the topbar available but transparent by default and
+   fade in on hover, so users can grab-to-detach without cluttering the
+   normal YouTube view. Snap-back button + dot grip are hidden here since
+   there's nothing to snap back to yet. */
+.video-frame:not(.is-detached) .video-topbar {
+  display: flex;
+  opacity: 0;
+  background: transparent;
+  transition: opacity 160ms var(--ease), background 160ms var(--ease);
+}
+.video-frame:not(.is-detached):hover .video-topbar {
+  opacity: 1;
+  background: linear-gradient(to bottom,
+    rgba(0,0,0,0.55) 0%,
+    rgba(0,0,0,0.3) 60%,
+    rgba(0,0,0,0.0) 100%);
+}
+.video-frame:not(.is-detached) .video-dock-btn,
+.video-frame:not(.is-detached) .video-topbar-grip { display: none; }
+.video-topbar:active,
+.video-frame.is-dragging .video-topbar { cursor: grabbing; }
+.video-topbar-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: rgba(255,255,255,0.78);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+/* 3-dot grip glyph left of the hint text — visually signals "grab me". */
+.video-topbar-grip {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+  padding-right: 4px;
+  pointer-events: none;
+}
+.video-topbar-grip > span {
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.55);
+}
+
+/* Bottombar: mini transport controls, only visible when detached. */
+.video-bottombar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 52px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 0 14px;
+  z-index: 5;
+  background: linear-gradient(to top,
+    rgba(0,0,0,0.82) 0%,
+    rgba(0,0,0,0.55) 55%,
+    rgba(0,0,0,0.0) 100%);
+  user-select: none;
+}
+.video-frame.is-detached .video-bottombar { display: flex; }
+
+.video-mini-btn {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 50% 20%,
+      rgba(255,255,255,0.14),
+      rgba(255,255,255,0.04) 60%);
+  border: 1px solid rgba(255,255,255,0.16);
+  color: rgba(255,255,255,0.94);
+  cursor: pointer;
+  box-shadow:
+    0 2px 6px -2px rgba(0,0,0,0.55),
+    inset 0 1px 0 rgba(255,255,255,0.12);
+  transition:
+    background 160ms var(--ease),
+    border-color 160ms var(--ease),
+    transform 120ms var(--ease),
+    color 160ms var(--ease),
+    box-shadow 160ms var(--ease);
+}
+.video-mini-btn:hover {
+  background:
+    radial-gradient(circle at 50% 20%,
+      color-mix(in oklab, var(--vibe-accent) 65%, transparent),
+      color-mix(in oklab, var(--vibe-accent) 35%, transparent) 60%);
+  border-color: color-mix(in oklab, var(--vibe-accent) 75%, rgba(255,255,255,0.16));
+  color: #fff;
+  box-shadow:
+    0 4px 12px -2px color-mix(in oklab, var(--vibe-accent) 55%, transparent),
+    inset 0 1px 0 rgba(255,255,255,0.2);
+}
+.video-mini-btn:active {
+  transform: scale(0.92);
+  box-shadow:
+    0 1px 3px -1px rgba(0,0,0,0.4),
+    inset 0 1px 2px rgba(0,0,0,0.25);
+}
+.video-mini-btn:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--vibe-accent) 75%, transparent);
+  outline-offset: 3px;
+}
+.video-mini-btn > svg { pointer-events: none; display: block; }
+
+/* Primary play/pause: bigger, accent-filled, with a soft glow ring. */
+.video-mini-play {
+  width: 48px;
+  height: 48px;
+  background:
+    radial-gradient(circle at 50% 25%,
+      color-mix(in oklab, var(--vibe-accent) 92%, white 12%),
+      color-mix(in oklab, var(--vibe-accent) 78%, transparent) 65%);
+  border-color: color-mix(in oklab, var(--vibe-accent) 90%, rgba(255,255,255,0.18));
+  color: #fff;
+  box-shadow:
+    0 6px 18px -4px color-mix(in oklab, var(--vibe-accent) 70%, transparent),
+    inset 0 1px 0 rgba(255,255,255,0.28);
+}
+.video-mini-play:hover {
+  background:
+    radial-gradient(circle at 50% 25%,
+      color-mix(in oklab, var(--vibe-accent) 100%, white 20%),
+      color-mix(in oklab, var(--vibe-accent) 90%, transparent) 65%);
+  box-shadow:
+    0 10px 24px -4px color-mix(in oklab, var(--vibe-accent) 80%, transparent),
+    inset 0 1px 0 rgba(255,255,255,0.32);
+}
+/* Nudge the play triangle a hair right for optical centering */
+.video-mini-play .video-mini-play-icon { transform: translateX(1px); }
+
+/* Drag surface: transparent overlay that sits above the iframe when the
+   frame is detached, so the user can grab the video from anywhere. Sits
+   between the topbar (34px) and bottombar (44px) so it doesn't swallow
+   clicks on those controls. Hidden while docked so YouTube UI stays
+   interactive in normal use. */
+.video-drag-surface {
+  position: absolute;
+  top: 34px;
+  left: 0;
+  right: 0;
+  bottom: 52px;
+  z-index: 4;
+  display: none;
+  cursor: grab;
+  background: transparent;
+}
+.video-frame.is-detached .video-drag-surface { display: block; }
+.video-drag-surface:active,
+.video-frame.is-dragging .video-drag-surface { cursor: grabbing; }
+
+/* Resize handles: four edges + four corners. Only active when detached.
+   Edges are thin invisible strips along each side; corners are 14x14
+   squares. Cursor changes hint at the resize direction. */
+.video-resize-edge,
+.video-resize-corner {
+  position: absolute;
+  z-index: 6;
+  display: block;
+  background: transparent;
+}
+
+/* Edges: 6px thick, inset from corners so corner handles win the overlap */
+.video-resize-n { top: 0;    left: 14px; right: 14px; height: 6px; cursor: ns-resize; }
+.video-resize-s { bottom: 0; left: 14px; right: 14px; height: 6px; cursor: ns-resize; }
+.video-resize-e { top: 14px; bottom: 14px; right: 0;  width: 6px;  cursor: ew-resize; }
+.video-resize-w { top: 14px; bottom: 14px; left: 0;   width: 6px;  cursor: ew-resize; }
+
+/* Corners: 14x14, above edges + bars for a reliable grab */
+.video-resize-corner { width: 14px; height: 14px; z-index: 7; }
+.video-resize-nw { top: 0;    left: 0;    cursor: nwse-resize; }
+.video-resize-ne { top: 0;    right: 0;   cursor: nesw-resize; }
+.video-resize-sw { bottom: 0; left: 0;    cursor: nesw-resize; }
+.video-resize-se { bottom: 0; right: 0;   cursor: nwse-resize; }
+
+/* Subtle glyph on the SE corner so users can find the primary handle */
+.video-resize-se::after {
+  content: '';
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 8px;
+  height: 8px;
+  background:
+    linear-gradient(135deg,
+      transparent 0 55%,
+      rgba(255,255,255,0.6) 55% 62%,
+      transparent 62% 72%,
+      rgba(255,255,255,0.42) 72% 79%,
+      transparent 79%);
+  opacity: 0;
+  transition: opacity 140ms var(--ease);
+}
+.video-frame.is-detached:hover .video-resize-se::after,
+.video-frame.is-resizing .video-resize-se::after { opacity: 1; }
+
+/* Detached / floating state: user has dragged or resized the frame.
+   Position + size come from inline styles set in JS. Break out of the
+   .art bounding box by escaping to fixed positioning. */
+.video-stage.is-detached:not([hidden]) {
+  position: static;
+  inset: auto;
+  display: block;
+  z-index: auto;
+  pointer-events: none;
+}
+.video-frame.is-detached {
+  position: fixed;
+  aspect-ratio: auto;
+  min-width: 240px;
+  min-height: 160px;
+  max-width: 96vw;
+  max-height: 92dvh;
+  z-index: 60;
+  pointer-events: auto;
+  box-shadow:
+    0 40px 100px -20px rgba(0,0,0,0.9),
+    0 0 0 1px color-mix(in oklab, var(--vibe-accent) 30%, transparent),
+    0 0 60px -10px color-mix(in oklab, var(--vibe-accent) 55%, transparent);
+}
+.video-frame.is-dragging,
+.video-frame.is-resizing { user-select: none; }
+
+/* Dock button: lives inside .video-topbar, pinned to the right (top-right
+   corner of the video-frame). Snaps the frame back to its default inline
+   position and clears saved rect. */
+.video-dock-btn {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.16);
+  color: rgba(255,255,255,0.9);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 140ms var(--ease), border-color 140ms var(--ease), color 140ms var(--ease);
+}
+.video-dock-btn:hover {
+  color: #fff;
+  background: color-mix(in oklab, var(--vibe-accent) 60%, transparent);
+  border-color: color-mix(in oklab, var(--vibe-accent) 75%, rgba(255,255,255,0.16));
+}
+.video-dock-btn:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--vibe-accent) 70%, transparent);
+  outline-offset: 2px;
+}
+
 .video-skeleton {
   position: absolute;
   inset: 0;
@@ -3754,6 +4040,57 @@ button.search-item:focus-visible {
 .queue-list[hidden],
 .queue-recs-list[hidden] { display: none; }
 
+/* Custom scrollbars for the queue + recs lists. Thin, transparent track,
+   vibe-tinted thumb that fades in on hover. Firefox uses scrollbar-color;
+   WebKit/Blink use the ::-webkit-scrollbar pseudos. Track is fully
+   transparent so the sidebar's background reads through. */
+.queue-list,
+.queue-recs-list {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--vibe-accent) 28%, transparent) transparent;
+  scrollbar-gutter: stable;
+}
+.queue-list::-webkit-scrollbar,
+.queue-recs-list::-webkit-scrollbar {
+  width: 8px;
+}
+.queue-list::-webkit-scrollbar-track,
+.queue-recs-list::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 4px 0;
+}
+.queue-list::-webkit-scrollbar-thumb,
+.queue-recs-list::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--vibe-accent) 40%, transparent),
+    color-mix(in oklab, var(--vibe-accent) 22%, transparent)
+  );
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background 200ms var(--ease);
+}
+.queue-list:hover::-webkit-scrollbar-thumb,
+.queue-recs-list:hover::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--vibe-accent) 65%, transparent),
+    color-mix(in oklab, var(--vibe-accent) 42%, transparent)
+  );
+  background-clip: padding-box;
+  box-shadow: 0 0 6px color-mix(in oklab, var(--vibe-accent) 35%, transparent);
+}
+.queue-list::-webkit-scrollbar-thumb:active,
+.queue-recs-list::-webkit-scrollbar-thumb:active {
+  background: color-mix(in oklab, var(--vibe-accent) 78%, var(--text));
+  background-clip: padding-box;
+}
+.queue-list::-webkit-scrollbar-corner,
+.queue-recs-list::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 /* Row layout. Number (or drag-position) + art + body + actions. */
 .queue-item {
   counter-increment: qi;
@@ -3876,6 +4213,134 @@ button.search-item:focus-visible {
 }
 .queue-item-btn.is-add:hover {
   background: color-mix(in oklab, var(--vibe-accent) 14%, transparent);
+}
+
+/* Drag grip. Sits at the right of the row, next to remove/add. Uses
+   touch-action:none so the browser doesn't hijack finger-drags as scrolls.
+   On desktop it hover-reveals with the actions row; on touch (no hover)
+   it stays visible so the affordance is discoverable. */
+.queue-item-grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px; height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: grab;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  transition: color 160ms var(--ease), background 160ms var(--ease);
+}
+.queue-item-grip:hover {
+  color: var(--text);
+  background: rgba(255,255,255,0.05);
+}
+.queue-item-grip:active { cursor: grabbing; }
+@media (hover: none) {
+  /* Touch devices — no hover to reveal the actions row, so pin grip visible. */
+  .queue-item-actions { opacity: 1; }
+}
+
+/* Source row while a drag is in flight — dim it in place. */
+.queue-item.is-dragging {
+  opacity: 0.35;
+}
+
+/* Suppress text selection on drag-source rows — they're button-like. */
+.queue-item,
+.search-item,
+[data-drag-source] {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Kill selection everywhere while a drag is active. */
+body.is-dragging-active,
+body.is-dragging-active * {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+  cursor: grabbing !important;
+}
+
+/* Compact card that follows the pointer during a drag. Built from track
+   data (not cloned) so it renders identically regardless of source. */
+.queue-drop-ghost {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9999;
+  left: 0; top: 0;
+  padding: 8px 12px 8px 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: color-mix(in oklab, var(--surface) 92%, var(--vibe-accent) 6%);
+  border: 1px solid color-mix(in oklab, var(--vibe-accent) 55%, var(--border-strong));
+  border-radius: 10px;
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.55),
+    0 0 0 4px color-mix(in oklab, var(--vibe-accent) 14%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transform: rotate(-1.2deg) scale(1.02);
+  transform-origin: 50% 50%;
+  opacity: 0.98;
+  animation: queueGhostPop 140ms var(--ease);
+}
+@keyframes queueGhostPop {
+  from { transform: rotate(0deg) scale(0.96); opacity: 0; }
+  to   { transform: rotate(-1.2deg) scale(1.02); opacity: 0.98; }
+}
+.queue-drop-ghost-art {
+  width: 40px; height: 40px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex: 0 0 40px;
+  background: color-mix(in oklab, var(--surface-2) 80%, transparent);
+  box-shadow: 0 4px 10px rgba(0,0,0,0.35);
+}
+.queue-drop-ghost-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+}
+.queue-drop-ghost-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.005em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.queue-drop-ghost-sub {
+  font-size: 11px;
+  color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Drop insertion indicator — 2px accent line, positioned via inline style.
+   Lives on document.body so it can span the whole list without clipping. */
+.queue-drop-indicator {
+  position: fixed;
+  height: 2px;
+  background: var(--vibe-accent);
+  border-radius: 2px;
+  box-shadow: 0 0 8px color-mix(in oklab, var(--vibe-accent) 60%, transparent);
+  pointer-events: none;
+  z-index: 9998;
+  opacity: 0;
+  transition: opacity 100ms var(--ease);
+}
+
+/* Subtle "you can drop here" hint on the queue list container. */
+.queue-list.is-drop-active {
+  outline: 1px dashed color-mix(in oklab, var(--vibe-accent) 45%, transparent);
+  outline-offset: 2px;
+  border-radius: 8px;
 }
 
 /* Currently-playing hint on recs (when the anchor track is showing) */
@@ -4677,6 +5142,255 @@ button.search-item:focus-visible {
   .title-row > .sdk-only-badge {
     margin-inline: 2px;
   }
+}
+
+/* ==================================================================
+   MODERNIZE PASS — player polish
+   ------------------------------------------------------------------
+   Product-feel upgrades layered on top of the existing player. Every
+   rule here is additive — nothing above is deleted. Order matters
+   because we override earlier ambient styles by specificity + source
+   order. Perf budget respected: no new blurred surfaces, no new
+   continuous animations, all transitions ≤ 250ms, no filter chains.
+   ================================================================== */
+
+/* ---------- Wordmark: editorial split ----------
+   "Vibe" stays in the sans stack, "Scape" gets Instrument Serif italic
+   in the vibe-accent color. Same typographic pattern the vibe-num and
+   auth title already use — extending the editorial voice into chrome. */
+.wordmark {
+  font-size: 16px;
+  letter-spacing: -0.015em;
+}
+.wm-text {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 1px;
+}
+.wm-em {
+  font-family: 'Instrument Serif', 'Times New Roman', serif;
+  font-style: italic;
+  font-weight: 400;
+  font-size: 1.12em;
+  letter-spacing: -0.02em;
+  color: var(--vibe-accent);
+  transition: color 400ms var(--ease);
+  padding-left: 1px;
+}
+.wm-dot {
+  width: 7px;
+  height: 7px;
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--vibe-accent) 22%, transparent),
+              0 0 10px color-mix(in oklab, var(--vibe-accent) 55%, transparent);
+}
+
+/* ---------- Topbar: subtle bottom hairline for anchoring ---------- */
+.topbar::after {
+  content: "";
+  position: absolute;
+  left: var(--pad-x);
+  right: var(--pad-x);
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent,
+    var(--border) 20%,
+    var(--border) 80%,
+    transparent);
+  pointer-events: none;
+}
+@media (max-width: 640px) {
+  .topbar::after { display: none; }
+}
+
+/* ---------- Art card: glassy inner highlight + rim ---------- */
+.art::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(180deg,
+    rgba(255,255,255,0.06) 0%,
+    rgba(255,255,255,0) 18%,
+    rgba(255,255,255,0) 82%,
+    rgba(0,0,0,0.18) 100%);
+  z-index: 2;
+  mix-blend-mode: overlay;
+}
+.art::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08),
+              inset 0 0 0 1px rgba(255,255,255,0.03);
+  z-index: 3;
+}
+.art.empty .art-empty { color: color-mix(in oklab, var(--vibe-accent) 45%, var(--text-3)); }
+
+/* ---------- Play button: accent-touched ---------- */
+.btn-play {
+  box-shadow:
+    0 10px 30px -10px color-mix(in oklab, var(--vibe-accent) 70%, black),
+    0 0 0 1px rgba(255,255,255,0.5) inset,
+    0 -2px 6px rgba(0,0,0,0.15) inset;
+  transition: transform 120ms var(--ease),
+              box-shadow 300ms var(--ease);
+}
+body.playing .btn-play {
+  box-shadow:
+    0 10px 30px -8px color-mix(in oklab, var(--vibe-accent) 80%, black),
+    0 0 0 1px rgba(255,255,255,0.5) inset,
+    0 -2px 6px rgba(0,0,0,0.15) inset,
+    0 0 0 4px color-mix(in oklab, var(--vibe-accent) 16%, transparent);
+}
+
+/* ---------- Ghost buttons: vibe-tinted hover ---------- */
+.btn-ghost:hover {
+  color: var(--text);
+  background: color-mix(in oklab, var(--vibe-accent) 10%, rgba(255,255,255,0.03));
+}
+.btn-ghost:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--vibe-accent) 45%, transparent);
+}
+
+/* ---------- Meta divider: gradient rule w/ accent notch ---------- */
+@media (min-width: 1024px) {
+  .meta-divider {
+    height: 1px;
+    border: 0 !important;
+    background: linear-gradient(90deg,
+      transparent,
+      var(--border-strong) 8%,
+      var(--border-strong) 92%,
+      transparent);
+    position: relative;
+    overflow: visible;
+  }
+  .meta-divider::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 22px;
+    height: 2px;
+    border-radius: 999px;
+    background: var(--vibe-accent);
+    box-shadow: 0 0 8px color-mix(in oklab, var(--vibe-accent) 60%, transparent);
+    transition: background 400ms var(--ease);
+  }
+}
+
+/* ---------- Times: editorial mono framing ---------- */
+.times {
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* ---------- Progress + slider recessed depth ---------- */
+.progress-track {
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.35),
+              inset 0 0 0 1px rgba(255,255,255,0.02);
+}
+.progress-fill {
+  box-shadow: 0 0 12px -2px color-mix(in oklab, var(--vibe-accent) 55%, transparent);
+}
+.slider-track {
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.35);
+}
+
+/* ---------- Queue sidebar: strip card-in-card boxiness ---------- */
+.queue-sidebar {
+  gap: clamp(12px, 2dvh, 20px);
+  padding-top: clamp(8px, 1.4dvh, 16px);
+}
+@media (min-width: 641px) {
+  .queue-section {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+  }
+  .queue-section-head {
+    padding: 4px 8px 10px;
+    border-bottom: 1px solid var(--border);
+    gap: 10px;
+  }
+  .queue-section-title {
+    color: var(--text-2);
+    font-size: 10.5px;
+    font-weight: 500;
+  }
+  .queue-list,
+  .queue-recs-list {
+    padding: 6px 0 4px;
+  }
+  .queue-item {
+    position: relative;
+    padding-left: 10px;
+  }
+  .queue-item::after {
+    content: "";
+    position: absolute;
+    left: 2px;
+    top: 8px;
+    bottom: 8px;
+    width: 2px;
+    border-radius: 2px;
+    background: var(--vibe-accent);
+    opacity: 0;
+    transition: opacity 160ms var(--ease);
+  }
+  .queue-item:hover::after,
+  .queue-item:focus-visible::after { opacity: 0.7; }
+}
+
+/* Quieter empty states */
+.queue-empty,
+.queue-recs-empty,
+.queue-recs-loading {
+  padding: 16px 8px;
+}
+.queue-empty-msg { font-size: 12.5px; color: var(--text-2); }
+.queue-empty-hint { font-size: 11px; color: var(--text-3); }
+
+/* ---------- Search bar: soft lift on the input pill ---------- */
+.search-input-wrap {
+  box-shadow: 0 2px 8px -4px rgba(0,0,0,0.4),
+              0 0 0 1px rgba(255,255,255,0.015) inset;
+}
+
+/* ---------- Stage depth: soft bottom vignette ---------- */
+body::before {
+  content: "";
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 40vh;
+  pointer-events: none;
+  background: radial-gradient(120% 100% at 50% 100%,
+    color-mix(in oklab, var(--vibe-accent) 6%, transparent) 0%,
+    transparent 55%);
+  z-index: 0;
+  transition: background 400ms var(--ease);
+}
+@media (max-width: 640px) {
+  body::before { display: none; }
+}
+
+/* Preserve auth wordmark dot sizing (not affected by new .wm-text rule) */
+.auth-brand .wm-dot { width: 8px; height: 8px; }
+
+/* Reduced-motion */
+@media (prefers-reduced-motion: reduce) {
+  .btn-play,
+  body.playing .btn-play,
+  .btn-ghost { transition: none; }
+  body::before { transition: none; }
 }
 
 /* ============== Prod-mode gating ==============
