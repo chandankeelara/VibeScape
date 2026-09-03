@@ -13,7 +13,7 @@
   </p>
 </div>
 
-## 📋 Table of Contents
+## 📋 Table of Contents 
 
 - [About](#about-the-project)
 - [Why This Exists](#why-this-exists)
