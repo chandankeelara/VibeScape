@@ -2149,11 +2149,14 @@ def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "
     # 3) Brand new to the whole DB: insert metadata-only row with
     #    ingestion_status='pending'. The offline worker will fill in the
     #    preview URL cascade + activation/valence/mood + ML + language later.
+    # vibe_score is NOT NULL in the current schema (legacy from the
+    # pre-split-ingest era). Insert 0.0 as a placeholder; the offline
+    # worker overwrites it with the real score in _ingest_track_row.
     cur = conn.execute(
         "INSERT INTO tracks "
         "(spotify_id, isrc, title, artist, album, artwork_url, preview_url, "
-        " duration_ms, ingestion_status) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
+        " duration_ms, vibe_score, ingestion_status) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0, 'pending')",
         (spotify_id, isrc, name, artist_name, album_name,
          artwork_url, preview_url, duration_ms),
     )

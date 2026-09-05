@@ -600,6 +600,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE tracks ADD COLUMN ingestion_status TEXT DEFAULT 'pending'",
         "ALTER TABLE tracks ADD COLUMN ingestion_error TEXT",
         "ALTER TABLE tracks ADD COLUMN ingestion_attempted_at TIMESTAMP",
+        # Per-stage status columns for the v2 modular ingest pipeline in
+        # ingest_pipeline/. Values: 'pending' | 'done' | 'no_match' | 'failed'.
+        # ingestion_status is the derived aggregate (see ingest_pipeline/promote.py).
+        "ALTER TABLE tracks ADD COLUMN preview_status TEXT DEFAULT 'pending'",
+        "ALTER TABLE tracks ADD COLUMN ml_status TEXT DEFAULT 'pending'",
+        "ALTER TABLE tracks ADD COLUMN youtube_status TEXT DEFAULT 'pending'",
+        "ALTER TABLE tracks ADD COLUMN language_status TEXT DEFAULT 'pending'",
+        "ALTER TABLE tracks ADD COLUMN preview_source TEXT",
     ]
     for c in _EXTENDED_COLUMNS:
         stmts.append(f"ALTER TABLE tracks ADD COLUMN {c} REAL")
@@ -638,6 +646,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
         _backfill_classification_source(conn)
         _backfill_ingestion_status(conn)
+        _backfill_stage_statuses(conn)
 
     # Split per-user tracks into global tracks + user_tracks. Must run
     # BEFORE schema.sql executes CREATE UNIQUE INDEX on spotify_id/apple_id,
@@ -668,19 +677,73 @@ def _backfill_ingestion_status(conn: sqlite3.Connection) -> int:
     fills every pre-existing row with 'pending', NOT NULL. So the WHERE
     clause has to match rows that are currently 'pending' *and* look
     scored, plus any lingering NULLs from paths that skipped the DEFAULT.
+
+    Require `activation IS NOT NULL` as the sole "actually scored" signal.
+    `vibe_score` alone is unreliable now: the new online fast path
+    (`_process_track`) inserts pending rows with `vibe_score=0.0` as a
+    placeholder because the column is NOT NULL in the legacy schema, and
+    the offline worker overwrites it later. Sweeping on `vibe_score IS NOT
+    NULL` would prematurely mark those pending rows 'done' before the
+    worker ever touches them.
     """
     try:
         cur = conn.execute(
             "UPDATE tracks SET ingestion_status = 'done' "
             "WHERE (ingestion_status IS NULL OR ingestion_status = 'pending') "
-            "AND (vibe_score IS NOT NULL "
-            "     OR vibe_score_ml IS NOT NULL "
-            "     OR activation IS NOT NULL)"
+            "AND activation IS NOT NULL"
         )
         conn.commit()
         return cur.rowcount or 0
     except sqlite3.OperationalError:
         return 0
+
+
+def _backfill_stage_statuses(conn: sqlite3.Connection) -> int:
+    """
+    Set the four v2 stage-status columns for pre-existing rows so the new
+    pipeline (ingest_pipeline/) doesn't re-process work that's already done.
+
+    Rules per column, inferred from actual data on the row:
+      preview_status  = 'done' if preview_url present, else 'no_match'
+      ml_status       = 'done' if activation IS NOT NULL, else 'pending'
+      youtube_status  = 'done' if youtube_id present, else 'pending'
+      language_status = 'done' if language present,   else 'pending'
+
+    Only touches rows where the column is currently NULL or 'pending' AND
+    the underlying data column is populated — never overwrites an existing
+    non-pending status. Safe to re-run.
+    """
+    total = 0
+    updates = [
+        ("preview_status",  "done",     "preview_url IS NOT NULL AND preview_url != ''"),
+        ("ml_status",       "done",     "activation IS NOT NULL"),
+        ("youtube_status",  "done",     "youtube_id IS NOT NULL AND youtube_id != ''"),
+        ("language_status", "done",     "language IS NOT NULL AND language != ''"),
+    ]
+    for col, val, cond in updates:
+        try:
+            cur = conn.execute(
+                f"UPDATE tracks SET {col} = ? "
+                f"WHERE (({col}) IS NULL OR {col} = 'pending') "
+                f"AND ({cond})",
+                (val,),
+            )
+            total += cur.rowcount or 0
+        except sqlite3.OperationalError:
+            pass
+    # Rows already 'no_preview' (legacy terminal) should have preview_status
+    # = 'no_match' so promote.py can re-derive ingestion_status consistently.
+    try:
+        cur = conn.execute(
+            "UPDATE tracks SET preview_status = 'no_match' "
+            "WHERE ingestion_status = 'no_preview' "
+            "AND (preview_status IS NULL OR preview_status = 'pending')"
+        )
+        total += cur.rowcount or 0
+    except sqlite3.OperationalError:
+        pass
+    conn.commit()
+    return total
 
 
 def _backfill_classification_source(conn: sqlite3.Connection) -> int:
