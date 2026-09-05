@@ -35,6 +35,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# Claude Code state (contains embedded git worktrees and session cache)
+.claude/
+
 # ML pipeline artifacts
 ml/data/previews/
 ml/data/*.log
