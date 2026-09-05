@@ -26,6 +26,7 @@ except ImportError:
     pass
 
 import asyncio
+import numpy as np
 import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
@@ -438,6 +439,10 @@ class SpotifyOAuthBody(BaseModel):
     redirect_uri: Optional[str] = None
 
 
+class SpotifyRefreshBody(BaseModel):
+    refresh_token: str
+
+
 def _spotify_token_exchange(code: str, redirect_uri: str) -> dict:
     client_id = getattr(app_config, "SPOTIFY_CLIENT_ID", "") if app_config else ""
     client_secret = getattr(app_config, "SPOTIFY_CLIENT_SECRET", "") if app_config else ""
@@ -605,6 +610,46 @@ def auth_spotify_oauth(body: SpotifyOAuthBody):
     }
 
 
+@app.post("/api/spotify/refresh")
+def spotify_refresh(body: SpotifyRefreshBody):
+    """
+    Exchange a Spotify refresh_token for a fresh access_token using the
+    server-side client_secret. This lets the browser avoid an interactive
+    re-consent (and PKCE dance) when its short-lived access_token expires.
+    Refresh tokens minted via the Authorization Code flow require
+    client_secret to refresh -- doing this on the server keeps the secret
+    off the wire.
+    """
+    if not body.refresh_token:
+        raise HTTPException(status_code=422, detail={"error": "refresh_token required"})
+    client_id = getattr(app_config, "SPOTIFY_CLIENT_ID", "") if app_config else ""
+    client_secret = getattr(app_config, "SPOTIFY_CLIENT_SECRET", "") if app_config else ""
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=500, detail={"error": "spotify_not_configured"})
+    r = requests.post(
+        "https://accounts.spotify.com/api/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": body.refresh_token,
+            "client_id": client_id,
+            "client_secret": client_secret,
+        },
+        timeout=15,
+    )
+    if r.status_code != 200:
+        log.warning("spotify refresh failed: %s %s", r.status_code, r.text[:200])
+        raise HTTPException(status_code=400, detail={"error": "spotify_refresh_failed"})
+    j = r.json()
+    return {
+        "access_token": j.get("access_token"),
+        "expires_in": j.get("expires_in"),
+        "scope": j.get("scope"),
+        # Spotify may rotate the refresh_token; pass through when present so
+        # the client can update its stored copy.
+        "refresh_token": j.get("refresh_token"),
+    }
+
+
 @app.get("/api/demo/moods")
 def demo_moods():
     """
@@ -679,17 +724,28 @@ def auth_guest():
             conn.commit()
             user_id = int(cur.lastrowid)
             display_name = "Guest"
-            # Seed the guest library with the admin's tracks so "just listen"
-            # actually plays something. Idempotent via INSERT OR IGNORE.
-            try:
+
+        # Seed the guest library with the full ingested catalog so
+        # "just listen" plays from every done track. Runs whenever the
+        # guest library is empty (covers both first-visit and cases
+        # where an earlier seed silently produced zero rows, e.g. when
+        # the old admin-based seed ran with no admin row present).
+        # Idempotent via INSERT OR IGNORE + the emptiness guard.
+        try:
+            has_any = conn.execute(
+                "SELECT 1 FROM user_tracks WHERE user_id = ? LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            if not has_any:
                 conn.execute(
                     "INSERT OR IGNORE INTO user_tracks (user_id, track_id, source) "
-                    "SELECT ?, track_id, 'guest_seed' FROM user_tracks WHERE user_id = ?",
-                    (user_id, ADMIN_USER_ID),
+                    "SELECT ?, id, 'guest_seed' FROM tracks "
+                    "WHERE ingestion_status = 'done'",
+                    (user_id,),
                 )
                 conn.commit()
-            except Exception as e:
-                log.warning("guest seed failed: %s", e)
+        except Exception as e:
+            log.warning("guest seed failed: %s", e)
         token = _issue_session(conn, user_id)
     finally:
         conn.close()
@@ -834,43 +890,127 @@ def search_tracks(
     return {"tracks": [_row_to_dict(r) for r in rows]}
 
 
-@app.get("/api/tracks/{track_key}/similar")
-def similar_tracks(
-    track_key: str,
-    limit: int = Query(8, ge=1, le=25),
-    sess: dict = Depends(require_user),
-):
-    """
-    Return N tracks from the caller's library most similar to the given
-    track. Similarity = weighted L1 distance across the four ML feature
-    dimensions (vibe_score_ml, energy_pred, danceability_pred,
-    valence_pred), with a small bonus for matching mood. The current
-    track is excluded from results.
+MERT_MODEL_VERSION = "mert_v1_95m_fp32_30s"
+MERT_DIM = 768
 
-    track_key can be a spotify_id (string) or an apple_id (numeric string).
-    """
+# Fused variant: MERT (768) + scalar features (9) + language one-hot (10 langs + 'other')
+# Recipe defined in scripts/_recommender_feasibility.py + scripts/_backfill_fused_embeddings.py.
+FUSED_MODEL_VERSION = "fused_v1_mert_scalar_lang"
+FUSED_SCALAR_DIMS = 9
+FUSED_LANG_DIMS = 11
+FUSED_DIM = MERT_DIM + FUSED_SCALAR_DIMS + FUSED_LANG_DIMS  # 788
+
+# Default DJ variant; override per-request with SimilarBody.variant.
+_DJ_VARIANT_DEFAULT = (os.environ.get("DJ_EMBEDDING_VARIANT") or "fused").strip().lower()
+if _DJ_VARIANT_DEFAULT not in ("fused", "mert"):
+    _DJ_VARIANT_DEFAULT = "fused"
+
+
+def _variant_spec(variant: str):
+    """Return (model_version, dim) for the requested variant."""
+    v = (variant or "").strip().lower()
+    if v == "mert":
+        return MERT_MODEL_VERSION, MERT_DIM
+    return FUSED_MODEL_VERSION, FUSED_DIM
+
+
+def _resolve_anchor(conn, track_key: str):
+    """Resolve track_key (apple_id numeric or spotify_id string) to a tracks row."""
+    anchor = None
+    try:
+        apple_id_int = int(track_key)
+        anchor = conn.execute(
+            "SELECT id, apple_id, spotify_id, mood, "
+            "vibe_score, vibe_score_ml, energy_pred, "
+            "danceability_pred, valence_pred "
+            "FROM tracks WHERE apple_id = ?",
+            (apple_id_int,),
+        ).fetchone()
+    except ValueError:
+        pass
+    if not anchor:
+        anchor = conn.execute(
+            "SELECT id, apple_id, spotify_id, mood, "
+            "vibe_score, vibe_score_ml, energy_pred, "
+            "danceability_pred, valence_pred "
+            "FROM tracks WHERE spotify_id = ?",
+            (track_key,),
+        ).fetchone()
+    return anchor
+
+
+def _load_mert_vec(conn, track_id: int,
+                   model_version: str = MERT_MODEL_VERSION,
+                   expected_dim: int = MERT_DIM) -> Optional[np.ndarray]:
+    row = conn.execute(
+        "SELECT embedding, dim FROM track_embeddings "
+        "WHERE track_id = ? AND model_version = ?",
+        (track_id, model_version),
+    ).fetchone()
+    if not row or row["embedding"] is None:
+        return None
+    dim = int(row["dim"])
+    if dim != expected_dim:
+        return None
+    vec = np.frombuffer(row["embedding"], dtype=np.float32, count=dim)
+    if vec.shape[0] != dim:
+        return None
+    return vec.astype(np.float32, copy=True)
+
+
+def _load_mert_vecs_bulk(conn, track_ids: list,
+                         model_version: str = MERT_MODEL_VERSION,
+                         expected_dim: int = MERT_DIM) -> dict:
+    """Return {track_id: np.ndarray} for track_ids that have an embedding
+    under the given model_version. Vectors with mismatched dim are dropped."""
+    out: dict = {}
+    if not track_ids:
+        return out
+    # Chunk to keep SQL param counts sane.
+    CHUNK = 400
+    for i in range(0, len(track_ids), CHUNK):
+        chunk = track_ids[i:i + CHUNK]
+        placeholders = ",".join("?" for _ in chunk)
+        sql = (
+            f"SELECT track_id, dim, embedding FROM track_embeddings "
+            f"WHERE model_version = ? AND track_id IN ({placeholders})"
+        )
+        rows = conn.execute(sql, (model_version, *chunk)).fetchall()
+        for r in rows:
+            if r["embedding"] is None:
+                continue
+            dim = int(r["dim"])
+            if dim != expected_dim:
+                continue
+            v = np.frombuffer(r["embedding"], dtype=np.float32, count=dim)
+            if v.shape[0] != dim:
+                continue
+            out[int(r["track_id"])] = v.astype(np.float32, copy=True)
+    return out
+
+
+def _l2_normalize(v: np.ndarray) -> np.ndarray:
+    n = float(np.linalg.norm(v))
+    if n < 1e-12:
+        return v
+    return v / n
+
+
+class SimilarBody(BaseModel):
+    mode: Optional[str] = None
+    positive_ids: Optional[list] = None
+    negative_ids: Optional[list] = None
+    exclude_ids: Optional[list] = None
+    limit: Optional[int] = None
+    # "fused" (default) | "mert". Selects which embedding variant DJ mode uses.
+    variant: Optional[str] = None
+
+
+def _similar_vibe(track_key: str, limit: int, user_id):
+    """Existing weighted L1 scalar-feature similarity. Returns response dict."""
     conn = get_conn()
     try:
-        anchor = None
-        try:
-            apple_id_int = int(track_key)
-            anchor = conn.execute(
-                "SELECT id, apple_id, spotify_id, mood, "
-                "vibe_score, vibe_score_ml, energy_pred, "
-                "danceability_pred, valence_pred "
-                "FROM tracks WHERE apple_id = ?",
-                (apple_id_int,),
-            ).fetchone()
-        except ValueError:
-            pass
-        if not anchor:
-            anchor = conn.execute(
-                "SELECT id, apple_id, spotify_id, mood, "
-                "vibe_score, vibe_score_ml, energy_pred, "
-                "danceability_pred, valence_pred "
-                "FROM tracks WHERE spotify_id = ?",
-                (track_key,),
-            ).fetchone()
+        anchor = _resolve_anchor(conn, track_key)
         if not anchor:
             raise HTTPException(status_code=404, detail={"error": "track_not_found"})
 
@@ -915,18 +1055,266 @@ def similar_tracks(
             ORDER BY distance ASC, t.title COLLATE NOCASE
             LIMIT ?
         """
-        rows = conn.execute(sql, (a_mood, sess["user_id"], anchor["id"], limit)).fetchall()
+        rows = conn.execute(sql, (a_mood, user_id, anchor["id"], limit)).fetchall()
+        anchor_out = {
+            "spotify_id": anchor["spotify_id"],
+            "apple_id": anchor["apple_id"],
+            "mood": a_mood,
+        }
     finally:
         conn.close()
 
     return {
-        "anchor": {
+        "anchor": anchor_out,
+        "tracks": [_row_to_dict(r) for r in rows],
+        "mode_used": "vibe",
+    }
+
+
+def _parse_id_weight_list(items) -> list:
+    """Normalize [{id, weight}] entries. Returns list of (str_id, float_weight)."""
+    out = []
+    if not items:
+        return out
+    for it in items:
+        if isinstance(it, dict):
+            tid = it.get("id")
+            w = it.get("weight", 1.0)
+        else:
+            tid, w = it, 1.0
+        if tid is None:
+            continue
+        try:
+            w = float(w)
+        except (TypeError, ValueError):
+            w = 1.0
+        out.append((str(tid), w))
+    return out
+
+
+def _resolve_ids_to_track_ids(conn, keys: list) -> list:
+    """Resolve a list of track_key strings (spotify_id or apple_id) to internal ids."""
+    ids = []
+    for k in keys:
+        if k is None:
+            continue
+        row = _resolve_anchor(conn, str(k))
+        if row:
+            ids.append(int(row["id"]))
+    return ids
+
+
+def _similar_dj(track_key: str, body: SimilarBody, user_id):
+    """Cosine similarity over per-track embedding vectors. Variant selects
+    which embedding table row to use ('fused' = MERT + scalars + language,
+    'mert' = raw MERT). Falls back cross-variant, then to vibe."""
+    limit = body.limit if body.limit else 8
+    limit = max(1, min(int(limit), 25))
+
+    requested_variant = (body.variant or _DJ_VARIANT_DEFAULT).strip().lower()
+    if requested_variant not in ("fused", "mert"):
+        requested_variant = _DJ_VARIANT_DEFAULT
+
+    conn = get_conn()
+    try:
+        anchor = _resolve_anchor(conn, track_key)
+    except Exception:
+        conn.close()
+        raise
+    if not anchor:
+        conn.close()
+        raise HTTPException(status_code=404, detail={"error": "track_not_found"})
+    anchor_id = int(anchor["id"])
+    a_mood = anchor["mood"] or ""
+
+    # Resolve variant with cross-variant fallback: try requested; if seed
+    # has no vector there, try the other variant; if neither, drop to vibe.
+    model_version, dim = _variant_spec(requested_variant)
+    seed_vec = _load_mert_vec(conn, anchor_id, model_version, dim)
+    variant_used = requested_variant
+
+    if seed_vec is None:
+        fallback_variant = "mert" if requested_variant == "fused" else "fused"
+        fb_model_version, fb_dim = _variant_spec(fallback_variant)
+        seed_vec = _load_mert_vec(conn, anchor_id, fb_model_version, fb_dim)
+        if seed_vec is not None:
+            model_version, dim = fb_model_version, fb_dim
+            variant_used = fallback_variant
+
+    if seed_vec is None:
+        conn.close()
+        resp = _similar_vibe(track_key, limit, user_id)
+        resp["mode_used"] = "vibe_fallback_no_seed_embedding"
+        resp["variant_used"] = None
+        return resp
+
+    try:
+        # Resolve positive/negative track_keys to internal ids. The seed
+        # track_key in the URL is used only for exclusion — it does NOT
+        # contribute to the query vector. Recommendations are driven purely
+        # by the user's session (completions, skips, queue-adds).
+        pos_pairs = _parse_id_weight_list(body.positive_ids)
+        neg_pairs = _parse_id_weight_list(body.negative_ids)
+
+        def _resolve_pairs(pairs):
+            out = []
+            for k, w in pairs:
+                row = _resolve_anchor(conn, k)
+                if row:
+                    out.append((int(row["id"]), w))
+            return out
+
+        pos_id_w = [(tid, w) for (tid, w) in _resolve_pairs(pos_pairs) if tid != anchor_id]
+        neg_id_w = [(tid, w) for (tid, w) in _resolve_pairs(neg_pairs) if tid != anchor_id]
+
+        needed_ids = list({tid for tid, _ in pos_id_w + neg_id_w})
+        ctx_vecs = _load_mert_vecs_bulk(conn, needed_ids, model_version, dim)
+
+        def _combine(pairs):
+            acc = np.zeros(dim, dtype=np.float32)
+            for tid, w in pairs:
+                v = ctx_vecs.get(tid)
+                if v is None:
+                    continue
+                acc = acc + (w * _l2_normalize(v))
+            return acc
+
+        pos_vec = _combine(pos_id_w)
+        neg_vec = _combine(neg_id_w)
+
+        pos_norm = float(np.linalg.norm(pos_vec))
+        taste_present = pos_norm >= 0.1
+
+        query_vec = None
+        if taste_present:
+            # Pure session taste. Answers "what's next for me?"
+            query_vec = _l2_normalize(pos_vec - 0.4 * neg_vec)
+        # Cold start (no session signal): query_vec stays None; we'll pick
+        # a random slice of the candidate pool below.
+
+        # Build exclude set: request excludes + seed itself.
+        exclude_keys = [str(x) for x in (body.exclude_ids or []) if x is not None]
+        exclude_ids = set(_resolve_ids_to_track_ids(conn, exclude_keys))
+        exclude_ids.add(anchor_id)
+
+        # Load candidate track_ids from user's library (done + has embedding, not excluded).
+        cand_rows = conn.execute(
+            "SELECT t.id FROM tracks t "
+            "JOIN user_tracks ut ON ut.track_id = t.id "
+            "JOIN track_embeddings te ON te.track_id = t.id "
+            "WHERE ut.user_id = ? "
+            "  AND t.ingestion_status = 'done' "
+            "  AND te.model_version = ?",
+            (user_id, model_version),
+        ).fetchall()
+        cand_ids = [int(r["id"]) for r in cand_rows if int(r["id"]) not in exclude_ids]
+        mode_used = f"dj_{variant_used}"
+        if not cand_ids:
+            anchor_out = {
+                "spotify_id": anchor["spotify_id"],
+                "apple_id": anchor["apple_id"],
+                "mood": a_mood,
+            }
+            return {"anchor": anchor_out, "tracks": [],
+                    "mode_used": mode_used, "variant_used": variant_used}
+
+        cand_vecs = _load_mert_vecs_bulk(conn, cand_ids, model_version, dim)
+        if not cand_vecs:
+            anchor_out = {
+                "spotify_id": anchor["spotify_id"],
+                "apple_id": anchor["apple_id"],
+                "mood": a_mood,
+            }
+            return {"anchor": anchor_out, "tracks": [],
+                    "mode_used": mode_used, "variant_used": variant_used}
+
+        ids_arr = np.array(list(cand_vecs.keys()), dtype=np.int64)
+        if query_vec is None:
+            # Cold start: shuffle the candidate pool and take the first N.
+            rng = np.random.default_rng()
+            perm = rng.permutation(len(ids_arr))[:limit]
+            top_ids = [int(ids_arr[i]) for i in perm]
+            top_scores = {tid: 0.0 for tid in top_ids}
+        else:
+            mat = np.stack([cand_vecs[int(i)] for i in ids_arr]).astype(np.float32)
+            # Row-normalize.
+            norms = np.linalg.norm(mat, axis=1, keepdims=True)
+            norms[norms < 1e-12] = 1.0
+            mat_n = mat / norms
+            sims = mat_n @ query_vec.astype(np.float32)
+            order = np.argsort(-sims)[:limit]
+            top_ids = [int(ids_arr[i]) for i in order]
+            top_scores = {int(ids_arr[i]): float(sims[i]) for i in order}
+
+        # Fetch full track rows for the top ids, preserve order.
+        select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
+        placeholders = ",".join("?" for _ in top_ids)
+        rows = conn.execute(
+            f"SELECT {select} FROM tracks t WHERE t.id IN ({placeholders})",
+            tuple(top_ids),
+        ).fetchall()
+        row_by_id = {int(r["id"]): r for r in rows}
+        out_tracks = []
+        for tid in top_ids:
+            r = row_by_id.get(tid)
+            if not r:
+                continue
+            d = _row_to_dict(r)
+            d["score"] = top_scores.get(tid, 0.0)
+            out_tracks.append(d)
+
+        anchor_out = {
             "spotify_id": anchor["spotify_id"],
             "apple_id": anchor["apple_id"],
             "mood": a_mood,
-        },
-        "tracks": [_row_to_dict(r) for r in rows],
-    }
+        }
+        return {"anchor": anchor_out, "tracks": out_tracks,
+                "mode_used": mode_used, "variant_used": variant_used}
+    finally:
+        conn.close()
+
+
+@app.get("/api/tracks/{track_key}/similar")
+def similar_tracks(
+    track_key: str,
+    limit: int = Query(8, ge=1, le=25),
+    sess: dict = Depends(require_user),
+):
+    """
+    Return N tracks from the caller's library most similar to the given
+    track. Similarity = weighted L1 distance across the four ML feature
+    dimensions (vibe_score_ml, energy_pred, danceability_pred,
+    valence_pred), with a small bonus for matching mood. The current
+    track is excluded from results.
+
+    track_key can be a spotify_id (string) or an apple_id (numeric string).
+    """
+    return _similar_vibe(track_key, limit, sess["user_id"])
+
+
+@app.post("/api/tracks/{track_key}/similar")
+def similar_tracks_post(
+    track_key: str,
+    body: Optional[SimilarBody] = None,
+    sess: dict = Depends(require_user),
+):
+    """POST variant: supports DJ mode (fused MERT cosine) via JSON body.
+
+    Body (all optional):
+      mode: "dj" | "vibe" (default vibe)
+      positive_ids: [{id, weight}, ...] — track_keys the user liked this session
+      negative_ids: [{id, weight}, ...] — track_keys the user skipped this session
+      exclude_ids: ["...", ...] — track_keys to exclude from results
+      limit: int (1..25, default 8)
+    """
+    if body is None:
+        body = SimilarBody()
+    limit = body.limit if body.limit else 8
+    limit = max(1, min(int(limit), 25))
+    mode = (body.mode or "vibe").lower()
+    if mode == "dj":
+        return _similar_dj(track_key, body, sess["user_id"])
+    return _similar_vibe(track_key, limit, sess["user_id"])
 
 
 @app.get("/api/tracks/random")
@@ -950,29 +1338,27 @@ def random_track(
     conn = get_conn()
     try:
         select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
-        for attempt in range(2):
-            tol = tolerance + (10 if attempt else 0)
-            lo, hi = vibe - tol, vibe + tol
-            # Prefer ML-predicted vibe (0-1 -> 0-100), fall back to formula.
-            sql = (
-                f"SELECT {select} FROM tracks t "
-                f"JOIN user_tracks ut ON ut.track_id = t.id "
-                f"WHERE ut.user_id = ? "
-                f"AND t.ingestion_status = 'done' "
-                f"AND COALESCE(t.vibe_score_ml * 100.0, t.vibe_score) BETWEEN ? AND ?"
-            )
-            params: list = [sess["user_id"], lo, hi]
-            if exclude:
-                placeholders = ",".join("?" * len(exclude))
-                sql += f" AND t.apple_id NOT IN ({placeholders})"
-                params.extend(exclude)
-            sql += " ORDER BY RANDOM() LIMIT 1"
-            try:
-                row = conn.execute(sql, params).fetchone()
-            except Exception:
-                row = None
-            if row:
-                return _row_to_dict(row)
+        lo, hi = vibe - tolerance, vibe + tolerance
+        # Prefer ML-predicted vibe (0-1 -> 0-100), fall back to formula.
+        sql = (
+            f"SELECT {select} FROM tracks t "
+            f"JOIN user_tracks ut ON ut.track_id = t.id "
+            f"WHERE ut.user_id = ? "
+            f"AND t.ingestion_status = 'done' "
+            f"AND COALESCE(t.vibe_score_ml * 100.0, t.vibe_score) BETWEEN ? AND ?"
+        )
+        params: list = [sess["user_id"], lo, hi]
+        if exclude:
+            placeholders = ",".join("?" * len(exclude))
+            sql += f" AND t.apple_id NOT IN ({placeholders})"
+            params.extend(exclude)
+        sql += " ORDER BY RANDOM() LIMIT 1"
+        try:
+            row = conn.execute(sql, params).fetchone()
+        except Exception:
+            row = None
+        if row:
+            return _row_to_dict(row)
     finally:
         conn.close()
 
@@ -1193,20 +1579,10 @@ def stream_track_by_spotify(spotify_id: str, request: Request, sess: dict = Depe
 def stream_track(track_key: str, request: Request, sess: dict = Depends(require_user_stream)):
     conn = get_conn()
     try:
-        row = None
-        try:
-            apple_id_int = int(track_key)
-            row = conn.execute(
-                "SELECT audio_path FROM tracks WHERE apple_id = ?",
-                (apple_id_int,),
-            ).fetchone()
-        except ValueError:
-            pass
-        if not row:
-            row = conn.execute(
-                "SELECT audio_path FROM tracks WHERE spotify_id = ?",
-                (track_key,),
-            ).fetchone()
+        row = conn.execute(
+            "SELECT audio_path FROM tracks WHERE spotify_id = ?",
+            (track_key,),
+        ).fetchone()
     finally:
         conn.close()
     return _stream_audio_row(row, request)

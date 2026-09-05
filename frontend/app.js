@@ -76,6 +76,8 @@
     queueRecsList: $('queueRecsList'),
     queueRecsEmpty: $('queueRecsEmpty'),
     queueRecsLoading: $('queueRecsLoading'),
+    queueRecsTitle: $('queueRecsTitle'),
+    djToggle: $('djToggle'),
     searchBar: $('searchBar'),
     searchInputWrap: $('searchInputWrap'),
     searchInput: $('searchInput'),
@@ -266,6 +268,18 @@
     // the right sidebar. Refreshes on each loadTrack; anchor identity is
     // tracked to avoid duplicate fetches.
     recs: { anchorKey: null, list: [], loading: false, reqToken: 0 },
+    // DJ mode — auto-fills the play queue from weighted /similar based on the
+    // last 10 session events. Toggle persisted to localStorage. Events buffer
+    // is a rolling window trimmed to the last 10 (recent at the end).
+    dj: {
+      enabled: false,
+      events: [],                 // {track_id, action, played_ratio, ts}
+      currentStart: 0,            // ms since epoch when current track began
+      currentTrackId: null,       // track_id for the now-playing track (for skip attribution)
+      lastRecs: [],               // cached DJ recs list — used for autoplay-on-empty-queue
+      inflight: false,            // guard against overlapping POSTs
+      reqToken: 0
+    },
     // Filter model — wide-open defaults; only appended to /api/tracks/random
     // when non-default. Backend ignores unknown params, safe to send early.
     filters: {
@@ -278,7 +292,7 @@
       mood: null
     }
   };
-  const RECENT_MAX = 5;
+  const RECENT_MAX = 15;
 
   const FILTER_DEFAULTS = {
     vibe_min: 0, vibe_max: 100,
@@ -574,7 +588,7 @@
   // locally-downloaded MP3 keeps the track playable.
   function setPreviewSource(track) {
     if (!track) return;
-    const streamKey = (track.apple_id != null ? track.apple_id : track.spotify_id) || '';
+    const streamKey = track.spotify_id || '';
     const backendSrc = authedStreamUrl('/api/stream/' + encodeURIComponent(streamKey));
     const directUrl = track.preview_url;
     if (!directUrl) {
@@ -891,6 +905,15 @@
     state.featureCache = {};
     state.queue = [];
     state.recs = { anchorKey: null, list: [], loading: false, reqToken: 0 };
+    // DJ mode: keep the enabled preference in localStorage across sign-outs
+    // (it's a device-level preference), but drop the auto-queue tag set and
+    // in-flight guard so a fresh session starts clean.
+    if (state.dj) {
+      state.dj.lastRecs = [];
+      state.dj.currentTrackId = null;
+      state.dj.currentStart = 0;
+      state.dj.inflight = false;
+    }
     try { renderQueue(); } catch (_) {}
     try { renderRecs(); } catch (_) {}
     if (el.recentTrail) { el.recentTrail.hidden = true; el.recentTrail.innerHTML = ''; }
@@ -1199,6 +1222,11 @@
     // Refresh sidebar recommendations for the new anchor. Fire-and-forget;
     // guarded by request-token inside so stale results are dropped.
     try { loadRecommendationsFor(t); } catch (_) {}
+
+    // DJ mode: rotate the "current track" latches for event attribution.
+    // Rec-panel refresh is handled by loadRecommendationsFor above — when DJ
+    // is on, that call routes to the POST /similar endpoint.
+    try { djOnTrackChanged(t); } catch (_) {}
 
     updateMediaSessionMetadata(t);
 
@@ -1646,6 +1674,13 @@
     stopGlowAnalyser();
     setGlowAlpha(0.65);
     setMediaSessionState(false);
+    // Natural end — force a 'completed' event before advance's own default
+    // (skip-inferred) recording fires. advanceToNext's guard skips a second
+    // record for the same track_id in the same tick.
+    try {
+      djRecordTrackTransition({ natural: true });
+      state.dj.currentTrackId = null; // prevent advanceToNext double-record
+    } catch (_) {}
     advanceToNext();
   });
   el.player.addEventListener('loadedmetadata', () => {
@@ -3312,6 +3347,13 @@
       toast('Spotify Premium required for full-track playback.', 'warning');
       spotify.isPremium = false;
     });
+    player.addListener('playback_error', ({ message }) => {
+      toast('Playback error: ' + (message || 'unknown') + ' — skipping.', 'error');
+      advanceToNext();
+    });
+    player.addListener('autoplay_failed', () => {
+      toast('Tap play to start — browser blocked autostart.', 'info');
+    });
     player.addListener('player_state_changed', (playerState) => {
       if (!playerState) {
         spotify.lastState = null;
@@ -3341,34 +3383,24 @@
         renderSpotifyProgress();
       }
 
-      // End-of-track heuristic: we WERE playing something with real
-      // duration + progress, and now we're paused at position 0.
-      // Independent of track_window.previous_tracks (which is often
-      // empty when playing a single URI via spotifyPlayTrack — that
-      // used to make the old prevTracks.length > 0 check silently
-      // skip auto-advance for every track).
+      // End-of-track: we WERE playing with real duration + progress and are
+      // now paused at position 0. Force a 'completed' event before advance
+      // so the SDK path records a positive signal (like the <audio> ended
+      // handler does). Then null currentTrackId to prevent advanceToNext
+      // from double-recording as 'skipped' (ratio would read as 0).
       const wasPlaying = !!(prevState && !prevState.paused
                             && (prevState.position || 0) > 0
                             && (prevState.duration || 0) > 0);
       const endedNow = playerState.paused
                        && (playerState.position || 0) === 0
                        && (playerState.duration || 0) > 0;
-      if (wasPlaying && endedNow && !spotify.advanceScheduled) {
-        // Fallback path: the position-poller preempt should have fired
-        // ~1500ms before this. Only runs if the poll interval missed
-        // (e.g. tab was backgrounded and setInterval was throttled).
-        spotify.advanceScheduled = true;
-        vsDebug('end-of-track fallback — scheduling advanceToNext in 500ms');
-        setTimeout(() => {
-          if (spotify.lastState
-              && spotify.lastState.paused
-              && (spotify.lastState.position || 0) === 0) {
-            vsDebug('advanceToNext firing (fallback)');
-            advanceToNext();
-          } else {
-            vsDebug('advanceToNext skipped — state changed during 500ms wait');
-          }
-        }, 500);
+      if (wasPlaying && endedNow) {
+        vsDebug('end-of-track detected — advancing');
+        try {
+          djRecordTrackTransition({ natural: true });
+          state.dj.currentTrackId = null;
+        } catch (_) {}
+        advanceToNext();
       }
     });
 
@@ -3387,13 +3419,6 @@
     el.progress.setAttribute('aria-valuetext', fmtTime(spotify.positionMs / 1000) + ' of ' + fmtTime(spotify.durationMs / 1000));
   }
 
-  // Preempt-window: fire advanceToNext when the playhead is this many ms
-  // from the end. Spotify's Autoplay engine will otherwise queue and start
-  // its own recommendation the moment the track ends, so VibeScape has to
-  // grab the transition first. 1500 ms is enough headroom for a fresh
-  // spotifyPlayTrack call to reach the SDK before autoplay fires.
-  const SDK_PREEMPT_MS = 1500;
-
   function startPositionPolling() {
     stopPositionPolling();
     spotify.pollTimer = setInterval(() => {
@@ -3404,19 +3429,6 @@
       spotify.positionMs = pos;
       renderSpotifyProgress();
       setMediaSessionPosition(spotify.durationMs / 1000, pos / 1000);
-
-      // Proactive end-of-track preemption. spotify.advanceScheduled is
-      // cleared by loadTrack() every time a new track starts, so this
-      // fires at most once per song.
-      if (!spotify.advanceScheduled
-          && spotify.durationMs > 0
-          && pos >= spotify.durationMs - SDK_PREEMPT_MS) {
-        spotify.advanceScheduled = true;
-        vsDebug('preempt fired', {
-          pos, dur: spotify.durationMs, remaining: spotify.durationMs - pos,
-        });
-        advanceToNext();
-      }
     }, 250);
   }
 
@@ -3475,9 +3487,12 @@
 
   async function spotifyPlayTrack(spotifyId) {
     if (!spotify.deviceId || !spotify.accessToken) return;
-    // Reset the preempt latch — a fresh track resets the "already scheduled
-    // an advance" flag so the next track can preempt too.
-    spotify.advanceScheduled = false;
+    // activateElement() must run inside a user gesture to enable audio on
+    // mobile browsers (iOS Safari especially). Fire once per session; cheap
+    // no-op after that. Errors are ignored — activation is best-effort.
+    if (spotify.player && !spotify.activated) {
+      try { await spotify.player.activateElement(); spotify.activated = true; } catch (_) {}
+    }
     if (Date.now() >= spotify.expiresAt - 60_000) {
       const ok = await refreshSpotifyToken();
       if (!ok) return;
@@ -4798,7 +4813,11 @@
       return false;
     }
     state.queue.push(t);
+    // DJ event: user manually queued a track — positive signal.
+    try { djPushEvent({ track_id: key, action: 'queued', played_ratio: null, ts: Date.now() }); } catch (_) {}
     renderQueue();
+    // DJ mode: refresh the recs sidebar so it reflects the new session weights.
+    try { if (state.dj && state.dj.enabled && state.current) djRefreshRecs(state.current); } catch (_) {}
     return true;
   }
 
@@ -4828,7 +4847,11 @@
     const q = state.queue;
     const i = Math.max(0, Math.min(idx | 0, q.length));
     q.splice(i, 0, t);
+    // DJ event: user manually queued a track (via drag) — positive signal.
+    try { djPushEvent({ track_id: key, action: 'queued', played_ratio: null, ts: Date.now() }); } catch (_) {}
     renderQueue();
+    // DJ mode: refresh the recs sidebar so it reflects the new session weights.
+    try { if (state.dj && state.dj.enabled && state.current) djRefreshRecs(state.current); } catch (_) {}
     return true;
   }
 
@@ -4854,6 +4877,9 @@
 
   function advanceToNext() {
     state.firstInteraction = true;
+    // DJ event: capture how the outgoing track ended before we swap tracks.
+    // `natural` is inferred from the played ratio inside djRecordTrackTransition.
+    try { djRecordTrackTransition({ natural: false }); } catch (_) {}
     if (state.queue.length > 0) {
       const next = state.queue.shift();
       renderQueue();
@@ -4861,7 +4887,32 @@
       loadTrack(next);
       return;
     }
+    // DJ mode: queue empty — refetch recs first so the just-completed track's
+    // signal (already in the session buffer) shapes the pick. Small perceptible
+    // gap (~400-700ms in prod) is the trade-off. If refetch yields nothing,
+    // stop gracefully rather than surprise the user with a random pull.
+    if (state.dj && state.dj.enabled) {
+      djPickAndPlayFresh();
+      return;
+    }
     fetchTrack(state.vibe);
+  }
+
+  // Fade the DJ rec row for `key` before it disappears. Purely decorative —
+  // the recs list re-renders on the new track's DJ fetch anyway. Skips work
+  // when the element isn't present or reduced-motion is on.
+  function flashDjConsume(key) {
+    if (!key || !el.queueRecsList) return;
+    try {
+      if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    } catch (_) {}
+    const row = el.queueRecsList.querySelector('.queue-item[data-key="' + cssEscape(key) + '"]');
+    if (row) row.classList.add('is-dj-consuming');
+  }
+
+  function cssEscape(s) {
+    try { return (window.CSS && CSS.escape) ? CSS.escape(String(s)) : String(s).replace(/"/g, '\\"'); }
+    catch (_) { return String(s); }
   }
 
   function renderQueue() {
@@ -4949,10 +5000,16 @@
       // No anchor — show idle state.
       state.recs.anchorKey = null;
       state.recs.list = [];
+      state.dj.lastRecs = [];
       if (el.queueRecsList) { el.queueRecsList.hidden = true; el.queueRecsList.innerHTML = ''; }
       if (el.queueRecsLoading) el.queueRecsLoading.hidden = true;
       if (el.queueRecsEmpty) el.queueRecsEmpty.hidden = false;
       return;
+    }
+    // DJ on: always route through djRefreshRecs (POST). It re-fetches every
+    // call so session-weighted results reflect the latest events buffer.
+    if (state.dj && state.dj.enabled) {
+      return djRefreshRecs(t);
     }
     if (state.recs.anchorKey === key && state.recs.list.length) {
       // Same anchor, already cached — nothing to do.
@@ -5006,6 +5063,301 @@
     el.queueRecsList.hidden = false;
     el.queueRecsList.innerHTML = list.map((t, i) => renderQueueRow(t, i, 'rec')).join('');
   }
+
+  // ===== DJ mode =====
+  //
+  // A rolling buffer of the last 10 playback events lives in localStorage.
+  // When DJ mode is ON, the buffer is weighted (with exponential decay) and
+  // POSTed to /api/tracks/{seed}/similar to drive the "DJ picks" sidebar
+  // (session-weighted MERT similarity). The user's queue is NEVER touched.
+  // Autoplay on empty-queue consumes the top DJ pick directly.
+  // Vibe-mode (DJ off) keeps the original GET /similar behavior in
+  // loadRecommendationsFor untouched.
+  const DJ_STORAGE_KEY = 'vibescape.sessionEvents';
+  const DJ_TOGGLE_KEY  = 'vibescape.djEnabled';
+  const DJ_MAX_EVENTS  = 10;
+  const DJ_DECAY       = 1.0;      // no age decay — every event in the buffer counts at full base weight
+  const DJ_COMPLETED_THRESHOLD = 0.85;
+
+  function djLoadEvents() {
+    try {
+      const raw = localStorage.getItem(DJ_STORAGE_KEY);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr.slice(-DJ_MAX_EVENTS) : [];
+    } catch (_) { return []; }
+  }
+  function djPersistEvents() {
+    try { localStorage.setItem(DJ_STORAGE_KEY, JSON.stringify(state.dj.events.slice(-DJ_MAX_EVENTS))); } catch (_) {}
+  }
+  function djPushEvent(evt) {
+    if (!evt || !evt.track_id) return;
+    state.dj.events.push({
+      track_id: String(evt.track_id),
+      action: evt.action,
+      played_ratio: typeof evt.played_ratio === 'number' ? evt.played_ratio : null,
+      ts: evt.ts || Date.now()
+    });
+    while (state.dj.events.length > DJ_MAX_EVENTS) state.dj.events.shift();
+    djPersistEvents();
+  }
+  // Compute the current played ratio for the now-playing track using whatever
+  // playback source is active (audio element, Spotify SDK, YouTube).
+  function djCurrentPlayedRatio() {
+    try {
+      const dur = currentPlaybackDurationSec ? currentPlaybackDurationSec() : 0;
+      const pos = currentPlaybackPositionSec ? currentPlaybackPositionSec() : 0;
+      if (!dur || !isFinite(dur) || dur <= 0) return 0;
+      return Math.max(0, Math.min(1, pos / dur));
+    } catch (_) { return 0; }
+  }
+
+  // Snapshot the current track's state as a completed/skipped event, called
+  // whenever the now-playing track is about to be replaced (next-click,
+  // natural end, direct jump). Skipped past 45% is ignored (neither strong).
+  function djRecordTrackTransition({ natural }) {
+    const dj = state.dj;
+    if (!dj.currentTrackId) return;
+    const ratio = djCurrentPlayedRatio();
+    let action;
+    if (natural || ratio >= DJ_COMPLETED_THRESHOLD) {
+      action = 'completed';
+    } else if (ratio >= 0.45) {
+      // Ambiguous — treat as a soft next; captured as 'next' so weighting
+      // logic can decide (weights table gives ratio>0.5 a small positive
+      // signal, and 0.45<=ratio<0.85 skipped is ignored).
+      action = 'next';
+    } else {
+      action = 'skipped';
+    }
+    djPushEvent({ track_id: dj.currentTrackId, action, played_ratio: ratio, ts: Date.now() });
+  }
+
+  // Called from loadTrack when a NEW track becomes current. Rotates the
+  // "currentStart / currentTrackId" latches so the NEXT transition can be
+  // measured accurately.
+  function djOnTrackChanged(t) {
+    const dj = state.dj;
+    const key = trackKeyOf(t);
+    dj.currentTrackId = key || null;
+    dj.currentStart = Date.now();
+  }
+
+  // Weighted aggregation of the event buffer. Returns {positives, negatives}
+  // as arrays of {id, weight} ready to send. Applies exponential decay by
+  // age-in-events. When the same track appears in both piles, keep it in
+  // whichever has the larger absolute total for that id.
+  function djBuildWeights() {
+    const events = state.dj.events;
+    const n = events.length;
+    // pos[id] = summed positive weight; neg[id] = summed negative weight
+    const pos = new Map();
+    const neg = new Map();
+    for (let i = 0; i < n; i++) {
+      const e = events[i];
+      const age = (n - 1) - i; // 0 = most recent
+      const decay = Math.pow(DJ_DECAY, age);
+      let base = 0;
+      let bucket = null;
+      if (e.action === 'completed') { base = 0.8; bucket = pos; }
+      else if (e.action === 'queued') { base = 1.2; bucket = pos; }
+      else if (e.action === 'next') {
+        const r = typeof e.played_ratio === 'number' ? e.played_ratio : 0;
+        if (r > 0.5) { base = 0.3; bucket = pos; }
+        // else: ignore
+      } else if (e.action === 'skipped') {
+        const r = typeof e.played_ratio === 'number' ? e.played_ratio : 0;
+        if (r < 0.15) { base = 0.8; bucket = neg; }
+        else if (r < 0.45) { base = 0.4; bucket = neg; }
+        // else: ignore
+      }
+      if (!bucket || !base) continue;
+      const w = base * decay;
+      bucket.set(e.track_id, (bucket.get(e.track_id) || 0) + w);
+    }
+    // Resolve conflicts — same id in both piles goes to whichever is larger.
+    const positives = [];
+    const negatives = [];
+    const allIds = new Set([...pos.keys(), ...neg.keys()]);
+    for (const id of allIds) {
+      const p = pos.get(id) || 0;
+      const g = neg.get(id) || 0;
+      if (p >= g && p > 0) {
+        positives.push({ id, weight: Number((p - g).toFixed(4)) || p });
+        positives[positives.length - 1].weight = Number(p.toFixed(4));
+      } else if (g > 0) {
+        negatives.push({ id, weight: Number(g.toFixed(4)) });
+      }
+    }
+    return { positives, negatives };
+  }
+
+  function djExcludeIds() {
+    const ids = new Set();
+    for (const t of state.queue) {
+      const k = trackKeyOf(t);
+      if (k) ids.add(k);
+    }
+    // Last 15 played track ids from state.recent (newest last).
+    const recent = (state.recent || []).slice(-15);
+    for (const r of recent) {
+      // state.recent stores {apple_id, spotify_id, ...} — prefer spotify_id
+      const k = String(r.spotify_id || r.apple_id || '');
+      if (k) ids.add(k);
+    }
+    // Also exclude the seed itself.
+    if (state.current) {
+      const seedKey = trackKeyOf(state.current);
+      if (seedKey) ids.add(seedKey);
+    }
+    return Array.from(ids);
+  }
+
+  // Fetch DJ picks and render them into the recs sidebar. Replaces the
+  // static GET /similar list while DJ is on. Does NOT touch state.queue.
+  //
+  // Coalesce redundant refreshes: on song-end we call djPickAndPlayFresh
+  // (which fetches once for the pick), then loadTrack(next) fires a second
+  // refresh for the sidebar. Skip that follow-up if the buffer hasn't
+  // changed since the last fetch — the taste vector would be identical.
+  async function djRefreshRecs(t) {
+    const dj = state.dj;
+    if (!dj.enabled) return;
+    const seed = t || state.current;
+    if (!seed || !el.queueRecsList) return;
+    const seedKey = trackKeyOf(seed);
+    if (!seedKey) return;
+    const bufferSig = (dj.events || []).length + ':' + ((dj.events || []).slice(-1)[0]?.ts || 0);
+    if (dj.lastFetchSig === bufferSig && (Date.now() - (dj.lastFetchAt || 0)) < 5000) {
+      return; // fresh results already reflect this buffer state
+    }
+    dj.lastFetchSig = bufferSig;
+    dj.lastFetchAt = Date.now();
+    // Share the recs anchor so vibe-mode's cache-key logic stays consistent
+    // if the user toggles DJ off later.
+    state.recs.anchorKey = seedKey;
+    state.recs.loading = true;
+    if (el.queueRecsEmpty) el.queueRecsEmpty.hidden = true;
+    // Keep the previous list visible until the new one lands to avoid a
+    // flash of loader on every queue-add. Only show the spinner if we have
+    // nothing to render yet.
+    if (!state.recs.list.length) {
+      if (el.queueRecsList) { el.queueRecsList.hidden = true; el.queueRecsList.innerHTML = ''; }
+      if (el.queueRecsLoading) el.queueRecsLoading.hidden = false;
+    }
+    const reqToken = ++state.recs.reqToken;
+    dj.reqToken = reqToken;
+    try {
+      const { positives, negatives } = djBuildWeights();
+      const body = {
+        mode: 'dj',
+        positive_ids: positives,
+        negative_ids: negatives,
+        exclude_ids: djExcludeIds(),
+        limit: 8
+      };
+      const r = await fetchWithAuth('/api/tracks/' + encodeURIComponent(seedKey) + '/similar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (reqToken !== state.recs.reqToken) return;
+      if (!r || !r.ok) {
+        state.recs.list = [];
+        dj.lastRecs = [];
+      } else {
+        const j = await r.json();
+        const results = (j && j.tracks) || [];
+        state.recs.list = results;
+        dj.lastRecs = results.slice();
+      }
+    } catch (_) {
+      if (reqToken !== state.recs.reqToken) return;
+      state.recs.list = [];
+      dj.lastRecs = [];
+    } finally {
+      if (reqToken === state.recs.reqToken) {
+        state.recs.loading = false;
+        if (el.queueRecsLoading) el.queueRecsLoading.hidden = true;
+        renderRecs();
+      }
+    }
+  }
+
+  // On queue-empty autoplay: one fetch, top pick plays, rest becomes the
+  // sidebar. loadTrack's follow-up refresh is suppressed by the buffer-
+  // signature guard in djRefreshRecs, so this is exactly one round-trip.
+  async function djPickAndPlayFresh() {
+    const seed = state.current;
+    if (!seed) return;
+    try { await djRefreshRecs(seed); } catch (_) {}
+    const dj = state.dj;
+    const picks = (dj && dj.lastRecs) ? dj.lastRecs.slice() : [];
+    if (!picks.length) return;
+    const next = picks.shift();
+    // Sidebar now shows what's next after this pick.
+    dj.lastRecs = picks;
+    state.recs.list = picks;
+    try { renderRecs(); } catch (_) {}
+    try { flashDjConsume(trackKeyOf(next)); } catch (_) {}
+    setVibeFromTrack(next);
+    loadTrack(next);
+  }
+
+  // UI reflection — toggle button + section title text.
+  function djApplyUI() {
+    const on = !!state.dj.enabled;
+    if (el.djToggle) {
+      el.djToggle.classList.toggle('is-active', on);
+      el.djToggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+    if (el.queueRecsTitle) {
+      el.queueRecsTitle.textContent = on ? 'DJ picks' : 'Recommended for this track';
+    }
+    const recsSection = el.queueRecsList && el.queueRecsList.closest('.queue-section-recs');
+    if (recsSection) recsSection.classList.toggle('is-dj-active', on);
+  }
+
+  function djSetEnabled(on, opts) {
+    const nextOn = !!on;
+    const prev = state.dj.enabled;
+    state.dj.enabled = nextOn;
+    try { localStorage.setItem(DJ_TOGGLE_KEY, nextOn ? '1' : '0'); } catch (_) {}
+    djApplyUI();
+    if (nextOn && !prev) {
+      if (!opts || !opts.silent) toast('DJ mode on — session-weighted picks in the sidebar.', 'success');
+      // Immediately swap the sidebar over to DJ picks for the current seed.
+      if (state.current) djRefreshRecs(state.current);
+    } else if (!nextOn && prev) {
+      if (!opts || !opts.silent) toast('DJ mode off.', 'info');
+      state.dj.lastRecs = [];
+      // Revert the sidebar to plain vibe-similarity for the current seed.
+      // Force a fresh fetch since we're changing data sources.
+      state.recs.anchorKey = null;
+      state.recs.list = [];
+      if (state.current) {
+        try { loadRecommendationsFor(state.current); } catch (_) {}
+      } else {
+        renderRecs();
+      }
+    }
+  }
+
+  function djRestore() {
+    // Rehydrate events buffer + toggle from localStorage. Called once at boot.
+    state.dj.events = djLoadEvents();
+    let saved = '0';
+    try { saved = localStorage.getItem(DJ_TOGGLE_KEY) || '0'; } catch (_) {}
+    state.dj.enabled = saved === '1';
+    djApplyUI();
+  }
+
+  if (el.djToggle) {
+    el.djToggle.addEventListener('click', () => {
+      djSetEnabled(!state.dj.enabled);
+    });
+  }
+  djRestore();
 
   // Delegated click handling for both lists.
   function onQueueSidebarClick(ev) {

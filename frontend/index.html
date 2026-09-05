@@ -477,7 +477,14 @@
 
   <section class="queue-section queue-section-recs">
     <div class="queue-section-head">
-      <h2 class="queue-section-title">Recommended for this track</h2>
+      <h2 class="queue-section-title" id="queueRecsTitle">Recommended for this track</h2>
+      <button class="dj-toggle" id="djToggle" type="button"
+              aria-pressed="false"
+              aria-label="Toggle DJ mode (auto-queue similar tracks)"
+              title="DJ mode — auto-queue similar tracks based on what you play, skip, and add">
+        <span class="dj-toggle-dot" aria-hidden="true"></span>
+        <span class="dj-toggle-label">DJ</span>
+      </button>
     </div>
     <div class="queue-recs-empty" id="queueRecsEmpty">
       <p class="queue-empty-hint">Play a track to see similar songs from your library.</p>

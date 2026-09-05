@@ -3981,6 +3981,92 @@ button.search-item:focus-visible {
   letter-spacing: 0.02em;
   flex-shrink: 0;
 }
+
+/* DJ mode toggle — mono pill in the recs section header. Off state reads
+   as a secondary chip (muted, transparent). On state paints with vibe
+   accent, adds a slow pulse ring, and swaps the dot to solid accent.
+   Section title text swaps via JS when active. */
+.dj-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px 3px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-3);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 180ms var(--ease), border-color 180ms var(--ease),
+              background 180ms var(--ease), box-shadow 220ms var(--ease);
+  position: relative;
+  -webkit-tap-highlight-color: transparent;
+}
+.dj-toggle:hover {
+  color: var(--text);
+  border-color: color-mix(in oklab, var(--vibe-accent) 40%, var(--border-strong));
+}
+.dj-toggle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--vibe-accent) 45%, transparent);
+}
+.dj-toggle-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--text-3);
+  box-shadow: none;
+  transition: background 220ms var(--ease), box-shadow 220ms var(--ease);
+  flex-shrink: 0;
+}
+.dj-toggle.is-active {
+  color: var(--text);
+  border-color: color-mix(in oklab, var(--vibe-accent) 60%, transparent);
+  background: color-mix(in oklab, var(--vibe-accent) 14%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--vibe-accent) 32%, transparent),
+    0 0 18px -4px color-mix(in oklab, var(--vibe-accent) 55%, transparent);
+}
+.dj-toggle.is-active .dj-toggle-dot {
+  background: var(--vibe-accent);
+  box-shadow: 0 0 8px color-mix(in oklab, var(--vibe-accent) 80%, transparent);
+  animation: dj-dot-pulse 2.4s ease-in-out infinite;
+}
+@keyframes dj-dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.55; transform: scale(0.82); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dj-toggle.is-active .dj-toggle-dot { animation: none; }
+}
+
+/* Subtle running-light on the recs section header while DJ is on — signals
+   "this list is now driven by DJ mode, not static similar-songs". Uses the
+   existing border-bottom via a background overlay so no extra DOM. */
+.queue-section-recs.is-dj-active .queue-section-head {
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--vibe-accent) 10%, transparent) 0%,
+    transparent 60%
+  );
+}
+
+/* DJ autoplay signal — the rec row about to be consumed briefly fades
+   before the recs list re-renders on the new track's DJ fetch. One-shot
+   400ms transition, no continuous animation. Reduced-motion callers
+   simply skip adding the class. */
+.queue-item.is-dj-consuming {
+  opacity: 0.35;
+  transform: translateX(2px);
+  transition: opacity 380ms ease-out, transform 380ms ease-out;
+  pointer-events: none;
+}
+
 .queue-clear {
   display: inline-flex;
   align-items: center;
