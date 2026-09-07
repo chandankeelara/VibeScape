@@ -22,12 +22,12 @@
 - [About](#about-the-project)
 - [Why This Exists](#why-this-exists)
 - [Ingestion Pipeline](#ingestion-pipeline)
-  - [Metadata Discovery](#1-metadata-discovery)
-  - [Dedup & User-Track Linking](#2-dedup--user-track-linking)
-  - [Preview-URL Cascade](#3-preview-url-cascade)
-  - [Two-Path Scoring Handoff](#4-two-path-scoring-handoff)
-  - [Persistence](#5-persistence)
-  - [Batch / Backfill Modes](#batch--backfill-modes)
+  - [Two-Phase Split: Fast Metadata Sync + Offline v2 Pipeline](#two-phase-split-fast-metadata-sync--offline-v2-pipeline)
+  - [The Six Stages](#the-six-stages)
+  - [Per-Stage Status Columns + Promotion Cascade](#per-stage-status-columns--promotion-cascade)
+  - [Preview Provider Chain](#preview-provider-chain)
+  - [Local Audio Cache](#local-audio-cache)
+  - [Orchestrator](#orchestrator)
 - [ML Pipeline](#ml-pipeline)
   - [Model — MERT Regressor](#model--mert-regressor)
   - [Data & Splits](#data--splits)
@@ -36,6 +36,8 @@
   - [Librosa Feature Bank (Baseline)](#librosa-feature-bank-baseline)
   - [Vibe Scoring](#vibe-scoring)
 - [Recommendation System](#recommendation-system)
+  - [Fused Embedding + Cosine Similarity](#fused-embedding--cosine-similarity)
+  - [DJ Mode — Session-Weighted Recommendations](#dj-mode--session-weighted-recommendations)
 - [Architecture](#architecture)
 - [Getting Started](#getting-started)
 - [Training Your Own Model](#training-your-own-model)
@@ -63,140 +65,102 @@ VibeScape reproduces those signals **from the raw 30-second preview clip** using
 
 ## Ingestion Pipeline
 
-The ingest layer turns a Spotify playlist URL into a fully-scored, deduplicated set of rows in the `tracks` table. Every step is idempotent, resume-safe, and content-addressed so re-ingesting the same playlist is effectively free.
+Ingest is split into a **fast online metadata pass** (runs inside the FastAPI request that a user's Spotify sync fires) and an **offline v2 pipeline of six modular stages** (a separate worker process that drains queued work). The split means the sync-modal returns in seconds — the user's library becomes visible immediately with metadata + previously-cached audio — while the heavy per-track work (audio download, MERT inference, embeddings, language, YouTube resolution) happens asynchronously with no bearing on request latency.
 
-```
-    Spotify playlist URL / OAuth
-                │
-                ▼
-   ┌─────────────────────────────┐
-   │ 1. spotify_library.py        │  metadata + preview_url + ISRC
-   │    (paginate playlist items) │
-   └─────────────┬───────────────┘
-                 │  per track
-                 ▼
-   ┌─────────────────────────────┐
-   │ 2. Dedup & user-track link   │  ─── skip:already_ingested
-   │    (spotify_id lookup)       │  ─── ok:linked_existing (reuse row)
-   └─────────────┬───────────────┘
-                 │
-                 ▼
-   ┌─────────────────────────────┐
-   │ 3. Preview-URL cascade       │
-   │    spotify_preview           │
-   │        │  (empty since 2024) │
-   │        ▼                     │
-   │    iTunes term-search        │
-   │        │                     │
-   │        ▼                     │
-   │    Deezer  ISRC   lookup     │  regional catalog coverage
-   │        │                     │
-   │        ▼                     │
-   │    Deezer  term-search       │
-   │        │                     │
-   │        ▼                     │
-   │    skip:no_preview           │
-   └─────────────┬───────────────┘
-                 │  audio_url
-                 ▼
-   ┌─────────────────────────────┐
-   │ 4. ml_backend.is_available() │
-   │        yes → MERT + Whisper  │ (Modal / local GPU — remote fetch)
-   │        no  → librosa fallback│ (download → extract_full → scoring)
-   └─────────────┬───────────────┘
-                 │
-                 ▼
-   ┌─────────────────────────────┐
-   │ 5. _upsert(tracks)           │  keyed on spotify_id ⨁ apple_id
-   │    + user_tracks(user,track) │
-   └─────────────────────────────┘
-```
+### Two-Phase Split: Fast Metadata Sync + Offline v2 Pipeline
 
-### 1. Metadata Discovery
+**Phase 1 — online, synchronous (`backend/app.py`).**
+`_process_track()` writes a metadata-only `tracks` row for anything genuinely new, with `ingestion_status='pending'` and six per-stage status columns each set to `'pending'`. Three short-circuit outcomes:
 
-`ingest/spotify_library.py` handles both entry points:
-
-- **Playlist URL** — accepts every shape Spotify emits: `open.spotify.com/playlist/{id}`, locale-prefixed variants (`intl-en/`), embed URLs, `spotify:playlist:` URIs, or a raw 22-char base62 ID. Regex-parsed by `parse_playlist_id()`.
-- **OAuth login** — user's saved library / playlists via Authorization Code flow (backend handles token refresh).
-
-For each track the API returns metadata (`name`, `artists[]`, `album`, `duration_ms`, `artwork_url`, `external_ids.isrc`, `preview_url`). The pagination loop yields tracks incrementally so the frontend can stream progress updates via a job ID.
-
-### 2. Dedup & User-Track Linking
-
-Tracks are **global**, not per-user. The `tracks` table is keyed on `spotify_id` (with `apple_id` as a secondary unique index); the `user_tracks` join table connects users to tracks with `(user_id, track_id, source, added_at)`.
-
-`_process_track()` short-circuits three ways:
-
-| Condition | Return | Cost |
+| Condition | Bucket | Cost |
 |---|---|---|
-| `user_tracks` row exists | `skip:already_ingested` | 1 SQL lookup |
-| `tracks` row exists globally, user not linked | `ok:linked_existing` — reuse audio + features, add `user_tracks` row | 1 SQL lookup + 1 insert |
-| Not seen before | Proceed to preview cascade | full path |
+| `user_tracks` row already exists | `already_in_library` | 1 SELECT |
+| `tracks` row exists globally, user not linked | `added_to_library` — reuse row, add `user_tracks` link | 1 SELECT + 1 INSERT |
+| Brand new to the DB | `queued_for_analysis` — insert metadata + `user_tracks` link | 2 INSERTs |
 
-This means an already-analyzed 500-track playlist re-ingests in a few hundred milliseconds — no downloads, no inference.
+A 500-track playlist re-sync where every track is already known completes in a few hundred milliseconds — no HTTP fetches beyond the Spotify pagination, no inference, no audio.
 
-### 3. Preview-URL Cascade
+**Phase 2 — offline, batch (`ingest_pipeline/` + `scripts/run_ingest_v2.py`).**
+A background worker walks the six stages of the v2 pipeline in waves. Each pass:
+1. Fetches all pending rows for stage 1, dispatches them concurrently (I/O-bound → thread pool).
+2. Advances to stage 2, same pattern.
+3. ... through all six stages.
+4. Runs `promote.py` to derive `ingestion_status` and cascade any terminal failures.
 
-Spotify silently emptied `preview_url` for the majority of tracks in November 2024, so the ingest layer degrades through a four-source cascade. Every hop is logged with `hit=True/False` and the resulting **classification source** is persisted on the row so later analytics can attribute where each audio sample actually came from.
+Songs move through **stages in waves, not one-by-one across stages** — the whole batch clears preview before any of it starts classify. Simpler orchestration than a per-track state machine, and each stage sees a hot working set.
 
-| Order | Source | Endpoint | When it helps | `classification_source` |
-|---|---|---|---|---|
-| 1 | Spotify | `track.preview_url` (from playlist item payload) | Rare, but free when present | `spotify_preview` |
-| 2 | iTunes | `iTunes Search API` (term = `"{title} {artist}"`) | US/UK/major-label catalog | `itunes_term_search` |
-| 3 | Deezer | `GET /track/isrc:{isrc}` | Precise, works when we have ISRC | `deezer_isrc` |
-| 4 | Deezer | `GET /search?q={title} {artist}` | Broad — especially good for **Indian / Punjabi / Tamil / other regional catalogs** where iTunes' western-biased search misses | `deezer_search` |
-| — | — | All misses → `skip:no_preview` | Track saved as metadata-only or skipped | `none` |
+### The Six Stages
 
-Notes:
-- **iTunes ISRC lookup is intentionally skipped**. Apple's undocumented `/lookup?isrc=` endpoint returns 0 hits for essentially every ISRC now; probing it costs ~1s/track for nothing.
-- **Deezer normalizes to iTunes shape**. `deezer_client._to_itunes_shape()` maps `preview/title/artist.name/album.cover_medium` → `previewUrl/trackName/artistName/artworkUrl100` so the downstream `_process_track()` merge slot doesn't need to branch on source.
-- **Shared audio** — if the same `spotify_id` was ingested by another user earlier and the file still exists on disk, the local path is reused instead of re-downloading (`shared_row` lookup).
+Each stage lives in its own module under `ingest_pipeline/`, is gated by exactly one status column on `tracks`, and writes only its own domain columns + its own status column.
 
-### 4. Two-Path Scoring Handoff
+| # | Stage | File | Status column | Blocks on | Concurrency | What it does |
+|---|---|---|---|---|---|---|
+| 1 | **preview** | `stage_preview.py` | `preview_status` | — | 2 workers | Runs the provider chain to resolve a `preview_url`. Also backfills `apple_id`, `genre`, `track_view_url`, `album`, `artwork_url`, `duration_ms` from the provider hit (only where the row lacks them). Sets `preview_source` to `spotify` / `itunes` / `deezer_isrc` / `deezer_search`. |
+| 2 | **download** | `stage_download.py` | `download_status` | `preview_status='done'` | 8 workers | Fetches `preview_url` and writes to `data/audio/<spotify_id>.<ext>` atomically (`.part` rename). Sets `audio_path`. |
+| 3 | **classify** | `stage_classify.py` | `ml_status` | `download_status='done'` | 1 (GPU) | Runs `MERTVibeRegressor` (10 s crop) on the cached audio via `ml_backend.predict_from_path`. Writes `energy_pred`, `danceability_pred`, `valence_pred`, `vibe_score_ml`, `activation`, `valence`, `vibe_score`, `mood`, `classification_source='ml_mert'`. |
+| 4 | **youtube** | `stage_youtube.py` | `youtube_status` | — (independent) | 6 workers | `yt-dlp ytsearch1` for `"{title} {artist}"`. Takes the first hit, no embed / age / availability check. Writes `youtube_id`, `youtube_queried_at`. |
+| 5 | **language** | `stage_language.py` | `language_status` | `download_status='done'` | 1 (GPU) | Whisper `small` language detection on the cached audio. Writes `language`, `language_confidence`, `language_top3_json`, `language_model_version` when top-1 confidence ≥ 0.20; otherwise sets `language_status='no_match'`. |
+| 6 | **embedding** | `stage_embedding.py` | `embedding_status` | `download_status='done'` AND `ml_status='done'` | 1 (GPU) | Runs raw MERT-v1-95M encoder (30 s window) on the cached audio → mean-pooled 768-D vector. Writes `mert_v1_95m_fp32_30s` blob to `track_embeddings`. Piggybacks librosa `tempo` / `brightness` / `acousticness` from the same waveform and writes them to `tracks`. Builds the fused vector using those scalars + `language` and writes `fused_v1_mert_scalar_lang` (788-D) to `track_embeddings`. |
 
-Once an `audio_url` is resolved, `ml_backend.is_available()` picks between two entirely disjoint scoring paths:
+Constraint-collision retry: an UPDATE that hits the legacy `UNIQUE (user_id, apple_id)` index retries once with `apple_id / track_view_url / genre` stripped. The row's own status column always lands so the pipeline never loops on the same row.
 
-**ML path (Modal / local GPU)**
-- `predict_from_url(audio_url)` — Modal downloads the preview server-side, runs MERT, returns `{energy, danceability, valence, vibe_score, model_version}`.
-- `predict_language_from_url(audio_url)` — Whisper runs on the same clip; the top-1 language is persisted only if `prob ≥ 0.2` (below that Whisper is guessing on instrumental audio).
-- **Prod (Cloud Run) never touches audio bytes locally** — the 512 MB torch-free container just hands the URL to Modal.
+### Per-Stage Status Columns + Promotion Cascade
 
-**Librosa path (dev / offline)**
-- Downloads the audio to a tempfile, runs `features.extract()` for the 15-feature bundle (tempo, RMS, HPSS, MFCC, CENS chroma, Krumhansl-Kessler valence, etc.), then `scoring.compute_axes()` for activation/valence, then `scoring.mood_label()` for the mood grid label.
-- Saves the audio locally at `data/audio/{spotify_id}.{mp3|m4a}` so subsequent recomputes are free.
+Each stage-status column takes one of four values: `pending`, `done`, `no_match`, `failed`. `no_match` is terminal but non-error (e.g. iTunes had no hit; audio decoded but Whisper confidence was too low). `failed` is retryable next pass.
 
-Both paths converge on the same `activation ∈ [0, 100]`, `valence ∈ [0, 100]`, and `mood` string — the frontend has no idea which one produced them.
+`ingest_pipeline/promote.py` derives the aggregate `ingestion_status`:
 
-### 5. Persistence
+```
+ingestion_status = 'done'        when preview + download + ml all 'done'
+ingestion_status = 'no_preview'  when preview_status='no_match'
+                                 OR download_status='no_match'
+```
 
-`_upsert()` writes to `tracks` (INSERT or UPDATE on existing row, keyed on `spotify_id` first, `apple_id` second) with the full column set: metadata + all librosa scalars + chroma JSON + `activation`/`valence`/`activation_relative`/`vibe_score`/`mood` + ML prediction columns (`energy_pred`, `danceability_pred`, `valence_pred`, `vibe_score_ml`, `model_version`) + language columns (`language`, `language_confidence`, `language_top3_json`, `language_model_version`, `language_predicted_at`) + `classification_source` provenance.
+`youtube_status` and `language_status` are best-effort — never block promotion.
 
-The `user_tracks` join row is written last with `INSERT OR IGNORE`, so re-runs are idempotent.
+Promote also **cascades** audio-availability failures downstream so pending counts stay meaningful:
 
-### Batch / Backfill Modes
+- `preview_status='no_match'` → `download_status='no_match'`
+- `download_status='no_match'` → `ml_status`, `language_status`, `embedding_status` all → `'no_match'`
 
-The ingest CLI at `ingest/ingest.py` exposes three offline modes for maintenance:
+Without the cascade, rows would sit `pending` forever waiting on audio that will never arrive.
+
+### Preview Provider Chain
+
+`ingest_pipeline/preview_providers.py` defines `PreviewProvider` as an ABC and ships four implementations: `SpotifyPreview`, `ItunesPreview`, `DeezerIsrcPreview`, `DeezerSearchPreview`. `PreviewChain.resolve(track)` walks providers in order and returns the first `PreviewHit`.
+
+The **default chain is Spotify-then-iTunes-only** — Deezer providers are wired but kept out of `default_chain()` because Deezer's signed URLs (`?hdnea=exp=<unix-ts>`) expire on a ~14-day rolling window. Using them in an offline worker guarantees a fraction of tracks will have dead URLs by download time.
+
+**iTunes rate-limit handling:** iTunes' Search API 403s bursts around ~20 req/min per IP. `ItunesPreview` serializes behind a class-level lock with a 500 ms inter-request gap and retries 403s with exponential backoff (2 s → 4 s → 8 s → 16 s + jitter, 4 retries max). `PreviewStage.max_workers=2` — more workers here would just spin on the lock without gaining throughput.
+
+Adding a new provider = write a `PreviewProvider` subclass + prepend it to `default_chain()`.
+
+### Local Audio Cache
+
+`DownloadStage` writes every preview to `data/audio/<spotify_id>.<ext>` (`.m4a` for iTunes AAC, `.mp3` for MP3 sources). `resolve_audio_path()` (exported from `stage_download.py`) is the single source of truth for cache lookups; every downstream stage prefers the local file. This means:
+
+- **One preview download per song, ever** — not per stage per pass.
+- **Cache survives crashes / re-runs** — the backfill migration marks pre-existing files (779 tracks in local dev) as `download_status='done'`.
+- **Strict cache path** — classify / language / embedding all `SELECT ... WHERE download_status='done' AND audio_path IS NOT NULL`. There is **no URL fallback** — if audio isn't cached, promote cascades the row to `no_match` and downstream stages skip it.
+
+The app never streams from `audio_path` — the frontend streams directly from `preview_url` (CDN) and the backend's `/api/stream/*` is only a fallback. The local cache is pipeline-internal state.
+
+### Orchestrator
 
 ```bash
-# 1. Backfill missing audio files for existing DB rows (dev only).
-python ingest/ingest.py --backfill
+# One pass across all six stages, up to 50 rows per stage per pass:
+python scripts/run_ingest_v2.py --batch 50
 
-# 2. Match tracks to Spotify IDs via ISRC → title/artist fallback.
-python ingest/ingest.py --match-spotify
+# Loop forever with 30 s idle sleep between empty passes:
+python scripts/run_ingest_v2.py --loop --batch 30 --interval 30
 
-# 3. Re-run librosa extract_full on every locally cached audio file,
-#    then library-wide z-score normalization for activation_relative.
-python ingest/ingest.py --recompute-features
-python ingest/ingest.py --recompute-features --limit 50 --force   # debug
+# Restrict to a subset of stages:
+python scripts/run_ingest_v2.py --stages preview,download,classify
 ```
 
-`--recompute-features` is fully idempotent — it skips tracks whose v2 columns are already populated unless `--force` is passed. Progress is written to `data/recompute_progress.json` after every track so external pollers (or the frontend admin panel) can watch state without parsing stdout. After the per-track pass finishes it runs a **library-wide z-score normalization** on `activation`:
+The orchestrator (`scripts/run_ingest_v2.py`) is a thin loop over `Stage.run_batch()` calls followed by `promote()`. Stages are stateless — swap in Modal-backed classify/language stages later by changing the `ml_backend` mode without touching orchestration.
 
-```
-activation_relative = clamp(50 + ((activation − μ) / σ) × 15, 0, 100)
-```
-
-so `vibe_score` (which the frontend slider drives) is a well-distributed percentile view of the user's actual library instead of clumping in the middle of the raw scale.
+Because each stage is isolated, later scaling is trivial: one worker per stage, or one worker per shard of rows, or a task queue in front of any subset.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -306,9 +270,12 @@ A 2×5 **mood grid** is derived from these two axes:
 
 ## Recommendation System
 
-Vibe-consistent autoplay picks the next track from your library using a **fused acoustic + emotional embedding**, ranked by cosine similarity against the current seed.
+Vibe-consistent autoplay picks the next track from your library using a **fused acoustic + emotional embedding**, ranked by cosine similarity. Two modes:
 
-### Design
+- **Vibe mode** (`GET /api/tracks/{id}/similar`) — anchored on the currently-playing seed, ranked by weighted L1 distance across the four ML feature dimensions + mood bonus. Returns the closest N tracks in the library.
+- **DJ mode** (`POST /api/tracks/{seed}/similar`) — anchored on the user's **rolling session** rather than a single seed. The query vector is built from the user's last few playback events (completions, queue-adds, skips) weighted by action type. See [DJ Mode](#dj-mode--session-weighted-recommendations) below.
+
+### Fused Embedding + Cosine Similarity
 
 Every track with a downloadable preview gets a **768-dim MERT embedding** computed from the full 30-second preview (mean-pool of `last_hidden_state`). Embeddings live in a dedicated `track_embeddings` table keyed on `(track_id, model_version)` — separate from the fat `tracks` row so the recommender pays the load cost only when it needs vectors, and multiple embedding versions can coexist during transitions.
 
@@ -398,6 +365,54 @@ Brute-force cosine at current library size:
 - No index maintenance, no vector-store dependency
 
 At **~100 K tracks** the scan cost hits ~230 M float ops and becomes user-visible (~30–80 ms). At that point we drop in `faiss.IndexHNSWFlat(dim=777, M=32, efConstruction=200)` — sub-linear query time with recall≥0.98 vs exact search. The `find_similar` interface stays the same.
+
+### DJ Mode — Session-Weighted Recommendations
+
+DJ mode replaces the single-seed similarity query with a **taste-vector query** built from the user's rolling session. The query vector is a weighted sum of the fused embeddings of tracks the user has interacted with recently.
+
+**Client-side taste buffer** (`frontend/app.js`, key `vibescape.sessionEvents` in localStorage):
+- Ring buffer of the **last 10 playback events** — each entry `{track_id, action, played_ratio, ts}`.
+- Populated by `djPushEvent()` on every queue-add, natural end, or transition. Actions: `completed`, `queued`, `next`, `skipped`.
+- Cleared on logout, survives page reload.
+
+**Event → weight table** (`djBuildWeights`, `frontend/app.js`):
+
+| action | condition | weight | pile |
+|---|---|---:|---|
+| `queued` | user explicitly added to queue | **+1.2** | positive |
+| `completed` | natural end or `played_ratio ≥ 0.85` | **+0.8** | positive |
+| `next` | manual skip, `played_ratio > 0.5` | +0.3 | positive |
+| `next` | manual skip, `played_ratio ≤ 0.5` | 0 | ignored |
+| `skipped` | manual skip, `played_ratio < 0.15` | **−0.8** | negative |
+| `skipped` | manual skip, `0.15 ≤ played_ratio < 0.45` | −0.4 | negative |
+| `skipped` | manual skip, `0.45 ≤ played_ratio < 0.85` | 0 | ignored (ambiguous) |
+
+Queued weight > completed weight because a queue-add is an *explicit, forward-looking* choice, while a completion can be passive (music continued playing in a background tab, user didn't bother to skip).
+
+**No age decay.** Every event in the 10-slot buffer counts at full base weight. The buffer *is* the recency window — older events roll off naturally as new ones come in. Decay was tried and dropped: at buffer size 10 it just penalized the median-age event by ~40% for no useful discrimination.
+
+**Query vector construction** (backend `_similar_dj`, `backend/app.py`):
+
+```
+pos_vec   = Σ (w_i · L2_normalize(fused_i))      for positive events
+neg_vec   = Σ (w_i · L2_normalize(fused_i))      for negative events
+query_vec = L2_normalize(pos_vec − 0.4 · neg_vec)
+```
+
+Each contributing track is L2-normalized *before* weighting, and the final query vector is L2-normalized again. This means **magnitude is irrelevant** — only the direction of the accumulated taste matters. Piling on more `completed` events from the same vibe pulls the query toward the centroid of the liked cluster (tighter recs), not out of the cluster.
+
+Cosine similarity between `query_vec` and every candidate embedding. Top-K after exclusions.
+
+**Exclusion list** (`djExcludeIds`, `frontend/app.js`):
+- All tracks currently in the queue.
+- **Last 50 played tracks** (`state.recent`, in-memory, capped at `RECENT_MAX=50`, cleared on logout).
+- The URL seed itself.
+
+50 tracks ≈ 2.5-3 hours of listening — long enough to prevent obvious repeats, short enough that the user can hear a track again later in a long session.
+
+**Cold start.** When the taste buffer is empty (fresh session) or contains only the seed track itself, the query vector is undefined. Backend falls back to random selection from the candidate pool with `score=0`. Once one non-seed positive event lands, DJ mode engages properly.
+
+**Fallback to vibe mode.** If the seed track has no MERT embedding in `track_embeddings` (recently-ingested tracks that haven't finished the embedding stage yet), the endpoint returns vibe-mode results with `mode_used='vibe_fallback_no_seed_embedding'`. The frontend can then choose whether to surface the fallback or wait for embeddings.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -650,14 +665,25 @@ VibeScape/
 │   ├── app.js                # mood-slider, filter, YouTube playback
 │   └── style.css
 │
-├── ingest/
+├── ingest/                   # low-level clients + ML dispatch (shared by both pipelines)
 │   ├── spotify_library.py    # Spotify Web API client
 │   ├── spotify_matcher.py    # Spotify ⇄ iTunes/Deezer matching
 │   ├── deezer_client.py      # Deezer preview fallback (30 s clips)
 │   ├── itunes_client.py      # iTunes Search preview fallback
 │   ├── features.py           # librosa feature bank + Krumhansl-Kessler
 │   ├── scoring.py            # activation / valence / mood-grid logic
-│   └── ml_backend.py         # Modal-vs-local-vs-none dispatcher
+│   └── ml_backend.py         # Modal-vs-local-vs-none dispatcher (+ predict_from_path variants)
+│
+├── ingest_pipeline/          # v2 modular offline pipeline (6 stages)
+│   ├── base.py               # Stage ABC + thread-pool run_batch + status vocab
+│   ├── preview_providers.py  # PreviewChain + Spotify/iTunes/Deezer providers
+│   ├── stage_preview.py      # 1. resolve preview_url (iTunes-only by default)
+│   ├── stage_download.py     # 2. fetch preview → data/audio/<spotify_id>.<ext>
+│   ├── stage_classify.py     # 3. MERT + head → activation/valence/mood + ML preds
+│   ├── stage_youtube.py      # 4. ytsearch1, first hit
+│   ├── stage_language.py     # 5. Whisper language detection
+│   ├── stage_embedding.py    # 6. raw MERT-95M + librosa piggyback → fused vector
+│   └── promote.py            # derive ingestion_status + cascade audio-failure rules
 │
 ├── ml/
 │   ├── configs/
@@ -676,13 +702,20 @@ VibeScape/
 │   └── experiments/mlruns/   # MLflow tracking store
 │
 ├── scripts/
+│   ├── run_ingest_v2.py                  # v2 orchestrator (loop across the 6 stages)
+│   ├── run_ingest_worker.py              # legacy single-pass worker (still runs the monolithic _ingest_track_row)
 │   ├── predict_ml.py                     # standalone predict wrapper
 │   ├── prewarm_youtube.py                # bulk-resolve YouTube IDs
 │   ├── build_cookies_file.py             # yt-dlp cookies helper
 │   ├── _backfill_mert_embeddings.py      # populate track_embeddings (MERT-v1, 30 s, fp32)
+│   ├── _backfill_fused_embeddings.py     # build fused_v1_mert_scalar_lang from existing MERT vectors
 │   ├── _rescore_regressor_30s.py         # re-run regressor on full 30 s window
 │   ├── _regressor_window_compare.py      # 10 s crop vs 30 s: bias + correlation across catalog
-│   └── _recommender_feasibility.py       # top-K similarity probe (MERT-only vs MERT+scalars)
+│   ├── _recommender_feasibility.py       # top-K similarity probe (MERT-only vs MERT+scalars)
+│   ├── _dj_same_track_test.py            # DJ sanity check: N-repeat positive should return itself at cos=1.0
+│   ├── _predict_crop_length_test.py      # trained-head sensitivity to 10 s vs 30 s crop (MAE per target)
+│   ├── _turso_*.py                       # Turso ops (inventory, smoke, reset, audio stats, migrations)
+│   └── _load_gcp_secrets.ps1             # local dev: pull Secret Manager values into env for a shell
 │
 ├── deploy/cloud-run/
 │   ├── README.md             # Cloud Run runbook (secrets, IAM, deploy)
@@ -721,26 +754,34 @@ VibeScape/
 - [x] **MERT-embedding-based recommender** — full-clip 30 s embeddings in a dedicated `track_embeddings` table, MERT + scalar fusion, brute-force cosine retrieval (79.2% top-1 agreement across 739 seeds — see [Recommendation System](#recommendation-system))
 - [x] Client-side preview streaming with backend fallback (cuts Cloud Run egress on the happy path)
 - [x] Floating draggable/resizable video panel with mini transport controls
+- [x] **Two-phase ingest split** — fast online metadata sync + offline worker for heavy analysis. Sync-modal returns in seconds instead of minutes.
+- [x] **v2 modular ingest pipeline** — six independent stages (preview / download / classify / youtube / language / embedding) with per-stage status columns, thread-pool concurrency within a stage, and derived `ingestion_status` with cascade rules for audio-availability failures
+- [x] **Local audio cache** — one preview download per song, ever; all downstream stages prefer the on-disk file. Strict cache gate (no URL fallback) so failures propagate cleanly instead of silently retrying
+- [x] **DJ mode** — session-weighted taste vector from the last 10 playback events (queued=1.2, completed=0.8, skipped up to −0.8), no age decay, exclude window of last 50 played tracks. See [DJ Mode](#dj-mode--session-weighted-recommendations)
+- [x] `/api/tracks/{id}/similar` — both `GET` (vibe mode, weighted L1 distance) and `POST` (DJ mode, cosine similarity against session-weighted query vector)
+- [x] Empirical crop-length sensitivity study — MERT head's 10 s vs 30 s crop drift measured across 34 tracks. MAE 0.03-0.04 on `energy` / `dance` / `vibe_score` (borderline), 0.06 on `valence` (retrain required if we ever unify encoder passes). See `scripts/_predict_crop_length_test.py`
 
 ### In Progress 🚧
 - [ ] Optuna sweeps over head-hidden / dropout / LR ratios
 - [ ] Multi-crop test-time averaging (currently single centre crop)
 - [ ] Genre auxiliary head (multi-task learning)
-- [ ] `/api/tracks/{id}/similar` endpoint wired to embedding retrieval (data layer landed; API surface follows)
+- [ ] Retire the legacy monolithic `_ingest_track_row` / `run_ingest_worker.py` once v2 pipeline is production-verified
+- [ ] Modal-backed Classify / Language / Embedding stages (unblocks GPU concurrency; currently `max_workers=1` on local GPU to avoid MERT OOM)
 
 ### Planned 📋
 - [ ] FAISS HNSW index swap — triggered when embedding count crosses ~100K
-- [ ] Session-aware ranking — recency-weighted seed vector + skip/complete feedback loop
 - [ ] Larger MERT (`MERT-v1-330M`) with LoRA adapters
-- [ ] Per-user preference learning on skip/replay signals
+- [ ] Per-user preference learning on skip/replay signals (extend DJ mode's session weights into a persistent per-user model)
 - [ ] Whisper transcription for lyric-based mood cues
 - [ ] Web-audio-based on-device inference (ONNX / WebGPU)
+- [ ] Unified MERT encoder pass — one 30 s forward feeds both the trained scalar head and the raw embedding pipeline (needs head retrained on 30 s crops first — see the crop-length sensitivity study)
+- [ ] iOS Capacitor wrapper + native Spotify iOS SDK bridge (Web Playback SDK doesn't decode on iOS Safari due to Widevine/EME missing)
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## Contact
 
-**Chandan Gowda K S**
+**Chandan Keelara**
 📧 gowdakeelarashivan.c@northeastern.edu
 🐙 [github.com/virtual457](https://github.com/virtual457)
 
