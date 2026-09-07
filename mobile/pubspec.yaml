@@ -22,9 +22,6 @@ dependencies:
   freezed_annotation: ^3.1.0
   json_annotation: ^4.12.0
 
-  # Env
-  flutter_dotenv: ^5.1.0
-
   # Native audio
   spotify_sdk: ^3.0.2       # SPTAppRemote + SPTSessionManager bindings
   audio_service: ^0.18.15   # Background isolate + lockscreen (iOS + Android)
@@ -69,7 +66,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-  assets:
-    - .env
-    - assets/icons/
-  # Fonts served via google_fonts at runtime — no bundled TTFs needed.
+  # No bundled assets. Runtime config uses `--dart-define=...` compile
+  # flags (see lib/core/env/env.dart). Fonts are served via google_fonts
+  # at runtime — no TTFs bundled.
