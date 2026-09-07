@@ -1,0 +1,75 @@
+name: vibescape
+description: Cross-platform VibeScape client (iOS, Android, macOS, web).
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.8.0
+  flutter: ">=3.24.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management
+  flutter_riverpod: ^2.5.1
+
+  # Routing
+  go_router: ^14.2.7
+
+  # HTTP + serialization
+  dio: ^5.7.0
+  freezed_annotation: ^3.1.0
+  json_annotation: ^4.12.0
+
+  # Env
+  flutter_dotenv: ^5.1.0
+
+  # Native audio
+  spotify_sdk: ^3.0.2       # SPTAppRemote + SPTSessionManager bindings
+  audio_service: ^0.18.15   # Background isolate + lockscreen (iOS + Android)
+  just_audio: ^0.9.40       # Local preview / fallback
+
+  # Storage
+  shared_preferences: ^2.3.2
+  flutter_secure_storage: ^9.2.2  # For Spotify tokens
+
+  # UI
+  cached_network_image: ^3.4.1
+  google_fonts: ^6.2.1
+  flutter_svg: ^2.0.10+1
+
+  # Utilities
+  intl: ^0.19.0
+  url_launcher: ^6.3.0
+  app_links: ^6.3.2  # Deep-link handling for OAuth callback
+  logger: ^2.4.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+
+  # Code generation
+  build_runner: ^2.16.1
+  freezed: ^4.0.1
+  json_serializable: ^6.14.1
+  # riverpod_generator / custom_lint disabled — none of the current providers
+  # use @riverpod annotations, and custom_lint has an analyzer 7 breakage.
+
+  # Testing
+  mocktail: ^1.0.4
+  network_image_mock: ^2.1.1
+  golden_toolkit: ^0.15.0
+  patrol: ^3.11.2  # optional real-device integration testing
+
+  # Lint
+  very_good_analysis: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - .env
+    - assets/icons/
+  # Fonts served via google_fonts at runtime — no bundled TTFs needed.
