@@ -137,3 +137,32 @@ CREATE TABLE IF NOT EXISTS user_tracks (
 
 CREATE INDEX IF NOT EXISTS idx_user_tracks_user  ON user_tracks(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_tracks_track ON user_tracks(track_id);
+
+
+-- ---------------------------------------------------------------------------
+-- track_embeddings — one row per track with both embedding variants inline.
+--
+-- Columns use libSQL typed vector affinities (F32_BLOB(dim)) so Turso can
+-- build an ANN index over fused_embedding via libsql_vector_idx(). On
+-- vanilla SQLite the types collapse to BLOB affinity — behaviour is
+-- identical for the numpy path (np.frombuffer(row['...'], dtype=float32)).
+--
+-- mert_embedding:  768-D  raw MERT-v1-95M mean-pooled last_hidden_state
+--                         over 30 s of audio.
+-- fused_embedding: 788-D  concat of (0.55·L2(MERT768) ⊕ 0.25·L2(9 scalars)
+--                         ⊕ 0.20·language_one_hot_11), then L2-normalized.
+--                         This is what DJ mode ranks by.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS track_embeddings (
+    track_id         INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    mert_embedding   F32_BLOB(768),
+    fused_embedding  F32_BLOB(788),
+    model_version    TEXT,          -- provenance: which regressor produced the scalars
+    updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ANN index for DJ mode's cosine similarity queries. libSQL only — a no-op
+-- syntax error on vanilla SQLite (guarded by IF NOT EXISTS + being wrapped
+-- in a try/except at bootstrap on the sqlite backend).
+-- CREATE INDEX IF NOT EXISTS track_embeddings_fused_ann
+--     ON track_embeddings(libsql_vector_idx(fused_embedding));

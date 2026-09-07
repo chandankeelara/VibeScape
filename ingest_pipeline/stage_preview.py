@@ -30,7 +30,11 @@ _FETCH_COLS = (
 class PreviewStage(Stage):
     name = "preview"
     status_column = "preview_status"
-    max_workers = 8
+    # Kept low because the iTunes Search API rate-limits aggressively
+    # (~20 req/min per IP) and ItunesPreview already serializes behind
+    # a global lock. More workers here would just spin waiting for the
+    # lock without any throughput gain.
+    max_workers = 2
 
     def __init__(self, chain: PreviewChain | None = None):
         self._chain = chain or default_chain(log=log)

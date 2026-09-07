@@ -47,9 +47,11 @@ except ImportError:
 from db import ensure_db, get_conn  # noqa: E402
 from ingest_pipeline.promote import promote  # noqa: E402
 from ingest_pipeline.stage_preview import PreviewStage  # noqa: E402
+from ingest_pipeline.stage_download import DownloadStage  # noqa: E402
 from ingest_pipeline.stage_classify import ClassifyStage  # noqa: E402
 from ingest_pipeline.stage_youtube import YoutubeStage  # noqa: E402
 from ingest_pipeline.stage_language import LanguageStage  # noqa: E402
+from ingest_pipeline.stage_embedding import EmbeddingStage  # noqa: E402
 
 
 log = logging.getLogger("vibescape.ingest.orch")
@@ -57,10 +59,12 @@ log = logging.getLogger("vibescape.ingest.orch")
 
 def build_stages(names: list[str]) -> list:
     all_stages: dict[str, callable] = {
-        "preview":  PreviewStage,
-        "classify": ClassifyStage,
-        "youtube":  YoutubeStage,
-        "language": LanguageStage,
+        "preview":   PreviewStage,
+        "download":  DownloadStage,
+        "classify":  ClassifyStage,
+        "youtube":   YoutubeStage,
+        "language":  LanguageStage,
+        "embedding": EmbeddingStage,
     }
     unknown = [n for n in names if n not in all_stages]
     if unknown:
@@ -70,7 +74,7 @@ def build_stages(names: list[str]) -> list:
 
 def pending_snapshot(conn) -> dict[str, int]:
     out: dict[str, int] = {}
-    for col in ("preview_status", "ml_status", "youtube_status", "language_status"):
+    for col in ("preview_status", "download_status", "ml_status", "youtube_status", "language_status", "embedding_status"):
         try:
             n = conn.execute(
                 f"SELECT COUNT(*) FROM tracks WHERE {col} = 'pending'"
@@ -100,8 +104,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--batch", type=int, default=50,
                         help="max rows per stage per pass (default 50)")
-    parser.add_argument("--stages", type=str, default="preview,classify,youtube,language",
-                        help="comma-separated stage names (default: all four in order)")
+    parser.add_argument("--stages", type=str,
+                        default="preview,download,classify,youtube,language,embedding",
+                        help="comma-separated stage names (default: all six in order)")
     parser.add_argument("--loop", action="store_true",
                         help="keep running; sleep --interval when nothing to do")
     parser.add_argument("--interval", type=int, default=30,

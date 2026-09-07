@@ -48,19 +48,29 @@ class LanguageStage(Stage):
         self._model_size = model_size
 
     def fetch_pending(self, conn, limit: int) -> list:
+        # Strict gate on DownloadStage — no URL fallback.
         rows = conn.execute(
-            "SELECT id, spotify_id, title, artist, preview_url "
+            "SELECT id, spotify_id, title, artist, audio_path "
             "FROM tracks "
             "WHERE language_status = 'pending' "
-            "AND preview_status = 'done' "
-            "AND preview_url IS NOT NULL AND preview_url != '' "
+            "AND download_status = 'done' "
+            "AND audio_path IS NOT NULL AND audio_path != '' "
             "ORDER BY id ASC LIMIT ?",
             (limit,),
         ).fetchall()
         return list(rows)
 
     def process_row(self, row) -> RowResult:
-        preds = self._ml.predict_language_from_url(row["preview_url"], model_size=self._model_size)
+        from .stage_download import resolve_audio_path
+        local = resolve_audio_path(row["audio_path"])
+        if local is None:
+            return RowResult(
+                track_id=int(row["id"]),
+                status=STATUS_FAILED,
+                fields={"ingestion_attempted_at": iso_now()},
+                error="cached audio missing",
+            )
+        preds = self._ml.predict_language_from_path(str(local), model_size=self._model_size)
         if not preds:
             return RowResult(
                 track_id=int(row["id"]),
