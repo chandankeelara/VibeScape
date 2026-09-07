@@ -607,6 +607,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE tracks ADD COLUMN ml_status TEXT DEFAULT 'pending'",
         "ALTER TABLE tracks ADD COLUMN youtube_status TEXT DEFAULT 'pending'",
         "ALTER TABLE tracks ADD COLUMN language_status TEXT DEFAULT 'pending'",
+        "ALTER TABLE tracks ADD COLUMN embedding_status TEXT DEFAULT 'pending'",
+        "ALTER TABLE tracks ADD COLUMN download_status TEXT DEFAULT 'pending'",
         "ALTER TABLE tracks ADD COLUMN preview_source TEXT",
     ]
     for c in _EXTENDED_COLUMNS:
@@ -630,9 +632,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     if _table_exists(conn, "tracks") and _has_column(conn, "tracks", "user_id"):
         default_uid = _seed_default_user(conn)
+        # Legacy UNIQUE (user_id, apple_id) index survives from the
+        # pre-split-tracks era. When we backfill user_id on NULL rows and
+        # two of them share an apple_id, this UPDATE would violate the
+        # constraint. Skip rows whose (default_uid, apple_id) tuple is
+        # already claimed — they stay NULL and are dropped from the
+        # legacy backfill path (they're already in the global-tracks
+        # model via user_tracks anyway).
         conn.execute(
-            "UPDATE tracks SET user_id = ? WHERE user_id IS NULL",
-            (default_uid,),
+            "UPDATE tracks SET user_id = ? "
+            "WHERE user_id IS NULL "
+            "  AND (apple_id IS NULL OR NOT EXISTS ("
+            "        SELECT 1 FROM tracks t2 "
+            "        WHERE t2.user_id = ? AND t2.apple_id = tracks.apple_id"
+            "  ))",
+            (default_uid, default_uid),
         )
         conn.commit()
 
@@ -647,6 +661,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         _backfill_classification_source(conn)
         _backfill_ingestion_status(conn)
         _backfill_stage_statuses(conn)
+
+    # track_embeddings shape migration: legacy (track_id, model_version,
+    # embedding) → Option A (track_id, mert_embedding, fused_embedding).
+    # Runs on any DB backend; idempotent (detects current shape first).
+    _migrate_track_embeddings_option_a(conn)
 
     # Split per-user tracks into global tracks + user_tracks. Must run
     # BEFORE schema.sql executes CREATE UNIQUE INDEX on spotify_id/apple_id,
@@ -698,6 +717,68 @@ def _backfill_ingestion_status(conn: sqlite3.Connection) -> int:
         return 0
 
 
+_MERT_MV_LEGACY  = "mert_v1_95m_fp32_30s"
+_FUSED_MV_LEGACY = "fused_v1_mert_scalar_lang"
+
+
+def _migrate_track_embeddings_option_a(conn: sqlite3.Connection) -> None:
+    """
+    Transpose track_embeddings from the legacy row-per-variant layout
+    (track_id, model_version, dim, embedding) into the Option A layout
+    (track_id, mert_embedding, fused_embedding, model_version, updated_at).
+
+    Idempotent — detects current shape via PRAGMA and returns early if
+    already migrated (or if the table doesn't exist yet). Preserves the
+    original bytes (F32_BLOB and BLOB share physical layout).
+    """
+    if not _table_exists(conn, "track_embeddings"):
+        return
+    cols = {r[1] for r in _table_info(conn, "track_embeddings")}
+    if {"mert_embedding", "fused_embedding"}.issubset(cols):
+        return  # already in Option A
+    if not {"model_version", "embedding"}.issubset(cols):
+        return  # unknown shape — leave alone
+    try:
+        conn.execute("BEGIN")
+        conn.execute(
+            """
+            CREATE TABLE track_embeddings_new (
+                track_id         INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+                mert_embedding   F32_BLOB(768),
+                fused_embedding  F32_BLOB(788),
+                model_version    TEXT,
+                updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO track_embeddings_new
+                (track_id, mert_embedding, fused_embedding, model_version, updated_at)
+            SELECT
+                t.track_id,
+                m.embedding,
+                f.embedding,
+                COALESCE(f.model_version, m.model_version),
+                COALESCE(f.created_at, m.created_at, CURRENT_TIMESTAMP)
+            FROM (SELECT DISTINCT track_id FROM track_embeddings) t
+            LEFT JOIN track_embeddings m
+                ON m.track_id = t.track_id AND m.model_version = ?
+            LEFT JOIN track_embeddings f
+                ON f.track_id = t.track_id AND f.model_version = ?
+            """,
+            (_MERT_MV_LEGACY, _FUSED_MV_LEGACY),
+        )
+        conn.execute("DROP TABLE track_embeddings")
+        conn.execute("ALTER TABLE track_embeddings_new RENAME TO track_embeddings")
+        conn.execute("COMMIT")
+    except sqlite3.OperationalError:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.OperationalError:
+            pass
+
+
 def _backfill_stage_statuses(conn: sqlite3.Connection) -> int:
     """
     Set the four v2 stage-status columns for pre-existing rows so the new
@@ -719,6 +800,18 @@ def _backfill_stage_statuses(conn: sqlite3.Connection) -> int:
         ("ml_status",       "done",     "activation IS NOT NULL"),
         ("youtube_status",  "done",     "youtube_id IS NOT NULL AND youtube_id != ''"),
         ("language_status", "done",     "language IS NOT NULL AND language != ''"),
+        # embedding_status is 'done' iff the track has BOTH the raw MERT and
+        # the fused vectors in track_embeddings. Anything less and the
+        # EmbeddingStage will re-extract; safe because INSERT OR REPLACE.
+        ("embedding_status", "done",
+            "EXISTS (SELECT 1 FROM track_embeddings te WHERE te.track_id = tracks.id "
+            "        AND te.model_version = 'mert_v1_95m_fp32_30s') "
+            "AND EXISTS (SELECT 1 FROM track_embeddings te WHERE te.track_id = tracks.id "
+            "        AND te.model_version = 'fused_v1_mert_scalar_lang')"),
+        # download_status is 'done' iff audio_path is set. We don't stat
+        # the filesystem here; the DownloadStage's fetch_pending query
+        # re-checks existence and re-downloads if the file went missing.
+        ("download_status", "done",  "audio_path IS NOT NULL AND audio_path != ''"),
     ]
     for col, val, cond in updates:
         try:

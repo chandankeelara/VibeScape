@@ -22,11 +22,20 @@ columns. Cheap and correct enough for the current volume.
 """
 from __future__ import annotations
 
+import logging
+import sqlite3
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Sequence
+from typing import Any
+
+
+# Fields we're willing to drop and retry with when a legacy uniqueness
+# constraint fires during UPDATE. These are all "nice-to-have" metadata
+# fields backfilled from external providers — the row's own status +
+# preview_url still lands.
+_RETRY_DROPPABLE_FIELDS = ("apple_id", "track_view_url", "genre")
 
 
 STATUS_PENDING = "pending"
@@ -103,17 +112,45 @@ class Stage(ABC):
         for res in results:
             fields = dict(res.fields or {})
             fields[self.status_column] = res.status
-            # Every stage stamps its own timestamp: <stage>_updated_at exists
-            # only where we care; skip if the column doesn't exist.
-            set_clause = ", ".join(f"{k} = ?" for k in fields.keys())
-            params: list = list(fields.values())
-            params.append(int(res.track_id))
-            conn.execute(f"UPDATE tracks SET {set_clause} WHERE id = ?", params)
+            self._commit_row_update(conn, int(res.track_id), fields, log)
             counts[res.status] = counts.get(res.status, 0) + 1
         conn.commit()
 
         log.info("[%s] batch done: %s", self.name, counts)
         return counts
+
+    @staticmethod
+    def _commit_row_update(conn, track_id: int, fields: dict, log) -> None:
+        """
+        UPDATE one row with `fields`. If a legacy UNIQUE constraint fires
+        (typically `UNIQUE (user_id, apple_id)` from the pre-split-tracks
+        era), retry the UPDATE with the collision-prone metadata fields
+        stripped out. The row's own status column always survives so the
+        pipeline never loops on the same row.
+        """
+        def _do(fields_):
+            set_clause = ", ".join(f"{k} = ?" for k in fields_.keys())
+            params = list(fields_.values()) + [track_id]
+            conn.execute(f"UPDATE tracks SET {set_clause} WHERE id = ?", params)
+
+        try:
+            _do(fields)
+            return
+        except sqlite3.IntegrityError as e:
+            dropped = [k for k in _RETRY_DROPPABLE_FIELDS if k in fields]
+            if not dropped:
+                log.warning("row %d IntegrityError with no droppable fields to retry: %s",
+                            track_id, e)
+                raise
+            reduced = {k: v for k, v in fields.items() if k not in dropped}
+            try:
+                _do(reduced)
+                log.warning("row %d retried without %s due to unique-constraint collision",
+                            track_id, dropped)
+            except sqlite3.IntegrityError as e2:
+                log.warning("row %d retry still failed after dropping %s: %s",
+                            track_id, dropped, e2)
+                raise
 
     def _safe_process(self, row) -> RowResult:
         """Wrap process_row so an exception in one row doesn't kill the batch."""

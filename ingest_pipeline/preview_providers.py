@@ -10,6 +10,9 @@ Add a new provider = write a new subclass + prepend/append to DEFAULT_CHAIN.
 """
 from __future__ import annotations
 
+import random
+import threading
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
@@ -54,12 +57,51 @@ class SpotifyPreview(PreviewProvider):
 
 
 class ItunesPreview(PreviewProvider):
-    """iTunes Search API — free, no auth, ~1M cache-friendly requests/day."""
+    """
+    iTunes Search API — free, no auth, but Apple aggressively 403s bursts.
+    Empirically ~20 req/min ceiling from a single IP before a rolling
+    rate limit kicks in. We serialize behind a class-level lock + a
+    minimum inter-request gap, and retry with exponential backoff on 403.
+    """
     name = "itunes"
+
+    # All ItunesPreview instances share a single request slot. The lock
+    # guards the "last request time" so worker threads take turns.
+    _lock = threading.Lock()
+    _last_request_ts = 0.0
+    _MIN_GAP_S = 0.5      # >= 500 ms between requests
+    _MAX_RETRIES = 4
+    _BASE_BACKOFF_S = 2.0 # 2, 4, 8, 16 seconds on successive 403s
 
     def __init__(self, itunes_client, log=None):
         self._client = itunes_client
         self._log = log
+
+    def _throttle(self):
+        with ItunesPreview._lock:
+            now = time.monotonic()
+            wait = ItunesPreview._MIN_GAP_S - (now - ItunesPreview._last_request_ts)
+            if wait > 0:
+                time.sleep(wait)
+            ItunesPreview._last_request_ts = time.monotonic()
+
+    def _search_with_retry(self, term: str) -> list | None:
+        for attempt in range(ItunesPreview._MAX_RETRIES + 1):
+            self._throttle()
+            try:
+                return self._client.search(term, limit=5)
+            except Exception as e:
+                is_403 = "403" in str(e)
+                if not is_403 or attempt == ItunesPreview._MAX_RETRIES:
+                    if self._log:
+                        self._log.warning("itunes search failed for %r: %s", term, e)
+                    return None
+                backoff = ItunesPreview._BASE_BACKOFF_S * (2 ** attempt) + random.uniform(0, 1)
+                if self._log:
+                    self._log.warning("itunes 403 for %r; backing off %.1fs (attempt %d/%d)",
+                                      term, backoff, attempt + 1, ItunesPreview._MAX_RETRIES)
+                time.sleep(backoff)
+        return None
 
     def fetch(self, track: dict) -> PreviewHit | None:
         title = (track.get("title") or "").strip()
@@ -67,11 +109,8 @@ class ItunesPreview(PreviewProvider):
         if not title or not artist:
             return None
         term = f"{title} {artist}"
-        try:
-            results = self._client.search(term, limit=5)
-        except Exception as e:
-            if self._log:
-                self._log.warning("itunes search failed for %r: %s", term, e)
+        results = self._search_with_retry(term)
+        if results is None:
             return None
         r = self._pick_best(results, title, artist)
         if not r:
@@ -184,8 +223,15 @@ class PreviewChain:
 
 def default_chain(log=None) -> PreviewChain:
     """
-    Standard provider order for the app. Constructed lazily so importing
-    this module doesn't drag in backend deps unless we actually run.
+    Standard provider order for the app. iTunes only — Deezer previews
+    have different audio properties (bitrate, EQ, sample rate) that
+    shift MERT embeddings enough to matter for recommendations, so we
+    keep provenance consistent by sourcing every preview from iTunes.
+    Deezer providers are retained in this module for opt-in use but
+    aren't wired into the default chain.
+
+    Constructed lazily so importing this module doesn't drag in backend
+    deps unless we actually run.
     """
     import sys
     from pathlib import Path
@@ -195,11 +241,8 @@ def default_chain(log=None) -> PreviewChain:
         if str(p) not in sys.path:
             sys.path.insert(0, str(p))
     import itunes_client  # type: ignore
-    import deezer_client  # type: ignore
 
     return PreviewChain([
         SpotifyPreview(),
         ItunesPreview(itunes_client, log=log),
-        DeezerIsrcPreview(deezer_client),
-        DeezerSearchPreview(deezer_client),
     ])

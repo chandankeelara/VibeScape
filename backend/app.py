@@ -939,53 +939,101 @@ def _resolve_anchor(conn, track_key: str):
     return anchor
 
 
+def _embedding_column_for(model_version: str) -> Optional[str]:
+    """Map a logical model_version to the physical column in the new
+    Option-A track_embeddings layout (one row per track, both variants
+    inline as separate typed vector columns)."""
+    if model_version == MERT_MODEL_VERSION:
+        return "mert_embedding"
+    if model_version == FUSED_MODEL_VERSION:
+        return "fused_embedding"
+    return None
+
+
+def _is_turso() -> bool:
+    return (os.environ.get("DB_BACKEND") or "").strip().lower() in ("turso", "libsql")
+
+
+def _decode_embedding_cell(val) -> Optional[np.ndarray]:
+    """Turso's HTTP protocol returns F32_BLOB cells in a form our
+    db_client shim decodes to empty bytes. Handle both cases:
+      - Real bytes (local sqlite path): np.frombuffer
+      - Text form '[a,b,c,...]' (Turso via vector_extract()): parse
+    Returns None if the cell is empty / invalid."""
+    if val is None:
+        return None
+    if isinstance(val, (bytes, bytearray, memoryview)):
+        if len(val) == 0:
+            return None
+        return np.frombuffer(val, dtype=np.float32).astype(np.float32, copy=True)
+    if isinstance(val, str):
+        s = val.strip()
+        if not s or s == "[]":
+            return None
+        s = s.lstrip("[").rstrip("]")
+        try:
+            return np.array([float(x) for x in s.split(",")], dtype=np.float32)
+        except ValueError:
+            return None
+    return None
+
+
 def _load_mert_vec(conn, track_id: int,
                    model_version: str = MERT_MODEL_VERSION,
                    expected_dim: int = MERT_DIM) -> Optional[np.ndarray]:
-    row = conn.execute(
-        "SELECT embedding, dim FROM track_embeddings "
-        "WHERE track_id = ? AND model_version = ?",
-        (track_id, model_version),
-    ).fetchone()
-    if not row or row["embedding"] is None:
+    col = _embedding_column_for(model_version)
+    if col is None:
         return None
-    dim = int(row["dim"])
-    if dim != expected_dim:
+    # On Turso, F32_BLOB reads back as empty bytes over HTTP — use
+    # vector_extract() to get the text form we can parse.
+    if _is_turso():
+        row = conn.execute(
+            f"SELECT vector_extract({col}) AS emb "
+            f"FROM track_embeddings WHERE track_id = ?",
+            (track_id,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            f"SELECT {col} AS emb FROM track_embeddings WHERE track_id = ?",
+            (track_id,),
+        ).fetchone()
+    if not row:
         return None
-    vec = np.frombuffer(row["embedding"], dtype=np.float32, count=dim)
-    if vec.shape[0] != dim:
+    vec = _decode_embedding_cell(row["emb"])
+    if vec is None or vec.shape[0] != expected_dim:
         return None
-    return vec.astype(np.float32, copy=True)
+    return vec
 
 
 def _load_mert_vecs_bulk(conn, track_ids: list,
                          model_version: str = MERT_MODEL_VERSION,
                          expected_dim: int = MERT_DIM) -> dict:
     """Return {track_id: np.ndarray} for track_ids that have an embedding
-    under the given model_version. Vectors with mismatched dim are dropped."""
+    for the requested variant. Rows with NULL in the target column are
+    skipped (track has the other variant but not this one)."""
     out: dict = {}
     if not track_ids:
         return out
+    col = _embedding_column_for(model_version)
+    if col is None:
+        return out
     # Chunk to keep SQL param counts sane.
     CHUNK = 400
+    turso = _is_turso()
+    select_expr = f"vector_extract({col})" if turso else col
     for i in range(0, len(track_ids), CHUNK):
         chunk = track_ids[i:i + CHUNK]
         placeholders = ",".join("?" for _ in chunk)
         sql = (
-            f"SELECT track_id, dim, embedding FROM track_embeddings "
-            f"WHERE model_version = ? AND track_id IN ({placeholders})"
+            f"SELECT track_id, {select_expr} AS emb FROM track_embeddings "
+            f"WHERE track_id IN ({placeholders}) AND {col} IS NOT NULL"
         )
-        rows = conn.execute(sql, (model_version, *chunk)).fetchall()
+        rows = conn.execute(sql, tuple(chunk)).fetchall()
         for r in rows:
-            if r["embedding"] is None:
+            v = _decode_embedding_cell(r["emb"])
+            if v is None or v.shape[0] != expected_dim:
                 continue
-            dim = int(r["dim"])
-            if dim != expected_dim:
-                continue
-            v = np.frombuffer(r["embedding"], dtype=np.float32, count=dim)
-            if v.shape[0] != dim:
-                continue
-            out[int(r["track_id"])] = v.astype(np.float32, copy=True)
+            out[int(r["track_id"])] = v
     return out
 
 
@@ -1197,18 +1245,90 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id):
         exclude_ids = set(_resolve_ids_to_track_ids(conn, exclude_keys))
         exclude_ids.add(anchor_id)
 
-        # Load candidate track_ids from user's library (done + has embedding, not excluded).
+        # Load candidate track_ids from user's library (done + has the
+        # requested embedding variant, not excluded). Option A layout:
+        # one row per track, each variant in its own typed column.
+        emb_col = _embedding_column_for(model_version) or "fused_embedding"
+        mode_used = f"dj_{variant_used}"
+
+        # ------------------------------------------------------------------
+        # Ranking backend: on Turso we push the cosine computation into the
+        # DB (vector_distance_cos on the typed column) so we only stream
+        # top-K + metadata back — ~10 KB per request instead of 4.7 MB of
+        # embedding blobs. On sqlite we fall back to the in-process numpy
+        # brute-force since vanilla sqlite has no vector functions.
+        # ------------------------------------------------------------------
+        _use_turso_ranking = (
+            (os.environ.get("DB_BACKEND") or "").strip().lower() in ("turso", "libsql")
+            and query_vec is not None
+        )
+
+        top_ids: list[int] = []
+        top_scores: dict[int, float] = {}
+        out_tracks: list[dict] = []
+
+        if _use_turso_ranking:
+            # Serialize query vector for Turso's vector32('[…]') builder.
+            qv_str = "[" + ",".join(f"{float(x):.7f}" for x in query_vec.tolist()) + "]"
+            # Exclude filter — inlined as literal ints since sqlite param
+            # counts have limits and this list is bounded (~50-100).
+            excl_sql = ""
+            if exclude_ids:
+                excl_sql = " AND t.id NOT IN ("
+                excl_sql += ",".join(str(int(x)) for x in exclude_ids)
+                excl_sql += ") "
+            select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
+            sql = (
+                f"SELECT {select}, "
+                f"       vector_distance_cos(te.{emb_col}, vector32(?)) AS distance "
+                f"FROM tracks t "
+                f"JOIN user_tracks ut ON ut.track_id = t.id "
+                f"JOIN track_embeddings te ON te.track_id = t.id "
+                f"WHERE ut.user_id = ? "
+                f"  AND t.ingestion_status = 'done' "
+                f"  AND te.{emb_col} IS NOT NULL "
+                f"  {excl_sql} "
+                f"ORDER BY distance ASC "
+                f"LIMIT ?"
+            )
+            try:
+                rows = conn.execute(sql, (qv_str, user_id, limit)).fetchall()
+            except Exception as e:
+                log.warning("[dj] turso vector_distance_cos path failed: %s; "
+                            "falling back to numpy", e)
+                rows = None
+            if rows is not None:
+                for r in rows:
+                    d = _row_to_dict(r)
+                    # vector_distance_cos returns (1 - cos_sim), so cosine
+                    # similarity = 1 - distance. Frontend expects similarity.
+                    dist = float(r["distance"]) if r["distance"] is not None else 1.0
+                    d["score"] = 1.0 - dist
+                    out_tracks.append(d)
+                anchor_out = {
+                    "spotify_id": anchor["spotify_id"],
+                    "apple_id": anchor["apple_id"],
+                    "mood": a_mood,
+                }
+                return {
+                    "anchor": anchor_out,
+                    "tracks": out_tracks,
+                    "mode_used": mode_used + "_turso",
+                    "variant_used": variant_used,
+                }
+            # else: fall through to numpy path
+
+        # -------- numpy fallback (local dev / cold-start / turso error) --------
         cand_rows = conn.execute(
             "SELECT t.id FROM tracks t "
             "JOIN user_tracks ut ON ut.track_id = t.id "
             "JOIN track_embeddings te ON te.track_id = t.id "
             "WHERE ut.user_id = ? "
             "  AND t.ingestion_status = 'done' "
-            "  AND te.model_version = ?",
-            (user_id, model_version),
+            f" AND te.{emb_col} IS NOT NULL",
+            (user_id,),
         ).fetchall()
         cand_ids = [int(r["id"]) for r in cand_rows if int(r["id"]) not in exclude_ids]
-        mode_used = f"dj_{variant_used}"
         if not cand_ids:
             anchor_out = {
                 "spotify_id": anchor["spotify_id"],
