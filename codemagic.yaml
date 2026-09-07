@@ -1,0 +1,95 @@
+# Codemagic build config for the VibeScape Flutter app.
+#
+# Free-tier friendly: produces an UNSIGNED iOS .ipa that you sideload
+# to your phone via AltStore on Windows using a free Apple ID.
+# No paid Apple Developer account required.
+#
+# Setup:
+#   1. Sign up at https://codemagic.io (GitHub OAuth is fine)
+#   2. Connect this repo
+#   3. Trigger the `ios-unsigned` workflow manually (or push to main)
+#   4. Download the `.ipa` artifact from the build output
+#   5. Open AltServer on Windows → drag the .ipa in → AltStore installs it
+#
+# Free tier: 500 build-minutes/month. A cold Flutter iOS build is ~15 min,
+# so you get ~30 iOS builds/month free.
+
+workflows:
+
+  # ---------------------------------------------------------------------------
+  # iOS — unsigned, free-tier flow. Output: mobile/build/ios/ipa/*.ipa
+  # ---------------------------------------------------------------------------
+  ios-unsigned:
+    name: iOS (unsigned, sideload via AltStore)
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      vars:
+        BUNDLE_ID: "com.vibescape.app"
+    scripts:
+      - name: Bootstrap Flutter deps
+        script: |
+          cd mobile
+          flutter --version
+          flutter pub get
+      - name: Generate freezed / json_serializable
+        script: |
+          cd mobile
+          dart run build_runner build --delete-conflicting-outputs
+      - name: Fill in native iOS shell
+        script: |
+          cd mobile
+          flutter create --org com.vibescape --project-name vibescape --platforms=ios .
+      - name: Install CocoaPods
+        script: |
+          cd mobile/ios
+          pod install --repo-update
+      - name: Build unsigned iOS app
+        script: |
+          cd mobile
+          flutter build ios --release --no-codesign \
+            --dart-define=VIBESCAPE_ENV=prod
+      - name: Package as .ipa (unsigned)
+        script: |
+          cd mobile/build/ios/iphoneos
+          mkdir -p Payload
+          cp -R Runner.app Payload/
+          zip -qr ../../../ipa/vibescape-unsigned.ipa Payload
+    artifacts:
+      - mobile/build/ios/ipa/*.ipa
+      - mobile/build/**/*.dSYM.zip
+
+  # ---------------------------------------------------------------------------
+  # Android — APK for direct install on an Android phone. No signing config
+  # needed; produces a debug APK. Sideload via `adb install` or share the file.
+  # ---------------------------------------------------------------------------
+  android-debug:
+    name: Android (debug APK)
+    max_build_duration: 30
+    instance_type: linux_x2
+    environment:
+      flutter: stable
+      java: 17
+    scripts:
+      - name: Bootstrap Flutter deps
+        script: |
+          cd mobile
+          flutter --version
+          flutter pub get
+      - name: Generate freezed / json_serializable
+        script: |
+          cd mobile
+          dart run build_runner build --delete-conflicting-outputs
+      - name: Fill in native Android shell
+        script: |
+          cd mobile
+          flutter create --org com.vibescape --project-name vibescape --platforms=android .
+      - name: Build debug APK
+        script: |
+          cd mobile
+          flutter build apk --debug --dart-define=VIBESCAPE_ENV=prod
+    artifacts:
+      - mobile/build/app/outputs/flutter-apk/*.apk
