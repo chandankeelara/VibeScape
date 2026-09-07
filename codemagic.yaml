@@ -30,6 +30,13 @@ workflows:
       vars:
         BUNDLE_ID: "com.vibescape.app"
     scripts:
+      - name: Materialize .env (from .env.example — .env is gitignored)
+        script: |
+          cd mobile
+          [ -f .env ] || cp .env.example .env
+          # `assets/icons/` is declared in pubspec but only holds a .gitkeep
+          mkdir -p assets/icons
+          touch assets/icons/.gitkeep
       - name: Bootstrap Flutter deps
         script: |
           cd mobile
@@ -104,6 +111,12 @@ workflows:
       flutter: stable
       java: 17
     scripts:
+      - name: Materialize .env + asset dirs
+        script: |
+          cd mobile
+          [ -f .env ] || cp .env.example .env
+          mkdir -p assets/icons
+          touch assets/icons/.gitkeep
       - name: Bootstrap Flutter deps
         script: |
           cd mobile
