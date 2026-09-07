@@ -43,24 +43,54 @@ workflows:
         script: |
           cd mobile
           flutter create --org com.vibescape --project-name vibescape --platforms=ios .
+      - name: Precache Flutter iOS engine
+        script: |
+          cd mobile
+          flutter precache --ios
       - name: Install CocoaPods
         script: |
           cd mobile/ios
           pod install --repo-update
-      - name: Build unsigned iOS app
+      # `flutter build ios --no-codesign` still requires a Development Team
+      # on the Xcode project. Bypass by calling xcodebuild directly with
+      # every signing setting explicitly disabled — produces an unsigned
+      # `.app` we then zip into an .ipa for AltStore sideloading.
+      - name: Build unsigned Runner.app via xcodebuild
+        script: |
+          cd mobile/ios
+          xcodebuild \
+            -workspace Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath ../build/ios-derived \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            EXPANDED_CODE_SIGN_IDENTITY="" \
+            FLUTTER_BUILD_MODE=release \
+            DART_DEFINES="$(echo -n 'VIBESCAPE_ENV=prod' | base64)" \
+            clean build
+      - name: Package Runner.app as unsigned .ipa
         script: |
           cd mobile
-          flutter build ios --release --no-codesign \
-            --dart-define=VIBESCAPE_ENV=prod
-      - name: Package as .ipa (unsigned)
-        script: |
-          cd mobile/build/ios/iphoneos
-          mkdir -p Payload
-          cp -R Runner.app Payload/
-          zip -qr ../../../ipa/vibescape-unsigned.ipa Payload
+          APP_PATH=$(find build/ios-derived/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "Runner.app not found — xcodebuild step must have failed"
+            find build/ios-derived -name "*.app" | head -5
+            exit 1
+          fi
+          mkdir -p build/ios/ipa Payload
+          cp -R "$APP_PATH" Payload/
+          zip -qr build/ios/ipa/vibescape-unsigned.ipa Payload
+          ls -la build/ios/ipa/
     artifacts:
       - mobile/build/ios/ipa/*.ipa
-      - mobile/build/**/*.dSYM.zip
 
   # ---------------------------------------------------------------------------
   # Android — APK for direct install on an Android phone. No signing config
