@@ -277,33 +277,50 @@ Vibe-consistent autoplay picks the next track from your library using a **fused 
 
 ### Fused Embedding + Cosine Similarity
 
-Every track with a downloadable preview gets a **768-dim MERT embedding** computed from the full 30-second preview (mean-pool of `last_hidden_state`). Embeddings live in a dedicated `track_embeddings` table keyed on `(track_id, model_version)` — separate from the fat `tracks` row so the recommender pays the load cost only when it needs vectors, and multiple embedding versions can coexist during transitions.
+Every track with a downloadable preview gets a **768-D raw MERT embedding** (mean-pool of `last_hidden_state` over 30 s of audio) and a **788-D fused embedding** that folds in the ML scalar predictions + a language one-hot. Both live in a dedicated `track_embeddings` table — **one row per track**, each variant in its own typed vector column, so the DB can build an ANN index over the fused column directly:
 
-The scoring vector is a weighted concat:
-
-```
-      768-D MERT          9-D scalars
-    ┌────────────────┐  ┌───────────┐
-    │ acoustic       │  │ energy    │
-    │ texture, timbre│  │ dance     │
-    │ mode, harmonic │  │ valence   │
-    │ content        │  │ vibe_score│
-    │                │  │ activation│
-    │                │  │ valence % │
-    │                │  │ acoustic. │
-    │                │  │ tempo     │
-    │                │  │ brightness│
-    └───────┬────────┘  └─────┬─────┘
-        L2-norm             L2-norm
-        × 0.70              × 0.30
-            └───────┬──────────┘
-                    concat + L2-norm
-                          │
-                          ▼
-                fused ∈ ℝ^777
+```sql
+CREATE TABLE track_embeddings (
+  track_id         INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+  mert_embedding   F32_BLOB(768),   -- raw MERT, DJ-independent
+  fused_embedding  F32_BLOB(788),   -- MERT + scalars + language, what DJ ranks
+  model_version    TEXT,
+  updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 ```
 
-At query time the recommender does a brute-force cosine against every embedding in the library (~739 tracks × 777 floats = 2.3 MB scan, sub-millisecond) and returns the top-K. When the library grows past ~100K vectors, we swap the scan for a **FAISS HNSW index** — the retrieval module already sits behind a `find_similar(seed_vec, k)` interface, so the switch is transparent to callers.
+On libSQL / Turso the `F32_BLOB(dim)` type is a typed vector affinity. On vanilla SQLite it collapses to plain BLOB affinity — physical bytes are identical, so the numpy code path (`np.frombuffer(row['fused_embedding'], dtype=np.float32)`) works on both. Only the DB-native `vector_distance_cos()` / `vector_top_k()` functions differ.
+
+The fused vector is a weighted concat:
+
+```
+      768-D MERT              9-D scalars           11-D language one-hot
+    ┌────────────────┐    ┌────────────────┐    ┌──────────────────┐
+    │ raw MERT       │    │ energy_pred    │    │ en / kn / te /   │
+    │ mean-pool of   │    │ dance_pred     │    │ hi / pa / sa /   │
+    │ last_hidden    │    │ valence_pred   │    │ ta / ur / km /   │
+    │ over 30 s      │    │ vibe_score     │    │ pt / other       │
+    │                │    │ activation     │    │                  │
+    │                │    │ valence        │    │                  │
+    │                │    │ acousticness   │    │                  │
+    │                │    │ tempo          │    │                  │
+    │                │    │ brightness     │    │                  │
+    └───────┬────────┘    └────────┬───────┘    └────────┬─────────┘
+        L2-norm                 L2-norm            hard one-hot
+        × 0.55                  × 0.25              × 0.20
+              └────────────────┬──────────────────────┘
+                        concat + L2-norm
+                               │
+                               ▼
+                     fused ∈ ℝ^788
+```
+
+**Ranking backend** — depends on `DB_BACKEND`:
+
+- **Turso (prod).** The cosine ranking runs **server-side** via `vector_distance_cos(fused_embedding, vector32(?))` — the query vector serializes as a JSON-array string, Turso computes distances against every candidate in a full-scan `ORDER BY distance ASC LIMIT K` and streams back only the top-K + track metadata. Payload per DJ request: **~10 KB** (top-K rows) instead of **~4.7 MB** (every candidate's raw embedding streamed to Python) — a **~500× reduction in Turso→Cloud-Run egress**, which is what makes DJ mode viable on the 3 GB / month Turso free tier.
+- **Local sqlite (dev).** Vanilla SQLite has no vector functions, so `_load_mert_vecs_bulk` still pulls all candidate embeddings and cosine happens in numpy. Fast at library sizes < 100 K (< 5 ms for the whole scan).
+
+The dispatch is a one-line check on `os.environ["DB_BACKEND"]` in `_similar_dj`; the numpy path is preserved as the local-dev + graceful-degradation fallback if a Turso call ever fails.
 
 ### Why the fusion, not MERT alone?
 
@@ -328,43 +345,27 @@ The trained regressor uses a centre-cropped 10 s window because that was the tra
 
 Ranking is largely preserved, but the ~16% of tracks with lopsided intros/outros can differ by 5-23 vibe points. The 30 s window is more representative for embedding purposes; the regressor's 10 s crop is left intact for the scalar-prediction path so downstream mood-grid coordinates stay stable. The two paths converge on the same track but "see" slightly different windows — captured explicitly via `model_version = 'mert_v1'` (10s scalar prediction) vs `model_version = 'mert_v1_30s'` (30s rescoring) so the split is queryable.
 
-### Pipeline
+### Populating embeddings
 
-```
-    tracks.audio_path          tracks.preview_url
-           │                          │
-           ▼                          ▼
-     scripts/_backfill_mert_embeddings.py
-       ├── load audio (soundfile → ffmpeg fallback)
-       ├── resample to 24 kHz mono, cap at 30 s
-       ├── MERT-v1-95M forward (768-D output)
-       ├── mean-pool last_hidden_state over time
-       └── write float32 BLOB to track_embeddings
+Embeddings are produced inline by the v2 pipeline's [`EmbeddingStage`](#the-six-stages) — no separate backfill needed. That stage reads the local cached audio (from `DownloadStage`), runs raw MERT once, piggybacks a `librosa` pass on the same waveform to fill `acousticness / tempo / brightness`, then builds the fused vector via `_build_fused(row_dict, mert_vec)` and writes both blobs in one `INSERT ... ON CONFLICT(track_id) DO UPDATE ...`.
 
-                          │
-                          ▼
-                ┌────────────────────┐
-                │ track_embeddings   │  ── (track_id, model_version) PK
-                │ ─ embedding: BLOB  │      3 KB per track (vs 16 KB JSON)
-                │ ─ dim: 768         │      composite PK → multi-version safe
-                │ ─ created_at       │
-                └─────────┬──────────┘
-                          │  ← boot-time load into np.ndarray (n, 777)
-                          ▼
-              backend/app.py recommender
-              GET /api/tracks/{id}/similar?k=10
-                    → brute-force cosine
-                    → top-K neighbours
-```
+Two ops helpers exist for offline maintenance:
+
+- **`scripts/_backfill_mert_embeddings.py`** — rebuild MERT vectors from local audio files. Useful when you've locally re-processed the audio (e.g. bumped `MAX_DURATION_S`) and want to regenerate everything without going through the full pipeline.
+- **`scripts/_refuse_embeddings.py`** — rebuild only the *fused* vector for every track from its existing MERT + current scalar columns + current language. No audio, no GPU — pure numpy over blobs we already have. Runs against local and Turso in one invocation. This is what you run after a language-tag correction sweep, since the fused vector has a 20 % language component that goes stale when `tracks.language` changes.
 
 ### Query performance
 
-Brute-force cosine at current library size:
-- Scan cost: **~1.7 M float ops** (739 × 777 × 3 for norm + dot)
-- Wall time: **~0.6 ms** on a single CPU core, dominated by memory bandwidth
-- No index maintenance, no vector-store dependency
+**Turso path (prod).** `vector_distance_cos()` full-scan over 1489 candidates: **~300 ms** per DJ request end-to-end (includes HTTP round-trip). Payload: ~10 KB. At ~50 K embeddings we'd hit ~10 s per request and want the DiskANN index — a `CREATE INDEX ... libsql_vector_idx(fused_embedding)` swap plus a `vector_top_k()` rewrite. Turso's ANN was flaky on our instance at build time so we defer this until the index cooperates or scale demands it.
 
-At **~100 K tracks** the scan cost hits ~230 M float ops and becomes user-visible (~30–80 ms). At that point we drop in `faiss.IndexHNSWFlat(dim=777, M=32, efConstruction=200)` — sub-linear query time with recall≥0.98 vs exact search. The `find_similar` interface stays the same.
+**Numpy path (local dev).** ~5 ms per request at library size 1489. Pure in-process cosine, no round-trip, no serialization.
+
+**Egress economics** (Turso free tier is 3 GB/month):
+
+| Backend | Bytes per DJ request | Free-tier ceiling |
+|---|---:|---:|
+| Old numpy path (every candidate blob streamed to app) | ~4.7 MB | ~640 requests/mo |
+| Current Turso `vector_distance_cos` (top-K + metadata) | ~10 KB | ~300 K requests/mo |
 
 ### DJ Mode — Session-Weighted Recommendations
 
@@ -401,7 +402,7 @@ query_vec = L2_normalize(pos_vec − 0.4 · neg_vec)
 
 Each contributing track is L2-normalized *before* weighting, and the final query vector is L2-normalized again. This means **magnitude is irrelevant** — only the direction of the accumulated taste matters. Piling on more `completed` events from the same vibe pulls the query toward the centroid of the liked cluster (tighter recs), not out of the cluster.
 
-Cosine similarity between `query_vec` and every candidate embedding. Top-K after exclusions.
+Cosine similarity is computed by whichever backend `DB_BACKEND` points at — Turso via `vector_distance_cos()` in prod, numpy fallback in dev (see [Query performance](#query-performance)). Response includes a `mode_used` field that ends in `_turso` when the fast path served the request, so client-side diagnostics can distinguish which backend answered.
 
 **Exclusion list** (`djExcludeIds`, `frontend/app.js`):
 - All tracks currently in the queue.
@@ -595,7 +596,7 @@ gcloud run deploy vibescape \
   --set-secrets "SPOTIFY_CLIENT_ID=SPOTIFY_CLIENT_ID:latest,SPOTIFY_CLIENT_SECRET=SPOTIFY_CLIENT_SECRET:latest,MODAL_TOKEN_ID=MODAL_TOKEN_ID:latest,MODAL_TOKEN_SECRET=MODAL_TOKEN_SECRET:latest,TURSO_DATABASE_URL=TURSO_DATABASE_URL:latest,TURSO_AUTH_TOKEN=TURSO_AUTH_TOKEN:latest"
 ```
 
-The container is deliberately tiny (512 MB, 1 CPU, scale-to-zero) — it never runs torch. `deploy.ps1` health-checks `/api/health` before pruning old revisions, images, and secret versions via `cleanup.ps1`.
+The container is deliberately tiny (512 MB, 1 CPU, scale-to-zero) — it never runs torch or librosa. Only 6 pip deps land: `fastapi / uvicorn / requests / modal / python-dotenv / numpy` (numpy is required because `_similar_dj`'s local-dev fallback path uses it — even in prod we import it at module top). `deploy.ps1` health-checks `/api/health` before pruning old revisions, images, and secret versions via `cleanup.ps1`.
 
 ### Database → Turso
 
@@ -606,6 +607,10 @@ turso db tokens create vibescape   # → TURSO_AUTH_TOKEN
 ```
 
 With `DB_BACKEND=turso` the app talks to the remote libSQL instance and `docker-entrypoint.sh` skips the local SQLite seed. Left unset, it defaults to `sqlite` and seeds `data/vibescape.db` from the image on first boot — the path still used for local dev and for VM hosts with a persistent volume.
+
+**Vector-native queries** — when `DB_BACKEND=turso`, `_similar_dj` builds the session-weighted query vector in Python, serializes it as a JSON array, and hands it to Turso as `vector32('[...]')`. Turso runs `vector_distance_cos()` server-side over the `fused_embedding F32_BLOB(788)` column and streams back only the top-K + track metadata. See [Query performance](#query-performance) for the egress math. F32_BLOB values come back as base64-encoded blobs that our `db_client.py` shim doesn't fully decode, so any Python path that needs the raw vectors (positives / negatives for query-vector construction) uses `vector_extract()` to get the text form and parses it. All wrapped in `_decode_embedding_cell()` in `backend/app.py`.
+
+**Data sync** — `scripts/_turso_vs_local_diff.py` and `scripts/_push_local_to_turso.py` are the reproducible seed workflow: build the catalog locally against `sqlite`, then bulk-push metadata + embeddings to Turso when you're ready to ship. The push is DROP + CREATE for `tracks` and `track_embeddings`; `users` / `sessions` / `user_tracks` are left alone to preserve prod identity.
 
 ### ML → Modal
 
@@ -633,7 +638,7 @@ modal deploy modal_app.py      # publishes vibescape-ml app
 - **FastAPI** + **Uvicorn** — REST API, OAuth callbacks, static file serving
 - **Turso (libSQL)** — hosted track store, users, sessions, embeddings in prod; **SQLite** for local dev (see `schema.sql`)
 - **`backend/db_client.py`** — hand-rolled `sqlite3`-compatible shim over Turso's Hrana HTTP API
-- **numpy** — in-memory embedding matrix + brute-force cosine (FAISS at 100K+ scale)
+- **numpy** — query-vector construction (weighted L2-norm sums of positives/negatives) + local-dev cosine fallback. Prod ranking happens server-side on Turso via `vector_distance_cos()`.
 - **yt-dlp** — resolve Spotify tracks → YouTube video IDs for playback
 - **requests** — Spotify Web API, iTunes/Deezer preview fallback
 
@@ -702,20 +707,29 @@ VibeScape/
 │   └── experiments/mlruns/   # MLflow tracking store
 │
 ├── scripts/
-│   ├── run_ingest_v2.py                  # v2 orchestrator (loop across the 6 stages)
-│   ├── run_ingest_worker.py              # legacy single-pass worker (still runs the monolithic _ingest_track_row)
-│   ├── predict_ml.py                     # standalone predict wrapper
-│   ├── prewarm_youtube.py                # bulk-resolve YouTube IDs
-│   ├── build_cookies_file.py             # yt-dlp cookies helper
-│   ├── _backfill_mert_embeddings.py      # populate track_embeddings (MERT-v1, 30 s, fp32)
-│   ├── _backfill_fused_embeddings.py     # build fused_v1_mert_scalar_lang from existing MERT vectors
-│   ├── _rescore_regressor_30s.py         # re-run regressor on full 30 s window
-│   ├── _regressor_window_compare.py      # 10 s crop vs 30 s: bias + correlation across catalog
-│   ├── _recommender_feasibility.py       # top-K similarity probe (MERT-only vs MERT+scalars)
-│   ├── _dj_same_track_test.py            # DJ sanity check: N-repeat positive should return itself at cos=1.0
-│   ├── _predict_crop_length_test.py      # trained-head sensitivity to 10 s vs 30 s crop (MAE per target)
-│   ├── _turso_*.py                       # Turso ops (inventory, smoke, reset, audio stats, migrations)
-│   └── _load_gcp_secrets.ps1             # local dev: pull Secret Manager values into env for a shell
+│   ├── run_ingest_v2.py                    # v2 orchestrator (loop across the 6 stages)
+│   ├── run_ingest_worker.py                # legacy single-pass worker (still runs the monolithic _ingest_track_row)
+│   ├── predict_ml.py                       # standalone predict wrapper
+│   ├── prewarm_youtube.py                  # bulk-resolve YouTube IDs
+│   ├── build_cookies_file.py               # yt-dlp cookies helper
+│   ├── _backfill_mert_embeddings.py        # rebuild MERT vectors from local audio files
+│   ├── _backfill_fused_embeddings.py       # legacy: build fused from existing MERT (pre-Option A)
+│   ├── _refuse_embeddings.py               # rebuild fused for every track using current scalars + language; runs on local + Turso
+│   ├── _migrate_track_embeddings_v2.py     # local: transpose track_embeddings to Option A shape
+│   ├── _rescore_regressor_30s.py           # re-run regressor on full 30 s window
+│   ├── _regressor_window_compare.py        # 10 s crop vs 30 s: bias + correlation across catalog
+│   ├── _recommender_feasibility.py         # top-K similarity probe (MERT-only vs MERT+scalars)
+│   ├── _dj_same_track_test.py              # DJ sanity check: N-repeat positive returns itself at cos=1.0
+│   ├── _predict_crop_length_test.py        # trained-head sensitivity to 10 s vs 30 s crop (MAE per target)
+│   ├── _fix_language_tags.py               # artist→language map + title patterns; corrects Whisper mistags on local + Turso
+│   ├── _turso_vs_local_diff.py             # spotify_id diff between prod Turso and local dev
+│   ├── _turso_pull_to_local.py             # pull missing tracks from Turso → local, mark stages as pending
+│   ├── _push_local_to_turso.py             # DROP+CREATE tracks/track_embeddings on Turso, bulk INSERT from local
+│   ├── _turso_create_vector_index.py       # attempt DiskANN index create (blocked by Turso server-side error)
+│   ├── _turso_vector_probe.py              # smoke-test vector_distance_cos + vector_extract against Turso
+│   ├── _turso_verify.py                    # post-push count/schema verifier
+│   ├── _turso_*.py                         # other Turso ops (inventory, smoke, audio stats, resets)
+│   └── _load_gcp_secrets.ps1               # local dev: pull Secret Manager values into env for a shell
 │
 ├── deploy/cloud-run/
 │   ├── README.md             # Cloud Run runbook (secrets, IAM, deploy)
@@ -760,6 +774,10 @@ VibeScape/
 - [x] **DJ mode** — session-weighted taste vector from the last 10 playback events (queued=1.2, completed=0.8, skipped up to −0.8), no age decay, exclude window of last 50 played tracks. See [DJ Mode](#dj-mode--session-weighted-recommendations)
 - [x] `/api/tracks/{id}/similar` — both `GET` (vibe mode, weighted L1 distance) and `POST` (DJ mode, cosine similarity against session-weighted query vector)
 - [x] Empirical crop-length sensitivity study — MERT head's 10 s vs 30 s crop drift measured across 34 tracks. MAE 0.03-0.04 on `energy` / `dance` / `vibe_score` (borderline), 0.06 on `valence` (retrain required if we ever unify encoder passes). See `scripts/_predict_crop_length_test.py`
+- [x] **Option A `track_embeddings` layout** — migrated from row-per-variant `(track_id, model_version, embedding)` to row-per-track with `mert_embedding F32_BLOB(768)` + `fused_embedding F32_BLOB(788)` typed columns inline. Byte-preserving migration (F32_BLOB and BLOB share physical layout), so the numpy code path works unchanged on both libSQL/Turso and vanilla SQLite.
+- [x] **Server-side cosine ranking on Turso** — `_similar_dj` uses `vector_distance_cos(fused_embedding, vector32(?))` when `DB_BACKEND=turso`. Payload per DJ request drops from ~4.7 MB (every candidate embedding streamed to numpy) to ~10 KB (top-K + metadata). ~500× reduction in Turso→Cloud Run egress. Numpy fallback preserved for local dev.
+- [x] **Language-tag correction workflow** — Whisper's language head hallucinates on musical audio (Kannada film songs often misclassified as `sa` / `km` / `nn`). `scripts/_fix_language_tags.py` applies an artist→language map + title-substring patterns to fix ~180 known-wrong tags; `scripts/_refuse_embeddings.py` then rebuilds fused vectors so DJ mode reflects the corrected language one-hot component. Runs against local + Turso in a single invocation.
+- [x] Prod deploy on Cloud Run pinned to Turso for both metadata and vectors — single DB shared with the local dev via `DB_BACKEND` switch.
 
 ### In Progress 🚧
 - [ ] Optuna sweeps over head-hidden / dropout / LR ratios
@@ -769,13 +787,14 @@ VibeScape/
 - [ ] Modal-backed Classify / Language / Embedding stages (unblocks GPU concurrency; currently `max_workers=1` on local GPU to avoid MERT OOM)
 
 ### Planned 📋
-- [ ] FAISS HNSW index swap — triggered when embedding count crosses ~100K
+- [ ] Turso DiskANN index (`libsql_vector_idx(fused_embedding)`) + `vector_top_k()` rewrite — server-side sub-linear query. Blocked on Turso server-side error `"vector index: unable to update global metadata table"`; revisit when they fix it or we grow past ~50 K embeddings and full-scan becomes user-visible.
 - [ ] Larger MERT (`MERT-v1-330M`) with LoRA adapters
 - [ ] Per-user preference learning on skip/replay signals (extend DJ mode's session weights into a persistent per-user model)
 - [ ] Whisper transcription for lyric-based mood cues
 - [ ] Web-audio-based on-device inference (ONNX / WebGPU)
 - [ ] Unified MERT encoder pass — one 30 s forward feeds both the trained scalar head and the raw embedding pipeline (needs head retrained on 30 s crops first — see the crop-length sensitivity study)
 - [ ] iOS Capacitor wrapper + native Spotify iOS SDK bridge (Web Playback SDK doesn't decode on iOS Safari due to Widevine/EME missing)
+- [ ] LrcLib-based ground-truth pass over the ~40 remaining implausible language tags (mostly true instrumentals; keep as `null` if no lyrics found)
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
