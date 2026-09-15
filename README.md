@@ -14,7 +14,7 @@
 - **Fingerprints every song in your library** along three axes — a fine-tuned MERT transformer regresses *danceability / energy / valence* from the raw preview audio; Whisper detects language; librosa contributes interpretable spectral scalars. Fused into a single 788-D embedding per track, this is the coordinate system everything else steers over.
 - **Two ways to steer the pool.** Scrub a two-axis **vibe grid** (activation × valence) to browse the library by feel — buckets like *chill / hype / melancholy / beast* fall out naturally. Or hand it to **DJ mode**, which picks the next track in real time from the last 10 events in your session (queue-adds and completions pull toward that sound, skips push away) ranked by cosine similarity over the fused embedding.
 - **Plays the whole library through YouTube.** Each Spotify track is resolved to a `youtube_id` at ingest; the player runs off the YouTube IFrame API with Bluetooth / OS / lock-screen controls via Media Session API. A floating draggable/resizable video panel keeps the visual accessible without eating the layout.
-- **Multi-profile sign-in per device.** Spotify OAuth *or* native email/password (scrypt), sitting under a Netflix-style profile picker with 4-digit PINs — shared devices don't leak session state.
+- **Zero-friction sign-in.** Your Spotify account *is* your VibeScape identity — one OAuth flow, no separate password, no PIN, no second profile to remember. Email/password (scrypt) is available as a secondary path, and a **Just listen** entry point drops you straight into a shared demo library with no account at all.
 - **Installs as a PWA** — manifest + service worker + iOS home-screen icons, so it lives on your home screen like an app.
 - **Companion clients + ops surface.** A **Flutter mobile client** in `mobile/` talks to the same FastAPI backend. A separate `admin.html` surface handles catalog/user/ingest operations.
 
@@ -472,7 +472,7 @@ modal deploy modal_app.py      # publishes vibescape-ml app
 - **YouTube IFrame Player API** — playback
 - **Media Session API** — Bluetooth / OS / lock-screen controls
 - **PWA** — manifest + service worker + iOS home-screen icons
-- Netflix-style **profile picker** with 4-digit PINs, plus Spotify OAuth *and* native email/password (scrypt) sign-in
+- **Sign-in:** Spotify OAuth as primary identity, native email/password (scrypt) as a secondary path, plus a *Just listen* guest flow (no account, shared demo library)
 - Separate **admin console** at `admin.html`
 - Companion **Flutter client** in `mobile/` against the same FastAPI backend
 
@@ -496,7 +496,7 @@ VibeScape/
 │   ├── index.html            # single-page player UI
 │   ├── app.js                # mood-slider, filter, YouTube playback, DJ session buffer
 │   ├── style.css
-│   ├── login.html/js/css     # profile picker + PIN / email-password sign-in
+│   ├── login.html/js/css     # Spotify OAuth + email-password + Just-listen guest
 │   ├── admin.html/js/css     # catalog + ingest admin console
 │   ├── manifest.json         # PWA install
 │   ├── sw.js                 # service worker
