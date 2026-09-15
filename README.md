@@ -1,9 +1,9 @@
 <a id="readme-top"></a>
 
 <div align="center">
-  <h3 align="center">🎧 VibeScape — Audio-ML Music Player</h3>
+  <h3 align="center">🎧 VibeScape</h3>
   <p align="center">
-    A fine-tuned <strong>MERT</strong> transformer regresses Spotify's deprecated <em>danceability / energy / valence</em> signals from raw audio, Whisper adds language detection, and a librosa feature bank supplies an interpretable fallback. Predictions drive a two-axis mood grid; a fused MERT+scalar+language embedding powers vibe-consistent autoplay with a session-weighted taste vector.
+    <strong>VibeScape</strong> turns your Spotify library into a <strong>dynamically playable pool</strong>. Every song is fingerprinted along <em>mood, acoustic texture, and language</em>, so instead of building playlists you either scrub a <strong>vibe grid</strong> to steer the pool by feel, or let autoplay pick the next track in real time from your <strong>live listening state</strong> — what you queue, complete, and skip this session.
     <br/><br/>
     <a href="https://vibescape-241988497106.us-central1.run.app"><strong>🌐 Live demo →</strong></a>
   </p>
@@ -11,13 +11,14 @@
 
 ## What it does
 
-- **Log in** with Spotify OAuth or native email/password (a Netflix-style local profile picker with 4-digit PINs sits on top for shared devices).
-- **Sync** a Spotify playlist URL — the sync-modal returns in seconds (metadata-only pass); heavy per-track work is drained by an offline pipeline.
-- **Browse** your library on a **two-axis mood grid** (activation × valence). Scrub a slider to filter into buckets like *chill / hype / melancholy / beast*.
-- **Play** via YouTube (the app resolves each Spotify track to a `youtube_id`; playback works with Bluetooth / OS / lock-screen controls via Media Session API).
-- **Autoplay** picks the next track via **DJ mode** — a taste vector built from your last 10 playback events, ranked by cosine similarity over a fused acoustic+scalar+language embedding.
+- **Fingerprints every song in your library** along three axes — a fine-tuned MERT transformer regresses *danceability / energy / valence* from the raw preview audio; Whisper detects language; librosa contributes interpretable spectral scalars. Fused into a single 788-D embedding per track, this is the coordinate system everything else steers over.
+- **Two ways to steer the pool.** Scrub a two-axis **vibe grid** (activation × valence) to browse the library by feel — buckets like *chill / hype / melancholy / beast* fall out naturally. Or hand it to **DJ mode**, which picks the next track in real time from the last 10 events in your session (queue-adds and completions pull toward that sound, skips push away) ranked by cosine similarity over the fused embedding.
+- **Plays the whole library through YouTube.** Each Spotify track is resolved to a `youtube_id` at ingest; the player runs off the YouTube IFrame API with Bluetooth / OS / lock-screen controls via Media Session API. A floating draggable/resizable video panel keeps the visual accessible without eating the layout.
+- **Multi-profile sign-in per device.** Spotify OAuth *or* native email/password (scrypt), sitting under a Netflix-style profile picker with 4-digit PINs — shared devices don't leak session state.
+- **Installs as a PWA** — manifest + service worker + iOS home-screen icons, so it lives on your home screen like an app.
+- **Companion clients + ops surface.** A **Flutter mobile client** in `mobile/` talks to the same FastAPI backend. A separate `admin.html` surface handles catalog/user/ingest operations.
 
-Installs as a PWA. A separate `admin.html` surface exists for catalog/user/ingest operations. A companion **Flutter mobile client** in `mobile/` talks to the same FastAPI backend.
+None of this rides on Spotify's deprecated `/audio-features` API — the mood/vibe signals are reconstructed from raw audio ([see below](#why-it-exists)).
 
 ## Why it exists
 
