@@ -129,7 +129,7 @@ Without the cascade, rows would sit `pending` forever waiting on audio that will
 
 `ingest_pipeline/preview_providers.py` defines `PreviewProvider` as an ABC and ships four implementations: `SpotifyPreview`, `ItunesPreview`, `DeezerIsrcPreview`, `DeezerSearchPreview`. `PreviewChain.resolve(track)` walks providers in order and returns the first `PreviewHit`.
 
-The **default chain is Spotify-then-iTunes-only** — Deezer providers are wired but kept out of `default_chain()` because Deezer's signed URLs (`?hdnea=exp=<unix-ts>`) expire on a ~14-day rolling window. Using them in an offline worker guarantees a fraction of tracks will have dead URLs by download time.
+The **default chain is Spotify-then-iTunes-only** — Deezer providers are wired but kept out of `default_chain()` because Deezer previews have different audio properties (bitrate, EQ, sample rate) that shift MERT embeddings enough to matter for recommendations. Keeping provenance consistent (every preview from iTunes when Spotify doesn't have one) means the embedding space stays comparable across the catalog. Signed-URL expiry (`?hdnea=exp=<ts>`, ~14-day rolling window) is a secondary concern for offline workers.
 
 **iTunes rate-limit handling:** iTunes' Search API 403s bursts around ~20 req/min per IP. `ItunesPreview` serializes behind a class-level lock with a 500 ms inter-request gap and retries 403s with exponential backoff (2 s → 4 s → 8 s → 16 s + jitter, 4 retries max). `PreviewStage.max_workers=2` — more workers here would just spin on the lock without gaining throughput.
 
@@ -646,6 +646,9 @@ modal deploy modal_app.py      # publishes vibescape-ml app
 - Vanilla **JavaScript** + **HTML** + **CSS** — no framework, no build step
 - **YouTube IFrame Player API** — playback
 - **Media Session API** — Bluetooth / OS transport controls
+- **PWA** — manifest + service worker + iOS home-screen icons for installable-app behavior
+- **Auth surfaces** — Spotify OAuth *and* native email/password (scrypt), plus a Netflix-style local profile picker with 4-digit PINs; a separate admin console at `admin.html`
+- A companion **Flutter client** lives in `mobile/` and talks to the same FastAPI backend (see `mobile/README.md`).
 
 ### Infra
 - **Docker** + **Google Cloud Run** — 512 MB / 1 CPU, `us-central1`, scale-to-zero
@@ -667,8 +670,13 @@ VibeScape/
 │
 ├── frontend/
 │   ├── index.html            # single-page player UI
-│   ├── app.js                # mood-slider, filter, YouTube playback
-│   └── style.css
+│   ├── app.js                # mood-slider, filter, YouTube playback, DJ mode
+│   ├── style.css
+│   ├── login.html/js/css     # profile picker + PIN / email-password sign-in
+│   ├── admin.html/js/css     # catalog + ingest admin console
+│   ├── manifest.json         # PWA install
+│   ├── sw.js                 # service worker (offline shell)
+│   └── icons/                # PWA + apple-touch icons
 │
 ├── ingest/                   # low-level clients + ML dispatch (shared by both pipelines)
 │   ├── spotify_library.py    # Spotify Web API client
@@ -682,7 +690,7 @@ VibeScape/
 ├── ingest_pipeline/          # v2 modular offline pipeline (6 stages)
 │   ├── base.py               # Stage ABC + thread-pool run_batch + status vocab
 │   ├── preview_providers.py  # PreviewChain + Spotify/iTunes/Deezer providers
-│   ├── stage_preview.py      # 1. resolve preview_url (iTunes-only by default)
+│   ├── stage_preview.py      # 1. resolve preview_url (Spotify → iTunes chain)
 │   ├── stage_download.py     # 2. fetch preview → data/audio/<spotify_id>.<ext>
 │   ├── stage_classify.py     # 3. MERT + head → activation/valence/mood + ML preds
 │   ├── stage_youtube.py      # 4. ytsearch1, first hit
@@ -737,7 +745,13 @@ VibeScape/
 │   └── cleanup.ps1           # prune revisions / images / secret versions
 │
 ├── docs/
-│   └── mobile-api.md         # API reference for a mobile client
+│   ├── architecture.md       # technical companion to this README
+│   ├── dsp.md                # DSP / feature-extraction deep-dive
+│   ├── mobile-api.md         # API reference for a mobile client
+│   └── openapi.json          # generated OpenAPI snapshot
+│
+├── mobile/                   # Flutter client (iOS + Android). Talks to the same FastAPI backend.
+├── codemagic.yaml            # CI for the Flutter mobile build
 │
 ├── modal_app.py              # Modal deployment (predict_from_url, predict_language_from_url)
 ├── config.py                 # Spotify credentials (env-backed)
