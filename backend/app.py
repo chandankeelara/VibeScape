@@ -914,29 +914,45 @@ def _variant_spec(variant: str):
     return FUSED_MODEL_VERSION, FUSED_DIM
 
 
-def _resolve_anchor(conn, track_key: str):
-    """Resolve track_key (apple_id numeric or spotify_id string) to a tracks row."""
-    anchor = None
-    try:
-        apple_id_int = int(track_key)
-        anchor = conn.execute(
-            "SELECT id, apple_id, spotify_id, mood, "
-            "vibe_score, vibe_score_ml, energy_pred, "
-            "danceability_pred, valence_pred "
-            "FROM tracks WHERE apple_id = ?",
-            (apple_id_int,),
-        ).fetchone()
-    except ValueError:
-        pass
-    if not anchor:
-        anchor = conn.execute(
-            "SELECT id, apple_id, spotify_id, mood, "
-            "vibe_score, vibe_score_ml, energy_pred, "
-            "danceability_pred, valence_pred "
-            "FROM tracks WHERE spotify_id = ?",
+_ANCHOR_COLS = (
+    "id, apple_id, spotify_id, mood, "
+    "vibe_score, vibe_score_ml, energy_pred, "
+    "danceability_pred, valence_pred"
+)
+
+
+def _resolve_anchor(conn, track_key):
+    """Resolve a track_key to a tracks row.
+
+    Accepts either a spotify_id string (canonical external key) or a numeric
+    value matching the internal tracks.id PK. The legacy apple_id lookup path
+    has been retired — every row in the DB has a spotify_id (verified in
+    audit), and internal callers now pass either spotify_id or tracks.id.
+    """
+    # Numeric input → treat as internal PK. Ints on the wire come from the
+    # frontend's hot path (dj excludes/pos/neg use t.id directly to avoid
+    # an N-round-trip resolution loop).
+    if isinstance(track_key, int):
+        return conn.execute(
+            f"SELECT {_ANCHOR_COLS} FROM tracks WHERE id = ?",
             (track_key,),
         ).fetchone()
-    return anchor
+    # String input → try spotify_id first (fast path), then fall back to
+    # int-parseable string as internal id.
+    row = conn.execute(
+        f"SELECT {_ANCHOR_COLS} FROM tracks WHERE spotify_id = ?",
+        (str(track_key),),
+    ).fetchone()
+    if row:
+        return row
+    try:
+        tid_int = int(track_key)
+    except (TypeError, ValueError):
+        return None
+    return conn.execute(
+        f"SELECT {_ANCHOR_COLS} FROM tracks WHERE id = ?",
+        (tid_int,),
+    ).fetchone()
 
 
 def _embedding_column_for(model_version: str) -> Optional[str]:
@@ -1120,7 +1136,12 @@ def _similar_vibe(track_key: str, limit: int, user_id):
 
 
 def _parse_id_weight_list(items) -> list:
-    """Normalize [{id, weight}] entries. Returns list of (str_id, float_weight)."""
+    """Normalize [{id, weight}] entries. Returns list of (tid, float_weight).
+
+    Preserves int types (frontend hot path sends internal tracks.id as int
+    to skip resolution). Strings are stringified; downstream batch resolver
+    handles both.
+    """
     out = []
     if not items:
         return out
@@ -1136,19 +1157,56 @@ def _parse_id_weight_list(items) -> list:
             w = float(w)
         except (TypeError, ValueError):
             w = 1.0
-        out.append((str(tid), w))
+        # Keep int as int; everything else becomes a string. The batch
+        # resolver distinguishes on isinstance(k, int).
+        if not isinstance(tid, int):
+            tid = str(tid)
+        out.append((tid, w))
     return out
 
 
-def _resolve_ids_to_track_ids(conn, keys: list) -> list:
-    """Resolve a list of track_key strings (spotify_id or apple_id) to internal ids."""
-    ids = []
-    for k in keys:
+def _resolve_ids_to_track_ids(conn, keys) -> list:
+    """Batch-resolve a mixed list of track keys to internal tracks.id ints.
+
+    Each entry may be:
+      * int → already an internal id, kept as-is
+      * str parseable as int → treated as an internal id (frontend sends
+        ints; JSON parsers may deliver them as either)
+      * str spotify_id → resolved via a single batched SELECT
+
+    Callers previously looped `_resolve_anchor` per key, paying one DB
+    round-trip each. On a 50-entry exclude list against Cloud Run → Turso
+    that added ~750 ms of pure overhead. This helper collapses that to at
+    most one round-trip regardless of list size.
+    """
+    ids: list = []
+    spotify_keys: list = []
+    for k in keys or []:
         if k is None:
             continue
-        row = _resolve_anchor(conn, str(k))
-        if row:
-            ids.append(int(row["id"]))
+        if isinstance(k, int):
+            ids.append(k)
+            continue
+        s = str(k)
+        # Numeric string → internal id. Spotify IDs are base62 (letters+
+        # digits, 22 chars) so an all-digit key is unambiguous.
+        if s.isdigit():
+            try:
+                ids.append(int(s))
+                continue
+            except ValueError:
+                pass
+        spotify_keys.append(s)
+    if spotify_keys:
+        # Single SQL round-trip. `?` placeholders scale fine into the
+        # low thousands on sqlite/libsql — well past any realistic DJ
+        # exclude buffer.
+        placeholders = ",".join("?" * len(spotify_keys))
+        rows = conn.execute(
+            f"SELECT id FROM tracks WHERE spotify_id IN ({placeholders})",
+            spotify_keys,
+        ).fetchall()
+        ids.extend(int(r["id"]) for r in rows)
     return ids
 
 
@@ -1205,12 +1263,45 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id):
         neg_pairs = _parse_id_weight_list(body.negative_ids)
 
         def _resolve_pairs(pairs):
-            out = []
+            """Batch-resolve (key, weight) pairs to (internal_id, weight).
+
+            Splits int/int-string entries (already resolved) from spotify_id
+            strings (need lookup), then issues a single SQL for the strings.
+            Preserves weights via a key→weight map so we don't lose data on
+            the batch round-trip.
+            """
+            if not pairs:
+                return []
+            resolved: list = []
+            str_keys: list = []
+            str_weight: dict = {}
             for k, w in pairs:
-                row = _resolve_anchor(conn, k)
-                if row:
-                    out.append((int(row["id"]), w))
-            return out
+                if isinstance(k, int):
+                    resolved.append((k, w))
+                    continue
+                s = str(k)
+                if s.isdigit():
+                    try:
+                        resolved.append((int(s), w))
+                        continue
+                    except ValueError:
+                        pass
+                str_keys.append(s)
+                # If the same spotify_id appears twice we keep the last
+                # weight — callers don't emit duplicates today.
+                str_weight[s] = w
+            if str_keys:
+                placeholders = ",".join("?" * len(str_keys))
+                rows = conn.execute(
+                    f"SELECT id, spotify_id FROM tracks "
+                    f"WHERE spotify_id IN ({placeholders})",
+                    str_keys,
+                ).fetchall()
+                for r in rows:
+                    tid = int(r["id"])
+                    w = str_weight.get(r["spotify_id"], 1.0)
+                    resolved.append((tid, w))
+            return resolved
 
         pos_id_w = [(tid, w) for (tid, w) in _resolve_pairs(pos_pairs) if tid != anchor_id]
         neg_id_w = [(tid, w) for (tid, w) in _resolve_pairs(neg_pairs) if tid != anchor_id]
@@ -1407,7 +1498,7 @@ def similar_tracks(
     valence_pred), with a small bonus for matching mood. The current
     track is excluded from results.
 
-    track_key can be a spotify_id (string) or an apple_id (numeric string).
+    track_key can be a spotify_id (string) or a numeric internal tracks.id.
     """
     return _similar_vibe(track_key, limit, sess["user_id"])
 
@@ -1422,9 +1513,11 @@ def similar_tracks_post(
 
     Body (all optional):
       mode: "dj" | "vibe" (default vibe)
-      positive_ids: [{id, weight}, ...] — track_keys the user liked this session
-      negative_ids: [{id, weight}, ...] — track_keys the user skipped this session
-      exclude_ids: ["...", ...] — track_keys to exclude from results
+      positive_ids: [{id, weight}, ...] — id may be internal tracks.id (int)
+        or spotify_id (str). Ints skip resolution; strings batch-resolve.
+      negative_ids: [{id, weight}, ...] — same shape as positive_ids
+      exclude_ids: [id, ...] — mixed list of internal tracks.id ints and/or
+        spotify_id strings. Ints skip resolution.
       limit: int (1..25, default 8)
     """
     if body is None:
@@ -1470,7 +1563,9 @@ def random_track(
         params: list = [sess["user_id"], lo, hi]
         if exclude:
             placeholders = ",".join("?" * len(exclude))
-            sql += f" AND t.apple_id NOT IN ({placeholders})"
+            # Filter by internal tracks.id — frontend now sends t.id in the
+            # exclude_ids query param (used to be apple_id).
+            sql += f" AND t.id NOT IN ({placeholders})"
             params.extend(exclude)
         sql += " ORDER BY RANDOM() LIMIT 1"
         try:
@@ -1851,23 +1946,16 @@ def api_recompute_scores(sess: dict = Depends(require_user)):
 def get_track_features(track_key: str, sess: dict = Depends(require_user)):
     """
     Return the full stored feature blob plus derived axes for a track,
-    keyed by spotify_id (string) or apple_id (numeric string). Per-user.
+    keyed by spotify_id (string) or numeric internal tracks.id. Per-user.
     """
     conn = get_conn()
     try:
-        row = None
-        try:
-            apple_id_int = int(track_key)
+        anchor = _resolve_anchor(conn, track_key)
+        if not anchor:
+            row = None
+        else:
             row = conn.execute(
-                "SELECT * FROM tracks WHERE apple_id = ?",
-                (apple_id_int,),
-            ).fetchone()
-        except ValueError:
-            pass
-        if not row:
-            row = conn.execute(
-                "SELECT * FROM tracks WHERE spotify_id = ?",
-                (track_key,),
+                "SELECT * FROM tracks WHERE id = ?", (int(anchor["id"]),)
             ).fetchone()
     finally:
         conn.close()

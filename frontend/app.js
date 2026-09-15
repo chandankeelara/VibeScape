@@ -251,13 +251,13 @@
   const state = {
     vibe: 50,
     current: null,
-    // recent: [{ apple_id, spotify_id, artwork_url, title, artist, ...full track }, ...]
+    // recent: [{ id, spotify_id, apple_id, artwork_url, title, artist, ...full track }, ...]
     // Newest last. Cap at RECENT_MAX. Used both to exclude re-fetches and to render the trail.
     recent: [],
     fetchToken: 0,
     isSeeking: false,
     firstInteraction: false,
-    // Feature blobs keyed by apple_id (fallback: spotify_id). Populated lazily
+    // Feature blobs keyed by spotify_id (fallback: internal id). Populated lazily
     // when the metrics panel opens for a track. Never cleared during a session.
     featureCache: {},
     // User-managed play queue. Populated only via search "+ queue" and the
@@ -292,7 +292,7 @@
       mood: null
     }
   };
-  const RECENT_MAX = 15;
+  const RECENT_MAX = 50;
 
   const FILTER_DEFAULTS = {
     vibe_min: 0, vibe_max: 100,
@@ -1037,10 +1037,16 @@
   });
 
   function pushRecent(track) {
-    if (!track || !track.apple_id) return;
-    // Dedup: if same apple_id already present, remove old entry so this becomes freshest
-    state.recent = state.recent.filter((r) => r.apple_id !== track.apple_id);
+    // Dedup on internal tracks.id — every track from the backend carries
+    // one, so this key is universal (unlike apple_id, which is only set
+    // for iTunes-sourced rows). Spotify-only tracks used to be silently
+    // dropped from the recent trail because the old guard required
+    // apple_id.
+    if (!track || track.id == null) return;
+    const tid = Number(track.id);
+    state.recent = state.recent.filter((r) => Number(r.id) !== tid);
     state.recent.push({
+      id: tid,
       apple_id: track.apple_id,
       spotify_id: track.spotify_id || '',
       artwork_url: track.artwork_url || '',
@@ -1055,17 +1061,18 @@
   }
 
   function recentExcludeIds() {
-    // Newest first is convention for exclude; backend just needs IDs, order agnostic.
-    // We include the currently-playing track's id too so the next fetch never repeats it.
-    return state.recent.map((r) => r.apple_id);
+    // Return internal tracks.id ints. Backend accepts these directly
+    // (fast path — no per-key SQL resolution). Includes the currently-
+    // playing track via state.recent (pushRecent runs on loadTrack).
+    return state.recent.map((r) => Number(r.id)).filter((n) => Number.isFinite(n));
   }
 
   function renderRecentTrail() {
     if (!el.recentTrail) return;
     // Build the display order: currently-playing track at the TOP with an
     // accent ring (persistent breadcrumb), followed by prior tracks newest-first.
-    const currentId = state.current && state.current.apple_id;
-    const prior = state.recent.filter((r) => r.apple_id !== currentId).slice().reverse();
+    const currentId = state.current && state.current.id;
+    const prior = state.recent.filter((r) => Number(r.id) !== Number(currentId)).slice().reverse();
     const ordered = [];
     if (state.current) ordered.push({ track: state.current, isCurrent: true });
     prior.slice(0, 4).forEach((track) => ordered.push({ track, isCurrent: false }));
@@ -3749,7 +3756,9 @@
 
   function trackKey(t) {
     if (!t) return null;
-    return t.apple_id || t.spotify_id || null;
+    // Metrics panel keys on spotify_id (universally available); the old
+    // apple_id-first order was a legacy artifact from iTunes-era ingest.
+    return t.spotify_id || (t.id != null ? String(t.id) : null);
   }
 
   function fmtMetricValue(v, opts) {
@@ -4344,7 +4353,7 @@
       '</div>');
     if (lib.length) {
       lib.forEach((t) => {
-        const key = t.spotify_id || t.apple_id || '';
+        const key = t.spotify_id || (t.id != null ? String(t.id) : '');
         const title = escapeHtml(t.title || '(unknown)');
         const artist = escapeHtml(t.artist || '');
         const album = escapeHtml(t.album || '');
@@ -4499,7 +4508,7 @@
     // Library results carry the full track shape from _row_to_dict; find it
     // in the cached list rather than refetching.
     const lib = search.lastResults.library || [];
-    const found = lib.find((t) => String(t.spotify_id || '') === String(key) || String(t.apple_id || '') === String(key));
+    const found = lib.find((t) => String(t.spotify_id || '') === String(key) || String(t.id || '') === String(key));
     if (!found) {
       toast('Could not open that track.', 'error');
       return;
@@ -4689,7 +4698,7 @@
   function queueLibraryByKey(key) {
     if (!key) return;
     const lib = search.lastResults.library || [];
-    const t = lib.find((x) => String(x.spotify_id || '') === String(key) || String(x.apple_id || '') === String(key));
+    const t = lib.find((x) => String(x.spotify_id || '') === String(key) || String(x.id || '') === String(key));
     if (!t) { toast('Could not queue that track.', 'error'); return; }
     if (addToQueue(t)) toast('Added to queue.', 'success');
   }
@@ -4796,7 +4805,10 @@
 
   function trackKeyOf(t) {
     if (!t) return '';
-    return String(t.spotify_id || t.apple_id || '');
+    // Prefer spotify_id (100% coverage in DB, stable across DB rebuilds).
+    // Fall back to internal id as a string when a track somehow lacks a
+    // spotify_id (should not happen in normal flow).
+    return String(t.spotify_id || t.id || '');
   }
 
   function queueContains(key) {
@@ -5193,23 +5205,19 @@
   }
 
   function djExcludeIds() {
+    // Return internal tracks.id integers so the backend skips per-key
+    // resolution entirely. This is the hot path — a 50-entry exclude list
+    // used to cost ~750ms of DB round-trips before this became ints.
     const ids = new Set();
-    for (const t of state.queue) {
-      const k = trackKeyOf(t);
-      if (k) ids.add(k);
-    }
-    // Last 15 played track ids from state.recent (newest last).
-    const recent = (state.recent || []).slice(-15);
-    for (const r of recent) {
-      // state.recent stores {apple_id, spotify_id, ...} — prefer spotify_id
-      const k = String(r.spotify_id || r.apple_id || '');
-      if (k) ids.add(k);
-    }
-    // Also exclude the seed itself.
-    if (state.current) {
-      const seedKey = trackKeyOf(state.current);
-      if (seedKey) ids.add(seedKey);
-    }
+    const add = (t) => {
+      if (t && t.id != null) {
+        const n = Number(t.id);
+        if (Number.isFinite(n)) ids.add(n);
+      }
+    };
+    for (const t of state.queue) add(t);
+    for (const r of (state.recent || [])) add(r);
+    if (state.current) add(state.current);
     return Array.from(ids);
   }
 
@@ -5444,7 +5452,7 @@
     }
     if (kind === 'search-lib') {
       const lib = (search && search.lastResults && search.lastResults.library) || [];
-      return lib.find((x) => String(x.spotify_id || '') === key || String(x.apple_id || '') === key) || null;
+      return lib.find((x) => String(x.spotify_id || '') === key || String(x.id || '') === key) || null;
     }
     return null;
   }
@@ -5625,7 +5633,7 @@
       if (t && addToQueueAt(t, target)) toast('Added to queue.', 'success');
     } else if (kind === 'search-lib') {
       const lib = (search && search.lastResults && search.lastResults.library) || [];
-      const t = lib.find((x) => String(x.spotify_id || '') === srcKey || String(x.apple_id || '') === srcKey);
+      const t = lib.find((x) => String(x.spotify_id || '') === srcKey || String(x.id || '') === srcKey);
       if (t && addToQueueAt(t, target)) toast('Added to queue.', 'success');
     }
   }
