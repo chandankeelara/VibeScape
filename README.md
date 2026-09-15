@@ -19,10 +19,6 @@
 - **Companion clients + ops surface.** A **Flutter mobile client** in `mobile/` talks to the same FastAPI backend. A separate `admin.html` surface handles catalog/user/ingest operations.
 
 
-## Why it exists
-
-Spotify removed the `/audio-features` endpoint for third-party apps in late 2024 — the endpoint that exposed `danceability / energy / valence`, the signals mood-based playlist construction is built on. The ML task here is precisely **knowledge distillation from a black-box model that was switched off**: training labels are Spotify's own published audio-features CSVs, so the model reproduces the function Spotify used. Predictions drop into the existing UI without recalibration.
-
 ## Architecture
 
 Three independently deployed tiers. None sits on the critical path of the others' release cycle.
@@ -178,7 +174,7 @@ See `ml/src/model.py` for the `MERTVibeRegressor` LightningModule.
 
 ### Data & Splits
 
-- **Labels**: Spotify audio-features CSV (`ml/data/spotify_tracks.csv`) — public Kaggle-style dumps still contain the deprecated fields.
+- **Labels**: audio-features CSV (`ml/data/spotify_tracks.csv`) with per-track `danceability / energy / valence` — the three targets the regressor learns to reproduce.
 - **Audio**: 30-second `.mp3` previews downloaded via `ml/src/download_previews.py` and validated against a manifest (`status == "ok"` and file ≥ 10 kB survives).
 - **Splits**: `GroupShuffleSplit` grouped on `artists` so **no artist crosses train/val/test**. Two nested splits enforce artist disjointness across all three sets.
 - **Crop**: random 10 s window at train, centre 10 s at val/test. Peak-normalized to prevent clipping, augmented with ±3 dB random gain.
@@ -630,7 +626,7 @@ python scripts/run_ingest_v2.py --loop --batch 30 --interval 30
 ## Training Your Own Model
 
 ```bash
-# 1. Get labels + previews (any Spotify audio-features CSV at ml/data/spotify_tracks.csv)
+# 1. Get labels + previews (audio-features CSV with danceability/energy/valence at ml/data/spotify_tracks.csv)
 python ml/src/download_previews.py
 
 # 2. Sanity check
