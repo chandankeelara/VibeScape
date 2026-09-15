@@ -1,13 +1,58 @@
+[![Contributors][contributors-shield]][contributors-url]
+[![Forks][forks-shield]][forks-url]
+[![Stargazers][stars-shield]][stars-url]
+[![Issues][issues-shield]][issues-url]
+[![MIT License][license-shield]][license-url]
+
 <a id="readme-top"></a>
 
 <div align="center">
-  <h3 align="center">🎧 VibeScape</h3>
+  <h3 align="center">🎧 VibeScape — Audio-ML Music Player</h3>
   <p align="center">
     <strong>VibeScape</strong> turns your Spotify library into a <strong>dynamically playable pool</strong>. Every song is fingerprinted along <em>mood, acoustic texture, and language</em>, so instead of building playlists you either scrub a <strong>vibe slider</strong> to steer the pool by feel, or let autoplay pick the next track in real time from your <strong>live listening state</strong> — what you queue, complete, and skip this session.
     <br/><br/>
     <a href="https://vibescape-241988497106.us-central1.run.app"><strong>🌐 Live demo →</strong></a>
+    <br/><br/>
+    <a href="#getting-started">Quick Start</a>
+    ·
+    <a href="#ml-pipeline">ML Pipeline</a>
+    ·
+    <a href="#architecture">Architecture</a>
+    ·
+    <a href="#recommendation-system">Recommender</a>
+    ·
+    <a href="https://github.com/chandankeelara/VibeScape/issues">Report Bug</a>
   </p>
 </div>
+
+## 📋 Table of Contents
+
+- [What it does](#what-it-does)
+- [Architecture](#architecture)
+- [ML Pipeline](#ml-pipeline)
+  - [Model — MERT Regressor](#model--mert-regressor)
+  - [Data & Splits](#data--splits)
+  - [Training Recipe](#training-recipe)
+  - [Whisper Language Head](#whisper-language-head)
+  - [Librosa Feature Bank (Baseline / Fallback)](#librosa-feature-bank-baseline--fallback)
+  - [Vibe Scoring](#vibe-scoring)
+- [Ingestion Pipeline](#ingestion-pipeline)
+  - [Phase 1 — online, synchronous](#phase-1--online-synchronous-backendapppy)
+  - [Phase 2 — offline, batch](#phase-2--offline-batch-ingest_pipeline--scriptsrun_ingest_v2py)
+  - [The Six Stages](#the-six-stages)
+  - [Status vocabulary + promotion cascade](#status-vocabulary--promotion-cascade)
+  - [Preview Provider Chain](#preview-provider-chain)
+  - [Local Audio Cache](#local-audio-cache)
+  - [Orchestrator](#orchestrator)
+- [Recommendation System](#recommendation-system)
+- [Engineering decisions worth calling out](#engineering-decisions-worth-calling-out)
+- [Deployment](#deployment)
+- [Tech Stack](#tech-stack)
+- [Project Structure](#project-structure)
+- [Getting Started](#getting-started)
+- [Training Your Own Model](#training-your-own-model)
+- [Roadmap](#roadmap)
+- [Contact](#contact)
 
 ## What it does
 
@@ -28,6 +73,8 @@ The 9 music-theoretic scalars (energy, valence, tempo, brightness…) in the fin
 **No age decay inside the 10-slot buffer.** The buffer *is* the recency window; older events roll off naturally. Decay was measured and dropped — at buffer size 10 it just penalized the median-age event by ~40% for no useful discrimination.
 
 **Cold start / edge cases.** Empty buffer (fresh session) → query vector undefined → backend falls back to random pick from the candidate pool with `score=0`. Seed track has no MERT embedding (recently ingested, embedding stage hasn't run) → falls back to vibe-mode (weighted L1 over the scalar block) with `mode_used='vibe_fallback_no_seed_embedding'` so the client can tell.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## Architecture
 
@@ -105,6 +152,8 @@ The load-bearing decisions:
 Under any reasonable definition of "distributed application" this qualifies — compute is disaggregated across three execution tiers, the database is both storage *and* work queue for the ingest pipeline, and every tier can scale independently.
 
 **Known scale limits.** Within a tier there's no horizontal scaling yet: single ingest orchestrator, `max_workers=1` on GPU stages. Two workers running at once would race on `pending` rows because there's no `claim_lease` column. That's a ~20-line addition when demand justifies it. Vector search is server-side but currently full-scan; a DiskANN index swap is roadmapped.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## ML Pipeline
 
@@ -222,6 +271,8 @@ A 2×5 **mood grid** is derived from these two axes:
 | 60–80 | aggressive | hype |
 | ≥ 80 | beast | beast |
 
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
 ## Ingestion Pipeline
 
 Ingest is split into a **fast online metadata pass** (runs inside the FastAPI request that a user's Spotify sync fires) and an **offline v2 pipeline of six modular stages** (a separate worker process that drains queued work). The split means the sync-modal returns in seconds — the user's library becomes visible immediately with metadata + previously-cached audio — while heavy per-track work (audio download, MERT inference, embeddings, language, YouTube resolution) happens asynchronously with no bearing on request latency.
@@ -314,6 +365,8 @@ python scripts/run_ingest_v2.py --stages preview,download,classify
 ```
 
 The orchestrator is a thin loop over `Stage.run_batch()` calls followed by `promote()`. Stages are stateless — swap in Modal-backed classify/language stages later by changing `ml_backend` mode without touching orchestration.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## Recommendation System
 
@@ -459,6 +512,8 @@ Two ops helpers exist for offline maintenance:
 - **`scripts/_backfill_mert_embeddings.py`** — rebuild MERT vectors from local audio files. Use after locally re-processing audio (e.g. bumped `MAX_DURATION_S`).
 - **`scripts/_refuse_embeddings.py`** — rebuild only the *fused* vector for every track from its existing MERT + current scalar columns + current language. No audio, no GPU — pure numpy over blobs we already have. Runs against local and Turso in one invocation. This is what you run after a language-tag correction sweep.
 
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
 ## Engineering decisions worth calling out
 
 Grouped by what they buy you:
@@ -473,6 +528,8 @@ Grouped by what they buy you:
 - **F32_BLOB round-trip quirk.** Turso returns F32_BLOB values as base64-encoded blobs that the HTTP shim doesn't fully decode. Any path that needs the raw vectors (positives/negatives for query-vector construction) uses `vector_extract()` to get the text form and parses it. Wrapped in `_decode_embedding_cell()` — one place to update if libSQL changes the wire format.
 - **Empirical crop-length audit.** Before committing to a 30 s embedding + 10 s scalar prediction split, we measured drift (`scripts/_predict_crop_length_test.py`, `_regressor_window_compare.py`). 0.960 correlation, ~3 pt MAE, systematic 1.83 pt bias — small enough to keep the split, large enough to justify the `model_version` column that makes it queryable.
 - **Language-tag correction workflow.** Whisper hallucinates on musical audio (Kannada film songs often mis-tagged as `sa / km / nn`). `scripts/_fix_language_tags.py` applies an artist→language map + title-substring patterns for ~180 known-wrong tags; `_refuse_embeddings.py` rebuilds fused vectors so DJ mode reflects the corrected language one-hot. Runs against local + Turso in one invocation.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## Deployment
 
@@ -519,6 +576,8 @@ modal deploy modal_app.py      # publishes vibescape-ml app
 
 `modal_app.py` bundles the checkpoint into the image and mounts persistent volumes for the HuggingFace and Whisper caches so cold starts don't re-download weights.
 
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
 ## Tech Stack
 
 ### Machine Learning
@@ -552,6 +611,8 @@ modal deploy modal_app.py      # publishes vibescape-ml app
 - **Secret Manager** — runtime-mounted credentials
 - **Turso** — hosted libSQL for state (keeps state off Cloud Run's ephemeral FS)
 - **Modal** — remote T4 GPU inference, warm containers, persistent-volume weight caches
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## Project Structure
 
@@ -657,6 +718,8 @@ VibeScape/
 └── fly.toml                  # legacy Fly.io config (superseded by Cloud Run)
 ```
 
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
 ## Getting Started
 
 ### Prerequisites
@@ -698,6 +761,8 @@ To drain the offline pipeline in a separate terminal:
 python scripts/run_ingest_v2.py --loop --batch 30 --interval 30
 ```
 
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
 ## Training Your Own Model
 
 ```bash
@@ -720,6 +785,8 @@ python ml/src/predict.py --ckpt ml/models/mert_v1.ckpt --audio path/to/clip.mp3
 python ml/src/predict_language.py --model small
 python ml/src/backfill_languages.py
 ```
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## Roadmap
 
@@ -768,8 +835,24 @@ python ml/src/backfill_languages.py
 - LrcLib-based ground-truth pass over remaining implausible language tags
 - Distributed ingest workers — add a claim-lease column so multiple orchestrators can safely drain in parallel
 
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
 ## Contact
 
 **Chandan Keelara**
 📧 gowdakeelarashivan.c@northeastern.edu
 🐙 [github.com/virtual457](https://github.com/virtual457)
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- MARKDOWN LINKS -->
+[contributors-shield]: https://img.shields.io/github/contributors/chandankeelara/VibeScape.svg?style=for-the-badge
+[forks-shield]: https://img.shields.io/github/forks/chandankeelara/VibeScape.svg?style=for-the-badge
+[stars-shield]: https://img.shields.io/github/stars/chandankeelara/VibeScape.svg?style=for-the-badge
+[issues-shield]: https://img.shields.io/github/issues/chandankeelara/VibeScape.svg?style=for-the-badge
+[license-shield]: https://img.shields.io/github/license/chandankeelara/VibeScape.svg?style=for-the-badge
+[contributors-url]: https://github.com/chandankeelara/VibeScape/graphs/contributors
+[forks-url]: https://github.com/chandankeelara/VibeScape/network/members
+[stars-url]: https://github.com/chandankeelara/VibeScape/stargazers
+[issues-url]: https://github.com/chandankeelara/VibeScape/issues
+[license-url]: https://github.com/chandankeelara/VibeScape/blob/main/LICENSE
