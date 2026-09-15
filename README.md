@@ -31,29 +31,60 @@ The 9 music-theoretic scalars (energy, valence, tempo, brightness…) in the fin
 
 ## Architecture
 
-Three independently deployed tiers. None sits on the critical path of the others' release cycle.
+Four independently deployed tiers. None sits on the critical path of the others' release cycle. Two client-facing paths (browser API + offline ingest worker) both fan out to the same GPU and persistence tiers.
 
 ```
-      deploy.ps1                modal deploy               turso db create
-           │                          │                          │
-           ▼                          ▼                          ▼
-    ┌─────────────┐            ┌──────────────┐          ┌────────────────┐
-    │  Cloud Run  │ ── RPC ──▶ │   Modal T4   │          │  Turso/libSQL  │
-    │  512 MB/1CPU│            │  GPU workers │          │    (hosted)    │
-    │  FastAPI+UI │ ◀──────────┤ MERT+Whisper │          │                │
-    │  no torch   │ ────────────── SQL over HTTP ───────▶│                │
-    └──────┬──────┘            └──────────────┘          └────────────────┘
-           │                          │
-           │                          └── fetches preview audio itself
-           ▼
-     YouTube IFrame + CDN preview URLs  (playback in the browser)
+  ┌────────────────────────────┐              ┌────────────────────────────┐
+  │  Browser  (PWA / mobile)   │              │  Ingest worker  (offline)  │
+  │  vibe slider · playback ·  │              │  6-stage pipeline:         │
+  │  session-event buffer      │              │   preview → download →     │
+  └────────────┬───────────────┘              │   classify → youtube →     │
+               │ REST / JSON                  │   language → embedding     │
+               ▼                              │  polls DB for pending rows │
+  ┌────────────────────────────┐              │  (SELECT ... WHERE         │
+  │  Stateless API tier        │              │   <stage>_status='pending' │
+  │  FastAPI + UI + /similar   │              │   LIMIT N); thread-pool    │
+  │  torch-free · scale-to-0   │              │   per stage                │
+  └──┬──────────────────┬──────┘              └──────┬──────────┬──────────┘
+     │                  │                            │          │
+     │ RPC (predict     │ SQL + vector-cos           │          │
+     │  from audio URL) │  over HTTP                 │          │
+     ▼                  ▼                            │          │
+  ┌────────────────────────────────┐                 │          │
+  │  GPU inference tier            │ ◀───────────────┘          │
+  │   • MERT regressor (10 s crop) │                            │
+  │   • MERT-95M encoder (30 s)    │                            │
+  │   • Whisper language head      │                            │
+  │  warm containers, persistent   │                            │
+  │  weight-cache volumes          │                            │
+  └────────────────────────────────┘                            │
+                                                                │
+  ┌───────────────────────────────────────────────────────▼─────┐
+  │  Persistence tier  (single hosted libSQL — two logical roles)│
+  │  ┌────────────────────────┐   ┌───────────────────────────┐  │
+  │  │  Relational DB         │   │  Vector DB                │  │
+  │  │   tracks · users ·     │   │   track_embeddings        │  │
+  │  │   sessions · user_     │   │    F32_BLOB(768) MERT     │  │
+  │  │   tracks · per-stage   │   │    F32_BLOB(788) fused    │  │
+  │  │   status columns =     │   │   vector_distance_cos ran │  │
+  │  │   ingest work queue    │   │   server-side (top-K+meta)│  │
+  │  └────────────────────────┘   └───────────────────────────┘  │
+  └──────────────────────────────────────────────────────────────┘
+
+  Playback path: browser resolves youtube_id from API, then streams
+  directly via the YouTube IFrame API. Audio bytes never touch the API tier.
 ```
 
-The load-bearing decision: **Cloud Run never imports `torch` and never touches audio bytes.** It dispatches a URL to Modal and stores the returned scalars. The always-on container stays at 512 MB / 1 CPU / scale-to-zero; GPU cost is paid per inference; state lives entirely off-box in Turso so any instance can serve any request.
+The load-bearing decisions:
 
-Under any reasonable definition of "distributed application" this qualifies — compute is disaggregated across three execution tiers, the database is both storage *and* work-queue for the ingest pipeline (via per-stage status columns), and every tier can scale independently.
+- **The API tier never imports `torch` and never touches audio bytes.** It dispatches a URL to the GPU tier and stores the returned scalars/embeddings. This is what keeps the always-on container tiny and cheap (512 MB / 1 CPU / scale-to-zero); GPU cost is paid per inference; state lives entirely off-box so any API instance can serve any request.
+- **The database is both storage and work queue.** Per-stage status columns on the `tracks` table (`preview_status`, `download_status`, `ml_status`, `youtube_status`, `language_status`, `embedding_status` — each one of `pending / done / no_match / failed`) let the ingest worker claim work via `SELECT ... WHERE <stage>_status='pending' LIMIT N`. No external queue (SQS/Celery/Redis), no separate broker to run.
+- **Vector search runs where the vectors live.** `vector_distance_cos(fused_embedding, vector32(?))` is executed server-side by the vector DB and returns only the top-K rows + track metadata (~10 KB), instead of streaming every candidate embedding to the API tier for numpy cosine (~4.7 MB). ~500× less egress per DJ request — see [Query performance](#query-performance).
+- **Relational + vector DBs are the same physical instance, two logical roles.** No dual-write bookkeeping to keep track metadata and its embedding consistent — they're in the same transaction. Same `DB_BACKEND` switch (`sqlite | turso`) flips both.
 
-**Known scale limits.** Within a tier there's no horizontal scaling yet: single ingest orchestrator, `max_workers=1` on GPU stages. Two workers running at once would race on `pending` rows because there's no `claim_lease` column. That's a ~20-line addition when demand justifies it. Vector search is server-side on Turso but currently full-scan (see [Query performance](#query-performance)); DiskANN swap is roadmapped.
+Under any reasonable definition of "distributed application" this qualifies — compute is disaggregated across three execution tiers, the database is both storage *and* work queue for the ingest pipeline, and every tier can scale independently.
+
+**Known scale limits.** Within a tier there's no horizontal scaling yet: single ingest orchestrator, `max_workers=1` on GPU stages. Two workers running at once would race on `pending` rows because there's no `claim_lease` column. That's a ~20-line addition when demand justifies it. Vector search is server-side but currently full-scan; a DiskANN index swap is roadmapped.
 
 ## Ingestion Pipeline
 
