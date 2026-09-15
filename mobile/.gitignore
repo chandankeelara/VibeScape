@@ -1,0 +1,41 @@
+# Flutter/Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub/
+build/
+pubspec.lock
+
+# Generated
+**/*.g.dart
+**/*.freezed.dart
+**/*.mocks.dart
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Native
+ios/Pods/
+ios/Podfile.lock
+ios/.symlinks/
+ios/Flutter/App.framework
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+ios/Flutter/Generated.xcconfig
+ios/Runner/GeneratedPluginRegistrant.*
+android/.gradle/
+android/local.properties
+android/**/gradle-wrapper.jar
+android/gradle/
+android/gradlew
+android/gradlew.bat
+
+# Env
+.env
+
+# OS
+.DS_Store
+Thumbs.db

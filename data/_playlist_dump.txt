@@ -1,0 +1,323 @@
+=== PLAYLIST META ===
+name: Darshan
+owner: Chandan
+tracks.total (what Spotify claims): undefined
+
+=== RAW PAGE 1 — first 3 items (verify field shape) ===
+[
+  {
+    "added_at": "2026-08-27T16:26:16Z",
+    "added_by": {
+      "external_urls": {
+        "spotify": "https://open.spotify.com/user/c80ulq1upqec6ts0ejy0qys8b"
+      },
+      "href": "https://api.spotify.com/v1/users/c80ulq1upqec6ts0ejy0qys8b",
+      "id": "c80ulq1upqec6ts0ejy0qys8b",
+      "type": "user",
+      "uri": "spotify:user:c80ulq1upqec6ts0ejy0qys8b"
+    },
+    "is_local": false,
+    "primary_color": null,
+    "item": {
+      "is_playable": true,
+      "explicit": false,
+      "type": "track",
+      "episode": false,
+      "track": true,
+      "album": {
+        "is_playable": true,
+        "type": "album",
+        "album_type": "album",
+        "href": "https://api.spotify.com/v1/albums/2cHhcN6iNLNXc7FByWBGi5",
+        "id": "2cHhcN6iNLNXc7FByWBGi5",
+        "images": [
+          {
+            "height": 640,
+            "url": "https://i.scdn.co/image/ab67616d0000b27385432abc16fd92be0d435cb9",
+            "width": 640
+          },
+          {
+            "height": 300,
+            "url": "https://i.scdn.co/image/ab67616d00001e0285432abc16fd92be0d435cb9",
+            "width": 300
+          },
+          {
+            "height": 64,
+            "url": "https://i.scdn.co/image/ab67616d0000485185432abc16fd92be0d435cb9",
+            "width": 64
+          }
+        ],
+        "name": "Oral Fixation, Vol. 2 (Expanded Edition)",
+        "release_date": "2005-11-28",
+        "release_date_precision": "day",
+        "uri": "spotify:album:2cHhcN6iNLNXc7FByWBGi5",
+        "artists": [
+          {
+            "external_urls": {
+              "spotify": "https://open.spotify.com/artist/0EmeFodog0BfCgMzAIvKQp"
+            },
+            "href": "https://api.spotify.com/v1/artists/0EmeFodog0BfCgMzAIvKQp",
+            "id": "0EmeFodog0BfCgMzAIvKQp",
+            "name": "Shakira",
+            "type": "artist",
+            "uri": "spotify:artist:0EmeFodog0BfCgMzAIvKQp"
+          }
+        ],
+        "external_urls": {
+          "spotify": "https://open.spotify.com/album/2cHhcN6iNLNXc7FByWBGi5"
+        },
+        "total_tracks": 16
+      },
+      "artists": [
+        {
+          "external_urls": {
+            "spotify": "https://open.spotify.com/artist/0EmeFodog0BfCgMzAIvKQp"
+          },
+          "href": "https://api.spotify.com/v1/artists/0EmeFodog0BfCgMzAIvKQp",
+          "id": "0EmeFodog0BfCgMzAIvKQp",
+          "name": "Shakira",
+          "type": "artist",
+          "uri": "spotify:artist:0EmeFodog0BfCgMzAIvKQp"
+        },
+        {
+          "external_urls": {
+            "spotify": "https://open.spotify.com/artist/7aBzpmFXB4WWpPl2F7RjBe"
+          },
+          "href": "https://api.spotify.com/v1/artists/7aBzpmFXB4WWpPl2F7RjBe",
+          "id": "7aBzpmFXB4WWpPl2F7RjBe",
+          "name": "Wyclef Jean",
+          "type": "artist",
+          "uri": "spotify:artist:7aBzpmFXB4WWpPl2F7RjBe"
+        }
+      ],
+      "disc_number": 1,
+      "track_number": 3,
+      "duration_ms": 220360,
+      "external_ids": {
+        "isrc": "USSM10600677"
+      },
+      "external_urls": {
+        "spotify": "https://open.spotify.com/track/3d0WouFnFmr0K3kjeza3fF"
+      },
+      "href": "https://api.spotify.com/v1/tracks/3d0WouFnFmr0K3kjeza3fF",
+      "id": "3d0WouFnFmr0K3kjeza3fF",
+      "name": "Hips Don't Lie (feat. Wyclef Jean)",
+      "uri": "spotify:track:3d0WouFnFmr0K3kjeza3fF",
+      "is_local": false
+    },
+    "video_thumbnail": {
+      "url": null
+    }
+  },
+  {
+    "added_at": "2026-08-27T16:26:16Z",
+    "added_by": {
+      "external_urls": {
+        "spotify": "https://open.spotify.com/user/c80ulq1upqec6ts0ejy0qys8b"
+      },
+      "href": "https://api.spotify.com/v1/users/c80ulq1upqec6ts0ejy0qys8b",
+      "id": "c80ulq1upqec6ts0ejy0qys8b",
+      "type": "user",
+      "uri": "spotify:user:c80ulq1upqec6ts0ejy0qys8b"
+    },
+    "is_local": false,
+    "primary_color": null,
+    "item": {
+      "is_playable": true,
+      "explicit": false,
+      "type": "track",
+      "episode": false,
+      "track": true,
+      "album": {
+        "is_pla
+
+=== WALKING ALL PAGES ===
+Total slots walked: 1115
+Unique spotify_ids: 132
+
+=== ALL UNIQUE TRACKS (id | count | title — artist) ===
+  1 | 44DFFra1iTFvIGpzVlRHFx | x 32 | Sang Hoon Tere — Pritam
+  2 | 4VsP4Dm8gsibRxB5I2hEkw | x 28 | Kahani Suno 2.0 — Kaifi Khalil
+  3 | 6aQIGqAo9PxRKjUkhYtR6R | x 25 | Hayyoda (From "Jawan") — Anirudh Ravichander
+  4 | 7d5TUdbJumBuBoaH33jyfo | x 24 | Ishq Jalakar - Karvaan (From "Dhurandhar") — Shashwat Sachdev
+  5 | 3d0WouFnFmr0K3kjeza3fF | x 19 | Hips Don't Lie (feat. Wyclef Jean) — Shakira
+  6 | 3F3ZuXYFXGM1V6pk3b3zmi | x 19 | Kinni Kinni — Diljit Dosanjh
+  7 | 1DDE4kw05jQtfGbtM6E4Wb | x 19 | Trampoline — SHAED
+  8 | 25MPTnqXQB1H6OkwSYUXWx | x 19 | Malang (Title Track) [From "Malang - Unleash The Madness"] — Ved Sharma
+  9 | 0rk2X5TAhraBC5aCIXK2Rq | x 18 | Samjhawan — Jawad Ahmad
+ 10 | 5StI7oCdn5t2VwQx7n2W7c | x 18 | Iss Qadar Pyar Hai — Ankit Tiwari
+ 11 | 62UAFVREdTssSevwa5jqhF | x 17 | I Took A Pill In Ibiza - Seeb Remix — Mike Posner
+ 12 | 3efEocziYjASsr8RojWERn | x 17 | Bing Bing Boo! — Yashraj Mukhate
+ 13 | 18uwL0vNUanqZH0ro2QcOP | x 17 | comethru — Jeremy Zucker
+ 14 | 6aJlqqeQg2ssfv8uuP3W8R | x 17 | Wajah Tum Ho — Armaan Malik
+ 15 | 0bIMSKoHPbgsgj6ZT7WA7O | x 17 | Hungamaa Ho Gaya — Asha Bhosle
+ 16 | 5QVHNa0ppJUOoqSd36ovQS | x 17 | Pachtaoge (From "Jaani Ve") — Arijit Singh
+ 17 | 2r32XiAWtZbT3eLUvf4pag | x 17 | Jee Le Zaraa — Vishal Dadlani
+ 18 | 6EUMEoAODXDNmCIld25A5x | x 16 | Dil Hi Toh Hai - From "The Sky Is Pink" — Pritam
+ 19 | 2OQJKTtrH482waGFmOfJni | x 16 | We Own It (Fast & Furious) — 2 Chainz
+ 20 | 4kLVbdUSLh3m2UcYRTt9CD | x 15 | Apna Bana Le — Sachin-Jigar
+ 21 | 6xXOssgMjvXCrfqh49onVX | x 14 | Let It Play — Shamur
+ 22 | 6riCsiX9csuomBYnenrtGd | x 13 | Saadi Galli Aaja — Rochak Kohli
+ 23 | 7FPbxfwWa2gzB9ePX19I5z | x 13 | Har Kisi Ko (Female) — Arijit Singh
+ 24 | 5UosMqqNrn6xfC8XiXV5rw | x 13 | Maahi Ve (From "Highway") — A.R. Rahman
+ 25 | 0cUdmruT6kjxa5KpteSdwc | x 13 | Nahin Milta — Bayaan
+ 26 | 75p6BrziB5urmwPCeXl3y7 | x 13 | Main Dhoondne Ko Zamaane Mein — Arijit Singh
+ 27 | 5sV6YuXW0Cherbpb6PEpTo | x 13 | VTOPIA — KAS:ST
+ 28 | 4Ld4kbKo1eOzToQ0P8JA0V | x 12 | Arcade (feat. FLETCHER) — Duncan Laurence
+ 29 | 5WDLRQ3VCdVrKw0njWe5E5 | x 12 | Careless Whisper — George Michael
+ 30 | 42TMa2hgBNjte4uV7jNCnQ | x 12 | Baller — Shubh
+ 31 | 5u1cWcqIX6sbKiVJn8PR86 | x 12 | Manavaalan Thug - From "Thallumaala" — Dabzee
+ 32 | 1dqseexfNVUMO6uE8zH7aN | x 12 | Halagode — Chandan Shetty
+ 33 | 1hnMvAiPtrACBl4brJ8j8Q | x 12 | Veere — Payal Dev
+ 34 | 6GkTKjv1XbFVdI2D8vvDPu | x 12 | Lose Yourself — Eminem
+ 35 | 2cPUB8EOT6AfJ8oxhyoNXL | x 12 | Ye Tune Kya Kiya — Pritam
+ 36 | 3WD9p2gr6banKwswAJrIkB | x 12 | Satisfya — Imran Khan
+ 37 | 4BnoDyyhpQreCpb4B7mN9W | x 12 | Attention — Charlie Puth
+ 38 | 58dGRQrNmAJeRMFuguUbvD | x 12 | Go Down Deh (feat. Sean Paul & Shaggy) — Spice
+ 39 | 6DefzsWqnwrFrmNVnJxWkS | x 11 | Jo Tu Na Mila — Asim Azhar
+ 40 | 5ira9VcDBJhaEVSrbHOlIK | x 11 | 295 — Sidhu Moose Wala
+ 41 | 29inEgNVWMPjxsnZiTbwVe | x 11 | death bed (coffee for your head) — Powfu
+ 42 | 2uqXfUERVBLa1heEoUTBlO | x 11 | Thuli Thuli — Yuvan Shankar Raja
+ 43 | 0qOnSQQF0yzuPWsXrQ9paz | x 11 | Stereo Hearts (feat. Adam Levine) — Gym Class Heroes
+ 44 | 7FEa01m9SgfOaam2AawVF6 | x 11 | Saajna (Unplugged) — Falak Shabbir
+ 45 | 0tgVpDi06FyKpA1z0VMD4v | x 11 | Perfect — Ed Sheeran
+ 46 | 1sNCUR5bUvFSQVDYEvsHCU | x 11 | Saathiyaa — Shreya Ghoshal
+ 47 | 0TL0LFcwIBF5eX7arDIKxY | x 11 | Husn — Anuv Jain
+ 48 | 4xigPf2sigSPmuFH3qCelB | x 11 | Genius (feat. Sia, Diplo, and Labrinth) — Sia
+ 49 | 2h930Pc1k4x4yfcUOlIh6A | x 11 | Tumse Mohabbat Hai — JalRaj
+ 50 | 17xVeULWSNKokSw1sJ3H9Y | x 11 | Masakali (From "Delhi-6") — Mohit Chauhan
+ 51 | 69BhjdL1v24t60xnmCXgmx | x 11 | Lachhamma — Anup Rubens
+ 52 | 6hItJt1s32Z8iIYxlwZBcZ | x 11 | Husna — Piyush Mishra
+ 53 | 7sjKPajt4ktF2qIaANqe0d | x 11 | Baat Ban Jaye — Siddharth Basrur
+ 54 | 479Rw8JEzMI9CVb4wdBGXH | x 11 | Phir Bhi Tumko Chaahungi — Mithoon
+ 55 | 6NPUftix9Z6nbo8Seg3yle | x 11 | Hum Pyaar Karne Wale (From "Dhurandhar The Revenge") — Shashwat Sachdev
+ 56 | 3GCdLUSnKSMJhs4Tj6CV3s | x 11 | All The Stars (with SZA) - From "Black Panther: The Album" — Kendrick Lamar
+ 57 | 2AilvPt1AQ8PixlCKqkjfj | x 11 | Elevated — Shubh
+ 58 | 4gbVRS8gloEluzf0GzDOFc | x 10 | Maps — Maroon 5
+ 59 | 2iGnFW7m517taq3AJIE6DK | x 10 | Milne Hai Mujhse Aayi — Arijit Singh
+ 60 | 0BrEDXo0w5pmEqDd67oERv | x  9 | Shaam Shaandaar — Amit Trivedi
+ 61 | 7lvDsmTRXFE3dK4OjvRiWB | x  9 | Pasoori — Ali Sethi
+ 62 | 21GNvMdRqehDvAb2g3T5rx | x  8 | Wo Ladki — Amit Trivedi
+ 63 | 64KxZ9K8PYSQ9CVimLlqxK | x  8 | Mashooqa - From “Cocktail 2” — Pritam
+ 64 | 0sVmhHgjkmeRrNxHTVB362 | x  8 | Bheegi Bheegi Raaton Mein - Reprise — JalRaj
+ 65 | 3JKrvan7415Xb8O3G4RW1H | x  8 | Humnava Mere-Baarish (From "T-Series Mixtape Season 2") — Aditya Narayan
+ 66 | 68YPrfXZLMedjSPReciyIN | x  7 | Phir Bhi Tumko Chaahungi - Jyotica Version — Jyotica Tangri
+ 67 | 1iF6lrJludTZmfgMgXPqSe | x  7 | Nachange Saari Raat — Tulsi Kumar
+ 68 | 7yDHHVKLbvDmVw1XXhDDIO | x  7 | Pehle Bhi Main — Vishal Mishra
+ 69 | 3P167vmmGRGKHoy7uDugvy | x  7 | Itni Si Baat Hain — Pritam
+ 70 | 73uS7CoWc6Ag3y2Tu20VCG | x  7 | Gazab Ka Hain Yeh Din — Arijit Singh
+ 71 | 0RjEjs91p7SpYubEnEanBm | x  7 | Tu Jo Hain (From "Mr. X") — Ankit Tiwari
+ 72 | 3Te8uLyit6X3ncNW8Fp3K2 | x  7 | Immortals — Fall Out Boy
+ 73 | 2nEntnpNpsJNhw1wLY8O96 | x  7 | Jeet — Ritviz
+ 74 | 7Ck2si1vtgdPXdKGtWGGXr | x  7 | The Humma Song (From "OK Jaanu") — A.R. Rahman
+ 75 | 5sSjntBXVmtJLCcMlJP5Qb | x  7 | One More Night — Maroon 5
+ 76 | 0aV8g3QnNrtwbUU7XJ611D | x  6 | Waada Raha Sanam - Recreated Version — Budhaditya Mukherjee
+ 77 | 3xkHsmpQCBMytMJNiDf3Ii | x  6 | Beautiful Things — Benson Boone
+ 78 | 5YoITs1m0q8UOQ4AW7N5ga | x  6 | Gasolina — Daddy Yankee
+ 79 | 6bmmHeCvZI92pRiTHxEdTC | x  6 | O Maahi — Pritam
+ 80 | 4r8JqkhpTb5tzSKKHnVJIJ | x  6 | Tujhe Bhula Diya — Vishal-Shekhar
+ 81 | 16ILOX4hsmscKY5rAgSu6P | x  6 | Raabta (From "Agent Vinod") — Arijit Singh
+ 82 | 4faUCG0CdNgMx0NkMMseOl | x  6 | Dillagi — Rahat Fateh Ali Khan
+ 83 | 5DQRjhMwoyVkptEoQTRa6u | x  6 | Ek Mulaqat - Unplugged — Jubin Nautiyal
+ 84 | 22DrqPUQfcOkv6QmjvHFcB | x  6 | Mera Pyar Tera Pyar — Jeet Gannguli
+ 85 | 5sfddXvR3E3EY6pDqA0zgo | x  6 | Manikya Malaraya Poovi — Shaan Rahman
+ 86 | 41ekYkc2fAEaN1aEFGQlZw | x  6 | Lean On (with Emiway Bantai) — Celina Sharma
+ 87 | 0hUAfJNqBOd5g8eSpkSFJO | x  6 | Kangna — Dr Zeus
+ 88 | 4gvrJnKCKIPiacNsWVQwEU | x  6 | love nwantiti (feat. Dj Yo! & AX'EL) - Remix — CKay
+ 89 | 068HSvCf5MbQfhV4qqaelg | x  6 | Haan Main Galat (From "Love Aaj Kal") — Pritam
+ 90 | 6L8lPS4qISwKxDyRHQNtxE | x  5 | Pal — Arijit Singh
+ 91 | 0gxhdfS9Jx98uo3PPOLvaZ | x  5 | Ore Priya Main Rooya — Fardin Ahmed
+ 92 | 6ZYxNjuAU9Vy3VtF6W1dtE | x  5 | We Rollin — Shubh
+ 93 | 5WncH5iZ5GFlnXm7jKEXVP | x  5 | Labon Ko — Pritam
+ 94 | 2MtlJqRbPKpPx9fJZqPPt4 | x  5 | Jitni Dafa — Yasser Desai
+ 95 | 3pHPp1FnboJDh8HRCGrj9i | x  4 | Premika — Pritam
+ 96 | 3OAFzjwWionh8OfM4kgf2R | x  2 | Main Yahaan Hoon — Madan Mohan
+ 97 | 1niVgR76UPobOED5cXfADq | x  2 | Mera Mann Kehne Laga — Falak Shabbir
+ 98 | 4brSaQIT3bnnE41D042fgL | x  2 | Tu Hai Ki Nahi — Ankit Tiwari
+ 99 | 2VgbvKdaSOXWByBKYgBsEc | x  2 | Love Mera Hit Hit — Pritam
+100 | 0w75KG0DuLDi6tdHmEMovD | x  2 | Don't Let Me Down — The Chainsmokers
+101 | 4IPzzBnFrGrlijBWY0JDYB | x  1 | Dastaan - E - Om Shanti Om — Shaan
+102 | 6UIwe16MDOYryCncOJ00mA | x  1 | Sanam Teri Kasam - Reprise — Himesh Reshammiya
+103 | 739IveImaxOatSzo2ZeKQA | x  1 | Kabhi Aayine Pe Likha Tujhe — KK
+104 | 31kHXAWLHAjE3STuapEIyI | x  1 | O Saathi — Arijit Singh
+105 | 6NJ8Z5GDoHe47R6gGX6sLq | x  1 | Admirin' You (feat. Preston Pablo) — Karan Aujla
+106 | 1fnyJEbolobEfv2gtLVjmA | x  1 | Kabhi Na Kabhi — Aditya Narayan
+107 | 3UhXPxLDFKCj1ZO6mmtV0a | x  1 | Apologize — OneRepublic
+108 | 1IG0qJeHJRbPPv5iK51TfI | x  1 | Don't Worry — All Ok
+109 | 3oM90C4SZLYzVZJEZD5EQk | x  1 | Khairiyat (Bonus Track) — Pritam
+110 | 06fP8ZtG6SRN5gs9MMB1dQ | x  1 | Let Her Go x Husn — Lewis Hanton
+111 | 5mjYQaktjmjcMKcUIcqz4s | x  1 | Strangers — Kenya Grace
+112 | 5Gb5VkJyeQJA4NadSn22iM | x  1 | Ee Sanje Yakagide — Sonu Nigam
+113 | 3uZiNvBNQldjl4OJiKsuxe | x  1 | Brothers Anthem — Ajay-Atul
+114 | 3APiIzLQYIitzR8F3oG1fV | x  1 | Ringa Ringa — Devi Sri Prasad
+115 | 2ygHwkk6BE4o1YKF2jhrFX | x  1 | Hua Hain Aaj Pehli Baar — Amaal Mallik
+116 | 5UcVIU1tsbN7ZsOSpR8AFD | x  1 | Y Que Fue? — Don Miguelo
+117 | 45wzRgkkG5gjuYS3OkFWaI | x  1 | Lo Safar (From "Baaghi 2") — Jubin Nautiyal
+118 | 0OfaueVeRebAfWsAHajj3z | x  1 | Tera Zikr — Darshan Raval
+119 | 5EYZZvmNAH5VZCwuzYJqoA | x  1 | Chand Sifarish — Jatin-Lalit
+120 | 5XsoDbDt98b0FkFLOhsJuS | x  1 | Lat Lag Gayee — Benny Dayal
+121 | 6zYUAhqQ1uzkYCONion2Vr | x  1 | Hanuman Chalisa — Shankar Mahadevan
+122 | 5cgKosPPj5Cs9a2JQufUc1 | x  1 | Ilahi — Pritam
+123 | 6eO9LvEiMqh1CAsa6y3wXP | x  1 | Bol Do Na Zara — Armaan Malik
+124 | 2mlGPkAx4kwF8Df0GlScsC | x  1 | Buttercup — Jack Stauber
+125 | 6UV7fmkHXKR24ZU4SlY32G | x  1 | Tere Liye — Mithoon
+126 | 4rSmmC6OYmjVOYxr8ruVWN | x  1 | Mere Bina — Pritam
+127 | 7Hs6F6EqYCxzMXbAQ8L7P6 | x  1 | Tees Maar Khan — Sonu Nigam
+128 | 4DpNNXFMMxQEKl7r0ykkWA | x  1 | Play Date — Melanie Martinez
+129 | 3cEJGXoXU4nyeZM3i6LlXP | x  1 | Subah Subah (From "Sonu Ke Titu Ki Sweety") — Arijit Singh
+130 | 4gU4FIc5N5nqg6W29LwXIs | x  1 | Sajni — Arijit Singh
+131 | 0JssjDh3UWEgjUslVZgHJG | x  1 | Sugar — Maroon 5
+132 | 5AdjDxKEz7h42iCJ4N9HCN | x  1 | Bad Habits — Ed Sheeran
+
+=== FIRST 15 SLOT POSITIONS (raw) ===
+  pos=   1 id=3d0WouFnFmr0K3kjeza3fF Hips Don't Lie (feat. Wyclef Jean) — Shakira
+  pos=   2 id=4Ld4kbKo1eOzToQ0P8JA0V Arcade (feat. FLETCHER) — Duncan Laurence
+  pos=   3 id=6aQIGqAo9PxRKjUkhYtR6R Hayyoda (From "Jawan") — Anirudh Ravichander
+  pos=   4 id=44DFFra1iTFvIGpzVlRHFx Sang Hoon Tere — Pritam
+  pos=   5 id=3F3ZuXYFXGM1V6pk3b3zmi Kinni Kinni — Diljit Dosanjh
+  pos=   6 id=5WDLRQ3VCdVrKw0njWe5E5 Careless Whisper — George Michael
+  pos=   7 id=68YPrfXZLMedjSPReciyIN Phir Bhi Tumko Chaahungi - Jyotica Version — Jyotica Tangri
+  pos=   8 id=1DDE4kw05jQtfGbtM6E4Wb Trampoline — SHAED
+  pos=   9 id=25MPTnqXQB1H6OkwSYUXWx Malang (Title Track) [From "Malang - Unleash The Madness"] — Ved Sharma
+  pos=  10 id=1iF6lrJludTZmfgMgXPqSe Nachange Saari Raat — Tulsi Kumar
+  pos=  11 id=3pHPp1FnboJDh8HRCGrj9i Premika — Pritam
+  pos=  12 id=6EUMEoAODXDNmCIld25A5x Dil Hi Toh Hai - From "The Sky Is Pink" — Pritam
+  pos=  13 id=0BrEDXo0w5pmEqDd67oERv Shaam Shaandaar — Amit Trivedi
+  pos=  14 id=7lvDsmTRXFE3dK4OjvRiWB Pasoori — Ali Sethi
+  pos=  15 id=6riCsiX9csuomBYnenrtGd Saadi Galli Aaja — Rochak Kohli
+
+=== SLOT POSITIONS 500-514 (raw) ===
+  pos= 500 id=3P167vmmGRGKHoy7uDugvy Itni Si Baat Hain — Pritam
+  pos= 501 id=3efEocziYjASsr8RojWERn Bing Bing Boo! — Yashraj Mukhate
+  pos= 502 id=18uwL0vNUanqZH0ro2QcOP comethru — Jeremy Zucker
+  pos= 503 id=3d0WouFnFmr0K3kjeza3fF Hips Don't Lie (feat. Wyclef Jean) — Shakira
+  pos= 504 id=1DDE4kw05jQtfGbtM6E4Wb Trampoline — SHAED
+  pos= 505 id=1dqseexfNVUMO6uE8zH7aN Halagode — Chandan Shetty
+  pos= 506 id=73uS7CoWc6Ag3y2Tu20VCG Gazab Ka Hain Yeh Din — Arijit Singh
+  pos= 507 id=0rk2X5TAhraBC5aCIXK2Rq Samjhawan — Jawad Ahmad
+  pos= 508 id=6aJlqqeQg2ssfv8uuP3W8R Wajah Tum Ho — Armaan Malik
+  pos= 509 id=0bIMSKoHPbgsgj6ZT7WA7O Hungamaa Ho Gaya — Asha Bhosle
+  pos= 510 id=25MPTnqXQB1H6OkwSYUXWx Malang (Title Track) [From "Malang - Unleash The Madness"] — Ved Sharma
+  pos= 511 id=5QVHNa0ppJUOoqSd36ovQS Pachtaoge (From "Jaani Ve") — Arijit Singh
+  pos= 512 id=1hnMvAiPtrACBl4brJ8j8Q Veere — Payal Dev
+  pos= 513 id=6GkTKjv1XbFVdI2D8vvDPu Lose Yourself — Eminem
+  pos= 514 id=75p6BrziB5urmwPCeXl3y7 Main Dhoondne Ko Zamaane Mein — Arijit Singh
+  pos= 515 id=0RjEjs91p7SpYubEnEanBm Tu Jo Hain (From "Mr. X") — Ankit Tiwari
+
+=== SLOT POSITIONS 1100-1114 (raw) ===
+  pos=1100 id=2r32XiAWtZbT3eLUvf4pag Jee Le Zaraa — Vishal Dadlani
+  pos=1101 id=4faUCG0CdNgMx0NkMMseOl Dillagi — Rahat Fateh Ali Khan
+  pos=1102 id=5DQRjhMwoyVkptEoQTRa6u Ek Mulaqat - Unplugged — Jubin Nautiyal
+  pos=1103 id=5StI7oCdn5t2VwQx7n2W7c Iss Qadar Pyar Hai — Ankit Tiwari
+  pos=1104 id=21GNvMdRqehDvAb2g3T5rx Wo Ladki — Amit Trivedi
+  pos=1105 id=22DrqPUQfcOkv6QmjvHFcB Mera Pyar Tera Pyar — Jeet Gannguli
+  pos=1106 id=44DFFra1iTFvIGpzVlRHFx Sang Hoon Tere — Pritam
+  pos=1107 id=5sfddXvR3E3EY6pDqA0zgo Manikya Malaraya Poovi — Shaan Rahman
+  pos=1108 id=6aQIGqAo9PxRKjUkhYtR6R Hayyoda (From "Jawan") — Anirudh Ravichander
+  pos=1109 id=41ekYkc2fAEaN1aEFGQlZw Lean On (with Emiway Bantai) — Celina Sharma
+  pos=1110 id=6EUMEoAODXDNmCIld25A5x Dil Hi Toh Hai - From "The Sky Is Pink" — Pritam
+  pos=1111 id=64KxZ9K8PYSQ9CVimLlqxK Mashooqa - From “Cocktail 2” — Pritam
+  pos=1112 id=44DFFra1iTFvIGpzVlRHFx Sang Hoon Tere — Pritam
+  pos=1113 id=0hUAfJNqBOd5g8eSpkSFJO Kangna — Dr Zeus
+  pos=1114 id=4gvrJnKCKIPiacNsWVQwEU love nwantiti (feat. Dj Yo! & AX'EL) - Remix — CKay
+  pos=1115 id=068HSvCf5MbQfhV4qqaelg Haan Main Galat (From "Love Aaj Kal") — Pritam

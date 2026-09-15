@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Admin — VibeScape</title>
+  <meta name="theme-color" content="#08080c" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/login.css" />
+  <link rel="stylesheet" href="/admin.css" />
+</head>
+
+<body data-vibe="42">
+
+  <header class="site-nav">
+    <a class="brand" href="/app">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">VibeScape</span>
+      <span class="brand-tag">/ admin</span>
+    </a>
+    <nav class="nav-links">
+      <a href="/app">← Back to player</a>
+    </nav>
+  </header>
+
+  <main class="admin-main">
+
+    <div id="adminGate" class="admin-gate" hidden>
+      <h1>Not authorized</h1>
+      <p>Only the admin user can view this page.</p>
+      <a class="admin-back-link" href="/app">Return to player</a>
+    </div>
+
+    <section id="adminApp" hidden>
+
+      <header class="admin-page-head">
+        <div>
+          <span class="eyebrow eyebrow-static"><span class="eyebrow-dot"></span>admin</span>
+          <h1>Users</h1>
+          <p class="admin-lede">
+            Every VibeScape identity. Delete removes a user's library link,
+            keeps the global <code>tracks</code> table intact.
+          </p>
+        </div>
+        <button class="admin-refresh" id="btnAdminRefresh" type="button">
+          <span>Refresh</span>
+        </button>
+      </header>
+
+      <div class="admin-body" id="adminBody">
+        <div class="admin-loading" id="adminLoading">Loading users…</div>
+        <div class="admin-users" id="adminUsersList" hidden></div>
+      </div>
+
+      <div class="admin-detail" id="adminDetail" hidden>
+        <button class="admin-back" id="btnAdminBack" type="button">
+          ← Back to users
+        </button>
+        <div id="adminDetailBody"></div>
+      </div>
+
+    </section>
+
+  </main>
+
+  <div id="loginStatus" class="login-status" role="status" aria-live="polite" hidden></div>
+
+  <script src="/admin.js"></script>
+</body>
+</html>
