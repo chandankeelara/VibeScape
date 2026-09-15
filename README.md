@@ -15,6 +15,19 @@
 - **Two ways to steer the pool.** Scrub a **vertical vibe slider** (activation, 0–100, library-wide z-scored so distribution is percentile-flat) to browse by feel — the library partitions into five buckets along that axis (*sleep / chill / steady / hype / beast*). Valence is a real dimension in the fused embedding and shapes DJ-mode ranking, but it isn't surfaced as a second slider yet. Or hand it to **DJ mode**, which picks the next track in real time from the last 10 events in your session (queue-adds and completions pull toward that sound, skips push away) ranked by cosine similarity over the fused embedding.
 - **Plays the whole library through YouTube.** Each Spotify track is resolved to a `youtube_id` at ingest via `yt-dlp ytsearch1`; the player runs off the YouTube IFrame API. Playback state hooks into the Media Session API for Bluetooth / OS / lock-screen transport controls, and the session buffer emitting events into DJ mode's taste vector runs off the same play/next/skip transitions.
 
+### How the vibe inference actually works
+
+No sensor, no "how are you feeling?" prompt, no biometric anything. VibeScape infers your current listening state from **implicit feedback on the tracks it's already played you**:
+
+1. **Every playback event becomes a signed weight on the fused embedding of the track that triggered it.** A queue-add is +1.2 (explicit, forward-looking choice), a natural completion is +0.8 (passive assent), a mid-track skip is −0.4 to −0.8 (rejection scaled by how quickly you bailed).
+2. **The taste vector is a weighted, L2-normalized sum of the last 10 event embeddings** — positives pull toward what you're keeping, negatives push away from what you're bouncing off. Because each contributing track is L2-normalized *before* weighting, magnitude cancels out — only the *direction* of your accumulated taste matters. That direction is your current vibe expressed as a 788-D coordinate.
+3. **Because that coordinate lives in the same space every song in your library is embedded in, "play what fits my vibe" is one lookup**: `vector_distance_cos(fused_embedding, taste_vector)` server-side on Turso, top-K by ascending distance, exclude the last 50 played + the current queue, return.
+
+The 9 music-theoretic scalars (energy, valence, tempo, brightness…) in the fingerprint mean the taste vector drifts through **mood-space** in real time as your session evolves — this is the closest the system comes to "detecting mood." The 768-D MERT dimensions mean it *also* drifts through **texture-space** (production style, instrumentation, mix character), and the 11-D language one-hot keeps recommendations inside languages you're actually listening to. Skip a track, and within one request the coordinate has moved away from *whatever combination of mood, texture, and language* that track represented — and the next pick is whichever library track is now closest to the new coordinate.
+
+**No age decay inside the 10-slot buffer.** The buffer *is* the recency window; older events roll off naturally. Decay was measured and dropped — at buffer size 10 it just penalized the median-age event by ~40% for no useful discrimination.
+
+**Cold start / edge cases.** Empty buffer (fresh session) → query vector undefined → backend falls back to random pick from the candidate pool with `score=0`. Seed track has no MERT embedding (recently ingested, embedding stage hasn't run) → falls back to vibe-mode (weighted L1 over the scalar block) with `mode_used='vibe_fallback_no_seed_embedding'` so the client can tell.
 
 ## Architecture
 
