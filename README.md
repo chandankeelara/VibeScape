@@ -3,7 +3,7 @@
 <div align="center">
   <h3 align="center">🎧 VibeScape</h3>
   <p align="center">
-    <strong>VibeScape</strong> turns your Spotify library into a <strong>dynamically playable pool</strong>. Every song is fingerprinted along <em>mood, acoustic texture, and language</em>, so instead of building playlists you either scrub a <strong>vibe grid</strong> to steer the pool by feel, or let autoplay pick the next track in real time from your <strong>live listening state</strong> — what you queue, complete, and skip this session.
+    <strong>VibeScape</strong> turns your Spotify library into a <strong>dynamically playable pool</strong>. Every song is fingerprinted along <em>mood, acoustic texture, and language</em>, so instead of building playlists you either scrub a <strong>vibe slider</strong> to steer the pool by feel, or let autoplay pick the next track in real time from your <strong>live listening state</strong> — what you queue, complete, and skip this session.
     <br/><br/>
     <a href="https://vibescape-241988497106.us-central1.run.app"><strong>🌐 Live demo →</strong></a>
   </p>
@@ -12,7 +12,7 @@
 ## What it does
 
 - **Fingerprints every song in your library into a 788-D vector.** A fine-tuned **MERT** transformer contributes a **768-D learned acoustic-texture embedding** (timbre, instrumentation, mix density, vocal character — self-supervised on ~160k hrs of music). On top of that sit **9 explicit music-theoretic scalars** — `danceability`, `energy`, `valence`, `vibe_score`, `activation`, `valence`, `acousticness`, `tempo`, `brightness` — regressed from the same audio by the fine-tuned head. **Whisper** adds an **11-D language one-hot**. Fused, L2-normalized, and weighted, this vector is the coordinate system everything else steers over.
-- **Two ways to steer the pool.** Scrub a two-axis **vibe grid** (activation × valence) to browse the library by feel — buckets like *chill / hype / melancholy / beast* fall out naturally. Or hand it to **DJ mode**, which picks the next track in real time from the last 10 events in your session (queue-adds and completions pull toward that sound, skips push away) ranked by cosine similarity over the fused embedding.
+- **Two ways to steer the pool.** Scrub a **vertical vibe slider** (activation, 0–100, library-wide z-scored so distribution is percentile-flat) to browse by feel — the library partitions into five buckets along that axis (*sleep / chill / steady / hype / beast*). Valence is a real dimension in the fused embedding and shapes DJ-mode ranking, but it isn't surfaced as a second slider yet. Or hand it to **DJ mode**, which picks the next track in real time from the last 10 events in your session (queue-adds and completions pull toward that sound, skips push away) ranked by cosine similarity over the fused embedding.
 - **Plays the whole library through YouTube.** Each Spotify track is resolved to a `youtube_id` at ingest via `yt-dlp ytsearch1`; the player runs off the YouTube IFrame API. Playback state hooks into the Media Session API for Bluetooth / OS / lock-screen transport controls, and the session buffer emitting events into DJ mode's taste vector runs off the same play/next/skip transitions.
 
 
@@ -651,7 +651,7 @@ python ml/src/backfill_languages.py
 - Modal remote-GPU dispatch + warm-container caching
 - Local-vs-Modal-vs-librosa dispatcher (`ml_backend.py`)
 - Whisper language detection with confidence tiers
-- Two-axis mood grid + `activation_relative` z-score normalization
+- Vibe slider (activation) with `activation_relative` z-score normalization; 2×5 mood grid computed backend-side (activation × valence), only activation exposed as a user slider today
 - Librosa feature bank with Krumhansl-Kessler valence
 - Resume-safe batch jobs (append-only manifests)
 - Cloud Run deployment (512 MB, torch-free, scale-to-zero)
