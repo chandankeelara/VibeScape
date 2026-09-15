@@ -354,6 +354,27 @@ def predict_from_url(preview_url: str, timeout: float = 120.0) -> Optional[dict]
     return None
 
 
+def predict_from_path(local_path: str) -> Optional[dict]:
+    """Local-only variant of predict_from_url that skips the tempfile
+    download step. Used by the ingest pipeline when DownloadStage has
+    already cached the preview to disk. Modal has no benefit from a local
+    file (its container is elsewhere), so this always uses the local
+    predictor.
+    """
+    if not local_path:
+        return None
+    predictor = _get_local_predictor()
+    if predictor is None:
+        return None
+    try:
+        preds = predictor.predict(local_path)
+        preds["model_version"] = "mert_v1"
+        return preds
+    except Exception as e:
+        log.warning("[ml_backend] local MERT predict_from_path failed: %s", e)
+        return None
+
+
 def predict_language_from_url(preview_url: str, model_size: str = "small") -> Optional[dict]:
     """Return {top1_lang, top1_prob, ..., model_version} or None.
 
@@ -368,3 +389,35 @@ def predict_language_from_url(preview_url: str, model_size: str = "small") -> Op
     if mode == "local":
         return _local_predict_language_from_url(preview_url, model_size)
     return None
+
+
+def predict_language_from_path(local_path: str, model_size: str = "small") -> Optional[dict]:
+    """Local-only variant of predict_language_from_url that skips the
+    tempfile download step. See predict_from_path for rationale."""
+    if not local_path:
+        return None
+    model = _get_local_whisper(model_size)
+    if model is None:
+        return None
+    try:
+        import whisper
+    except ImportError:
+        return None
+    try:
+        audio = whisper.load_audio(local_path)
+        audio = whisper.pad_or_trim(audio)
+        n_mels = getattr(model, "dims", None)
+        n_mels = n_mels.n_mels if n_mels is not None else 80
+        mel = whisper.log_mel_spectrogram(audio, n_mels=n_mels).to(model.device)
+        _, probs = model.detect_language(mel)
+        top3 = sorted(probs.items(), key=lambda kv: kv[1], reverse=True)[:3]
+        top3 = list(top3) + [("", 0.0)] * (3 - len(top3))
+        return {
+            "top1_lang": top3[0][0], "top1_prob": float(top3[0][1]),
+            "top2_lang": top3[1][0], "top2_prob": float(top3[1][1]),
+            "top3_lang": top3[2][0], "top3_prob": float(top3[2][1]),
+            "model_version": f"whisper_{model_size}",
+        }
+    except Exception as e:
+        log.warning("[ml_backend] local Whisper predict_from_path failed: %s", e)
+        return None

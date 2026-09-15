@@ -178,7 +178,7 @@ class _HttpConnection:
         self._token = token
         self.row_factory = sqlite3.Row  # for API compat; unused
 
-    def _post(self, requests_list):
+    def _post(self, requests_list, timeout: float = 30.0):
         r = self._session.post(
             self._pipeline_url,
             headers={
@@ -186,7 +186,7 @@ class _HttpConnection:
                 "Content-Type": "application/json",
             },
             data=json.dumps({"baton": None, "requests": requests_list}),
-            timeout=30,
+            timeout=timeout,
         )
         r.raise_for_status()
         return r.json()
@@ -198,10 +198,13 @@ class _HttpConnection:
         args = list(params) if params else []
         if args:
             stmt["args"] = [_hrana_arg(p) for p in args]
+        # DiskANN index builds on CREATE INDEX ... libsql_vector_idx() can
+        # take several minutes on large tables — bump timeout for that path.
+        _timeout = 300.0 if "libsql_vector_idx" in sql else 30.0
         payload = self._post([
             {"type": "execute", "stmt": stmt},
             {"type": "close"},
-        ])
+        ], timeout=_timeout)
         results = payload.get("results") or []
         if not results:
             raise sqlite3.OperationalError("Turso pipeline returned no results")

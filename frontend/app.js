@@ -13,9 +13,20 @@
   // Server-driven debug flag. Set by loadClientConfig() on boot from
   // GET /api/client-config, which reads VIBESCAPE_ENV=dev|prod. Any
   // vsDebug() call before the fetch resolves silently no-ops.
+  //
+  // The env value also drives body[data-env] so CSS can hide dev-only
+  // UI (Spotify debug button, help/? popover, redundant Spotify sign-out
+  // button) in prod, and keyboard shortcut handlers gate off VS_ENV too.
   let VS_DEBUG = false;
+  let VS_ENV = 'prod';
   function vsDebug(...args) {
     if (VS_DEBUG) console.log('[VS]', ...args);
+  }
+  function applyEnvToDom() {
+    // Prefer document.body when it exists, otherwise stash on documentElement
+    // and let the assignment cascade once body is parsed.
+    const target = document.body || document.documentElement;
+    if (target) target.dataset.env = VS_ENV;
   }
   async function loadClientConfig() {
     try {
@@ -23,9 +34,15 @@
       if (!r.ok) return;
       const j = await r.json();
       VS_DEBUG = !!j.debug;
+      VS_ENV = (j.env === 'dev') ? 'dev' : 'prod';
+      applyEnvToDom();
       if (VS_DEBUG) console.log('[VS] debug logging enabled (VIBESCAPE_ENV=' + (j.env || '?') + ')');
     } catch (_) { /* silent */ }
   }
+  // Default to 'prod' on the body immediately so prod-only CSS applies
+  // before the fetch resolves and we don't flash the dev-only buttons.
+  if (document.body) applyEnvToDom();
+  else document.addEventListener('DOMContentLoaded', applyEnvToDom, { once: true });
   // Fire-and-forget on module load — flag flips as soon as the fetch settles.
   loadClientConfig();
 
@@ -59,6 +76,8 @@
     queueRecsList: $('queueRecsList'),
     queueRecsEmpty: $('queueRecsEmpty'),
     queueRecsLoading: $('queueRecsLoading'),
+    queueRecsTitle: $('queueRecsTitle'),
+    djToggle: $('djToggle'),
     searchBar: $('searchBar'),
     searchInputWrap: $('searchInputWrap'),
     searchInput: $('searchInput'),
@@ -86,11 +105,9 @@
     toastContainer: $('toastContainer'),
     player: $('player'),
     btnSpotifySignIn: $('btnSpotifySignIn'),
-    btnSpotifySignOut: $('btnSpotifySignOut'),
     btnSpotifySync: $('btnSpotifySync'),
     btnSpotifyDebug: $('btnSpotifyDebug'),
     spSigned: $('spSigned'),
-    spName: $('spName'),
     chipSource: $('chipSource'),
     btnVerify: $('btnVerify'),
     verifyTip: $('verifyTip'),
@@ -135,7 +152,6 @@
     userMenu: $('userMenu'),
     btnUserMenu: $('btnUserMenu'),
     userMenuPopover: $('userMenuPopover'),
-    userAvatar: $('userAvatar'),
     userName: $('userName'),
     userMenuName: $('userMenuName'),
     btnUserSignOut: $('btnUserSignOut'),
@@ -182,15 +198,22 @@
     syncProgressPct: $('syncProgressPct'),
     syncProgressCounts: $('syncProgressCounts'),
     syncCurrentTrack: $('syncCurrentTrack'),
-    syncStatNew: $('syncStatNew'),
-    syncStatLinked: $('syncStatLinked'),
+    syncStatAdded: $('syncStatAdded'),
     syncStatAlready: $('syncStatAlready'),
-    syncStatNoPreview: $('syncStatNoPreview'),
+    syncStatQueued: $('syncStatQueued'),
     syncCompleteSummary: $('syncCompleteSummary'),
     syncFooterMeta: $('syncFooterMeta'),
     syncModalFooter: $('syncModalFooter'),
     videoStage: $('videoStage'),
     videoFrame: document.querySelector('.video-frame'),
+    videoDragHandle: $('videoDragHandle'),
+    videoDragSurface: $('videoDragSurface'),
+    videoResizeHandle: $('videoResizeHandle'),
+    videoDockBtn: $('videoDockBtn'),
+    videoBottomBar: $('videoBottomBar'),
+    videoMiniPrev: $('videoMiniPrev'),
+    videoMiniPlay: $('videoMiniPlay'),
+    videoMiniNext: $('videoMiniNext'),
     videoSkeleton: $('videoSkeleton'),
     videoEmpty: $('videoEmpty'),
     videoEmptyMsg: $('videoEmptyMsg'),
@@ -245,6 +268,18 @@
     // the right sidebar. Refreshes on each loadTrack; anchor identity is
     // tracked to avoid duplicate fetches.
     recs: { anchorKey: null, list: [], loading: false, reqToken: 0 },
+    // DJ mode — auto-fills the play queue from weighted /similar based on the
+    // last 10 session events. Toggle persisted to localStorage. Events buffer
+    // is a rolling window trimmed to the last 10 (recent at the end).
+    dj: {
+      enabled: false,
+      events: [],                 // {track_id, action, played_ratio, ts}
+      currentStart: 0,            // ms since epoch when current track began
+      currentTrackId: null,       // track_id for the now-playing track (for skip attribution)
+      lastRecs: [],               // cached DJ recs list — used for autoplay-on-empty-queue
+      inflight: false,            // guard against overlapping POSTs
+      reqToken: 0
+    },
     // Filter model — wide-open defaults; only appended to /api/tracks/random
     // when non-default. Backend ignores unknown params, safe to send early.
     filters: {
@@ -257,7 +292,7 @@
       mood: null
     }
   };
-  const RECENT_MAX = 5;
+  const RECENT_MAX = 15;
 
   const FILTER_DEFAULTS = {
     vibe_min: 0, vibe_max: 100,
@@ -546,6 +581,32 @@
     return base + (base.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(auth.token);
   }
 
+  // Point the main <audio> at a track's preview clip, preferring the CDN
+  // preview_url (iTunes/Deezer/Spotify) so we don't burn backend egress on
+  // an audio_path proxy we already have upstream. If the CDN load fails
+  // (link rot, CORS, network), fall back once to /api/stream/{key} so the
+  // locally-downloaded MP3 keeps the track playable.
+  function setPreviewSource(track) {
+    if (!track) return;
+    const streamKey = track.spotify_id || '';
+    const backendSrc = authedStreamUrl('/api/stream/' + encodeURIComponent(streamKey));
+    const directUrl = track.preview_url;
+    if (!directUrl) {
+      el.player.src = backendSrc;
+      return;
+    }
+    el.player.crossOrigin = 'anonymous';
+    const onError = () => {
+      el.player.removeEventListener('error', onError);
+      console.warn('[VibeScape] preview_url load failed; falling back to /api/stream');
+      try { el.player.src = backendSrc; } catch (_) {}
+      const p = el.player.play();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    };
+    el.player.addEventListener('error', onError, { once: true });
+    el.player.src = directUrl;
+  }
+
   async function fetchWithAuth(path, options) {
     options = options || {};
     const headers = new Headers(options.headers || {});
@@ -572,7 +633,9 @@
     try { stopPlayback(); } catch (_) {}
     updateUserMenu();
     toast('Session expired. Sign in again.', 'error');
-    showAuthOverlay();
+    // Route back to the landing page rather than showing the overlay in-place;
+    // the landing page will offer Spotify sign-in again.
+    try { window.location.replace('/'); return; } catch (_) {}
   }
 
   // ============== Auth flow ==============
@@ -588,10 +651,14 @@
     if (!el.userMenu) return;
     if (auth.user) {
       el.userMenu.hidden = false;
-      const name = auth.user.display_name || 'user';
+      // Prefer the Spotify display name once it's known — the pill uses
+      // the Spotify design (green + dot) so it visually implies the
+      // connected identity when available. Falls back to the VibeScape
+      // display name before Spotify OAuth finishes.
+      const spotifyName = (typeof spotify !== 'undefined') ? (spotify && spotify.displayName) : '';
+      const name = spotifyName || auth.user.display_name || 'user';
       el.userName.textContent = name;
       el.userMenuName.textContent = name;
-      el.userAvatar.textContent = initialsFor(name);
       // Admin button visibility (chandan-only).
       const btnAdmin = document.getElementById('btnUserAdmin');
       if (btnAdmin) btnAdmin.hidden = !auth.user.is_admin;
@@ -838,6 +905,15 @@
     state.featureCache = {};
     state.queue = [];
     state.recs = { anchorKey: null, list: [], loading: false, reqToken: 0 };
+    // DJ mode: keep the enabled preference in localStorage across sign-outs
+    // (it's a device-level preference), but drop the auto-queue tag set and
+    // in-flight guard so a fresh session starts clean.
+    if (state.dj) {
+      state.dj.lastRecs = [];
+      state.dj.currentTrackId = null;
+      state.dj.currentStart = 0;
+      state.dj.inflight = false;
+    }
     try { renderQueue(); } catch (_) {}
     try { renderRecs(); } catch (_) {}
     if (el.recentTrail) { el.recentTrail.hidden = true; el.recentTrail.innerHTML = ''; }
@@ -855,7 +931,10 @@
     updateUserMenu();
     closeUserMenu();
     if (wasSignedIn) toast('Signed out of VibeScape.', 'success');
-    showAuthOverlay();
+    // Send the browser back to the landing page. Using location.replace so
+    // /app doesn't linger in history — Back from the landing page shouldn't
+    // return to an authed-looking player screen.
+    try { window.location.replace('/'); return; } catch (_) {}
   }
 
   // Try to hydrate from a stored session token. Returns true if we're auth'd.
@@ -1144,6 +1223,11 @@
     // guarded by request-token inside so stale results are dropped.
     try { loadRecommendationsFor(t); } catch (_) {}
 
+    // DJ mode: rotate the "current track" latches for event attribution.
+    // Rec-panel refresh is handled by loadRecommendationsFor above — when DJ
+    // is on, that call routes to the POST /similar endpoint.
+    try { djOnTrackChanged(t); } catch (_) {}
+
     updateMediaSessionMetadata(t);
 
     // Genre whisper line (item #14) — replaces the chip when present.
@@ -1216,11 +1300,7 @@
       el.progressThumb.style.left = '0%';
       setSourcePill('preview');
 
-      // Prefer apple_id (present for iTunes-sourced tracks) but fall back to
-      // spotify_id when apple_id is null — happens for search-added tracks
-      // processed via the ML-only path (no iTunes term-search).
-      const streamKey = (t.apple_id != null ? t.apple_id : t.spotify_id) || '';
-      el.player.src = authedStreamUrl('/api/stream/' + encodeURIComponent(streamKey));
+      setPreviewSource(t);
       el.player.volume = 0.8;
 
       const p = el.player.play();
@@ -1594,6 +1674,13 @@
     stopGlowAnalyser();
     setGlowAlpha(0.65);
     setMediaSessionState(false);
+    // Natural end — force a 'completed' event before advance's own default
+    // (skip-inferred) recording fires. advanceToNext's guard skips a second
+    // record for the same track_id in the same tick.
+    try {
+      djRecordTrackTransition({ natural: true });
+      state.dj.currentTrackId = null; // prevent advanceToNext double-record
+    } catch (_) {}
     advanceToNext();
   });
   el.player.addEventListener('loadedmetadata', () => {
@@ -1631,6 +1718,241 @@
 
   // ===== Video mode (YouTube IFrame API) =====
   function isVideoMode() { return video.mode === 'video'; }
+
+  // ===== Video-frame drag + resize =====
+  // First drag/resize gesture flips the frame into `is-detached` (position:
+  // fixed), storing its current on-screen rect as the starting point so the
+  // grab feels continuous. Size + position persist in localStorage so the
+  // panel remembers where the user parked it.
+  const VIDEO_FRAME_STORAGE_KEY = 'vs.videoFrame.rect';
+
+  function loadVideoFrameRect() {
+    try {
+      const raw = localStorage.getItem(VIDEO_FRAME_STORAGE_KEY);
+      if (!raw) return null;
+      const r = JSON.parse(raw);
+      if (!r || typeof r.left !== 'number' || typeof r.top !== 'number') return null;
+      return r;
+    } catch (_) { return null; }
+  }
+  function saveVideoFrameRect(rect) {
+    try { localStorage.setItem(VIDEO_FRAME_STORAGE_KEY, JSON.stringify(rect)); } catch (_) {}
+  }
+  function clampVideoFrameRect(rect) {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const minW = 240, minH = 160;
+    const w = Math.max(minW, Math.min(rect.width, vw * 0.96));
+    const h = Math.max(minH, Math.min(rect.height, vh * 0.92));
+    const left = Math.max(0, Math.min(rect.left, vw - w));
+    const top = Math.max(0, Math.min(rect.top, vh - h));
+    return { left, top, width: w, height: h };
+  }
+  function applyDetachedRect(rect) {
+    if (!el.videoFrame || !el.videoStage) return;
+    const clamped = clampVideoFrameRect(rect);
+    el.videoStage.classList.add('is-detached');
+    el.videoFrame.classList.add('is-detached');
+    el.videoFrame.style.left = clamped.left + 'px';
+    el.videoFrame.style.top = clamped.top + 'px';
+    el.videoFrame.style.width = clamped.width + 'px';
+    el.videoFrame.style.height = clamped.height + 'px';
+    return clamped;
+  }
+  function ensureDetached() {
+    if (!el.videoFrame) return null;
+    if (el.videoFrame.classList.contains('is-detached')) {
+      const r = el.videoFrame.getBoundingClientRect();
+      return { left: r.left, top: r.top, width: r.width, height: r.height };
+    }
+    const r = el.videoFrame.getBoundingClientRect();
+    return applyDetachedRect({ left: r.left, top: r.top, width: r.width, height: r.height });
+  }
+
+  function setupVideoFrameDragResize() {
+    if (!el.videoFrame || !el.videoDragHandle || !el.videoResizeHandle) return;
+
+    // Restore last-known rect if the user previously detached.
+    const saved = loadVideoFrameRect();
+    if (saved) applyDetachedRect(saved);
+
+    // Keep the panel on-screen when the viewport shrinks.
+    window.addEventListener('resize', () => {
+      if (!el.videoFrame.classList.contains('is-detached')) return;
+      const r = el.videoFrame.getBoundingClientRect();
+      applyDetachedRect({ left: r.left, top: r.top, width: r.width, height: r.height });
+    });
+
+    // ----- Drag -----
+    // Same handler wired to both the topbar and a transparent overlay that
+    // covers the video area, so the user can grab the panel from anywhere.
+    let drag = null;
+    const attachDrag = (surface) => {
+      if (!surface) return;
+      surface.addEventListener('pointerdown', (ev) => {
+        if (ev.button !== 0) return;
+        // Ignore drags that start on interactive elements (dock button,
+        // future controls). Prevents click-swallowing.
+        if (ev.target.closest('button, a, input')) return;
+        const start = ensureDetached();
+        if (!start) return;
+        drag = {
+          pointerId: ev.pointerId,
+          surface: surface,
+          offsetX: ev.clientX - start.left,
+          offsetY: ev.clientY - start.top,
+          width: start.width,
+          height: start.height,
+        };
+        el.videoFrame.classList.add('is-dragging');
+        try { surface.setPointerCapture(ev.pointerId); } catch (_) {}
+        ev.preventDefault();
+      });
+      surface.addEventListener('pointermove', (ev) => {
+        if (!drag || ev.pointerId !== drag.pointerId) return;
+        const rect = applyDetachedRect({
+          left: ev.clientX - drag.offsetX,
+          top: ev.clientY - drag.offsetY,
+          width: drag.width,
+          height: drag.height,
+        });
+        if (rect) saveVideoFrameRect(rect);
+      });
+      const endDrag = (ev) => {
+        if (!drag || (ev && ev.pointerId !== drag.pointerId)) return;
+        el.videoFrame.classList.remove('is-dragging');
+        try { drag.surface.releasePointerCapture(drag.pointerId); } catch (_) {}
+        drag = null;
+      };
+      surface.addEventListener('pointerup', endDrag);
+      surface.addEventListener('pointercancel', endDrag);
+    };
+    attachDrag(el.videoDragHandle);
+    attachDrag(el.videoDragSurface);
+
+    // ----- Resize (8 directions: 4 edges + 4 corners) -----
+    // Each handle carries a data-resize attribute (n/s/e/w/ne/nw/se/sw)
+    // that says which edges to move. Anchor edges stay put; grab edges
+    // follow the pointer, clamped by min-width/height.
+    const MIN_W = 240, MIN_H = 160;
+    let resize = null;
+    const attachResize = (surface) => {
+      if (!surface) return;
+      const dir = surface.getAttribute('data-resize') || 'se';
+      surface.addEventListener('pointerdown', (ev) => {
+        if (ev.button !== 0) return;
+        const start = ensureDetached();
+        if (!start) return;
+        resize = {
+          pointerId: ev.pointerId,
+          surface: surface,
+          dir: dir,
+          startX: ev.clientX,
+          startY: ev.clientY,
+          left: start.left,
+          top: start.top,
+          right: start.left + start.width,
+          bottom: start.top + start.height,
+        };
+        el.videoFrame.classList.add('is-resizing');
+        try { surface.setPointerCapture(ev.pointerId); } catch (_) {}
+        ev.preventDefault();
+        ev.stopPropagation();
+      });
+      surface.addEventListener('pointermove', (ev) => {
+        if (!resize || ev.pointerId !== resize.pointerId) return;
+        const dx = ev.clientX - resize.startX;
+        const dy = ev.clientY - resize.startY;
+        let left = resize.left;
+        let top = resize.top;
+        let right = resize.right;
+        let bottom = resize.bottom;
+        const d = resize.dir;
+        if (d.indexOf('e') !== -1) right  = Math.max(resize.left + MIN_W, resize.right + dx);
+        if (d.indexOf('w') !== -1) left   = Math.min(resize.right - MIN_W, resize.left + dx);
+        if (d.indexOf('s') !== -1) bottom = Math.max(resize.top + MIN_H, resize.bottom + dy);
+        if (d.indexOf('n') !== -1) top    = Math.min(resize.bottom - MIN_H, resize.top + dy);
+        const rect = applyDetachedRect({
+          left: left,
+          top: top,
+          width: right - left,
+          height: bottom - top,
+        });
+        if (rect) saveVideoFrameRect(rect);
+      });
+      const endResize = (ev) => {
+        if (!resize || (ev && ev.pointerId !== resize.pointerId)) return;
+        el.videoFrame.classList.remove('is-resizing');
+        try { resize.surface.releasePointerCapture(resize.pointerId); } catch (_) {}
+        resize = null;
+      };
+      surface.addEventListener('pointerup', endResize);
+      surface.addEventListener('pointercancel', endResize);
+    };
+    document.querySelectorAll('.video-resize-edge, .video-resize-corner').forEach(attachResize);
+
+    // Explicit dock button — only visible when detached. Clicking it clears
+    // the saved rect and returns the frame to the inline layout inside .art.
+    if (el.videoDockBtn) {
+      el.videoDockBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        el.videoStage.classList.remove('is-detached');
+        el.videoFrame.classList.remove('is-detached');
+        el.videoFrame.style.left = '';
+        el.videoFrame.style.top = '';
+        el.videoFrame.style.width = '';
+        el.videoFrame.style.height = '';
+        try { localStorage.removeItem(VIDEO_FRAME_STORAGE_KEY); } catch (_) {}
+      });
+    }
+  }
+
+  // Re-apply the saved rect on demand (called when video mode becomes
+  // visible, so any race between initial script eval and DOM layout can't
+  // leave the frame in the default position).
+  function reapplyDetachedRectIfSaved() {
+    const saved = loadVideoFrameRect();
+    if (saved) applyDetachedRect(saved);
+  }
+
+  // Mini transport controls inside the detached video panel. Delegate to
+  // the main buttons so all the wiring (Spotify SDK, preview <audio>,
+  // queue advance) stays in one place.
+  function setupVideoMiniControls() {
+    if (el.videoMiniPrev && el.btnPrev) {
+      el.videoMiniPrev.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        el.btnPrev.click();
+      });
+    }
+    if (el.videoMiniNext && el.btnNext) {
+      el.videoMiniNext.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        el.btnNext.click();
+      });
+    }
+    if (el.videoMiniPlay && el.btnPlay) {
+      el.videoMiniPlay.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        el.btnPlay.click();
+      });
+    }
+    // Reflect play/pause state via body.playing (already toggled elsewhere).
+    // A MutationObserver on body class avoids duplicating playback-state
+    // logic across all the places that already flip .playing on/off.
+    const playIcon = el.videoMiniPlay && el.videoMiniPlay.querySelector('.video-mini-play-icon');
+    const pauseIcon = el.videoMiniPlay && el.videoMiniPlay.querySelector('.video-mini-pause-icon');
+    if (!playIcon || !pauseIcon) return;
+    const sync = () => {
+      const playing = document.body.classList.contains('playing');
+      playIcon.hidden = playing;
+      pauseIcon.hidden = !playing;
+    };
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  }
+
 
   function loadYouTubeApi() {
     if (video.apiRequested) return;
@@ -2076,6 +2398,7 @@
     if (el.videoStage) {
       el.videoStage.hidden = next !== 'video';
       el.videoStage.setAttribute('aria-hidden', next === 'video' ? 'false' : 'true');
+      if (next === 'video') reapplyDetachedRectIfSaved();
     }
     if (next !== 'video' && videoSearch.open) closeVideoSearchPanel();
     updateModeToggleUi();
@@ -2093,8 +2416,7 @@
         } else {
           try {
             if (!el.player.src) {
-              const streamKey = (t.apple_id != null ? t.apple_id : t.spotify_id) || '';
-              el.player.src = authedStreamUrl('/api/stream/' + encodeURIComponent(streamKey));
+              setPreviewSource(t);
             }
             const p = el.player.play();
             if (p && typeof p.catch === 'function') p.catch(() => {});
@@ -2145,6 +2467,9 @@
       openVideoSearchPanel();
     });
   }
+
+  setupVideoFrameDragResize();
+  setupVideoMiniControls();
   if (el.videoSearchFromEmpty) {
     el.videoSearchFromEmpty.addEventListener('click', (ev) => {
       ev.stopPropagation();
@@ -2180,6 +2505,7 @@
     if (el.videoStage) {
       el.videoStage.hidden = video.mode !== 'video';
       el.videoStage.setAttribute('aria-hidden', video.mode === 'video' ? 'false' : 'true');
+      if (video.mode === 'video') reapplyDetachedRectIfSaved();
     }
     updateModeToggleUi();
     if (video.mode === 'video') loadYouTubeApi();
@@ -2515,15 +2841,17 @@
     if (spotify.accessToken) {
       el.btnSpotifySignIn.hidden = true;
       el.spSigned.hidden = false;
-      el.spName.textContent = spotify.displayName || 'Connected';
-      el.spName.title = spotify.isPremium
-        ? 'Spotify Premium — full tracks'
-        : 'Free account — preview only';
+      // The Spotify display name is surfaced through the unified user
+      // pill (see updateUserMenu()). No separate #spName pill anymore.
     } else {
       el.btnSpotifySignIn.hidden = false;
       el.spSigned.hidden = true;
       closeDebugPanel();
     }
+    // The unified pill's label prefers spotify.displayName when it exists;
+    // refresh it whenever Spotify state changes so the pill reflects the
+    // Spotify identity as soon as it's known.
+    updateUserMenu();
     // If the sync modal's URL tab is currently visible, keep its Spotify-gated
     // state fresh (input vs sign-in prompt).
     if (sync.open && sync.stage === 'url' && typeof refreshUrlViewState === 'function') {
@@ -2870,32 +3198,57 @@
   }
 
   async function refreshSpotifyToken() {
-    if (!spotify.refreshToken || !spotify.clientId) return false;
-    const body = new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: spotify.refreshToken,
-      client_id: spotify.clientId
-    });
+    if (!spotify.refreshToken) return false;
+    // Prefer the backend endpoint: it sends client_secret alongside
+    // client_id, which is required to refresh tokens minted via the
+    // server-side Authorization Code flow (login.js path). Direct-to-Spotify
+    // refresh with only client_id works for PKCE-issued tokens; we fall back
+    // to that if the backend refresh isn't available (older deploys).
+    let j = null;
     try {
-      const r = await fetch('https://accounts.spotify.com/api/token', {
+      const r = await fetch(API_BASE + '/api/spotify/refresh', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body.toString()
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: spotify.refreshToken })
       });
-      if (!r.ok) { clearSpotifySession(); return false; }
-      const j = await r.json();
-      spotify.accessToken = j.access_token || '';
-      if (j.refresh_token) spotify.refreshToken = j.refresh_token;
-      spotify.expiresAt = Date.now() + ((j.expires_in || 3600) * 1000);
-      const k = spotifyKeys();
-      localStorage.setItem(k.tokenKey, spotify.accessToken);
-      localStorage.setItem(k.refreshKey, spotify.refreshToken);
-      localStorage.setItem(k.expiryKey, String(spotify.expiresAt));
-      await fetchSpotifyProfile();
-      return true;
-    } catch (e) {
-      return false;
+      if (r.ok) {
+        j = await r.json();
+      } else if (r.status === 400 || r.status === 401) {
+        // refresh_token is bad -- no point falling back to direct call
+        clearSpotifySession();
+        return false;
+      }
+    } catch (_) { /* network -- try direct fallback */ }
+
+    if (!j && spotify.clientId) {
+      const body = new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: spotify.refreshToken,
+        client_id: spotify.clientId
+      });
+      try {
+        const r = await fetch('https://accounts.spotify.com/api/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: body.toString()
+        });
+        if (!r.ok) { clearSpotifySession(); return false; }
+        j = await r.json();
+      } catch (e) {
+        return false;
+      }
     }
+    if (!j || !j.access_token) return false;
+
+    spotify.accessToken = j.access_token;
+    if (j.refresh_token) spotify.refreshToken = j.refresh_token;
+    spotify.expiresAt = Date.now() + ((j.expires_in || 3600) * 1000);
+    const k = spotifyKeys();
+    localStorage.setItem(k.tokenKey, spotify.accessToken);
+    localStorage.setItem(k.refreshKey, spotify.refreshToken);
+    localStorage.setItem(k.expiryKey, String(spotify.expiresAt));
+    await fetchSpotifyProfile();
+    return true;
   }
 
   async function fetchSpotifyProfile() {
@@ -2994,6 +3347,13 @@
       toast('Spotify Premium required for full-track playback.', 'warning');
       spotify.isPremium = false;
     });
+    player.addListener('playback_error', ({ message }) => {
+      toast('Playback error: ' + (message || 'unknown') + ' — skipping.', 'error');
+      advanceToNext();
+    });
+    player.addListener('autoplay_failed', () => {
+      toast('Tap play to start — browser blocked autostart.', 'info');
+    });
     player.addListener('player_state_changed', (playerState) => {
       if (!playerState) {
         spotify.lastState = null;
@@ -3023,34 +3383,24 @@
         renderSpotifyProgress();
       }
 
-      // End-of-track heuristic: we WERE playing something with real
-      // duration + progress, and now we're paused at position 0.
-      // Independent of track_window.previous_tracks (which is often
-      // empty when playing a single URI via spotifyPlayTrack — that
-      // used to make the old prevTracks.length > 0 check silently
-      // skip auto-advance for every track).
+      // End-of-track: we WERE playing with real duration + progress and are
+      // now paused at position 0. Force a 'completed' event before advance
+      // so the SDK path records a positive signal (like the <audio> ended
+      // handler does). Then null currentTrackId to prevent advanceToNext
+      // from double-recording as 'skipped' (ratio would read as 0).
       const wasPlaying = !!(prevState && !prevState.paused
                             && (prevState.position || 0) > 0
                             && (prevState.duration || 0) > 0);
       const endedNow = playerState.paused
                        && (playerState.position || 0) === 0
                        && (playerState.duration || 0) > 0;
-      if (wasPlaying && endedNow && !spotify.advanceScheduled) {
-        // Fallback path: the position-poller preempt should have fired
-        // ~1500ms before this. Only runs if the poll interval missed
-        // (e.g. tab was backgrounded and setInterval was throttled).
-        spotify.advanceScheduled = true;
-        vsDebug('end-of-track fallback — scheduling advanceToNext in 500ms');
-        setTimeout(() => {
-          if (spotify.lastState
-              && spotify.lastState.paused
-              && (spotify.lastState.position || 0) === 0) {
-            vsDebug('advanceToNext firing (fallback)');
-            advanceToNext();
-          } else {
-            vsDebug('advanceToNext skipped — state changed during 500ms wait');
-          }
-        }, 500);
+      if (wasPlaying && endedNow) {
+        vsDebug('end-of-track detected — advancing');
+        try {
+          djRecordTrackTransition({ natural: true });
+          state.dj.currentTrackId = null;
+        } catch (_) {}
+        advanceToNext();
       }
     });
 
@@ -3069,13 +3419,6 @@
     el.progress.setAttribute('aria-valuetext', fmtTime(spotify.positionMs / 1000) + ' of ' + fmtTime(spotify.durationMs / 1000));
   }
 
-  // Preempt-window: fire advanceToNext when the playhead is this many ms
-  // from the end. Spotify's Autoplay engine will otherwise queue and start
-  // its own recommendation the moment the track ends, so VibeScape has to
-  // grab the transition first. 1500 ms is enough headroom for a fresh
-  // spotifyPlayTrack call to reach the SDK before autoplay fires.
-  const SDK_PREEMPT_MS = 1500;
-
   function startPositionPolling() {
     stopPositionPolling();
     spotify.pollTimer = setInterval(() => {
@@ -3086,19 +3429,6 @@
       spotify.positionMs = pos;
       renderSpotifyProgress();
       setMediaSessionPosition(spotify.durationMs / 1000, pos / 1000);
-
-      // Proactive end-of-track preemption. spotify.advanceScheduled is
-      // cleared by loadTrack() every time a new track starts, so this
-      // fires at most once per song.
-      if (!spotify.advanceScheduled
-          && spotify.durationMs > 0
-          && pos >= spotify.durationMs - SDK_PREEMPT_MS) {
-        spotify.advanceScheduled = true;
-        vsDebug('preempt fired', {
-          pos, dur: spotify.durationMs, remaining: spotify.durationMs - pos,
-        });
-        advanceToNext();
-      }
     }, 250);
   }
 
@@ -3136,8 +3466,7 @@
   function fallbackToPreview(reason) {
     if (!state.current) return;
     setSourcePill('preview');
-    const streamKey = (state.current.apple_id != null ? state.current.apple_id : state.current.spotify_id) || '';
-    el.player.src = authedStreamUrl('/api/stream/' + encodeURIComponent(streamKey));
+    setPreviewSource(state.current);
     const p = el.player.play();
     if (p && typeof p.catch === 'function') p.catch(() => {});
     if (reason) console.warn('[VibeScape] Spotify → preview fallback:', reason);
@@ -3158,9 +3487,12 @@
 
   async function spotifyPlayTrack(spotifyId) {
     if (!spotify.deviceId || !spotify.accessToken) return;
-    // Reset the preempt latch — a fresh track resets the "already scheduled
-    // an advance" flag so the next track can preempt too.
-    spotify.advanceScheduled = false;
+    // activateElement() must run inside a user gesture to enable audio on
+    // mobile browsers (iOS Safari especially). Fire once per session; cheap
+    // no-op after that. Errors are ignored — activation is best-effort.
+    if (spotify.player && !spotify.activated) {
+      try { await spotify.player.activateElement(); spotify.activated = true; } catch (_) {}
+    }
     if (Date.now() >= spotify.expiresAt - 60_000) {
       const ok = await refreshSpotifyToken();
       if (!ok) return;
@@ -3235,21 +3567,6 @@
     state.firstInteraction = true;
     beginSpotifyLogin();
   });
-  el.btnSpotifySignOut.addEventListener('click', () => {
-    console.log('[VibeScape] sign-out clicked; accessToken present:', !!spotify.accessToken);
-    const wasSignedIn = !!spotify.accessToken;
-    try {
-      stopPlayback();
-      clearSpotifySession();
-      stopPositionPolling();
-      setSourcePill(null);
-      if (wasSignedIn) toast('Signed out of Spotify.', 'success');
-    } catch (err) {
-      console.error('[VibeScape] sign-out error:', err);
-      toast('Sign-out error — see console.', 'error');
-    }
-  });
-
   // ===== Debug panel (personal token debug view) =====
 
   const debugPanel = { open: false };
@@ -4040,7 +4357,7 @@
         const sdkBadge = sdkOnlyBadgeHtml(t);
         const keyEsc = escapeHtml(String(key));
         parts.push(
-          '<div class="search-item" data-action="play-library" data-key="' + keyEsc + '" tabindex="0" role="button">' +
+          '<div class="search-item" data-action="play-library" data-key="' + keyEsc + '" data-drag-source="search-lib" data-drag-key="' + keyEsc + '" tabindex="0" role="button">' +
           art +
           '<div class="search-item-body">' +
             '<div class="search-item-title-row">' +
@@ -4446,22 +4763,28 @@
       if (debugPanel.open) { ev.preventDefault(); closeDebugPanel(); return; }
       if (helpPop.open) { ev.preventDefault(); closeHelpPopover(); return; }
     }
-    if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && (ev.key === 'D' || ev.key === 'd')) {
-      ev.preventDefault();
-      toggleDebugPanel();
-      return;
-    }
-    if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && (ev.key === 'M' || ev.key === 'm')) {
-      ev.preventDefault();
-      toggleMetricsPanel();
-      return;
-    }
-    // `?` opens help; ignore when typing in an input/textarea
-    if (ev.key === '?' && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
-      const t = ev.target;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
-      ev.preventDefault();
-      toggleHelpPopover();
+    // Dev-only shortcuts. In prod (VIBESCAPE_ENV=prod, the default) the
+    // Spotify debug panel, the internal metrics panel, and the help
+    // popover are all hidden — so the shortcuts should be too. Keeps
+    // the surface minimal for end users while devs still get the affordance.
+    if (VS_ENV === 'dev') {
+      if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && (ev.key === 'D' || ev.key === 'd')) {
+        ev.preventDefault();
+        toggleDebugPanel();
+        return;
+      }
+      if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && (ev.key === 'M' || ev.key === 'm')) {
+        ev.preventDefault();
+        toggleMetricsPanel();
+        return;
+      }
+      // `?` opens help; ignore when typing in an input/textarea
+      if (ev.key === '?' && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+        const t = ev.target;
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+        ev.preventDefault();
+        toggleHelpPopover();
+      }
     }
   });
 
@@ -4490,7 +4813,11 @@
       return false;
     }
     state.queue.push(t);
+    // DJ event: user manually queued a track — positive signal.
+    try { djPushEvent({ track_id: key, action: 'queued', played_ratio: null, ts: Date.now() }); } catch (_) {}
     renderQueue();
+    // DJ mode: refresh the recs sidebar so it reflects the new session weights.
+    try { if (state.dj && state.dj.enabled && state.current) djRefreshRecs(state.current); } catch (_) {}
     return true;
   }
 
@@ -4506,6 +4833,41 @@
     renderQueue();
   }
 
+  // Insert a track at a specific index in the queue. Called by the drag
+  // engine when dropping from a rec / search source. Rejects duplicates
+  // (same policy as addToQueue).
+  function addToQueueAt(t, idx) {
+    if (!t) return false;
+    const key = trackKeyOf(t);
+    if (!key) return false;
+    if (queueContains(key)) {
+      toast('Already in your queue.', 'info');
+      return false;
+    }
+    const q = state.queue;
+    const i = Math.max(0, Math.min(idx | 0, q.length));
+    q.splice(i, 0, t);
+    // DJ event: user manually queued a track (via drag) — positive signal.
+    try { djPushEvent({ track_id: key, action: 'queued', played_ratio: null, ts: Date.now() }); } catch (_) {}
+    renderQueue();
+    // DJ mode: refresh the recs sidebar so it reflects the new session weights.
+    try { if (state.dj && state.dj.enabled && state.current) djRefreshRecs(state.current); } catch (_) {}
+    return true;
+  }
+
+  // Reorder a queue item. `to` is the desired index in the pre-removal list
+  // (i.e., "insert before this row"). Handles the from<to shift internally.
+  function moveInQueue(from, to) {
+    const q = state.queue;
+    if (from < 0 || from >= q.length) return;
+    let target = Math.max(0, Math.min(to | 0, q.length));
+    if (target === from || target === from + 1) return;
+    const [t] = q.splice(from, 1);
+    if (target > from) target -= 1;
+    q.splice(target, 0, t);
+    renderQueue();
+  }
+
   function jumpToQueueItem(idx) {
     if (idx < 0 || idx >= state.queue.length) return;
     // Drop everything above idx, then advance-to-next consumes idx.
@@ -4515,6 +4877,9 @@
 
   function advanceToNext() {
     state.firstInteraction = true;
+    // DJ event: capture how the outgoing track ended before we swap tracks.
+    // `natural` is inferred from the played ratio inside djRecordTrackTransition.
+    try { djRecordTrackTransition({ natural: false }); } catch (_) {}
     if (state.queue.length > 0) {
       const next = state.queue.shift();
       renderQueue();
@@ -4522,7 +4887,32 @@
       loadTrack(next);
       return;
     }
+    // DJ mode: queue empty — refetch recs first so the just-completed track's
+    // signal (already in the session buffer) shapes the pick. Small perceptible
+    // gap (~400-700ms in prod) is the trade-off. If refetch yields nothing,
+    // stop gracefully rather than surprise the user with a random pull.
+    if (state.dj && state.dj.enabled) {
+      djPickAndPlayFresh();
+      return;
+    }
     fetchTrack(state.vibe);
+  }
+
+  // Fade the DJ rec row for `key` before it disappears. Purely decorative —
+  // the recs list re-renders on the new track's DJ fetch anyway. Skips work
+  // when the element isn't present or reduced-motion is on.
+  function flashDjConsume(key) {
+    if (!key || !el.queueRecsList) return;
+    try {
+      if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    } catch (_) {}
+    const row = el.queueRecsList.querySelector('.queue-item[data-key="' + cssEscape(key) + '"]');
+    if (row) row.classList.add('is-dj-consuming');
+  }
+
+  function cssEscape(s) {
+    try { return (window.CSS && CSS.escape) ? CSS.escape(String(s)) : String(s).replace(/"/g, '\\"'); }
+    catch (_) { return String(s); }
   }
 
   function renderQueue() {
@@ -4564,6 +4954,22 @@
     const actionAttrs = kind === 'queue'
       ? ' data-action="jump" data-idx="' + idx + '"'
       : ' data-action="play-rec" data-key="' + dataKey + '"';
+    // Drag source metadata — consumed by the pointer-drag engine below. A
+    // 'queue' row is reorder-only (from index); a 'rec' row inserts a new
+    // track at drop index.
+    const dragAttrs = kind === 'queue'
+      ? ' data-drag-source="queue" data-drag-idx="' + idx + '"'
+      : ' data-drag-source="rec" data-drag-key="' + dataKey + '"';
+    // Grip handle. touch-action: none in CSS so browser doesn't intercept
+    // vertical scroll while the finger is on the handle.
+    const grip =
+      '<button class="queue-item-grip" type="button" data-drag-handle aria-label="Drag to reorder" title="Drag to reorder" tabindex="-1">' +
+        '<svg viewBox="0 0 16 16" width="10" height="14" fill="currentColor" aria-hidden="true">' +
+          '<circle cx="5" cy="4" r="1"/><circle cx="11" cy="4" r="1"/>' +
+          '<circle cx="5" cy="8" r="1"/><circle cx="11" cy="8" r="1"/>' +
+          '<circle cx="5" cy="12" r="1"/><circle cx="11" cy="12" r="1"/>' +
+        '</svg>' +
+      '</button>';
     // Right-side button: remove-from-queue OR add-to-queue depending on kind.
     const rightBtn = kind === 'queue'
       ? '<button class="queue-item-btn" type="button" data-action="remove" data-idx="' + idx + '" aria-label="Remove from queue" title="Remove">' +
@@ -4573,14 +4979,14 @@
           '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' +
         '</button>';
     return (
-      '<li class="queue-item"' + actionAttrs + ' tabindex="0">' +
+      '<li class="queue-item"' + actionAttrs + dragAttrs + ' tabindex="0">' +
       art +
       '<div class="queue-item-body">' +
         '<div class="queue-item-title">' + title + '</div>' +
         '<div class="queue-item-sub">' + sub + '</div>' +
         meta +
       '</div>' +
-      '<div class="queue-item-actions">' + rightBtn + '</div>' +
+      '<div class="queue-item-actions">' + grip + rightBtn + '</div>' +
       '</li>'
     );
   }
@@ -4594,10 +5000,16 @@
       // No anchor — show idle state.
       state.recs.anchorKey = null;
       state.recs.list = [];
+      state.dj.lastRecs = [];
       if (el.queueRecsList) { el.queueRecsList.hidden = true; el.queueRecsList.innerHTML = ''; }
       if (el.queueRecsLoading) el.queueRecsLoading.hidden = true;
       if (el.queueRecsEmpty) el.queueRecsEmpty.hidden = false;
       return;
+    }
+    // DJ on: always route through djRefreshRecs (POST). It re-fetches every
+    // call so session-weighted results reflect the latest events buffer.
+    if (state.dj && state.dj.enabled) {
+      return djRefreshRecs(t);
     }
     if (state.recs.anchorKey === key && state.recs.list.length) {
       // Same anchor, already cached — nothing to do.
@@ -4652,8 +5064,307 @@
     el.queueRecsList.innerHTML = list.map((t, i) => renderQueueRow(t, i, 'rec')).join('');
   }
 
+  // ===== DJ mode =====
+  //
+  // A rolling buffer of the last 10 playback events lives in localStorage.
+  // When DJ mode is ON, the buffer is weighted (with exponential decay) and
+  // POSTed to /api/tracks/{seed}/similar to drive the "DJ picks" sidebar
+  // (session-weighted MERT similarity). The user's queue is NEVER touched.
+  // Autoplay on empty-queue consumes the top DJ pick directly.
+  // Vibe-mode (DJ off) keeps the original GET /similar behavior in
+  // loadRecommendationsFor untouched.
+  const DJ_STORAGE_KEY = 'vibescape.sessionEvents';
+  const DJ_TOGGLE_KEY  = 'vibescape.djEnabled';
+  const DJ_MAX_EVENTS  = 10;
+  const DJ_DECAY       = 1.0;      // no age decay — every event in the buffer counts at full base weight
+  const DJ_COMPLETED_THRESHOLD = 0.85;
+
+  function djLoadEvents() {
+    try {
+      const raw = localStorage.getItem(DJ_STORAGE_KEY);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr.slice(-DJ_MAX_EVENTS) : [];
+    } catch (_) { return []; }
+  }
+  function djPersistEvents() {
+    try { localStorage.setItem(DJ_STORAGE_KEY, JSON.stringify(state.dj.events.slice(-DJ_MAX_EVENTS))); } catch (_) {}
+  }
+  function djPushEvent(evt) {
+    if (!evt || !evt.track_id) return;
+    state.dj.events.push({
+      track_id: String(evt.track_id),
+      action: evt.action,
+      played_ratio: typeof evt.played_ratio === 'number' ? evt.played_ratio : null,
+      ts: evt.ts || Date.now()
+    });
+    while (state.dj.events.length > DJ_MAX_EVENTS) state.dj.events.shift();
+    djPersistEvents();
+  }
+  // Compute the current played ratio for the now-playing track using whatever
+  // playback source is active (audio element, Spotify SDK, YouTube).
+  function djCurrentPlayedRatio() {
+    try {
+      const dur = currentPlaybackDurationSec ? currentPlaybackDurationSec() : 0;
+      const pos = currentPlaybackPositionSec ? currentPlaybackPositionSec() : 0;
+      if (!dur || !isFinite(dur) || dur <= 0) return 0;
+      return Math.max(0, Math.min(1, pos / dur));
+    } catch (_) { return 0; }
+  }
+
+  // Snapshot the current track's state as a completed/skipped event, called
+  // whenever the now-playing track is about to be replaced (next-click,
+  // natural end, direct jump). Skipped past 45% is ignored (neither strong).
+  function djRecordTrackTransition({ natural }) {
+    const dj = state.dj;
+    if (!dj.currentTrackId) return;
+    const ratio = djCurrentPlayedRatio();
+    let action;
+    if (natural || ratio >= DJ_COMPLETED_THRESHOLD) {
+      action = 'completed';
+    } else if (ratio >= 0.45) {
+      // Ambiguous — treat as a soft next; captured as 'next' so weighting
+      // logic can decide (weights table gives ratio>0.5 a small positive
+      // signal, and 0.45<=ratio<0.85 skipped is ignored).
+      action = 'next';
+    } else {
+      action = 'skipped';
+    }
+    djPushEvent({ track_id: dj.currentTrackId, action, played_ratio: ratio, ts: Date.now() });
+  }
+
+  // Called from loadTrack when a NEW track becomes current. Rotates the
+  // "currentStart / currentTrackId" latches so the NEXT transition can be
+  // measured accurately.
+  function djOnTrackChanged(t) {
+    const dj = state.dj;
+    const key = trackKeyOf(t);
+    dj.currentTrackId = key || null;
+    dj.currentStart = Date.now();
+  }
+
+  // Weighted aggregation of the event buffer. Returns {positives, negatives}
+  // as arrays of {id, weight} ready to send. Applies exponential decay by
+  // age-in-events. When the same track appears in both piles, keep it in
+  // whichever has the larger absolute total for that id.
+  function djBuildWeights() {
+    const events = state.dj.events;
+    const n = events.length;
+    // pos[id] = summed positive weight; neg[id] = summed negative weight
+    const pos = new Map();
+    const neg = new Map();
+    for (let i = 0; i < n; i++) {
+      const e = events[i];
+      const age = (n - 1) - i; // 0 = most recent
+      const decay = Math.pow(DJ_DECAY, age);
+      let base = 0;
+      let bucket = null;
+      if (e.action === 'completed') { base = 0.8; bucket = pos; }
+      else if (e.action === 'queued') { base = 1.2; bucket = pos; }
+      else if (e.action === 'next') {
+        const r = typeof e.played_ratio === 'number' ? e.played_ratio : 0;
+        if (r > 0.5) { base = 0.3; bucket = pos; }
+        // else: ignore
+      } else if (e.action === 'skipped') {
+        const r = typeof e.played_ratio === 'number' ? e.played_ratio : 0;
+        if (r < 0.15) { base = 0.8; bucket = neg; }
+        else if (r < 0.45) { base = 0.4; bucket = neg; }
+        // else: ignore
+      }
+      if (!bucket || !base) continue;
+      const w = base * decay;
+      bucket.set(e.track_id, (bucket.get(e.track_id) || 0) + w);
+    }
+    // Resolve conflicts — same id in both piles goes to whichever is larger.
+    const positives = [];
+    const negatives = [];
+    const allIds = new Set([...pos.keys(), ...neg.keys()]);
+    for (const id of allIds) {
+      const p = pos.get(id) || 0;
+      const g = neg.get(id) || 0;
+      if (p >= g && p > 0) {
+        positives.push({ id, weight: Number((p - g).toFixed(4)) || p });
+        positives[positives.length - 1].weight = Number(p.toFixed(4));
+      } else if (g > 0) {
+        negatives.push({ id, weight: Number(g.toFixed(4)) });
+      }
+    }
+    return { positives, negatives };
+  }
+
+  function djExcludeIds() {
+    const ids = new Set();
+    for (const t of state.queue) {
+      const k = trackKeyOf(t);
+      if (k) ids.add(k);
+    }
+    // Last 15 played track ids from state.recent (newest last).
+    const recent = (state.recent || []).slice(-15);
+    for (const r of recent) {
+      // state.recent stores {apple_id, spotify_id, ...} — prefer spotify_id
+      const k = String(r.spotify_id || r.apple_id || '');
+      if (k) ids.add(k);
+    }
+    // Also exclude the seed itself.
+    if (state.current) {
+      const seedKey = trackKeyOf(state.current);
+      if (seedKey) ids.add(seedKey);
+    }
+    return Array.from(ids);
+  }
+
+  // Fetch DJ picks and render them into the recs sidebar. Replaces the
+  // static GET /similar list while DJ is on. Does NOT touch state.queue.
+  //
+  // Coalesce redundant refreshes: on song-end we call djPickAndPlayFresh
+  // (which fetches once for the pick), then loadTrack(next) fires a second
+  // refresh for the sidebar. Skip that follow-up if the buffer hasn't
+  // changed since the last fetch — the taste vector would be identical.
+  async function djRefreshRecs(t) {
+    const dj = state.dj;
+    if (!dj.enabled) return;
+    const seed = t || state.current;
+    if (!seed || !el.queueRecsList) return;
+    const seedKey = trackKeyOf(seed);
+    if (!seedKey) return;
+    const bufferSig = (dj.events || []).length + ':' + ((dj.events || []).slice(-1)[0]?.ts || 0);
+    if (dj.lastFetchSig === bufferSig && (Date.now() - (dj.lastFetchAt || 0)) < 5000) {
+      return; // fresh results already reflect this buffer state
+    }
+    dj.lastFetchSig = bufferSig;
+    dj.lastFetchAt = Date.now();
+    // Share the recs anchor so vibe-mode's cache-key logic stays consistent
+    // if the user toggles DJ off later.
+    state.recs.anchorKey = seedKey;
+    state.recs.loading = true;
+    if (el.queueRecsEmpty) el.queueRecsEmpty.hidden = true;
+    // Keep the previous list visible until the new one lands to avoid a
+    // flash of loader on every queue-add. Only show the spinner if we have
+    // nothing to render yet.
+    if (!state.recs.list.length) {
+      if (el.queueRecsList) { el.queueRecsList.hidden = true; el.queueRecsList.innerHTML = ''; }
+      if (el.queueRecsLoading) el.queueRecsLoading.hidden = false;
+    }
+    const reqToken = ++state.recs.reqToken;
+    dj.reqToken = reqToken;
+    try {
+      const { positives, negatives } = djBuildWeights();
+      const body = {
+        mode: 'dj',
+        positive_ids: positives,
+        negative_ids: negatives,
+        exclude_ids: djExcludeIds(),
+        limit: 8
+      };
+      const r = await fetchWithAuth('/api/tracks/' + encodeURIComponent(seedKey) + '/similar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (reqToken !== state.recs.reqToken) return;
+      if (!r || !r.ok) {
+        state.recs.list = [];
+        dj.lastRecs = [];
+      } else {
+        const j = await r.json();
+        const results = (j && j.tracks) || [];
+        state.recs.list = results;
+        dj.lastRecs = results.slice();
+      }
+    } catch (_) {
+      if (reqToken !== state.recs.reqToken) return;
+      state.recs.list = [];
+      dj.lastRecs = [];
+    } finally {
+      if (reqToken === state.recs.reqToken) {
+        state.recs.loading = false;
+        if (el.queueRecsLoading) el.queueRecsLoading.hidden = true;
+        renderRecs();
+      }
+    }
+  }
+
+  // On queue-empty autoplay: one fetch, top pick plays, rest becomes the
+  // sidebar. loadTrack's follow-up refresh is suppressed by the buffer-
+  // signature guard in djRefreshRecs, so this is exactly one round-trip.
+  async function djPickAndPlayFresh() {
+    const seed = state.current;
+    if (!seed) return;
+    try { await djRefreshRecs(seed); } catch (_) {}
+    const dj = state.dj;
+    const picks = (dj && dj.lastRecs) ? dj.lastRecs.slice() : [];
+    if (!picks.length) return;
+    const next = picks.shift();
+    // Sidebar now shows what's next after this pick.
+    dj.lastRecs = picks;
+    state.recs.list = picks;
+    try { renderRecs(); } catch (_) {}
+    try { flashDjConsume(trackKeyOf(next)); } catch (_) {}
+    setVibeFromTrack(next);
+    loadTrack(next);
+  }
+
+  // UI reflection — toggle button + section title text.
+  function djApplyUI() {
+    const on = !!state.dj.enabled;
+    if (el.djToggle) {
+      el.djToggle.classList.toggle('is-active', on);
+      el.djToggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+    if (el.queueRecsTitle) {
+      el.queueRecsTitle.textContent = on ? 'DJ picks' : 'Recommended for this track';
+    }
+    const recsSection = el.queueRecsList && el.queueRecsList.closest('.queue-section-recs');
+    if (recsSection) recsSection.classList.toggle('is-dj-active', on);
+  }
+
+  function djSetEnabled(on, opts) {
+    const nextOn = !!on;
+    const prev = state.dj.enabled;
+    state.dj.enabled = nextOn;
+    try { localStorage.setItem(DJ_TOGGLE_KEY, nextOn ? '1' : '0'); } catch (_) {}
+    djApplyUI();
+    if (nextOn && !prev) {
+      if (!opts || !opts.silent) toast('DJ mode on — session-weighted picks in the sidebar.', 'success');
+      // Immediately swap the sidebar over to DJ picks for the current seed.
+      if (state.current) djRefreshRecs(state.current);
+    } else if (!nextOn && prev) {
+      if (!opts || !opts.silent) toast('DJ mode off.', 'info');
+      state.dj.lastRecs = [];
+      // Revert the sidebar to plain vibe-similarity for the current seed.
+      // Force a fresh fetch since we're changing data sources.
+      state.recs.anchorKey = null;
+      state.recs.list = [];
+      if (state.current) {
+        try { loadRecommendationsFor(state.current); } catch (_) {}
+      } else {
+        renderRecs();
+      }
+    }
+  }
+
+  function djRestore() {
+    // Rehydrate events buffer + toggle from localStorage. Called once at boot.
+    state.dj.events = djLoadEvents();
+    let saved = '0';
+    try { saved = localStorage.getItem(DJ_TOGGLE_KEY) || '0'; } catch (_) {}
+    state.dj.enabled = saved === '1';
+    djApplyUI();
+  }
+
+  if (el.djToggle) {
+    el.djToggle.addEventListener('click', () => {
+      djSetEnabled(!state.dj.enabled);
+    });
+  }
+  djRestore();
+
   // Delegated click handling for both lists.
   function onQueueSidebarClick(ev) {
+    // Grip is a <button> with no data-action. Clicks land here when the user
+    // taps the grip without moving (below drag threshold). Swallow so the row
+    // click handler below doesn't fire jump/play-rec.
+    if (ev.target.closest && ev.target.closest('[data-drag-handle]')) return;
     const btn = ev.target.closest && ev.target.closest('button[data-action]');
     if (btn) {
       const action = btn.getAttribute('data-action');
@@ -4691,6 +5402,262 @@
 
   if (el.queueSidebar) el.queueSidebar.addEventListener('click', onQueueSidebarClick);
   if (el.queueClear) el.queueClear.addEventListener('click', clearQueue);
+
+  // ---- Pointer-based drag engine -------------------------------------------
+  // One engine handles three sources (queue reorder, rec -> queue, search-lib
+  // -> queue) via [data-drag-source] on the row and [data-drag-handle] on the
+  // grip. Uses Pointer Events so touch + mouse share a single code path —
+  // HTML5 DnD is skipped because it doesn't fire on touchscreens.
+  //
+  // Search rows (mouse only) can be dragged from anywhere on the row; queue
+  // and rec rows require pressing the grip so that tapping the row still
+  // triggers jump/play-rec.
+  const drag = {
+    active: false,
+    started: false,
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    sourceEl: null,
+    sourceKind: null,          // 'queue' | 'rec' | 'search-lib'
+    sourceIdx: -1,             // for kind='queue'
+    sourceKey: null,           // for rec/search
+    ghost: null,
+    ghostOffsetY: 0,
+    indicator: null,
+    dropTargetIdx: -1,         // insert-before index into state.queue (-1 = none)
+    ranCleanup: false,
+  };
+  const DRAG_THRESHOLD = 6; // px before mouse drag actually starts
+
+  function findDragSource(target) {
+    if (!target || !target.closest) return null;
+    return target.closest('[data-drag-source]');
+  }
+
+  // Resolve a drag source's identifiers back to a full track object so the
+  // ghost card can render artwork + title without cloning the DOM.
+  function trackFromDragSource(kind, idx, key) {
+    if (kind === 'queue') return state.queue[idx] || null;
+    if (kind === 'rec') {
+      return (state.recs.list || []).find((x) => trackKeyOf(x) === key) || null;
+    }
+    if (kind === 'search-lib') {
+      const lib = (search && search.lastResults && search.lastResults.library) || [];
+      return lib.find((x) => String(x.spotify_id || '') === key || String(x.apple_id || '') === key) || null;
+    }
+    return null;
+  }
+
+  function onPointerDown(ev) {
+    if (drag.active) return;
+    if (ev.button !== undefined && ev.button !== 0) return; // left-click only
+    const isTouch = ev.pointerType === 'touch';
+    const handle = ev.target.closest && ev.target.closest('[data-drag-handle]');
+    const source = findDragSource(ev.target);
+    if (!source) return;
+    const kind = source.getAttribute('data-drag-source');
+    // Touch: require grip for queue/rec rows so tap-to-jump / tap-to-play-rec
+    // still work (no movement threshold on touch — a tap would otherwise start
+    // a drag). Mouse: drag from anywhere on the row; the 6px threshold in
+    // onPointerMove protects the click.
+    if ((kind === 'queue' || kind === 'rec') && isTouch && !handle) return;
+    if (kind === 'search-lib' && isTouch) return; // search view has no visible queue on mobile
+
+    drag.pointerId = ev.pointerId;
+    drag.startX = ev.clientX;
+    drag.startY = ev.clientY;
+    drag.sourceEl = source;
+    drag.sourceKind = kind;
+    drag.sourceIdx = kind === 'queue' ? parseInt(source.getAttribute('data-drag-idx'), 10) : -1;
+    drag.sourceKey = source.getAttribute('data-drag-key') || null;
+    drag.active = true;
+    drag.started = false;
+    drag.ranCleanup = false;
+
+    // Grip drags on touch feel best when they start immediately (no threshold).
+    // Also prevents the browser from starting a scroll gesture before we do.
+    if (handle && isTouch) {
+      ev.preventDefault();
+      beginDrag(ev);
+    }
+    // Mouse: suppress the default text-selection gesture that mousedown
+    // normally kicks off. preventDefault on pointerdown does not block the
+    // subsequent click, so tap-to-jump / tap-to-play-rec still work.
+    if (!isTouch) {
+      ev.preventDefault();
+    }
+
+    document.addEventListener('pointermove', onPointerMove, { passive: false });
+    document.addEventListener('pointerup', onPointerUp, { once: false });
+    document.addEventListener('pointercancel', onPointerCancel, { once: false });
+  }
+
+  function beginDrag(ev) {
+    if (drag.started) return;
+    drag.started = true;
+
+    const src = drag.sourceEl;
+    const rect = src.getBoundingClientRect();
+    // Build a compact fresh ghost card from the source track's data so it
+    // renders identically whether the source is a .queue-item (li, grid) or
+    // a .search-item (div, flex). Cloning was leaking mismatched layouts.
+    const t = trackFromDragSource(drag.sourceKind, drag.sourceIdx, drag.sourceKey);
+    const ghost = document.createElement('div');
+    ghost.className = 'queue-drop-ghost';
+    const artUrl = t && t.artwork_url ? t.artwork_url : '';
+    const title = escapeHtml((t && t.title) || 'Track');
+    const artist = escapeHtml((t && t.artist) || '');
+    ghost.innerHTML =
+      (artUrl
+        ? '<img class="queue-drop-ghost-art" src="' + escapeHtml(artUrl) + '" alt="" />'
+        : '<div class="queue-drop-ghost-art"></div>') +
+      '<div class="queue-drop-ghost-body">' +
+        '<div class="queue-drop-ghost-title">' + title + '</div>' +
+        '<div class="queue-drop-ghost-sub">' + artist + '</div>' +
+      '</div>';
+    const width = Math.min(Math.max(rect.width, 220), 320);
+    ghost.style.width = width + 'px';
+    ghost.style.left = (ev.clientX - width / 2) + 'px';
+    ghost.style.top = (ev.clientY - 24) + 'px';
+    document.body.appendChild(ghost);
+    drag.ghost = ghost;
+    drag.ghostWidth = width;
+    drag.ghostOffsetY = 24;
+
+    src.classList.add('is-dragging');
+    document.body.classList.add('is-dragging-active');
+    // Clear any selection the mousedown may have already started before
+    // the threshold was crossed.
+    try { const s = window.getSelection(); if (s) s.removeAllRanges(); } catch (_) {}
+
+    if (el.queueList) el.queueList.classList.add('is-drop-active');
+
+    const ind = document.createElement('div');
+    ind.className = 'queue-drop-indicator';
+    document.body.appendChild(ind);
+    drag.indicator = ind;
+
+    updateDropTarget(ev.clientX, ev.clientY);
+  }
+
+  function onPointerMove(ev) {
+    if (!drag.active) return;
+    if (!drag.started) {
+      const dx = ev.clientX - drag.startX;
+      const dy = ev.clientY - drag.startY;
+      if ((dx * dx + dy * dy) < (DRAG_THRESHOLD * DRAG_THRESHOLD)) return;
+      beginDrag(ev);
+    }
+    ev.preventDefault();
+    if (drag.ghost) {
+      drag.ghost.style.left = (ev.clientX - drag.ghostWidth / 2) + 'px';
+      drag.ghost.style.top = (ev.clientY - drag.ghostOffsetY) + 'px';
+    }
+    updateDropTarget(ev.clientX, ev.clientY);
+  }
+
+  function updateDropTarget(x, y) {
+    const list = el.queueList;
+    if (!list || list.hidden) {
+      // Queue is empty — allow drop-to-add-at-0 when hovering the empty state.
+      const empty = el.queueEmpty;
+      const box = empty && !empty.hidden ? empty.getBoundingClientRect() : null;
+      if (box && x >= box.left && x <= box.right && y >= box.top && y <= box.bottom) {
+        drag.dropTargetIdx = 0;
+        if (drag.indicator) {
+          drag.indicator.style.left = box.left + 'px';
+          drag.indicator.style.top = (box.top + box.height / 2) + 'px';
+          drag.indicator.style.width = box.width + 'px';
+          drag.indicator.style.opacity = '1';
+        }
+      } else {
+        drag.dropTargetIdx = -1;
+        if (drag.indicator) drag.indicator.style.opacity = '0';
+      }
+      return;
+    }
+    const box = list.getBoundingClientRect();
+    if (x < box.left || x > box.right || y < box.top - 20 || y > box.bottom + 20) {
+      drag.dropTargetIdx = -1;
+      if (drag.indicator) drag.indicator.style.opacity = '0';
+      return;
+    }
+    const rows = list.querySelectorAll('.queue-item');
+    let targetIdx = rows.length;
+    let indicatorY = null;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i].getBoundingClientRect();
+      const mid = r.top + r.height / 2;
+      if (y < mid) {
+        targetIdx = i;
+        indicatorY = r.top;
+        break;
+      }
+    }
+    if (indicatorY == null && rows.length) {
+      indicatorY = rows[rows.length - 1].getBoundingClientRect().bottom;
+    } else if (indicatorY == null) {
+      indicatorY = box.top;
+    }
+    drag.dropTargetIdx = targetIdx;
+    if (drag.indicator) {
+      drag.indicator.style.left = box.left + 'px';
+      drag.indicator.style.top = indicatorY + 'px';
+      drag.indicator.style.width = box.width + 'px';
+      drag.indicator.style.opacity = '1';
+    }
+  }
+
+  function onPointerUp(ev) {
+    if (!drag.active) return;
+    const started = drag.started;
+    const target = drag.dropTargetIdx;
+    const kind = drag.sourceKind;
+    const srcIdx = drag.sourceIdx;
+    const srcKey = drag.sourceKey;
+    cleanupDrag();
+    if (!started || target < 0) return;
+    if (kind === 'queue') {
+      moveInQueue(srcIdx, target);
+    } else if (kind === 'rec') {
+      const t = (state.recs.list || []).find((x) => trackKeyOf(x) === srcKey);
+      if (t && addToQueueAt(t, target)) toast('Added to queue.', 'success');
+    } else if (kind === 'search-lib') {
+      const lib = (search && search.lastResults && search.lastResults.library) || [];
+      const t = lib.find((x) => String(x.spotify_id || '') === srcKey || String(x.apple_id || '') === srcKey);
+      if (t && addToQueueAt(t, target)) toast('Added to queue.', 'success');
+    }
+  }
+
+  function onPointerCancel() {
+    cleanupDrag();
+  }
+
+  function cleanupDrag() {
+    if (drag.ranCleanup) return;
+    drag.ranCleanup = true;
+    document.removeEventListener('pointermove', onPointerMove);
+    document.removeEventListener('pointerup', onPointerUp);
+    document.removeEventListener('pointercancel', onPointerCancel);
+    if (drag.sourceEl) drag.sourceEl.classList.remove('is-dragging');
+    document.body.classList.remove('is-dragging-active');
+    if (drag.ghost && drag.ghost.parentNode) drag.ghost.parentNode.removeChild(drag.ghost);
+    if (drag.indicator && drag.indicator.parentNode) drag.indicator.parentNode.removeChild(drag.indicator);
+    if (el.queueList) el.queueList.classList.remove('is-drop-active');
+    drag.active = false;
+    drag.started = false;
+    drag.pointerId = null;
+    drag.sourceEl = null;
+    drag.sourceKind = null;
+    drag.sourceIdx = -1;
+    drag.sourceKey = null;
+    drag.ghost = null;
+    drag.indicator = null;
+    drag.dropTargetIdx = -1;
+  }
+
+  document.addEventListener('pointerdown', onPointerDown);
 
   // Initial paint
   renderQueue();
@@ -4973,7 +5940,7 @@
     const sel = collectSyncSelection();
     if (!sel.liked && !sel.top && sel.playlist_ids.length === 0) return;
     setSyncView('progress');
-    updateSyncProgress({ processed: 0, total: sel.total || 0, newly_analyzed: 0, linked_from_global: 0, already_in_library: 0, no_preview: 0, current_track: 'Starting…' });
+    updateSyncProgress({ processed: 0, total: sel.total || 0, added_to_library: 0, already_in_library: 0, queued_for_analysis: 0, current_track: 'Starting…' });
 
     try {
       const r = await fetchWithAuth('/api/ingest/spotify', {
@@ -5018,7 +5985,7 @@
     if (spotify.accessToken) body.access_token = spotify.accessToken;
 
     setSyncView('progress');
-    updateSyncProgress({ processed: 0, total: 0, newly_analyzed: 0, linked_from_global: 0, already_in_library: 0, no_preview: 0, current_track: 'Starting…' });
+    updateSyncProgress({ processed: 0, total: 0, added_to_library: 0, already_in_library: 0, queued_for_analysis: 0, current_track: 'Starting…' });
 
     try {
       const r = await fetchWithAuth('/api/ingest/spotify-public', {
@@ -5127,16 +6094,25 @@
       }
       if (s.status === 'complete') {
         stopSyncPolling();
-        // Four-bucket summary: new / linked / already yours / no preview.
-        const nNew     = s.newly_analyzed     || 0;
-        const nLinked  = s.linked_from_global || 0;
-        const nAlready = s.already_in_library || 0;
-        const nDropped = s.no_preview         || 0;
-        const total    = s.total              || 0;
-        const landed   = nNew + nLinked + nAlready;
-        const summary =
-          `${landed} of ${total} in your library — ` +
-          `${nNew} new, ${nLinked} linked from global, ${nAlready} already yours, ${nDropped} no preview.`;
+        // Three-bucket summary: added / already yours / queued.
+        // Analysis (preview cascade + ML + Whisper) runs offline via
+        // scripts/run_ingest_worker.py — queued rows will appear in the
+        // library once the worker finishes them.
+        const nAdded   = s.added_to_library    || 0;
+        const nAlready = s.already_in_library  || 0;
+        const nQueued  = s.queued_for_analysis || 0;
+        const total    = s.total               || 0;
+        const playable = nAdded + nAlready;
+        let summary =
+          `${playable} of ${total} playable in your library now — ` +
+          `${nAdded} added, ${nAlready} already yours`;
+        if (nQueued > 0) {
+          summary +=
+            `. ${nQueued} queued for analysis — they'll appear once the ` +
+            `background worker finishes them.`;
+        } else {
+          summary += '.';
+        }
         el.syncCompleteSummary.textContent = summary;
         setSyncView('complete');
       } else if (s.status === 'error') {
@@ -5157,10 +6133,9 @@
     el.syncProgressPct.textContent = pct + '%';
     el.syncProgressCounts.textContent = `${processed} / ${total}`;
     el.syncCurrentTrack.textContent = s.current_track || '—';
-    if (el.syncStatNew)       el.syncStatNew.textContent       = String(s.newly_analyzed     || 0);
-    if (el.syncStatLinked)    el.syncStatLinked.textContent    = String(s.linked_from_global || 0);
-    if (el.syncStatAlready)   el.syncStatAlready.textContent   = String(s.already_in_library || 0);
-    if (el.syncStatNoPreview) el.syncStatNoPreview.textContent = String(s.no_preview         || 0);
+    if (el.syncStatAdded)   el.syncStatAdded.textContent   = String(s.added_to_library     || 0);
+    if (el.syncStatAlready) el.syncStatAlready.textContent = String(s.already_in_library   || 0);
+    if (el.syncStatQueued)  el.syncStatQueued.textContent  = String(s.queued_for_analysis  || 0);
   }
 
   async function cancelSyncJob() {
@@ -5309,169 +6284,21 @@
     if (!handled) restoreSpotifySession();
   }
 
-  // ============ Admin panel (chandan-only) ============
-  const adminEl = {
-    overlay: document.getElementById('adminOverlay'),
-    backdrop: document.getElementById('adminBackdrop'),
-    close: document.getElementById('btnAdminClose'),
-    loading: document.getElementById('adminLoading'),
-    list: document.getElementById('adminUsersList'),
-    body: document.getElementById('adminBody'),
-    detail: document.getElementById('adminDetail'),
-    detailBody: document.getElementById('adminDetailBody'),
-    back: document.getElementById('btnAdminBack'),
-  };
-
-  function openAdmin() {
-    if (!adminEl.overlay) return;
-    if (!auth.user || !auth.user.is_admin) {
-      toast('Admin panel is restricted.', 'error');
-      return;
-    }
-    adminEl.overlay.hidden = false;
-    adminEl.detail.hidden = true;
-    adminEl.body.hidden = false;
-    closeUserMenu();
-    loadAdminUsers();
-  }
-
-  function closeAdmin() {
-    if (adminEl.overlay) adminEl.overlay.hidden = true;
-  }
-
-  async function loadAdminUsers() {
-    adminEl.loading.hidden = false;
-    adminEl.list.hidden = true;
-    adminEl.list.innerHTML = '';
-    try {
-      const r = await fetchWithAuth('/api/admin/users');
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const j = await r.json();
-      renderAdminUsers(j.users || []);
-    } catch (e) {
-      adminEl.list.innerHTML = '<div class="admin-loading">Failed to load users: ' + escapeHtml(String(e)) + '</div>';
-      adminEl.list.hidden = false;
-    } finally {
-      adminEl.loading.hidden = true;
-    }
-  }
-
-  function escapeHtml(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
-
-  function renderAdminUsers(users) {
-    adminEl.list.innerHTML = '';
-    users.forEach((u) => {
-      const row = document.createElement('div');
-      row.className = 'admin-user-row';
-      const badge = u.is_admin ? '<span class="admin-user-badge">admin</span>' : '';
-      const spName = u.spotify_display_name ? ' · Spotify: ' + escapeHtml(u.spotify_display_name) : '';
-      const created = u.created_at ? new Date(u.created_at).toLocaleDateString() : '—';
-      row.innerHTML = `
-        <div class="admin-user-info">
-          <div class="admin-user-name">${escapeHtml(u.display_name)} ${badge}</div>
-          <div class="admin-user-meta">id ${u.user_id} · created ${created}${spName}</div>
-        </div>
-        <div class="admin-user-count">${u.track_count} tracks</div>
-        <div class="admin-actions">
-          <button class="admin-btn" data-action="stats" data-uid="${u.user_id}">Stats</button>
-          <button class="admin-btn admin-btn-danger" data-action="delete" data-uid="${u.user_id}" ${u.is_admin ? 'disabled' : ''}>Delete</button>
-        </div>
-      `;
-      adminEl.list.appendChild(row);
-    });
-    adminEl.list.hidden = false;
-
-    adminEl.list.querySelectorAll('[data-action="stats"]').forEach((btn) => {
-      btn.addEventListener('click', () => loadAdminStats(parseInt(btn.dataset.uid, 10)));
-    });
-    adminEl.list.querySelectorAll('[data-action="delete"]').forEach((btn) => {
-      btn.addEventListener('click', () => confirmDeleteUser(parseInt(btn.dataset.uid, 10)));
-    });
-  }
-
-  async function loadAdminStats(userId) {
-    adminEl.body.hidden = true;
-    adminEl.detail.hidden = false;
-    adminEl.detailBody.innerHTML = '<div class="admin-loading">Loading stats…</div>';
-    try {
-      const r = await fetchWithAuth('/api/admin/users/' + userId + '/stats');
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const s = await r.json();
-      renderAdminStats(s);
-    } catch (e) {
-      adminEl.detailBody.innerHTML = '<div class="admin-loading">Failed to load: ' + escapeHtml(String(e)) + '</div>';
-    }
-  }
-
-  function renderAdminStats(s) {
-    const fmt = (n, d = 2) => (n == null ? '—' : (Math.round(n * Math.pow(10, d)) / Math.pow(10, d)).toString());
-    const moods = (s.by_mood || []).map(m =>
-      `<span class="admin-chip">${escapeHtml(m.mood)}<span class="admin-chip-count">${m.count}</span></span>`
-    ).join('');
-    const sources = (s.by_source || []).map(m =>
-      `<span class="admin-chip">${escapeHtml(m.source)}<span class="admin-chip-count">${m.count}</span></span>`
-    ).join('');
-    const artists = (s.top_artists || []).map(m =>
-      `<span class="admin-chip">${escapeHtml(m.artist)}<span class="admin-chip-count">${m.count}</span></span>`
-    ).join('');
-
-    adminEl.detailBody.innerHTML = `
-      <h3 style="margin:0 0 4px;font-size:16px;">${escapeHtml(s.display_name)}</h3>
-      <p style="margin:0;color:rgba(255,255,255,0.5);font-size:12px;">id ${s.user_id} · ${s.spotify_display_name ? 'Spotify: ' + escapeHtml(s.spotify_display_name) : 'no Spotify link'}</p>
-      <div class="admin-stat-grid">
-        <div class="admin-stat-card"><div class="admin-stat-label">Tracks</div><div class="admin-stat-value">${s.track_count}</div></div>
-        <div class="admin-stat-card"><div class="admin-stat-label">Avg vibe (ML)</div><div class="admin-stat-value">${fmt(s.avg_vibe_ml)}</div></div>
-        <div class="admin-stat-card"><div class="admin-stat-label">Avg activation</div><div class="admin-stat-value">${fmt(s.avg_activation, 1)}</div></div>
-      </div>
-      <div class="admin-section-title">Moods</div>
-      <div class="admin-chip-row">${moods || '<span class="admin-chip">none</span>'}</div>
-      <div class="admin-section-title">Classification sources</div>
-      <div class="admin-chip-row">${sources || '<span class="admin-chip">none</span>'}</div>
-      <div class="admin-section-title">Top artists</div>
-      <div class="admin-chip-row">${artists || '<span class="admin-chip">none</span>'}</div>
-    `;
-  }
-
-  async function confirmDeleteUser(userId) {
-    if (!window.confirm('Delete user #' + userId + '? Their PIN + library link will be removed. Global tracks stay. This cannot be undone.')) return;
-    try {
-      const r = await fetchWithAuth('/api/admin/users/' + userId, { method: 'DELETE' });
-      if (!r.ok && r.status !== 204) {
-        let msg = 'HTTP ' + r.status;
-        try { const j = await r.json(); if (j && j.detail && j.detail.error) msg = j.detail.error; } catch (_) {}
-        throw new Error(msg);
-      }
-      toast('User deleted.', 'success');
-      loadAdminUsers();
-    } catch (e) {
-      toast('Delete failed: ' + e.message, 'error');
-    }
-  }
-
-  if (adminEl.overlay) {
-    const btnAdmin = document.getElementById('btnUserAdmin');
-    if (btnAdmin) btnAdmin.addEventListener('click', openAdmin);
-    if (adminEl.close) adminEl.close.addEventListener('click', closeAdmin);
-    if (adminEl.backdrop) adminEl.backdrop.addEventListener('click', closeAdmin);
-    if (adminEl.back) adminEl.back.addEventListener('click', () => {
-      adminEl.detail.hidden = true;
-      adminEl.body.hidden = false;
-    });
-  }
+  // Admin panel lives at /admin now. The user-menu link (#btnUserAdmin
+  // in index.html) is a plain <a href="/admin"> and is hidden for non-
+  // admin users via updateUserMenu() based on /api/auth/me is_admin.
 
   // Try to hydrate an existing session from localStorage; if success, boot
-  // the app. Otherwise show the profile picker.
+  // the app. Otherwise bounce to the landing page — there's no in-app
+  // sign-in surface anymore (PIN accounts were removed, Spotify + Guest
+  // both live on /).
   (async () => {
     const authed = await hydrateSessionFromStorage();
     if (authed) {
       hideAuthOverlay();
       bootAuthenticatedApp();
     } else {
-      showAuthOverlay();
+      window.location.replace('/');
     }
   })();
 })();

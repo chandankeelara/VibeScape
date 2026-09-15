@@ -7,7 +7,8 @@ RUN pip install --no-cache-dir \
     "uvicorn[standard]>=0.24.0" \
     "requests>=2.31.0" \
     "modal>=0.63.0" \
-    "python-dotenv>=1.0.0"
+    "python-dotenv>=1.0.0" \
+    "numpy>=1.24"
 
 COPY backend/ /app/backend/
 COPY frontend/ /app/frontend/
@@ -28,5 +29,5 @@ WORKDIR /app/backend
 EXPOSE 8000
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-# Cloud Run injects $PORT=8080; Fly / local honor the ENV PORT=8000 default.
+# Cloud Run injects $PORT=8080; local runs honor the ENV PORT=8000 default.
 CMD ["sh", "-c", "exec uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}"]

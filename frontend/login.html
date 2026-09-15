@@ -1,0 +1,592 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+
+  <title>VibeScape — Sort your music by mood, energy, and vibe</title>
+  <meta name="description" content="A music player that scores every song for energy and mood. Drag a two-axis slider to build vibe-consistent queues from your Spotify library. Free — no signup required." />
+  <meta name="keywords" content="mood music player, sort music by mood, spotify mood playlist, vibe playlist, energy based playlist, mood based music, music recommendations by feeling, audio ml music player" />
+  <meta name="theme-color" content="#08080c" />
+  <link rel="canonical" href="/" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="VibeScape — Sort your music by mood, energy, and vibe" />
+  <meta property="og:description" content="Drag a slider from chill to hype. VibeScape scores your Spotify library and builds queues that hold a vibe from start to finish." />
+  <meta property="og:site_name" content="VibeScape" />
+  <meta property="og:image" content="/og-cover.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="VibeScape — Sort your music by mood, energy, and vibe" />
+  <meta name="twitter:description" content="A music player that groups your songs by how they feel. Free — try the demo in one click." />
+
+  <link rel="preconnect" href="https://accounts.spotify.com" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/login.css" />
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "VibeScape",
+    "applicationCategory": "MultimediaApplication",
+    "operatingSystem": "Web, iOS, Android",
+    "description": "A free mood-based music player. Sort your Spotify library along an energy axis, filter by five moods from sleep to beast, and build queues that hold a consistent vibe.",
+    "featureList": [
+      "Vibe slider along an energy axis",
+      "Five mood filters: sleep, chill, steady, hype, beast",
+      "Spotify library sync (liked songs, playlists, top tracks)",
+      "AI-powered similar tracks",
+      "Full-text library search",
+      "YouTube video playback",
+      "Mobile-first responsive design",
+      "Bluetooth transport controls",
+      "One-click Spotify sign-in",
+      "Automatic language detection"
+    ],
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "author": { "@type": "Person", "name": "Chandan Keelara" }
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "How does VibeScape sort music by mood?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Every track in your library is scored for energy using a fine-tuned audio-ML model. That score places it in one of five mood buckets — sleep, chill, steady, hype, or beast — which become one-tap filters. You can also drag a vibe slider to blend between them."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Do I need a Spotify Premium account?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No. VibeScape works with a free Spotify account for library import, and plays previews or YouTube videos of your tracks. Spotify Premium unlocks in-app streaming of full songs via the Spotify Web Playback SDK."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I try VibeScape without signing up?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. Click Just listen on the landing page to enter a shared demo library instantly, no account required. When you're ready, sign in with Spotify to import your own music — your Spotify account IS your VibeScape identity, no separate password or PIN."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is VibeScape free?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes, VibeScape is free and open source. There are no ads, no paid tiers, and no data sold. Source code lives on GitHub."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does it work on my phone?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. The mobile layout uses your album art as a full-viewport backdrop, a slide-up queue sheet, and native Bluetooth transport controls via the Media Session API so play, pause, and skip work from your headphones or car."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What languages does VibeScape support?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The library is language-agnostic. VibeScape uses Whisper to detect the sung language of each track — including Indian, Punjabi, Tamil, and other regional catalogs that western music APIs often miss — and labels them in the player. Instrumentals are left untagged rather than guessed."
+        }
+      }
+    ]
+  }
+  </script>
+</head>
+
+<body data-vibe="42">
+
+  <header class="site-nav">
+    <a class="brand" href="/">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">VibeScape</span>
+    </a>
+    <nav class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#mobile">Mobile</a>
+      <a href="#faq">FAQ</a>
+      <a href="https://github.com/chandankeelara/VibeScape" target="_blank" rel="noopener" aria-label="VibeScape on GitHub">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+
+    <!-- ============================================================
+         HERO — the whole product in one screen.
+         Left: massive editorial headline + three CTAs stacked by weight.
+         Right: LIVE vibe slider (draggable) that shifts the mood cell,
+                the accent color of the page, and a "now playing"-style
+                mock track card. This IS the demo.
+    ============================================================= -->
+    <section class="hero">
+      <div class="hero-copy">
+        <span class="eyebrow">
+          <span class="eyebrow-dot"></span>
+          <span>mood-based music player</span>
+        </span>
+
+        <h1 class="hero-h1">
+          Play music in
+          <span class="mood-swap"><span class="serif-em" data-mood-word>chill</span></span>
+          mode.
+        </h1>
+
+        <p class="lede">
+          Every song, scored for energy and mood.
+          Drag the slider &mdash; your queue shifts with it.
+          Sign in with Spotify to sort your own library,
+          or start listening in one tap.
+        </p>
+
+        <div class="cta-stack" role="group" aria-label="Sign in options">
+          <button id="ctaLogin" class="cta cta-primary" type="button">
+            <svg class="cta-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
+              <polyline points="10 17 15 12 10 7"/>
+              <line x1="15" y1="12" x2="3" y2="12"/>
+            </svg>
+            <span class="cta-label">
+              <span class="cta-title">Log in</span>
+              <span class="cta-sub">Spotify, email &mdash; more providers soon</span>
+            </span>
+            <span class="cta-arrow" aria-hidden="true">→</span>
+          </button>
+
+          <button id="ctaGuest" class="cta cta-quiet" type="button">
+            <svg class="cta-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path fill="currentColor" d="M8 5v14l11-7z"/>
+            </svg>
+            <span class="cta-label">
+              <span class="cta-title">Just listen</span>
+              <span class="cta-sub">No signup &mdash; curated library, streamed from YouTube</span>
+            </span>
+            <span class="cta-arrow" aria-hidden="true">→</span>
+          </button>
+
+          <p class="cta-note">
+            No passwords required when you use Spotify.
+            Your identity is <em>yours</em> &mdash; guest sessions are ephemeral.
+          </p>
+        </div>
+
+        <ul class="proof-strip" aria-label="At a glance">
+          <li><span class="proof-num">5</span><span class="proof-lbl">moods</span></li>
+          <li><span class="proof-num">1</span><span class="proof-lbl">click sign-in</span></li>
+          <li><span class="proof-num">0</span><span class="proof-lbl">passwords</span></li>
+          <li><span class="proof-num">0</span><span class="proof-lbl">ads</span></li>
+        </ul>
+      </div>
+
+      <!--
+        Signature moment: the live vibe demo.
+        The real player uses this exact chip / hero-num / slider vocabulary.
+        Dragging updates:
+          - body data-vibe → CSS interpolates --accent
+          - .vibe-num text
+          - .mood-word serif label
+          - the .mood-cell that's active
+          - the mock track card (title/artist swap from a table)
+        The mood-grid + mood-cells + mood-cursor from the old contract are
+        still here — cursor now snaps to the cell that the slider selects
+        instead of cycling on a timer. login.js still targets the same
+        element IDs / classes.
+      -->
+      <aside class="hero-demo" aria-label="Live vibe demo">
+
+        <!-- Mock now-playing card, styled after the real player chips -->
+        <div class="np-card">
+          <div class="np-art" aria-hidden="true" data-np-art>
+            <div class="np-art-inner"></div>
+            <img class="np-art-img" alt="" data-np-art-img />
+          </div>
+          <div class="np-body">
+            <div class="np-title" data-np-title>Late Night Drive</div>
+            <div class="np-sub" data-np-sub>The Midnight · Kids</div>
+            <div class="np-chips">
+              <span class="np-chip np-chip-mood" data-np-mood>chill</span>
+              <span class="np-chip np-chip-vibe"><span data-np-vibe>42</span>/100</span>
+              <span class="np-chip np-chip-genre">synthwave</span>
+            </div>
+            <div class="np-progress" aria-hidden="true">
+              <span class="np-progress-fill"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Mood ladder (a stack of 5 bands, top=beast bottom=sleep).
+             Mirrors the player's MOODS table in app.js — same five buckets,
+             same 0..100 boundaries. Kept in the DOM as .mood-grid /
+             .mood-cell / .mood-cursor for login.js compatibility — visual is
+             a vertical ladder now. -->
+        <div class="mood-ladder">
+          <div class="mood-grid" data-orientation="vertical">
+            <div class="mood-grid-label mood-grid-label-top">energy ↑</div>
+            <div class="mood-cell" data-mood="beast"  data-vibe-min="80">beast</div>
+            <div class="mood-cell" data-mood="hype"   data-vibe-min="60">hype</div>
+            <div class="mood-cell" data-mood="steady" data-vibe-min="40">steady</div>
+            <div class="mood-cell active" data-mood="chill" data-vibe-min="20">chill</div>
+            <div class="mood-cell" data-mood="sleep"  data-vibe-min="0">sleep</div>
+            <div class="mood-grid-label mood-grid-label-bot">energy ↓</div>
+            <span class="mood-cursor" aria-hidden="true"></span>
+          </div>
+
+          <!-- The live slider itself.
+               Vertical: dragging up = more energy. Snaps to the active cell. -->
+          <div class="vibe-slider-wrap">
+            <div class="vibe-hero-num">
+              <span class="vibe-num" data-vibe-num>42</span>
+              <span class="vibe-word" data-mood-word>chill</span>
+            </div>
+            <div class="vibe-slider-track">
+              <input
+                id="heroVibe"
+                class="vibe-slider"
+                type="range"
+                min="0" max="100" step="1" value="42"
+                aria-label="Vibe — drag to change mood"
+              />
+            </div>
+            <div class="vibe-slider-hint">
+              <kbd>↑</kbd><kbd>↓</kbd>
+              <span>drag</span>
+            </div>
+          </div>
+        </div>
+
+      </aside>
+    </section>
+
+    <!-- ============================================================
+         MOBILE — split with a real phone mockup that mirrors the app.
+    ============================================================= -->
+    <section id="mobile" class="split">
+      <div class="split-copy">
+        <span class="eyebrow eyebrow-static"><span class="eyebrow-dot"></span>mobile</span>
+        <h2>Built for the <span class="serif-em">phone</span> in your pocket.</h2>
+        <p class="split-lede">
+          On mobile, your album art becomes the whole screen. A single tap opens a slide-up queue. Bluetooth headphones and car stereos get play, pause, and skip through the Media Session API &mdash; no fumbling with the browser.
+        </p>
+        <ul class="check-list">
+          <li>Full-viewport album art backdrop</li>
+          <li>Slide-up queue sheet</li>
+          <li>Bluetooth &amp; car-stereo transport controls</li>
+          <li>Portrait-first controls that don&rsquo;t shrink</li>
+          <li>Works installed as a home-screen PWA</li>
+        </ul>
+      </div>
+
+      <div class="split-visual" aria-hidden="true">
+        <div class="phone-frame">
+          <div class="phone-notch"></div>
+          <div class="phone-screen">
+            <div class="phone-art"></div>
+            <div class="phone-veil"></div>
+            <div class="phone-meta">
+              <div class="phone-title">Late Night Drive</div>
+              <div class="phone-sub">The Midnight</div>
+              <div class="phone-chips">
+                <span class="phone-chip phone-chip-mood">chill</span>
+                <span class="phone-chip phone-chip-vibe">42</span>
+              </div>
+            </div>
+            <div class="phone-bottom">
+              <div class="phone-bar"><span></span></div>
+              <div class="phone-buttons">
+                <span class="pbtn" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+                </span>
+                <span class="pbtn pbtn-lg" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+                </span>
+                <span class="pbtn" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M6 18l8.5-6L6 6v12zM16 6v12h2V6z"/></svg>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         FEATURES — 3 tiers of visual weight.
+         Row 1: two hero features (vibe slider + moods) wide.
+         Row 2: 3 medium features.
+         Row 3: 4 tight features.
+    ============================================================= -->
+    <section id="features" class="features">
+      <header class="section-head">
+        <span class="eyebrow eyebrow-static"><span class="eyebrow-dot"></span>the player</span>
+        <h2>Everything a music library <span class="serif-em">should</span> do &mdash; and doesn&rsquo;t.</h2>
+        <p class="section-lede">Real features shipping today. Not a roadmap.</p>
+      </header>
+
+      <div class="feature-grid">
+
+        <!-- Hero features -->
+        <article class="feature feature-hero">
+          <div class="feature-tag"><span class="tag-num">01</span> Vibe slider</div>
+          <h3>Drag from sleep to beast.</h3>
+          <p>A single slider walks your entire library along an energy axis. Move it and the queue re-fills instantly with tracks that match &mdash; the color of the whole app shifts with your mood, from muted blue at chill to red at hype.</p>
+          <div class="feature-visual feature-visual-slider" aria-hidden="true">
+            <div class="fv-track"><span class="fv-fill"></span><span class="fv-thumb"></span></div>
+            <div class="fv-ticks">
+              <span>sleep</span><span>chill</span><span>steady</span><span>hype</span><span>beast</span>
+            </div>
+          </div>
+        </article>
+
+        <article class="feature feature-hero">
+          <div class="feature-tag"><span class="tag-num">02</span> Five moods</div>
+          <h3>One-tap mood filters.</h3>
+          <p>Every track lands in one of five mood buckets &mdash; <em>sleep</em>, <em>chill</em>, <em>steady</em>, <em>hype</em>, <em>beast</em>. Tap one to lock the queue there.</p>
+          <div class="feature-visual feature-visual-chips" aria-hidden="true">
+            <span class="fv-chip" style="--c:#4c5b8a">sleep</span>
+            <span class="fv-chip" style="--c:#00b4d8">chill</span>
+            <span class="fv-chip is-active" style="--c:#7c3aed">steady</span>
+            <span class="fv-chip" style="--c:#ec4899">hype</span>
+            <span class="fv-chip" style="--c:#f43f5e">beast</span>
+          </div>
+        </article>
+
+        <!-- Medium features -->
+        <article class="feature">
+          <div class="feature-tag"><span class="tag-num">03</span> Similar tracks</div>
+          <h3>Neighbors that hold the vibe.</h3>
+          <p>Every song surfaces eight neighbors from your library &mdash; ranked on four ML feature dimensions with a mood-match bonus so the next pick doesn&rsquo;t derail the session.</p>
+        </article>
+
+        <article class="feature">
+          <div class="feature-tag"><span class="tag-num">04</span> Search</div>
+          <h3>Instant library search.</h3>
+          <p><kbd class="inline-kbd">Ctrl</kbd> <kbd class="inline-kbd">K</kbd> opens full-text search across title, artist, and album. Prefix matches rank first, so what you&rsquo;re thinking of shows up first.</p>
+        </article>
+
+        <article class="feature">
+          <div class="feature-tag"><span class="tag-num">05</span> Spotify sync</div>
+          <h3>One-click library import.</h3>
+          <p>Pull in your Liked Songs, Top Tracks, or hand-picked playlists. Or paste any public playlist URL. Progress streams live so you can watch it happen.</p>
+        </article>
+
+        <!-- Tight features -->
+        <article class="feature feature-tight">
+          <div class="feature-tag"><span class="tag-num">06</span> Video mode</div>
+          <p>Swap between the 30-second audio preview and the full YouTube video for any track. Find a different video if the auto-match isn&rsquo;t right.</p>
+        </article>
+
+        <article class="feature feature-tight">
+          <div class="feature-tag"><span class="tag-num">07</span> One sign-in</div>
+          <p>Your Spotify account is your VibeScape identity. No separate password, no PIN, no second profile to remember &mdash; sign in once, land in your library.</p>
+        </article>
+
+        <article class="feature feature-tight">
+          <div class="feature-tag"><span class="tag-num">08</span> Language-aware</div>
+          <p>Whisper detects the sung language of every track &mdash; regional catalogs western APIs miss get labeled just as accurately. Instrumentals stay untagged rather than guessed.</p>
+        </article>
+
+        <article class="feature feature-tight">
+          <div class="feature-tag"><span class="tag-num">09</span> Free forever</div>
+          <p>MIT-licensed on <a href="https://github.com/chandankeelara/VibeScape" target="_blank" rel="noopener">GitHub</a>. Runs on your machine or a $5 VM. No ads, no telemetry.</p>
+        </article>
+
+      </div>
+    </section>
+
+    <!-- ============================================================
+         WORKS-WITH — quiet strip.
+    ============================================================= -->
+    <section id="works" class="strip">
+      <div class="strip-label">Works with</div>
+      <div class="logo-row">
+        <span class="logo-chip">Spotify</span>
+        <span class="logo-chip">YouTube</span>
+        <span class="logo-chip">Apple Music previews</span>
+        <span class="logo-chip">Deezer</span>
+        <span class="logo-chip">Bluetooth</span>
+        <span class="logo-chip">CarPlay</span>
+        <span class="logo-chip">Android Auto</span>
+        <span class="logo-chip">PWA</span>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         FAQ — footnote-quiet, one column.
+    ============================================================= -->
+    <section id="faq" class="faq">
+      <header class="section-head section-head-tight">
+        <span class="eyebrow eyebrow-static"><span class="eyebrow-dot"></span>faq</span>
+        <h2>Questions we get a lot.</h2>
+      </header>
+
+      <div class="faq-list">
+        <details class="faq-item">
+          <summary>How does VibeScape sort music by mood?</summary>
+          <p>Every track in your library is scored for energy using a fine-tuned audio-ML model. That score places it in one of five mood buckets &mdash; sleep, chill, steady, hype, or beast &mdash; which become one-tap filters. You can also drag a vibe slider to blend between them.</p>
+        </details>
+
+        <details class="faq-item">
+          <summary>Do I need a Spotify Premium account?</summary>
+          <p>No. VibeScape works with a free Spotify account for library import, and plays audio previews or YouTube videos of your tracks. Spotify Premium unlocks in-app streaming of full songs via the Spotify Web Playback SDK.</p>
+        </details>
+
+        <details class="faq-item">
+          <summary>Can I try VibeScape without signing up?</summary>
+          <p>Yes. Click <em>Just listen</em> on the landing page to enter a shared demo library instantly, no account required. When you&rsquo;re ready, sign in with Spotify to import your own music &mdash; your Spotify account is your VibeScape identity, no separate password or PIN.</p>
+        </details>
+
+        <details class="faq-item">
+          <summary>Is VibeScape free?</summary>
+          <p>Yes. Free, open source, no ads, no paid tiers, no data sold. Source lives on <a href="https://github.com/chandankeelara/VibeScape" target="_blank" rel="noopener">GitHub</a>.</p>
+        </details>
+
+        <details class="faq-item">
+          <summary>Does it work on my phone?</summary>
+          <p>Yes. The mobile layout uses your album art as a full-viewport backdrop, a slide-up queue sheet, and native Bluetooth transport controls through the Media Session API &mdash; so play, pause, and skip work from your headphones or car.</p>
+        </details>
+
+        <details class="faq-item">
+          <summary>What languages does VibeScape support?</summary>
+          <p>The library is language-agnostic. Whisper detects the sung language of each track &mdash; including Indian, Punjabi, Tamil, and other regional catalogs that western music APIs often miss &mdash; and labels them in the player. Instrumentals stay untagged rather than guessed.</p>
+        </details>
+
+        <details class="faq-item">
+          <summary>Where does the mood data come from?</summary>
+          <p>A fine-tuned MERT-95M transformer scores each track for danceability, energy, and valence directly from the audio. When Spotify&rsquo;s own audio-features API was deprecated in 2024, VibeScape kept working &mdash; because it never depended on it.</p>
+        </details>
+
+        <details class="faq-item">
+          <summary>Can I run it on my own server?</summary>
+          <p>Yes. It&rsquo;s a FastAPI + SQLite app with a static frontend. The heavy inference runs on a free Modal GPU tier, and the playback API fits in a 512&nbsp;MB VM. See the README for the full self-host guide.</p>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-foot">
+    <div class="foot-inner">
+      <a class="brand brand-foot" href="/">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">VibeScape</span>
+      </a>
+      <div class="foot-meta">
+        <span>&copy; <span id="year"></span></span>
+        <span class="sep">·</span>
+        <span>built by <a href="https://github.com/chandankeelara/VibeScape" target="_blank" rel="noopener">Chandan Keelara</a></span>
+        <span class="sep">·</span>
+        <a href="https://github.com/chandankeelara/VibeScape" target="_blank" rel="noopener">source</a>
+      </div>
+    </div>
+  </footer>
+
+  <div id="loginStatus" class="login-status" role="status" aria-live="polite" hidden></div>
+
+  <!--
+    Email login/signup modal. Hidden by default; login.js toggles [hidden]
+    when #ctaEmail is clicked. Two tabs share the same email + password
+    fields (display_name only appears on signup). Submitting routes to
+    /api/auth/login or /api/auth/signup and reuses the same redirect flow
+    as the other CTAs.
+  -->
+  <div class="auth-modal" id="authModal" hidden role="dialog" aria-modal="true" aria-labelledby="authModalTitle">
+    <div class="auth-modal-backdrop" data-auth-close></div>
+    <div class="auth-modal-card" role="document">
+      <button class="auth-modal-close" type="button" data-auth-close aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+
+      <h2 class="auth-modal-title" id="authModalTitle">
+        Log in to <span class="serif-em">VibeScape</span>
+      </h2>
+      <p class="auth-modal-sub">
+        Pick a provider &mdash; or use email.
+      </p>
+
+      <!--
+        Provider list. Spotify is live; the other three are placeholders
+        with a "Soon" badge and disabled state. Order = most-likely-to-be-
+        implemented-next descending.
+      -->
+      <div class="provider-list">
+        <button id="ctaSpotify" type="button" class="provider provider-spotify">
+          <span class="provider-icon">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+              <path fill="currentColor" d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0Zm5.52 17.34a.75.75 0 0 1-1.03.25c-2.82-1.72-6.36-2.11-10.54-1.16a.75.75 0 1 1-.33-1.46c4.57-1.04 8.5-.6 11.66 1.34.35.21.46.68.24 1.03Zm1.47-3.27a.94.94 0 0 1-1.29.31c-3.23-1.98-8.14-2.55-11.96-1.4a.94.94 0 1 1-.54-1.8c4.36-1.31 9.77-.67 13.48 1.6a.94.94 0 0 1 .31 1.29Zm.13-3.4c-3.86-2.3-10.24-2.51-13.93-1.4a1.12 1.12 0 1 1-.65-2.15c4.24-1.28 11.28-1.04 15.72 1.6a1.12 1.12 0 1 1-1.14 1.95Z"/>
+            </svg>
+          </span>
+          <span class="provider-label">Continue with <strong>Spotify</strong></span>
+          <span class="provider-arrow" aria-hidden="true">→</span>
+        </button>
+
+        <button type="button" class="provider provider-ytmusic" disabled aria-disabled="true">
+          <span class="provider-icon">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+              <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2Zm-2 14.5v-9l7 4.5-7 4.5Z"/>
+            </svg>
+          </span>
+          <span class="provider-label">Continue with <strong>YouTube Music</strong></span>
+          <span class="provider-badge">Soon</span>
+        </button>
+
+        <button type="button" class="provider provider-apple" disabled aria-disabled="true">
+          <span class="provider-icon">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+              <path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm3.68 13.06a.86.86 0 0 1-.85-.13c-1.34-.9-2.86-1.35-4.5-1.35a.86.86 0 0 1 0-1.72 9.71 9.71 0 0 1 5.22 1.53.86.86 0 0 1 .13 1.67ZM10 8.5v5.19a.75.75 0 0 1-1.5 0V8.5A.75.75 0 0 1 10 8.5Z"/>
+            </svg>
+          </span>
+          <span class="provider-label">Continue with <strong>Apple Music</strong></span>
+          <span class="provider-badge">Soon</span>
+        </button>
+
+        <button type="button" class="provider provider-amazon" disabled aria-disabled="true">
+          <span class="provider-icon">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+              <path fill="currentColor" d="M18.7 15.3c-2 1.5-4.9 2.3-7.4 2.3-3.5 0-6.6-1.3-9-3.4-.2-.2 0-.4.2-.3 2.5 1.5 5.7 2.3 8.9 2.3 2.1 0 4.4-.4 6.6-1.3.3-.1.6.2.3.4Zm.9-1c-.3-.3-1.7-.2-2.4-.1-.2 0-.3-.1-.1-.3 1.1-.8 2.9-.5 3.1-.3.2.2-.1 2-1.1 2.9-.2.1-.3.1-.2-.1.1-.4.6-1.7.4-2.1Z"/>
+              <path fill="currentColor" d="M12 6.9a3 3 0 0 0-3 2.6c0 .2.1.3.3.3l1.3.1c.2 0 .3-.1.3-.3.2-.7.7-1 1.1-1 .8 0 .9.7.9 1.6v.5c-.9 0-2.1 0-2.9.4a2.6 2.6 0 0 0-1.6 2.4c0 1.7 1.4 2.7 2.9 2.7 1.3 0 2-.3 2.9-1.2a1.9 1.9 0 0 0 .4.5c.1.1.3.1.4 0l.9-.8c.1-.1.1-.3 0-.4a2 2 0 0 1-.5-1.5V9.6c0-2-1.4-2.7-3.4-2.7Zm.9 3.9v.3c0 .6 0 1.1-.3 1.6a1.2 1.2 0 0 1-1 .7c-.6 0-.9-.4-.9-1s.4-1.1.9-1.4c.3-.2.7-.2 1.3-.2Z"/>
+            </svg>
+          </span>
+          <span class="provider-label">Continue with <strong>Amazon Music</strong></span>
+          <span class="provider-badge">Soon</span>
+        </button>
+      </div>
+
+      <div class="auth-divider"><span>or</span></div>
+
+      <div class="auth-tabs" role="tablist">
+        <button class="auth-tab is-active" type="button" data-auth-tab="login" role="tab" aria-selected="true">Log in</button>
+        <button class="auth-tab" type="button" data-auth-tab="signup" role="tab" aria-selected="false">Create account</button>
+      </div>
+
+      <form class="auth-form" id="authEmailForm" novalidate>
+        <label class="auth-field">
+          <span>Email</span>
+          <input type="email" name="email" autocomplete="email" required placeholder="you@example.com" />
+        </label>
+        <label class="auth-field">
+          <span>Password <em class="auth-hint" data-auth-pw-hint>&nbsp;</em></span>
+          <input type="password" name="password" autocomplete="current-password" required minlength="6" placeholder="at least 6 characters" />
+        </label>
+
+        <div class="auth-error" data-auth-error hidden></div>
+
+        <button type="submit" class="auth-submit" data-auth-submit>Log in with email</button>
+      </form>
+    </div>
+  </div>
+
+  <script src="/login.js"></script>
+</body>
+</html>
