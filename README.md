@@ -112,7 +112,16 @@ Under any reasonable definition of "distributed application" this qualifies — 
 
 **Backbone**: [`m-a-p/MERT-v1-95M`](https://huggingface.co/m-a-p/MERT-v1-95M) — a HuBERT-style self-supervised encoder pre-trained on ~160k hours of music, 95M parameters, 24 kHz input, 768-dim hidden states.
 
-**Head**: mean-pool + max-pool the last hidden state along time, concat to a 1536-d vector, then **three independent regression heads** (one per target). Each head is `LayerNorm → Linear(1536→256) → GELU → Dropout(0.2) → Linear(256→1) → sigmoid`.
+**Head**: mean-pool + max-pool the last hidden state along time, concat to a **1536-D vector** (2 × 768), then **three independent regression heads** (one per target — `danceability`, `energy`, `valence`). Each head is a shallow MLP written explicitly in `ml/src/model.py::RegressionHead`:
+
+```
+in (1536) → LayerNorm → Linear(1536, 256) → GELU → Dropout(0.2)
+          → Linear(256, 1) → sigmoid → out ∈ [0, 1]
+```
+
+Heads live in an `nn.ModuleDict` keyed by target name, so `preds[:, i]` in the loss step maps 1-to-1 back to the config's target list. Sigmoid on the output means we're not clipping — the network learns to compress into `[0, 1]` where the labels already live.
+
+**Frozen-encoder forward is wrapped in `torch.no_grad()`** during the freeze epoch (`model.py:85-89`), so no gradients or activations are cached through the 95M-parameter backbone while the heads warm up on random init. Cuts encoder-epoch memory to what the heads need.
 
 ```
      ┌──────────────────────────────────────┐
@@ -142,27 +151,31 @@ See `ml/src/model.py` for the `MERTVibeRegressor` LightningModule.
 
 ### Data & Splits
 
-- **Labels**: audio-features CSV (`ml/data/spotify_tracks.csv`) with per-track `danceability / energy / valence` — the three targets the regressor learns to reproduce.
-- **Audio**: 30-second `.mp3` previews downloaded via `ml/src/download_previews.py` and validated against a manifest (`status == "ok"` and file ≥ 10 kB survives).
-- **Splits**: `GroupShuffleSplit` grouped on `artists` so **no artist crosses train/val/test**. Two nested splits enforce artist disjointness across all three sets.
-- **Crop**: random 10 s window at train, centre 10 s at val/test. Peak-normalized to prevent clipping, augmented with ±3 dB random gain.
+- **Labels**: audio-features CSV (`ml/data/spotify_tracks.csv`) with per-track `danceability / energy / valence` — the three targets the regressor learns to reproduce. Rows with any target NaN are dropped in `build_dataframe`.
+- **Audio**: 30-second `.mp3` previews downloaded via `ml/src/download_previews.py` and validated against a manifest — only rows with `status == "ok"` in `manifest.csv` **and** an on-disk file ≥ 10 kB (`dataset.py:46`) survive. Loading uses `soundfile` when available and falls back to `librosa.load`, mono-mixed, resampled to the model's 24 kHz.
+- **Splits**: `GroupShuffleSplit` grouped on `artists` (train.py:47-60) so **no artist crosses train/val/test**. Two nested splits with the same seed enforce artist disjointness across all three sets — one split peels off 10 % as test, the second splits the remaining 90 % into 80 %/10 % train/val.
+- **Crop**: raw audio is first truncated to 30 s (`max_duration_s`), then a **random 10 s window at train, centre 10 s at val/test** (`dataset.py:76-85`). Signals shorter than 10 s are zero-padded on the right rather than dropped.
+- **Augmentation**: ±3 dB random gain at train only. Conditional peak-normalize (`peak > 1.0` → divide by peak) runs after gain to catch clip-through cases (`dataset.py:106-108`) — not applied when the augmented signal is already in-range, so it doesn't quietly rescale everything.
 
 ### Training Recipe
 
 | Knob | Value | Rationale |
 |---|---|---|
 | Pre-trained backbone | `m-a-p/MERT-v1-95M` | Music-domain SSL beats generic wav2vec for MIR tasks |
-| Freeze schedule | encoder frozen epoch 0, unfrozen from epoch 1 | Warm up heads on random init before touching encoder |
-| Optimizer | AdamW, two param groups | Encoder LR = 1e-5, head LR = 1e-4 |
-| LR schedule | Linear warmup (500 steps) → cosine decay | Standard transformer fine-tune curve |
+| Freeze schedule | encoder frozen epoch 0, unfrozen from epoch 1 (`freeze_encoder_epochs`) | Warm up heads on random init before touching encoder; frozen forward runs under `torch.no_grad()` so encoder activations aren't cached |
+| Optimizer | AdamW with **two param groups** | Encoder LR = **1e-5**, head LR = **1e-4** (10× the encoder LR because heads start from random init) |
+| Weight decay | **1e-2** on both groups | Standard AdamW default; applied uniformly |
+| LR schedule | Linear warmup (500 steps) → cosine decay to 0 over `total_steps` | `total_steps = (len(dl_train) // grad_accum) × max_epochs` — step-based, not epoch-based, so it survives batch/accum changes |
 | Precision | `16-mixed` | Fits ~4× more batch on T4 / consumer GPU |
 | Batch × Accum | 4 × 8 = **32 effective** | Small physical batch, real batch via accumulation |
-| Loss | Per-head MSE, summed | Three independent [0,1] regressions |
-| Early stopping | `val_loss`, patience 3 | |
+| Loss | Per-head MSE, summed | Three independent `[0, 1]` regressions; per-target `val_mse_{name}` also logged each epoch |
+| Early stopping | monitor `val_loss`, patience 3 | Restores best weights via `ModelCheckpoint` (`save_top_k=1`) |
 | Grad clip | 1.0 | |
-| Tracking | MLflow (`ml/experiments/mlruns`) | Loss curves, LR, per-target MSE all logged |
+| Tracking | MLflow (`ml/experiments/mlruns`, `experiment_name='vibescape-mert'`) | Loss curves, LR-per-step, per-target MSE all logged |
+| Best-checkpoint handling | Hard-linked (fallback: copied) to `ml/models/mert_v1.ckpt` after training | Downstream inference code always loads a stable path, not the epoch-decorated filename |
+| Post-training | `trainer.test(model, ckpt_path='best')` on the held-out test split | Final test metrics logged to the same MLflow run for a single-glance report |
 
-Reproducibility: `seed=42`, `deterministic=True`, split RNG seeded independently.
+Reproducibility: `seed=42`, `deterministic=True` (also flips `torch.backends.cudnn.deterministic` on and `benchmark` off), split RNG seeded independently. `--fast-dev-run` and `--limit-tracks N` CLI flags for smoke runs and small-catalog debugging.
 
 ### Whisper Language Head
 
@@ -196,7 +209,8 @@ Both paths converge on a two-axis representation:
 
 - **activation** ∈ [0, 100]: `0.30·energy + 0.25·tempo + 0.20·dance + 0.10·onset + 0.10·brightness + 0.05·dynamic_range`
 - **valence** ∈ [0, 100]: `0.50·mode + 0.20·(1−flatness) + 0.15·contrast + 0.15·(1 − 0.5·acousticness)`
-- **`activation_relative`**: library-wide z-score so the frontend slider gives a percentile view instead of clumping in the middle.
+- **`vibe_score`** = alias of `activation` (kept for backwards compatibility with the frontend slider column). Once the library-wide z-score pass runs, the persisted `vibe_score` is overwritten with `activation_relative` so slider-percentile filtering matches the actual library distribution.
+- **`activation_relative`**: library-wide z-score of `activation` so the slider gives a percentile-flat view instead of clumping in the middle of the population.
 
 A 2×5 **mood grid** is derived from these two axes:
 
