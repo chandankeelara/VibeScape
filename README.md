@@ -31,49 +31,69 @@ The 9 music-theoretic scalars (energy, valence, tempo, brightness…) in the fin
 
 ## Architecture
 
-Four independently deployed tiers. None sits on the critical path of the others' release cycle. Two client-facing paths (browser API + offline ingest worker) both fan out to the same GPU and persistence tiers.
+Four independently deployed components. Two client-facing paths — the online **request handler** and the offline **ingest worker** — fan into the same shared backends: a **GPU inference tier** and a **persistence tier** (relational + vector, same physical libSQL instance in two logical roles).
+
+**Request / DJ path** (user scrubs the vibe slider or plays a track → next-track recommendation):
 
 ```
-  ┌────────────────────────────┐              ┌────────────────────────────┐
-  │  Browser  (PWA / mobile)   │              │  Ingest worker  (offline)  │
-  │  vibe slider · playback ·  │              │  6-stage pipeline:         │
-  │  session-event buffer      │              │   preview → download →     │
-  └────────────┬───────────────┘              │   classify → youtube →     │
-               │ REST / JSON                  │   language → embedding     │
-               ▼                              │  polls DB for pending rows │
-  ┌────────────────────────────┐              │  (SELECT ... WHERE         │
-  │  Stateless API tier        │              │   <stage>_status='pending' │
-  │  FastAPI + UI + /similar   │              │   LIMIT N); thread-pool    │
-  │  torch-free · scale-to-0   │              │   per stage                │
-  └──┬──────────────────┬──────┘              └──────┬──────────┬──────────┘
-     │                  │                            │          │
-     │ RPC (predict     │ SQL + vector-cos           │          │
-     │  from audio URL) │  over HTTP                 │          │
-     ▼                  ▼                            │          │
-  ┌────────────────────────────────┐                 │          │
-  │  GPU inference tier            │ ◀───────────────┘          │
-  │   • MERT regressor (10 s crop) │                            │
-  │   • MERT-95M encoder (30 s)    │                            │
-  │   • Whisper language head      │                            │
-  │  warm containers, persistent   │                            │
-  │  weight-cache volumes          │                            │
-  └────────────────────────────────┘                            │
-                                                                │
-  ┌───────────────────────────────────────────────────────▼─────┐
-  │  Persistence tier  (single hosted libSQL — two logical roles)│
-  │  ┌────────────────────────┐   ┌───────────────────────────┐  │
-  │  │  Relational DB         │   │  Vector DB                │  │
-  │  │   tracks · users ·     │   │   track_embeddings        │  │
-  │  │   sessions · user_     │   │    F32_BLOB(768) MERT     │  │
-  │  │   tracks · per-stage   │   │    F32_BLOB(788) fused    │  │
-  │  │   status columns =     │   │   vector_distance_cos ran │  │
-  │  │   ingest work queue    │   │   server-side (top-K+meta)│  │
-  │  └────────────────────────┘   └───────────────────────────┘  │
-  └──────────────────────────────────────────────────────────────┘
-
-  Playback path: browser resolves youtube_id from API, then streams
-  directly via the YouTube IFrame API. Audio bytes never touch the API tier.
+   ┌────────────────────────────┐
+   │   Browser  (PWA / mobile)  │
+   │   vibe slider · playback · │
+   │   session-event buffer     │
+   └─────────────┬──────────────┘
+                 │  REST / JSON
+                 ▼
+   ┌────────────────────────────┐
+   │   Stateless API tier       │
+   │   FastAPI + UI + /similar  │
+   │   (vibe mode + DJ mode)    │
+   │   torch-free, scale-to-0   │
+   └───┬─────────────────────┬──┘
+       │                     │
+       │  RPC (predict from  │  SQL + vector_distance_cos
+       │   audio URL)        │   over HTTP
+       ▼                     ▼
+   ┌─────────────────┐   ┌───────────────────────────────────────────┐
+   │  GPU inference  │   │  Persistence tier                         │
+   │   MERT regressor│   │  (single hosted libSQL — two roles below) │
+   │   MERT-95M enc. │   │  ┌─────────────────┐ ┌─────────────────┐  │
+   │   Whisper lang  │   │  │ Relational DB   │ │ Vector DB       │  │
+   │   warm ctx +    │   │  │  tracks · users │ │  track_embeds   │  │
+   │   weight cache  │   │  │  · sessions ·   │ │   F32_BLOB(768) │  │
+   │   volumes       │   │  │  user_tracks ·  │ │   F32_BLOB(788) │  │
+   └─────────────────┘   │  │  per-stage      │ │  vector_dist_   │  │
+                         │  │  status cols =  │ │  cos server-    │  │
+                         │  │  ingest queue   │ │  side ranking   │  │
+                         │  └─────────────────┘ └─────────────────┘  │
+                         └───────────────────────────────────────────┘
 ```
+
+**Ingest path** (offline worker → same GPU + persistence tiers, no API tier in the loop):
+
+```
+   ┌────────────────────────────────┐
+   │   Ingest worker  (offline)     │
+   │   6-stage pipeline in waves:   │
+   │    preview → download →        │
+   │    classify → youtube →        │
+   │    language → embedding        │
+   │   Claims work directly from DB:│
+   │    SELECT ... WHERE            │
+   │    <stage>_status='pending'    │
+   │    LIMIT N;  thread-pool per   │
+   │    stage; promote() cascades   │
+   │    terminal failures           │
+   └───┬────────────────────────┬───┘
+       │                        │
+       │  RPC (predict from     │  SQL: writes scalars,
+       │   audio URL); worker   │   embedding blobs, and
+       │   also fetches audio   │   status-column updates
+       │   bytes itself         │
+       ▼                        ▼
+     (same GPU tier)         (same persistence tier)
+```
+
+**Playback path** (out-of-band): the browser resolves `youtube_id` from the API, then streams directly via the YouTube IFrame API. Audio bytes never touch the API tier.
 
 The load-bearing decisions:
 
@@ -85,99 +105,6 @@ The load-bearing decisions:
 Under any reasonable definition of "distributed application" this qualifies — compute is disaggregated across three execution tiers, the database is both storage *and* work queue for the ingest pipeline, and every tier can scale independently.
 
 **Known scale limits.** Within a tier there's no horizontal scaling yet: single ingest orchestrator, `max_workers=1` on GPU stages. Two workers running at once would race on `pending` rows because there's no `claim_lease` column. That's a ~20-line addition when demand justifies it. Vector search is server-side but currently full-scan; a DiskANN index swap is roadmapped.
-
-## Ingestion Pipeline
-
-Ingest is split into a **fast online metadata pass** (runs inside the FastAPI request that a user's Spotify sync fires) and an **offline v2 pipeline of six modular stages** (a separate worker process that drains queued work). The split means the sync-modal returns in seconds — the user's library becomes visible immediately with metadata + previously-cached audio — while heavy per-track work (audio download, MERT inference, embeddings, language, YouTube resolution) happens asynchronously with no bearing on request latency.
-
-### Phase 1 — online, synchronous (`backend/app.py`)
-
-`_process_track()` writes a metadata-only `tracks` row for anything genuinely new, with `ingestion_status='pending'` and six per-stage status columns each set to `'pending'`. Three short-circuit outcomes:
-
-| Condition | Bucket | Cost |
-|---|---|---|
-| `user_tracks` row already exists | `already_in_library` | 1 SELECT |
-| `tracks` row exists globally, user not linked | `added_to_library` — reuse row, add `user_tracks` link | 1 SELECT + 1 INSERT |
-| Brand new to the DB | `queued_for_analysis` — insert metadata + `user_tracks` link | 2 INSERTs |
-
-A 500-track playlist re-sync where every track is already known completes in a few hundred milliseconds — no HTTP fetches beyond the Spotify pagination, no inference, no audio.
-
-### Phase 2 — offline, batch (`ingest_pipeline/` + `scripts/run_ingest_v2.py`)
-
-A background worker walks the six stages of the v2 pipeline in waves. Each pass fetches all pending rows for stage *N*, dispatches them concurrently (I/O-bound → thread pool), advances to stage *N+1*, and finishes with `promote.py` to derive `ingestion_status` and cascade terminal failures.
-
-Songs move through **stages in waves, not one-by-one across stages** — the whole batch clears preview before any of it starts classify. Simpler orchestration than a per-track state machine, and each stage sees a hot working set.
-
-### The Six Stages
-
-Each stage lives in its own module under `ingest_pipeline/`, is gated by exactly one status column on `tracks`, and writes only its own domain columns + its own status column.
-
-| # | Stage | File | Status column | Blocks on | Concurrency | What it does |
-|---|---|---|---|---|---|---|
-| 1 | **preview** | `stage_preview.py` | `preview_status` | — | 2 workers | Runs the provider chain to resolve a `preview_url`. Also backfills `apple_id`, `genre`, `track_view_url`, `album`, `artwork_url`, `duration_ms` from the provider hit. Sets `preview_source` to `spotify` / `itunes` / `deezer_isrc` / `deezer_search`. |
-| 2 | **download** | `stage_download.py` | `download_status` | `preview_status='done'` | 8 workers | Fetches `preview_url` and writes to `data/audio/<spotify_id>.<ext>` atomically (`.part` rename). Sets `audio_path`. |
-| 3 | **classify** | `stage_classify.py` | `ml_status` | `download_status='done'` | 1 (GPU) | Runs `MERTVibeRegressor` (10 s crop) on the cached audio via `ml_backend.predict_from_path`. Writes `energy_pred`, `danceability_pred`, `valence_pred`, `vibe_score_ml`, `activation`, `valence`, `vibe_score`, `mood`, `classification_source='ml_mert'`. |
-| 4 | **youtube** | `stage_youtube.py` | `youtube_status` | — (independent) | 6 workers | `yt-dlp ytsearch1` for `"{title} {artist}"`. Takes the first hit, no embed / age / availability check. Writes `youtube_id`, `youtube_queried_at`. |
-| 5 | **language** | `stage_language.py` | `language_status` | `download_status='done'` | 1 (GPU) | Whisper `small` language detection on the cached audio. Writes `language`, `language_confidence`, `language_top3_json`, `language_model_version` when top-1 confidence ≥ 0.20; otherwise `language_status='no_match'`. |
-| 6 | **embedding** | `stage_embedding.py` | `embedding_status` | `download_status='done'` AND `ml_status='done'` | 1 (GPU) | Runs raw MERT-v1-95M encoder (30 s window) → mean-pooled 768-D vector. Writes `mert_v1_95m_fp32_30s` blob to `track_embeddings`. Piggybacks librosa `tempo` / `brightness` / `acousticness` from the same waveform. Builds the fused vector using those scalars + `language` and writes `fused_v1_mert_scalar_lang` (788-D). |
-
-**Constraint-collision retry.** An UPDATE that hits the legacy `UNIQUE (user_id, apple_id)` index retries once with `apple_id / track_view_url / genre` stripped. The row's own status column always lands so the pipeline never loops on the same row.
-
-### Status vocabulary + promotion cascade
-
-Each stage-status column takes one of four values: `pending`, `done`, `no_match`, `failed`. `no_match` is terminal but non-error (e.g. iTunes had no hit; audio decoded but Whisper confidence was too low). `failed` is retryable next pass.
-
-`ingest_pipeline/promote.py` derives the aggregate `ingestion_status`:
-
-```
-ingestion_status = 'done'        when preview + download + ml all 'done'
-ingestion_status = 'no_preview'  when preview_status='no_match'
-                                 OR download_status='no_match'
-```
-
-`youtube_status` and `language_status` are best-effort — never block promotion.
-
-Promote also **cascades** audio-availability failures downstream so pending counts stay meaningful:
-
-- `preview_status='no_match'` → `download_status='no_match'`
-- `download_status='no_match'` → `ml_status`, `language_status`, `embedding_status` all → `'no_match'`
-
-Without the cascade, rows would sit `pending` forever waiting on audio that will never arrive.
-
-### Preview Provider Chain
-
-`ingest_pipeline/preview_providers.py` defines `PreviewProvider` as an ABC and ships four implementations: `SpotifyPreview`, `ItunesPreview`, `DeezerIsrcPreview`, `DeezerSearchPreview`. `PreviewChain.resolve(track)` walks providers in order and returns the first `PreviewHit`.
-
-The **default chain is Spotify-then-iTunes-only**. Deezer providers are wired but kept out of `default_chain()` because Deezer previews have different audio properties (bitrate, EQ, sample rate) that shift MERT embeddings enough to matter for recommendations — keeping provenance consistent means the embedding space stays comparable across the catalog. Signed-URL expiry (`?hdnea=exp=<ts>`) is a secondary concern.
-
-**iTunes rate-limit handling.** iTunes' Search API 403s bursts around ~20 req/min per IP. `ItunesPreview` serializes behind a class-level lock with a 500 ms inter-request gap and retries 403s with exponential backoff (2 s → 4 s → 8 s → 16 s + jitter, 4 retries max). `PreviewStage.max_workers=2` — more workers here would just spin on the lock without gaining throughput.
-
-Adding a new provider = write a `PreviewProvider` subclass + prepend it to `default_chain()`.
-
-### Local Audio Cache
-
-`DownloadStage` writes every preview to `data/audio/<spotify_id>.<ext>` (`.m4a` for iTunes AAC, `.mp3` for MP3 sources). `resolve_audio_path()` is the single source of truth for cache lookups; every downstream stage prefers the local file:
-
-- **One preview download per song, ever** — not per stage per pass.
-- **Cache survives crashes / re-runs.** A backfill migration marks pre-existing files as `download_status='done'`.
-- **Strict cache path.** Classify / language / embedding all `SELECT ... WHERE download_status='done' AND audio_path IS NOT NULL`. There is **no URL fallback** — if audio isn't cached, promote cascades the row to `no_match` and downstream stages skip it. Failures propagate cleanly instead of silently retrying.
-
-The app never streams from `audio_path` — the frontend streams directly from `preview_url` (CDN) and the backend's `/api/stream/*` is only a fallback. The local cache is pipeline-internal state.
-
-### Orchestrator
-
-```bash
-# One pass across all six stages, up to 50 rows per stage per pass:
-python scripts/run_ingest_v2.py --batch 50
-
-# Loop forever with 30 s idle sleep between empty passes:
-python scripts/run_ingest_v2.py --loop --batch 30 --interval 30
-
-# Restrict to a subset of stages:
-python scripts/run_ingest_v2.py --stages preview,download,classify
-```
-
-The orchestrator is a thin loop over `Stage.run_batch()` calls followed by `promote()`. Stages are stateless — swap in Modal-backed classify/language stages later by changing `ml_backend` mode without touching orchestration.
 
 ## ML Pipeline
 
@@ -280,6 +207,99 @@ A 2×5 **mood grid** is derived from these two axes:
 | 40–60 | moody | steady |
 | 60–80 | aggressive | hype |
 | ≥ 80 | beast | beast |
+
+## Ingestion Pipeline
+
+Ingest is split into a **fast online metadata pass** (runs inside the FastAPI request that a user's Spotify sync fires) and an **offline v2 pipeline of six modular stages** (a separate worker process that drains queued work). The split means the sync-modal returns in seconds — the user's library becomes visible immediately with metadata + previously-cached audio — while heavy per-track work (audio download, MERT inference, embeddings, language, YouTube resolution) happens asynchronously with no bearing on request latency.
+
+### Phase 1 — online, synchronous (`backend/app.py`)
+
+`_process_track()` writes a metadata-only `tracks` row for anything genuinely new, with `ingestion_status='pending'` and six per-stage status columns each set to `'pending'`. Three short-circuit outcomes:
+
+| Condition | Bucket | Cost |
+|---|---|---|
+| `user_tracks` row already exists | `already_in_library` | 1 SELECT |
+| `tracks` row exists globally, user not linked | `added_to_library` — reuse row, add `user_tracks` link | 1 SELECT + 1 INSERT |
+| Brand new to the DB | `queued_for_analysis` — insert metadata + `user_tracks` link | 2 INSERTs |
+
+A 500-track playlist re-sync where every track is already known completes in a few hundred milliseconds — no HTTP fetches beyond the Spotify pagination, no inference, no audio.
+
+### Phase 2 — offline, batch (`ingest_pipeline/` + `scripts/run_ingest_v2.py`)
+
+A background worker walks the six stages of the v2 pipeline in waves. Each pass fetches all pending rows for stage *N*, dispatches them concurrently (I/O-bound → thread pool), advances to stage *N+1*, and finishes with `promote.py` to derive `ingestion_status` and cascade terminal failures.
+
+Songs move through **stages in waves, not one-by-one across stages** — the whole batch clears preview before any of it starts classify. Simpler orchestration than a per-track state machine, and each stage sees a hot working set.
+
+### The Six Stages
+
+Each stage lives in its own module under `ingest_pipeline/`, is gated by exactly one status column on `tracks`, and writes only its own domain columns + its own status column.
+
+| # | Stage | File | Status column | Blocks on | Concurrency | What it does |
+|---|---|---|---|---|---|---|
+| 1 | **preview** | `stage_preview.py` | `preview_status` | — | 2 workers | Runs the provider chain to resolve a `preview_url`. Also backfills `apple_id`, `genre`, `track_view_url`, `album`, `artwork_url`, `duration_ms` from the provider hit. Sets `preview_source` to `spotify` / `itunes` / `deezer_isrc` / `deezer_search`. |
+| 2 | **download** | `stage_download.py` | `download_status` | `preview_status='done'` | 8 workers | Fetches `preview_url` and writes to `data/audio/<spotify_id>.<ext>` atomically (`.part` rename). Sets `audio_path`. |
+| 3 | **classify** | `stage_classify.py` | `ml_status` | `download_status='done'` | 1 (GPU) | Runs `MERTVibeRegressor` (10 s crop) on the cached audio via `ml_backend.predict_from_path`. Writes `energy_pred`, `danceability_pred`, `valence_pred`, `vibe_score_ml`, `activation`, `valence`, `vibe_score`, `mood`, `classification_source='ml_mert'`. |
+| 4 | **youtube** | `stage_youtube.py` | `youtube_status` | — (independent) | 6 workers | `yt-dlp ytsearch1` for `"{title} {artist}"`. Takes the first hit, no embed / age / availability check. Writes `youtube_id`, `youtube_queried_at`. |
+| 5 | **language** | `stage_language.py` | `language_status` | `download_status='done'` | 1 (GPU) | Whisper `small` language detection on the cached audio. Writes `language`, `language_confidence`, `language_top3_json`, `language_model_version` when top-1 confidence ≥ 0.20; otherwise `language_status='no_match'`. |
+| 6 | **embedding** | `stage_embedding.py` | `embedding_status` | `download_status='done'` AND `ml_status='done'` | 1 (GPU) | Runs raw MERT-v1-95M encoder (30 s window) → mean-pooled 768-D vector. Writes `mert_v1_95m_fp32_30s` blob to `track_embeddings`. Piggybacks librosa `tempo` / `brightness` / `acousticness` from the same waveform. Builds the fused vector using those scalars + `language` and writes `fused_v1_mert_scalar_lang` (788-D). |
+
+**Constraint-collision retry.** An UPDATE that hits the legacy `UNIQUE (user_id, apple_id)` index retries once with `apple_id / track_view_url / genre` stripped. The row's own status column always lands so the pipeline never loops on the same row.
+
+### Status vocabulary + promotion cascade
+
+Each stage-status column takes one of four values: `pending`, `done`, `no_match`, `failed`. `no_match` is terminal but non-error (e.g. iTunes had no hit; audio decoded but Whisper confidence was too low). `failed` is retryable next pass.
+
+`ingest_pipeline/promote.py` derives the aggregate `ingestion_status`:
+
+```
+ingestion_status = 'done'        when preview + download + ml all 'done'
+ingestion_status = 'no_preview'  when preview_status='no_match'
+                                 OR download_status='no_match'
+```
+
+`youtube_status` and `language_status` are best-effort — never block promotion.
+
+Promote also **cascades** audio-availability failures downstream so pending counts stay meaningful:
+
+- `preview_status='no_match'` → `download_status='no_match'`
+- `download_status='no_match'` → `ml_status`, `language_status`, `embedding_status` all → `'no_match'`
+
+Without the cascade, rows would sit `pending` forever waiting on audio that will never arrive.
+
+### Preview Provider Chain
+
+`ingest_pipeline/preview_providers.py` defines `PreviewProvider` as an ABC and ships four implementations: `SpotifyPreview`, `ItunesPreview`, `DeezerIsrcPreview`, `DeezerSearchPreview`. `PreviewChain.resolve(track)` walks providers in order and returns the first `PreviewHit`.
+
+The **default chain is Spotify-then-iTunes-only**. Deezer providers are wired but kept out of `default_chain()` because Deezer previews have different audio properties (bitrate, EQ, sample rate) that shift MERT embeddings enough to matter for recommendations — keeping provenance consistent means the embedding space stays comparable across the catalog. Signed-URL expiry (`?hdnea=exp=<ts>`) is a secondary concern.
+
+**iTunes rate-limit handling.** iTunes' Search API 403s bursts around ~20 req/min per IP. `ItunesPreview` serializes behind a class-level lock with a 500 ms inter-request gap and retries 403s with exponential backoff (2 s → 4 s → 8 s → 16 s + jitter, 4 retries max). `PreviewStage.max_workers=2` — more workers here would just spin on the lock without gaining throughput.
+
+Adding a new provider = write a `PreviewProvider` subclass + prepend it to `default_chain()`.
+
+### Local Audio Cache
+
+`DownloadStage` writes every preview to `data/audio/<spotify_id>.<ext>` (`.m4a` for iTunes AAC, `.mp3` for MP3 sources). `resolve_audio_path()` is the single source of truth for cache lookups; every downstream stage prefers the local file:
+
+- **One preview download per song, ever** — not per stage per pass.
+- **Cache survives crashes / re-runs.** A backfill migration marks pre-existing files as `download_status='done'`.
+- **Strict cache path.** Classify / language / embedding all `SELECT ... WHERE download_status='done' AND audio_path IS NOT NULL`. There is **no URL fallback** — if audio isn't cached, promote cascades the row to `no_match` and downstream stages skip it. Failures propagate cleanly instead of silently retrying.
+
+The app never streams from `audio_path` — the frontend streams directly from `preview_url` (CDN) and the backend's `/api/stream/*` is only a fallback. The local cache is pipeline-internal state.
+
+### Orchestrator
+
+```bash
+# One pass across all six stages, up to 50 rows per stage per pass:
+python scripts/run_ingest_v2.py --batch 50
+
+# Loop forever with 30 s idle sleep between empty passes:
+python scripts/run_ingest_v2.py --loop --batch 30 --interval 30
+
+# Restrict to a subset of stages:
+python scripts/run_ingest_v2.py --stages preview,download,classify
+```
+
+The orchestrator is a thin loop over `Stage.run_batch()` calls followed by `promote()`. Stages are stateless — swap in Modal-backed classify/language stages later by changing `ml_backend` mode without touching orchestration.
 
 ## Recommendation System
 
