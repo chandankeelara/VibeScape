@@ -96,8 +96,13 @@ export default function ArtStage() {
           <div className={styles.videoGlow} aria-hidden="true" />
 
           <div className={styles.videoInner}>
-            {/* Drag bar. Grabbing anywhere on the video also drags (dragSurface
-                below), matching legacy. */}
+            {/* The ONLY drag origin. A transparent grab layer over the video
+                would swallow every pointerdown, and a cross-origin iframe can
+                never be handed that click back — so YouTube's own controls
+                (play/pause, seek, volume, fullscreen) would all be dead.
+                Legacy reached the same conclusion: its .video-drag-surface is
+                display:none. Pointer capture on this bar means a drag started
+                here still tracks across the whole video. */}
             <div className={styles.videoTopbar} title="Drag to move" {...dragProps}>
               <span className={styles.grip} aria-hidden="true"><span /><span /><span /></span>
               <span className={styles.topbarHint}>
@@ -140,9 +145,6 @@ export default function ArtStage() {
                 and React recreating it would kill playback mid-song. */}
             <div id={MOUNT_ID} className={styles.ytMount} />
 
-            {/* Transparent grab layer over the iframe. The iframe swallows
-                pointer events, so without this you could only drag by the bar. */}
-            <div className={styles.dragSurface} aria-hidden="true" title="Drag to move" {...dragProps} />
           </div>
 
           {RESIZE_DIRS.map((dir) => (
