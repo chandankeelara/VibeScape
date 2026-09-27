@@ -152,25 +152,33 @@ export default function QueueSidebar() {
     // tell them apart — and asserting "natural" would score a track the user
     // skipped 10 seconds in as a full listen. Let the played ratio decide,
     // which is exactly what advanceToNext() did.
+    // Flushing the event calls setEvents SYNCHRONOUSLY, so React re-renders
+    // during the await below with the new signature but the old `current`.
+    // useRecs recomputes its key at that moment — so we must fetch through
+    // React Query under exactly that key, or useRecs misses the cache and
+    // fires a second POST for the vector we are already fetching.
     const events = recordTransitionNow({ natural: false });
-    const picks = await fetchDjPicks(current, {
-      queue, recent, current, events, limit: RECS_LIMIT,
+    const sig = bufferSignature(events);
+    // apiKey, not trackKey — useRecs builds its queryKey the same way.
+    const interimKey = ['queue-recs', apiKey(current), 'dj', sig];
+
+    // fetchQuery instead of a bare fetchDjPicks: an in-flight request under a
+    // given key is shared, so useRecs attaches to this one rather than
+    // starting its own. This is what keeps a song ending at ONE round-trip,
+    // which is what the legacy lastFetchSig guard bought.
+    const picks = await queryClient.fetchQuery({
+      queryKey: interimKey,
+      staleTime: 5000,
+      queryFn: () => fetchDjPicks(current, { queue, recent, current, events, limit: RECS_LIMIT }),
     });
-    if (!picks.length) return null;
+    if (!picks?.length) return null;
     const [top, ...rest] = picks;
     flashConsume(trackKey(top));
 
-    // Seed the cache so this stays exactly one round-trip, which is what the
-    // legacy lastFetchSig guard bought. Flushing the event changes the buffer
-    // signature, and playing `top` changes the seed — two new query keys that
-    // would each trigger their own POST for a taste vector we just fetched
-    // against. Both get the remainder, which is also what the sidebar should
-    // show: the picks queued up behind the one now playing.
-    const sig = bufferSignature(events);
-    // MUST use apiKey — useRecs builds its queryKey the same way. Keying
-    // these with the UI trackKey would seed caches nobody reads, and the
-    // extra POST this exists to avoid would fire anyway.
-    queryClient.setQueryData(['queue-recs', apiKey(current), 'dj', sig], rest);
+    // Playing `top` changes the seed — another key that would otherwise
+    // trigger its own POST. Both get the remainder, which is also what the
+    // sidebar should show: the picks queued up behind the one now playing.
+    queryClient.setQueryData(interimKey, rest);
     queryClient.setQueryData(['queue-recs', apiKey(top), 'dj', sig], rest);
     return top;
   }, [djEnabled, current, queue, recent, recordTransitionNow, flashConsume, queryClient]);
