@@ -1,3 +1,17 @@
+# ---------- stage 1: build the React app (frontend-next) ----------
+# Node exists only in this stage; the final image stays torch-free AND
+# node-free. Cloud Build handles multi-stage fine with `--source .`, so
+# deploy/cloud-run/deploy.ps1 needs no changes.
+FROM node:20-slim AS fe
+
+WORKDIR /fe
+COPY frontend-next/package*.json ./
+RUN npm ci
+COPY frontend-next/ ./
+RUN npm run build
+
+
+# ---------- stage 2: the runtime image ----------
 FROM python:3.13-slim
 
 WORKDIR /app
@@ -15,6 +29,9 @@ COPY frontend/ /app/frontend/
 COPY ingest/ /app/ingest/
 COPY config.py /app/config.py
 COPY schema.sql /app/schema.sql
+
+# Built React SPA from stage 1 — served at /next by backend/app.py.
+COPY --from=fe /fe/dist /app/frontend-next/dist
 
 COPY data/vibescape.db /app/seed/vibescape.db
 

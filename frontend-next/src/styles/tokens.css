@@ -1,0 +1,87 @@
+/**
+ * Design tokens.
+ *
+ * Lifted from the legacy frontend/login.css :root block so the two apps look
+ * identical during the migration. Unlike the legacy style.css — which had only
+ * 19 custom properties across 5,497 lines and hardcoded the rest — every value
+ * used by a component should come from here.
+ *
+ * Adding a raw hex or px value in a component's .module.css is a code smell:
+ * add a token instead.
+ */
+
+:root {
+  /* surfaces */
+  --bg: #08080c;
+  --bg-2: #0d0d14;
+  --surface: #12121a;
+  --surface-2: #191922;
+
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+
+  /* text */
+  --text: #f2f2f5;
+  --text-2: rgba(242, 242, 245, 0.72);
+  --text-3: rgba(242, 242, 245, 0.48);
+  --text-4: rgba(242, 242, 245, 0.3);
+
+  /* brand */
+  --spotify: #1ed760;
+  --accent: #22c1e3;
+  --accent-soft: rgba(34, 193, 227, 0.16);
+  --accent-glow: rgba(34, 193, 227, 0.35);
+  --danger: #ff5d5d;
+  --danger-soft: rgba(255, 93, 93, 0.12);
+
+  /* Runtime-written by lib/vibe.js applyAccent(). Declared here so the UI is
+     styled before the player boots — consumers should still use the
+     var(--vibe-accent, var(--accent)) form defensively. */
+  --vibe-accent: #7c3aed;
+  --vibe-accent-2: #a78bfa;
+  --art-glow-alpha: 0.65;
+
+  /* overlays */
+  --scrim: rgba(0, 0, 0, 0.75);
+  --shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.55);
+
+  /* radii */
+  --radius-sm: 10px;
+  --radius: 14px;
+  --radius-lg: 20px;
+  /* Player hero card. Legacy style.css sets --radius:20px for the player
+     while login.css uses 14px — two different scales in one app. Kept
+     separate so the ported auth/admin screens stay at 14px. */
+  --radius-card: 20px;
+  --radius-pill: 999px;
+
+  /* type */
+  --sans: 'Space Grotesk', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --serif: 'Instrument Serif', ui-serif, Georgia, 'Times New Roman', serif;
+  --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* motion */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur: 220ms;
+  --dur-slow: 420ms;
+
+  /* spacing scale — new; legacy hardcoded these */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+
+  /*
+   * z-index scale — new. Legacy style.css has 43 unscaled z-index values,
+   * which is a stacking-order bug waiting to happen. Use these names only.
+   */
+  --z-base: 0;
+  --z-sticky: 100;
+  --z-overlay: 200;
+  --z-modal: 300;
+  --z-toast: 400;
+}

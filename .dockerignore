@@ -24,3 +24,7 @@ frontend/node_modules/
 .claude/
 .vscode/
 .idea/
+
+# frontend-next: only package*.json + src are needed by the build stage.
+frontend-next/node_modules/
+frontend-next/dist/

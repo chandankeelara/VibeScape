@@ -1,0 +1,258 @@
+/*
+ * Persistent search bar. Ported from frontend/style.css .search-bar /
+ * .search-input-wrap / .search-dropdown (3560-3915).
+ */
+
+.bar {
+  position: relative;
+  z-index: var(--z-sticky);
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: clamp(4px, 0.8dvh, 10px) var(--sp-4) 0;
+  display: flex;
+  justify-content: center;
+}
+
+.inner {
+  position: relative;
+  width: 100%;
+  max-width: min(760px, 100%);
+}
+
+/* ------------------------------------------------------------------ input */
+
+.inputWrap {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  height: 56px;
+  padding: 0 14px 0 18px;
+  background: color-mix(in oklab, var(--surface) 82%, transparent);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+.inputWrap:focus-within {
+  border-color: color-mix(in oklab, var(--vibe-accent, var(--accent)) 55%, var(--border-strong));
+  background: color-mix(in oklab, var(--surface) 94%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--vibe-accent, var(--accent)) 22%, transparent),
+    0 12px 32px -18px rgba(0, 0, 0, 0.55);
+}
+
+.inputIcon {
+  color: var(--text-3);
+  flex-shrink: 0;
+  transition: color var(--dur) var(--ease);
+}
+
+.inputWrap:focus-within .inputIcon { color: var(--text); }
+
+.input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font: inherit;
+  font-family: var(--sans);
+  font-size: 15px;
+  letter-spacing: -0.005em;
+}
+
+.input::placeholder { color: var(--text-3); }
+.input::-webkit-search-cancel-button { display: none; }
+
+/* Ctrl+K affordance — visible only while the field is empty and unfocused. */
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  opacity: 1;
+  pointer-events: none;
+  transition: opacity 160ms var(--ease);
+}
+
+.kbd kbd {
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: color-mix(in oklab, var(--surface-2) 70%, transparent);
+  color: var(--text-3);
+}
+
+.inputWrap:focus-within .kbd,
+.hasQuery .kbd { opacity: 0; }
+
+.clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+
+.clear:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
+
+.clear:focus-visible {
+  outline: none;
+  color: var(--text);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--vibe-accent, var(--accent)) 55%, transparent);
+}
+
+/* --------------------------------------------------------------- dropdown */
+
+.dropdown {
+  position: absolute;
+  top: calc(100% + var(--sp-2));
+  left: 0;
+  right: 0;
+  z-index: var(--z-overlay);
+  max-height: min(520px, calc(100dvh - 220px));
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in oklab, var(--surface) 94%, transparent);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-modal), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 6px 6px var(--sp-2);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  animation: dropdownIn 160ms var(--ease);
+}
+
+@keyframes dropdownIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dropdown { animation: none; }
+}
+
+/* loading / no-match panels */
+.stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px 20px;
+  text-align: center;
+}
+
+.hint {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+.spinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--vibe-accent, var(--accent));
+  animation: spin 700ms linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 2s; }
+}
+
+/* ---------------------------------------------------------------- results */
+
+.results {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.results[hidden] { display: none; }
+
+.section { display: flex; flex-direction: column; }
+.section + .section { margin-top: var(--sp-1); }
+
+.sectionTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-3) 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+}
+
+.sectionHint {
+  font-family: var(--sans);
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-3);
+  font-weight: 400;
+  text-align: right;
+}
+
+/* Inline "Connect Spotify" — a real button, styled as a link. */
+.linkBtn {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--vibe-accent, var(--accent));
+  cursor: pointer;
+}
+
+.linkBtn:hover { text-decoration: underline; }
+
+.linkBtn:focus-visible {
+  outline: none;
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--vibe-accent, var(--accent)) 55%, transparent);
+}
+
+.status {
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--text-3);
+  padding: 6px var(--sp-3) var(--sp-1);
+}
+
+.statusError { color: var(--danger); }
+
+/* ----------------------------------------------------------------- 375px */
+
+@media (max-width: 640px) {
+  .bar { padding: clamp(2px, 0.5dvh, 6px) var(--sp-3) 0; }
+  .kbd { display: none; }
+  .inputWrap {
+    height: 48px;
+    padding: 0 10px 0 14px;
+    gap: var(--sp-2);
+  }
+  .input { font-size: 16px; } /* >=16px stops iOS Safari zooming on focus */
+  .dropdown { max-height: min(420px, calc(100dvh - 160px)); }
+}

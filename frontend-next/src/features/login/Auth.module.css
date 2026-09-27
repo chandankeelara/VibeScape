@@ -1,0 +1,361 @@
+/*
+ * Ported from frontend/style.css:2985-3310 (`.auth-overlay` … `.auth-input`).
+ *
+ * Token notes for the parent (I don't own tokens.css):
+ *   --vibe-accent / --vibe-accent-2 are written at runtime by lib/vibe.js and
+ *     are NOT declared in tokens.css, so every use here carries an --accent
+ *     fallback. They should get default declarations in tokens.css.
+ *   --scrim (the modal backdrop wash) has no token; fallback inlined below.
+ *   --shadow-modal likewise.
+ */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-5);
+}
+
+.backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--scrim, rgba(0, 0, 0, 0.75));
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.card {
+  position: relative;
+  width: 100%;
+  max-width: 540px;
+  max-height: min(760px, calc(100dvh - var(--sp-7)));
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in oklab, var(--surface) 94%, transparent);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-modal, 0 40px 100px -20px rgba(0, 0, 0, 0.7));
+  overflow: hidden;
+}
+
+.header {
+  padding: var(--sp-5) var(--sp-5) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  letter-spacing: -0.005em;
+  margin-bottom: var(--sp-3);
+}
+
+.brandDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--vibe-accent, var(--accent));
+  box-shadow: 0 0 10px var(--accent-glow);
+}
+
+.brandName { color: var(--text); }
+
+.title {
+  margin: 0;
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(26px, 4dvh, 40px);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.view {
+  padding: var(--sp-5) var(--sp-5);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+/* -------------------------------------------------------- sign-in options */
+
+.loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-6) 0;
+  text-align: center;
+}
+
+.hint {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--vibe-accent, var(--accent));
+  animation: spin 700ms linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  text-align: left;
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: color-mix(in oklab, var(--surface-2) 60%, transparent);
+  color: var(--text);
+  font-family: inherit;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+    transform var(--dur) var(--ease);
+}
+
+.option:hover:not(:disabled),
+.option:focus-visible {
+  background: color-mix(in oklab, var(--vibe-accent, var(--accent)) 8%, color-mix(in oklab, var(--surface-2) 70%, transparent));
+  border-color: color-mix(in oklab, var(--vibe-accent, var(--accent)) 40%, var(--border-strong));
+  transform: translateY(-1px);
+}
+
+.option:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.optionSpotify .optionIcon { color: var(--spotify); }
+
+.optionSpotify:hover:not(:disabled),
+.optionSpotify:focus-visible {
+  background: color-mix(in oklab, var(--spotify) 10%, color-mix(in oklab, var(--surface-2) 70%, transparent));
+  border-color: color-mix(in oklab, var(--spotify) 45%, var(--border-strong));
+}
+
+.optionIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: color-mix(in oklab, var(--text) 6%, transparent);
+  color: var(--text-2);
+}
+
+.optionLabel {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.optionTitle {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  letter-spacing: -0.005em;
+}
+
+.optionSub {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-3);
+}
+
+.optionArrow {
+  flex-shrink: 0;
+  color: var(--text-4);
+  font-size: 15px;
+}
+
+.footer {
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  justify-content: center;
+}
+
+/* ------------------------------------------------------------ buttons */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: 40px;
+  padding: 10px 18px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.005em;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease), transform 100ms var(--ease);
+}
+
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btnSecondary:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--text) 6%, transparent);
+  border-color: color-mix(in oklab, var(--vibe-accent, var(--accent)) 30%, var(--border-strong));
+}
+
+.btnPrimary {
+  background: var(--vibe-accent, var(--accent));
+  color: var(--text);
+  border-color: transparent;
+}
+
+.btnPrimary:hover:not(:disabled) { filter: brightness(1.1); }
+.btnPrimary:active:not(:disabled) { transform: scale(0.98); }
+
+.back {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px 6px 6px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2);
+  font-family: inherit;
+  font-size: 12px;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.back:hover {
+  color: var(--text);
+  background: color-mix(in oklab, var(--text) 6%, transparent);
+  border-color: var(--border-strong);
+}
+
+/* ----------------------------------------------------------- form view */
+
+.formBody {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-3);
+  padding: var(--sp-1) 0;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  width: 100%;
+  max-width: 380px;
+  margin: var(--sp-2) auto 0;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.fieldLabel {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  font-family: var(--mono);
+}
+
+.input {
+  width: 100%;
+  padding: 10px var(--sp-4);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: color-mix(in oklab, var(--surface-2) 70%, transparent);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+
+.input:focus {
+  outline: none;
+  border-color: color-mix(in oklab, var(--vibe-accent, var(--accent)) 50%, var(--border-strong));
+  background: color-mix(in oklab, var(--surface-2) 85%, transparent);
+}
+
+.inputError { border-color: var(--danger); }
+
+.error {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--danger);
+  background: var(--danger-soft);
+  border: 1px solid color-mix(in oklab, var(--danger) 35%, transparent);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+/* ----------------------------------------------------------- gate boot */
+
+.boot {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---------------------------------------------------------- responsive */
+
+@media (max-width: 480px) {
+  .overlay {
+    padding: var(--sp-3);
+    padding-top: max(var(--sp-3), env(safe-area-inset-top));
+  }
+  .card { max-height: calc(100dvh - var(--sp-5)); }
+  .header { padding: 18px 18px var(--sp-3); }
+  .view { padding: var(--sp-4) 18px var(--sp-5); }
+  .title { font-size: 24px; }
+  .option { padding: var(--sp-3); gap: var(--sp-2); }
+  .optionArrow { display: none; }
+  .footer { flex-direction: column; }
+  .footer .btn { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .option:hover:not(:disabled),
+  .option:focus-visible { transform: none; }
+}

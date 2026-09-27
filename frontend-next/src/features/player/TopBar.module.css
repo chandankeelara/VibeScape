@@ -1,0 +1,113 @@
+.topbar {
+  position: relative;
+  /* Above .search-bar so the user-menu popover overlays the search dropdown
+     when both are open (legacy comment at style.css:89). */
+  z-index: 10;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: clamp(8px, 1.4dvh, 16px) clamp(14px, 3vw, 28px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  min-height: 0;
+}
+
+.wordmark { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--vibe-accent, var(--accent));
+  box-shadow: 0 0 12px var(--vibe-accent, var(--accent));
+  transition: background 400ms var(--ease), box-shadow 400ms var(--ease);
+}
+
+.text { font-weight: 600; letter-spacing: -0.01em; }
+.text em { font-style: normal; color: var(--text-3); }
+
+.right { display: flex; align-items: center; gap: var(--sp-2); flex-shrink: 0; }
+
+.help, .sync {
+  width: 30px; height: 30px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-3);
+  font-size: 12px;
+}
+.help:hover, .sync:hover { color: var(--text); background: rgba(255, 255, 255, 0.09); }
+
+.spotify {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(30, 215, 96, 0.35);
+  background: rgba(30, 215, 96, 0.12);
+  color: var(--spotify);
+  font-size: 12.5px; font-weight: 500;
+}
+.spotify:hover { background: rgba(30, 215, 96, 0.2); }
+
+.userMenu { position: relative; }
+
+.userPill {
+  display: inline-flex; align-items: center; gap: var(--sp-2);
+  padding: 4px 10px 4px 4px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 12.5px;
+}
+.userPill:hover { background: rgba(255, 255, 255, 0.09); }
+
+.avatar {
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: var(--surface-2);
+  font-family: var(--mono); font-size: 9.5px;
+  color: var(--text-3);
+}
+
+.userName { max-width: 12ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.popover {
+  position: absolute;
+  right: 0; top: calc(100% + 8px);
+  min-width: 220px;
+  z-index: var(--z-overlay);
+  padding: var(--sp-2);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-modal);
+}
+
+.popHeader { padding: var(--sp-2) var(--sp-3) var(--sp-3); border-bottom: 1px solid var(--border); margin-bottom: var(--sp-2); }
+.popName { font-weight: 600; font-size: 13.5px; }
+.popHint { font-family: var(--mono); font-size: 10px; color: var(--text-3); margin-top: 2px; }
+
+.popItem {
+  display: flex; align-items: center; gap: var(--sp-2);
+  width: 100%;
+  padding: 9px var(--sp-3);
+  border: none; background: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  font-size: 13px;
+  text-align: left;
+}
+.popItem:hover { background: rgba(255, 255, 255, 0.07); color: var(--text); }
+
+.popDanger { color: #fca5a5; }
+.popDanger:hover { background: rgba(248, 113, 113, 0.12); }
+
+@media (max-width: 640px) {
+  .spotify span { display: none; }
+  .spotify { padding: 7px; }
+  .userName { display: none; }
+}

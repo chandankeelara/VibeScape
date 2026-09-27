@@ -3907,4 +3907,35 @@ def serve_admin_page():
     return FileResponse(str(FRONTEND_DIR / "admin.html"))
 
 
+# ---------------- React app (frontend-next) ----------------
+# Strangler-fig migration: the React rewrite is served at /next while the
+# legacy vanilla app above keeps serving / until parity is reached.
+#
+# ORDER MATTERS. Starlette matches routes in registration order and the
+# app.mount("/") below is a catch-all, so everything for /next must be
+# registered BEFORE it or it silently 404s.
+NEXT_DIR = Path(__file__).resolve().parent.parent / "frontend-next" / "dist"
+
+
+@app.get("/next", include_in_schema=False)
+@app.get("/next/{path:path}", include_in_schema=False)
+def serve_next_app(path: str = ""):
+    """
+    Serve the built React SPA. StaticFiles alone would 404 on client-routed
+    deep links (e.g. /next/admin on a hard refresh), so unknown paths fall
+    back to index.html and let React Router resolve them.
+    """
+    if not NEXT_DIR.is_dir():
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "frontend_next_not_built",
+                    "hint": "cd frontend-next && npm install && npm run build"},
+        )
+    candidate = (NEXT_DIR / path).resolve()
+    # Containment check — never serve outside the dist directory.
+    if path and candidate.is_file() and NEXT_DIR.resolve() in candidate.parents:
+        return FileResponse(str(candidate))
+    return FileResponse(str(NEXT_DIR / "index.html"))
+
+
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
