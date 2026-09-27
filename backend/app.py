@@ -31,7 +31,8 @@ import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, RedirectResponse,
+                               Response, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -3885,46 +3886,56 @@ def admin_delete_user(user_id: int, sess: dict = Depends(require_admin)):
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 FRONTEND_DIR.mkdir(parents=True, exist_ok=True)
+NEXT_DIR = Path(__file__).resolve().parent.parent / "frontend-next" / "dist"
 
+# ---------------------------------------------------------------- routing ---
+# The React app (frontend-next) is the default UI and owns "/". The legacy
+# vanilla app is still fully functional under /legacy while the migration
+# finishes.
+#
+# ORDER MATTERS THROUGHOUT. Starlette matches in registration order, and the
+# two StaticFiles mounts at the bottom are catch-alls — every explicit page
+# route must be registered before them or it silently 404s.
+
+
+def _serve_next_index():
+    if not NEXT_DIR.is_dir():
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "frontend_next_not_built",
+                    "hint": "cd frontend-next && npm install && npm run build"},
+        )
+    return FileResponse(str(NEXT_DIR / "index.html"))
+
+
+# ---- React (default UI) ----
+# One explicit route per client-side path. A blanket catch-all is deliberately
+# NOT used here: it would swallow the legacy app's absolute asset requests
+# (/app.js, /style.css, /login.css) that the "/" mount below must still serve.
 
 @app.get("/", include_in_schema=False)
-def serve_login_page():
-    """Public landing page. login.js redirects to /app if a session exists."""
-    return FileResponse(str(FRONTEND_DIR / "login.html"))
-
-
-@app.get("/app", include_in_schema=False)
-def serve_player_page():
-    """Authenticated player. Client-side auth guard lives in app.js."""
-    return FileResponse(str(FRONTEND_DIR / "index.html"))
+def serve_react_root():
+    """Default UI — the React player."""
+    return _serve_next_index()
 
 
 @app.get("/admin", include_in_schema=False)
-def serve_admin_page():
-    """Admin-only page. Client-side guard in admin.js redirects to /app
-    if /api/auth/me returns is_admin=false; every API call under
-    /api/admin/* is server-side gated via require_admin anyway."""
-    return FileResponse(str(FRONTEND_DIR / "admin.html"))
-
-
-# ---------------- React app (frontend-next) ----------------
-# Strangler-fig migration: the React rewrite is served at /next while the
-# legacy vanilla app above keeps serving / until parity is reached.
-#
-# ORDER MATTERS. Starlette matches routes in registration order and the
-# app.mount("/") below is a catch-all, so everything for /next must be
-# registered BEFORE it or it silently 404s.
-NEXT_DIR = Path(__file__).resolve().parent.parent / "frontend-next" / "dist"
+def serve_react_admin():
+    """React admin panel. Client-side guard is UX only; every /api/admin/*
+    route is server-side gated via require_admin."""
+    return _serve_next_index()
 
 
 @app.get("/next", include_in_schema=False)
+def serve_next_alias():
+    """Historical URL from the strangler phase — now just an alias for /."""
+    return RedirectResponse(url="/", status_code=308)
+
+
 @app.get("/next/{path:path}", include_in_schema=False)
-def serve_next_app(path: str = ""):
-    """
-    Serve the built React SPA. StaticFiles alone would 404 on client-routed
-    deep links (e.g. /next/admin on a hard refresh), so unknown paths fall
-    back to index.html and let React Router resolve them.
-    """
+def serve_next_asset(path: str = ""):
+    """Hashed SPA assets. Vite emits them under /next/ (base: '/next/'), kept
+    distinct from the legacy app's files so the two never collide at "/"."""
     if not NEXT_DIR.is_dir():
         raise HTTPException(
             status_code=503,
@@ -3938,4 +3949,37 @@ def serve_next_app(path: str = ""):
     return FileResponse(str(NEXT_DIR / "index.html"))
 
 
-app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+# ---- Legacy app ----
+
+@app.get("/legacy", include_in_schema=False)
+def serve_legacy_landing():
+    """Legacy landing page. login.js redirects to /app when a session exists,
+    which the /app route below forwards into /legacy/app."""
+    return FileResponse(str(FRONTEND_DIR / "login.html"))
+
+
+@app.get("/legacy/app", include_in_schema=False)
+def serve_legacy_player():
+    return FileResponse(str(FRONTEND_DIR / "index.html"))
+
+
+@app.get("/legacy/admin", include_in_schema=False)
+def serve_legacy_admin():
+    return FileResponse(str(FRONTEND_DIR / "admin.html"))
+
+
+@app.get("/app", include_in_schema=False)
+def redirect_legacy_app():
+    """Legacy code hard-codes /app in several places (login.js session
+    redirect, admin.html "back to player"). Forward rather than edit the
+    legacy source, which stays frozen."""
+    return RedirectResponse(url="/legacy/app", status_code=302)
+
+
+# ---- Static mounts (catch-alls, must stay last) ----
+# Legacy HTML references assets BOTH ways: relative (app.js, style.css) and
+# absolute (/login.css, /admin.js). Relative refs from /legacy/app resolve to
+# /legacy/..., absolute ones to /... — so the same directory is mounted at
+# both prefixes. Cheap: StaticFiles holds a path, not a copy.
+app.mount("/legacy", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend-legacy")
+app.mount("/", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend")

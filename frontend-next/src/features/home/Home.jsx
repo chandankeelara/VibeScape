@@ -21,7 +21,7 @@ export default function Home() {
 
       <div className={styles.links}>
         <Link className={styles.btn} to="/admin">Admin panel →</Link>
-        <a className={styles.btnGhost} href="/">← Legacy player</a>
+        <a className={styles.btnGhost} href="/legacy">← Legacy player</a>
       </div>
     </main>
   );

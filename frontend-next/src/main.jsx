@@ -32,8 +32,10 @@ createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
-        {/* basename matches the FastAPI mount point in backend/app.py */}
-        <BrowserRouter basename="/next">
+        {/* React is the default UI and owns "/" — legacy lives at /legacy.
+            Assets still emit under /next/ (vite base) so they never collide
+            with the legacy app's files at the root. */}
+        <BrowserRouter>
           <App />
         </BrowserRouter>
       </ToastProvider>
