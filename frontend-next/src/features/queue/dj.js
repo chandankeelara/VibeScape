@@ -20,14 +20,35 @@ import { apiKey } from '../../lib/vibe';
 
 export const DJ_STORAGE_KEY = 'vibescape.sessionEvents';
 export const DJ_TOGGLE_KEY = 'vibescape.djEnabled';
-export const DJ_MAX_EVENTS = 10;
+export const DJ_MAX_EVENTS = 100;
+
+/**
+ * Caps on what actually goes over the wire. The buffer is deep so the taste
+ * vector has history; the payload stays small so each DJ fetch stays cheap.
+ *
+ * The backend loads one 768-float embedding per id sent (_load_mert_vecs_bulk),
+ * so an uncapped 100-event buffer would pull ~100 vectors from Turso on every
+ * pick. Sending the highest-weighted ids keeps the signal and drops the tail,
+ * which contributes almost nothing once decayed.
+ */
+export const DJ_MAX_SENT_IDS = 20;
+
+/**
+ * Exclude list cap. queue is unbounded (enqueue just appends) while recent is
+ * capped at 12, so without this a long queue produced a correspondingly long
+ * `NOT IN (...)` clause — and backend/app.py:1366 inlines those ids as SQL
+ * literals on the assumption the list is "bounded (~50-100)".
+ */
+export const DJ_MAX_EXCLUDES = 100;
 
 /**
  * No age decay: every event in the 10-slot buffer counts at full base weight.
  * Kept as a named constant (rather than deleting the exponent) because the
- * buffer is short enough that tuning this back below 1.0 is a one-line change.
+ * At DJ_MAX_EVENTS=100 a flat 1.0 would weight a track from 100 plays ago the
+ * same as the one just skipped, so recency decay is required rather than
+ * optional. 0.97^99 ~= 0.05, i.e. the oldest event still counts, barely.
  */
-export const DJ_DECAY = 1.0;
+export const DJ_DECAY = 0.97;
 
 /** Played ratio at or above which a transition counts as a full listen. */
 export const DJ_COMPLETED_THRESHOLD = 0.85;
@@ -189,7 +210,13 @@ export function buildWeights(events) {
     if (p >= g && p > 0) positives.push({ id, weight: Number(p.toFixed(4)) });
     else if (g > 0) negatives.push({ id, weight: Number(g.toFixed(4)) });
   }
-  return { positives, negatives };
+  // Strongest signal first, then trim. Sorting before the cap matters: the
+  // tail of a decayed 100-event buffer is near-zero weight, so dropping it
+  // costs almost nothing while bounding the request.
+  const strongest = (arr) =>
+    arr.sort((a, b) => b.weight - a.weight).slice(0, DJ_MAX_SENT_IDS);
+
+  return { positives: strongest(positives), negatives: strongest(negatives) };
 }
 
 /**
@@ -208,10 +235,13 @@ export function excludeIds({ queue = [], recent = [], current = null }) {
       if (Number.isFinite(n)) ids.add(n);
     }
   };
-  queue.forEach(add);
-  recent.forEach(add);
+  // Order matters once capped: what's playing and just played must survive
+  // the trim, since "don't replay this" is overwhelmingly about recency.
+  // Queue entries fill whatever room is left, newest first.
   add(current);
-  return Array.from(ids);
+  [...recent].reverse().forEach(add);
+  [...queue].reverse().forEach(add);
+  return Array.from(ids).slice(0, DJ_MAX_EXCLUDES);
 }
 
 /** Signature of the buffer's current state — used to coalesce redundant fetches. */

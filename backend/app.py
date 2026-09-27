@@ -1061,6 +1061,15 @@ def _l2_normalize(v: np.ndarray) -> np.ndarray:
     return v / n
 
 
+# Server-side caps on client-supplied id lists. The frontend already trims
+# (DJ_MAX_SENT_IDS / DJ_MAX_EXCLUDES in frontend-next/src/features/queue/dj.js),
+# but a request body is user input: without these a large list means one
+# embedding row loaded per positive/negative id, and an arbitrarily long
+# inlined NOT IN (...) clause for excludes.
+_DJ_MAX_WEIGHTED_IDS = 50
+_DJ_MAX_EXCLUDE_IDS = 200
+
+
 class SimilarBody(BaseModel):
     mode: Optional[str] = None
     positive_ids: Optional[list] = None
@@ -1260,8 +1269,14 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id):
         # track_key in the URL is used only for exclusion — it does NOT
         # contribute to the query vector. Recommendations are driven purely
         # by the user's session (completions, skips, queue-adds).
-        pos_pairs = _parse_id_weight_list(body.positive_ids)
-        neg_pairs = _parse_id_weight_list(body.negative_ids)
+        # Strongest weights win when a client sends more than we'll accept.
+        def _cap_pairs(pairs):
+            if len(pairs) <= _DJ_MAX_WEIGHTED_IDS:
+                return pairs
+            return sorted(pairs, key=lambda kw: kw[1], reverse=True)[:_DJ_MAX_WEIGHTED_IDS]
+
+        pos_pairs = _cap_pairs(_parse_id_weight_list(body.positive_ids))
+        neg_pairs = _cap_pairs(_parse_id_weight_list(body.negative_ids))
 
         def _resolve_pairs(pairs):
             """Batch-resolve (key, weight) pairs to (internal_id, weight).
@@ -1333,7 +1348,10 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id):
         # a random slice of the candidate pool below.
 
         # Build exclude set: request excludes + seed itself.
+        # Truncated, not rejected: excludes are a nicety (avoid replaying
+        # something recent), so dropping the tail degrades gracefully.
         exclude_keys = [str(x) for x in (body.exclude_ids or []) if x is not None]
+        exclude_keys = exclude_keys[:_DJ_MAX_EXCLUDE_IDS]
         exclude_ids = set(_resolve_ids_to_track_ids(conn, exclude_keys))
         exclude_ids.add(anchor_id)
 
