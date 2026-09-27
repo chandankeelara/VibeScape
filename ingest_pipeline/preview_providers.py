@@ -89,16 +89,21 @@ class ItunesPreview(PreviewProvider):
         for attempt in range(ItunesPreview._MAX_RETRIES + 1):
             self._throttle()
             try:
-                return self._client.search(term, limit=5)
+                return self._client.search(term, limit=5, raise_on_rate_limit=True)
             except Exception as e:
-                is_403 = "403" in str(e)
-                if not is_403 or attempt == ItunesPreview._MAX_RETRIES:
+                # Apple signals a rolling rate limit with either 403 or 429
+                # depending on which edge/endpoint answers. Both are transient
+                # and must be retried — treating them as "no result" silently
+                # writes false no_match rows.
+                msg = str(e)
+                is_rate_limited = "403" in msg or "429" in msg
+                if not is_rate_limited or attempt == ItunesPreview._MAX_RETRIES:
                     if self._log:
                         self._log.warning("itunes search failed for %r: %s", term, e)
                     return None
                 backoff = ItunesPreview._BASE_BACKOFF_S * (2 ** attempt) + random.uniform(0, 1)
                 if self._log:
-                    self._log.warning("itunes 403 for %r; backing off %.1fs (attempt %d/%d)",
+                    self._log.warning("itunes rate-limited for %r; backing off %.1fs (attempt %d/%d)",
                                       term, backoff, attempt + 1, ItunesPreview._MAX_RETRIES)
                 time.sleep(backoff)
         return None

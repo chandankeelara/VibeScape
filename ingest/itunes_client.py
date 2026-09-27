@@ -7,7 +7,16 @@ SEARCH_URL = "https://itunes.apple.com/search"
 LOOKUP_URL = "https://itunes.apple.com/lookup"
 
 
-def search(term: str, limit: int = 25, genre: str | None = None) -> list[dict]:
+def search(term: str, limit: int = 25, genre: str | None = None,
+           raise_on_rate_limit: bool = False) -> list[dict]:
+    """Search the iTunes catalog.
+
+    Swallows request errors and returns [] by default. Callers that own a
+    retry/backoff loop should pass raise_on_rate_limit=True so Apple's
+    transient 403/429 throttling propagates instead of being flattened into
+    an empty result — otherwise a rate-limited lookup is indistinguishable
+    from a genuine catalog miss and gets written as a false no_match.
+    """
     params = {
         "term": term,
         "media": "music",
@@ -21,6 +30,9 @@ def search(term: str, limit: int = 25, genre: str | None = None) -> list[dict]:
         r.raise_for_status()
         return r.json().get("results", [])
     except requests.RequestException as e:
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        if raise_on_rate_limit and status in (403, 429):
+            raise
         log.warning("iTunes search failed for %r: %s", term, e)
         return []
 
