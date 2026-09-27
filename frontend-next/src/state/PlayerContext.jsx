@@ -20,7 +20,8 @@
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as api from '../lib/api';
 import * as player from '../media/player';
-import { applyAccent, moodFor, trackKey, trackVibe } from '../lib/vibe';
+import * as verifyMedia from '../media/verify';
+import { applyAccent, canVerify, moodFor, trackKey, trackVibe } from '../lib/vibe';
 import { useToast } from './ToastContext';
 
 const PlayerCtx = createContext(null);
@@ -158,6 +159,33 @@ export function PlayerProvider({ children }) {
     },
     [vibe, recent, loadTrack, toast]
   );
+
+  /* --------------------------------------------------------------- verify */
+
+  const [verifying, setVerifying] = useState(false);
+
+  useEffect(() => verifyMedia.subscribe(({ active }) => {
+    setVerifying(active);
+    // Whoever stopped it — the 30s cap, the clip ending, or the user — main
+    // playback comes back exactly where it was.
+    if (!active) player.restoreAfterVerify();
+  }), []);
+
+  /** Play the 30s clip this track was classified from. */
+  const startVerify = useCallback(async () => {
+    if (!canVerify(current)) {
+      toast('No classification audio for this track.', 'info');
+      return;
+    }
+    player.snapshotAndPauseForVerify();
+    const ok = await verifyMedia.start(current.preview_url);
+    if (!ok) toast('Could not play classification audio — link may be broken.', 'error');
+  }, [current, toast]);
+
+  const stopVerify = useCallback(() => verifyMedia.stop(), []);
+
+  // A new track always ends any verify session in progress.
+  useEffect(() => { verifyMedia.stop(); }, [current]);
 
   /* ---------------------------------------------------------------- video */
 
@@ -302,12 +330,13 @@ export function PlayerProvider({ children }) {
       current, loadTrack, fetchForVibe, loadingTrack, setVibeFromTrack,
       playing, togglePlay, seek, next, prev, setNextFallback,
       mode, setPlaybackMode, videoState, resolveYoutubeId,
+      verifying, startVerify, stopVerify, canVerify: canVerify(current),
       source,
       queue, enqueue, enqueueAt, dequeueAt, clearQueue, reorderQueue,
       recent,
     }),
     [vibe, setVibe, shiftVibe, current, loadTrack, fetchForVibe, loadingTrack, setVibeFromTrack,
-     playing, togglePlay, seek, next, prev, setNextFallback, mode, setPlaybackMode, videoState, resolveYoutubeId, source,
+     playing, togglePlay, seek, next, prev, setNextFallback, mode, setPlaybackMode, videoState, resolveYoutubeId, verifying, startVerify, stopVerify, source,
      queue, enqueue, enqueueAt, dequeueAt, clearQueue, reorderQueue, recent]
   );
 
@@ -329,4 +358,14 @@ export function usePlaybackTime() {
   const [t, setT] = useState({ position: 0, duration: 0 });
   useEffect(() => player.subscribeTime(setT), []);
   return t;
+}
+
+/**
+ * Verify countdown, isolated from the main context on purpose. Ticks ~4x/sec
+ * while a clip plays, so only the overlay should subscribe.
+ */
+export function useVerifyCountdown() {
+  const [state, setState] = useState({ active: false, remainingMs: 0 });
+  useEffect(() => verifyMedia.subscribe(setState), []);
+  return state;
 }

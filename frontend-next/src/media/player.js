@@ -16,6 +16,7 @@
 import * as glow from './glow';
 import * as youtube from './youtube';
 import * as spotify from './spotify';
+import * as verify from './verify';
 import { getToken } from '../lib/session';
 
 const listeners = new Set();
@@ -88,6 +89,10 @@ export function init() {
   // window.onYouTubeIframeAPIReady global. Without this the video
   // stage never gets a player and the mode toggle is a dead switch.
   youtube.init();
+
+  // Owns its own isolated <audio>; see src/media/verify.js for why it must
+  // never share the main element.
+  verify.init();
   // Without this the progress bar is dead during Spotify playback — the
   // <audio> element is detached, so nothing else emits position.
   spotify.setOnState(({ playing, position, duration }) => {
@@ -252,6 +257,53 @@ export function stop() {
   state.source = null;
   emit();
   emitTime(0, 0);
+}
+
+/* ------------------------------------------------------- verify support */
+
+let verifySnapshot = null;
+
+/**
+ * Pause whatever is playing and remember enough to put it back exactly.
+ * The verify clip plays on its own element, so the main one is left intact —
+ * we only need its position and play state.
+ */
+export function snapshotAndPauseForVerify() {
+  const usingSpotify = state.source === 'spotify';
+  if (usingSpotify) {
+    verifySnapshot = { source: 'spotify', playing: state.playing };
+    spotify.pause();
+  } else {
+    const el = state.audioEl;
+    verifySnapshot = {
+      source: 'preview',
+      playing: !!el && !el.paused,
+      time: el && Number.isFinite(el.currentTime) ? el.currentTime : 0,
+      src: el?.src || '',
+    };
+    try { el?.pause(); } catch { /* nothing playing */ }
+  }
+  glow.stop();
+}
+
+/** Restore what snapshotAndPauseForVerify() paused, if it was playing. */
+export function restoreAfterVerify() {
+  const snap = verifySnapshot;
+  verifySnapshot = null;
+  if (!snap || !snap.playing) return;
+
+  if (snap.source === 'spotify') {
+    spotify.resume();
+    return;
+  }
+  const el = state.audioEl;
+  if (!el) return;
+  // The element kept its src; restore it only if something cleared it.
+  if (!el.src && snap.src) el.src = snap.src;
+  try {
+    if (Number.isFinite(snap.time) && snap.time > 0) el.currentTime = snap.time;
+  } catch { /* not seekable yet */ }
+  el.play().catch(() => {});
 }
 
 function quietAudio() {

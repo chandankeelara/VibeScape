@@ -107,3 +107,25 @@ export function trackVibe(t) {
  */
 export const apiKey = (t) =>
   t?.id != null ? Number(t.id) : String(t?.spotify_id || '');
+
+/** Human labels for `classification_source` (legacy app.js:1351). */
+export const CLASSIFICATION_LABELS = {
+  spotify_preview: 'Spotify preview',
+  itunes_isrc: 'iTunes ISRC lookup',
+  itunes_term_search: 'iTunes term search',
+  deezer_isrc: 'Deezer ISRC lookup',
+  deezer_search: 'Deezer search',
+  ml_mert: 'MERT (remote GPU)',
+  metadata_only: 'Metadata only',
+  none: 'No classification audio',
+};
+
+export const classificationLabel = (src) =>
+  !src ? 'Unknown' : CLASSIFICATION_LABELS[src] || src;
+
+/**
+ * Can we play back the exact clip this track was classified from?
+ * Needs a preview_url and a real classification source.
+ */
+export const canVerify = (t) =>
+  !!t && t.classification_source !== 'none' && !!t.preview_url;

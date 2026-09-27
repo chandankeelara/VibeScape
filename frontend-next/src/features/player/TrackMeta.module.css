@@ -145,3 +145,13 @@
 
 .chipBtn { transition: background var(--dur) var(--ease), color var(--dur) var(--ease); }
 .chipBtn:hover { background: var(--surface-2); color: var(--text); }
+
+.chipBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Active verify session — accent-filled so it reads as "this is playing now",
+   matching the overlay on the art. */
+.chipVerifying {
+  color: var(--vibe-accent, var(--accent));
+  background: color-mix(in oklab, var(--vibe-accent, var(--accent)) 18%, var(--surface));
+  border-color: color-mix(in oklab, var(--vibe-accent, var(--accent)) 45%, var(--border-strong));
+}

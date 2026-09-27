@@ -30,6 +30,7 @@ on the other.
 | Library sync modal | `app.js:5674-6250` | ✅ `src/features/sync/` |
 | Metrics / debug / help | `app.js:3577-4173` | ✅ `src/features/panels/` |
 | Player shell + mood grid | `app.js:1127-1360`, `index.html` | ✅ `src/features/player/` |
+| Verify (classification clip) | `app.js:1338-1541` | ✅ `src/media/verify.js` + chip/overlay |
 | Media layer | `app.js:1541-2450`, `2762-3576` | ✅ `src/media/` |
 
 ~9,850 lines across 77 files, replacing ~16,600 lines of legacy.

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { usePlayer } from '../../state/PlayerContext';
+import { usePlayer, useVerifyCountdown } from '../../state/PlayerContext';
 import { MOUNT_ID, createPlayer } from '../../media/youtube';
+import { classificationLabel } from '../../lib/vibe';
 import useVideoFrame, { RESIZE_DIRS } from './useVideoFrame';
 import styles from './ArtStage.module.css';
 
@@ -13,6 +14,30 @@ import styles from './ArtStage.module.css';
  * instance is orphaned. Video mode toggles VISIBILITY only (see .videoHidden).
  * See src/media/README.md.
  */
+/**
+ * Shown while the classification clip plays. Subscribes to the countdown on
+ * its own so the ~4x/sec tick doesn't re-render the rest of the player.
+ */
+function VerifyOverlay({ track }) {
+  const { active, remainingMs } = useVerifyCountdown();
+  if (!active) return null;
+  const secs = Math.max(0, Math.ceil(remainingMs / 1000));
+  return (
+    <div className={styles.verifyOverlay} aria-live="polite">
+      <div className={styles.verifyIcon} aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 12a9 9 0 0 1 18 0v5a2 2 0 0 1-2 2h-2v-7h4" />
+          <path d="M3 12v5a2 2 0 0 0 2 2h2v-7H3" />
+        </svg>
+      </div>
+      <div className={styles.verifyTitle}>classification audio</div>
+      <div className={styles.verifySub}>
+        {classificationLabel(track?.classification_source)} · {secs}s
+      </div>
+    </div>
+  );
+}
+
 export default function ArtStage() {
   const { current, mode, videoState } = usePlayer();
   const [artLoaded, setArtLoaded] = useState(false);
@@ -47,6 +72,8 @@ export default function ArtStage() {
   return (
     <section className={styles.wrap}>
       <div className={styles.glow} aria-hidden="true" />
+
+      <VerifyOverlay track={current} />
 
       <div className={`${styles.art} ${mode === 'video' ? styles.artHidden : ''}`}>
         {artLoaded ? (
