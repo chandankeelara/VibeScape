@@ -2,7 +2,8 @@
 V2 modular ingest orchestrator.
 
 Runs each stage across its full pending batch (concurrent I/O within a
-stage), then advances to the next stage, then promotes finished rows.
+stage), then advances to the next stage. Each stage settles
+ingestion_status itself; there is no separate promote pass.
 Songs move through the pipeline in waves — not one-by-one.
 
 Wired stages:
@@ -45,7 +46,6 @@ except ImportError:
     pass
 
 from db import ensure_db, get_conn  # noqa: E402
-from ingest_pipeline.promote import promote  # noqa: E402
 from ingest_pipeline.stage_preview import PreviewStage  # noqa: E402
 from ingest_pipeline.stage_download import DownloadStage  # noqa: E402
 from ingest_pipeline.stage_classify import ClassifyStage  # noqa: E402
@@ -86,7 +86,13 @@ def pending_snapshot(conn) -> dict[str, int]:
 
 
 def run_pass(stages: list, batch: int) -> int:
-    """One orchestrator pass: run every stage's batch, then promote.
+    """One orchestrator pass: run every stage's batch.
+
+    There is no promote step. Each stage settles ingestion_status itself
+    via `finalizes` (see ingest_pipeline/base.py) in the same UPDATE that
+    writes its own status, so there is no window where a row's stage
+    columns and its ingestion_status disagree.
+
     Returns total rows processed across all stages."""
     conn = get_conn()
     total_processed = 0
@@ -94,7 +100,6 @@ def run_pass(stages: list, batch: int) -> int:
         for stage in stages:
             counts = stage.run_batch(conn, batch, log)
             total_processed += sum(counts.values())
-        promote(conn)
     finally:
         conn.close()
     return total_processed

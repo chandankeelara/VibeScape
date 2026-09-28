@@ -13,7 +13,7 @@ An orchestrator (scripts/run_ingest_v2.py) fetches the pending set for
 each stage, dispatches work concurrently (I/O-bound), then advances to
 the next stage. `ingestion_status` is derived: a row is 'done' when
 preview_status='done' AND ml_status='done'; 'no_preview' when
-preview_status='no_match'. See ingest_pipeline/promote.py.
+preview_status='no_match'. See `finalizes` in ingest_pipeline/base.py.
 
 Each stage writes only its own columns + its own status column, so
 stages compose freely and can later be distributed across workers or

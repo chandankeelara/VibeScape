@@ -60,6 +60,8 @@ class DownloadStage(Stage):
     # is armed by classify instead, since it additionally needs the
     # scalar predictions.
     arms = ("ml_status", "language_status")
+    # A URL that won't fetch is the same dead end as no URL at all.
+    finalizes = {STATUS_NO_MATCH: "no_preview"}
     # Network I/O only, no GPU — safe to parallelize. iTunes AudioPreview
     # CDN doesn't rate-limit downloads the way the Search API does.
     max_workers = 8

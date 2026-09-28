@@ -112,9 +112,23 @@ class Stage(ABC):
 
     # Status columns to set to 'pending' when THIS stage returns 'done',
     # making the next stage eligible. Only on 'done': a 'no_match' or
-    # 'failed' row must not arm anything downstream — promote() cascades
-    # those to 'no_match' instead.
+    # 'failed' row must not arm anything downstream. Nothing cascades a
+    # failure forward any more — an unarmed stage simply never runs.
     arms: tuple[str, ...] = ()
+
+    # Stage status -> the ingestion_status it settles the whole track on.
+    # Used where a stage's outcome is terminal for the track, not just for
+    # itself: preview/download finding nothing means the track can never
+    # proceed ('no_preview'), and youtube finishing means it is fully
+    # ingested ('done').
+    #
+    # This replaces promote(). That pass existed to cascade dead rows
+    # into 'no_match' so they would stop being retried — which was only
+    # necessary because every status column started at 'pending' from a
+    # schema default. Arming removed that, leaving promote with nothing
+    # to do but write the terminal ingestion_status, which the stage that
+    # actually knows the outcome can do itself, in the same UPDATE.
+    finalizes: dict[str, str] = {}
 
     @abstractmethod
     def fetch_pending(self, conn, limit: int) -> list:
@@ -179,6 +193,12 @@ class Stage(ABC):
             fields["ingestion_status"] = stage_error_status(self.name)
             if res.error:
                 fields["ingestion_error"] = f"[{self.name}] {res.error}"[:500]
+        # A terminal verdict for the whole track, if this stage has one.
+        # Not elif: a 'done' that both arms the next stage and settles the
+        # track (youtube) must do both.
+        settled = self.finalizes.get(res.status)
+        if settled and res.status != STATUS_FAILED:
+            fields["ingestion_status"] = settled
         return fields
 
     @staticmethod

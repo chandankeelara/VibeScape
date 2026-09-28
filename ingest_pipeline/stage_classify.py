@@ -7,7 +7,7 @@ back all the ML-derived columns. No local audio file is created.
 
 Blocks on preview_status='done' (needs a URL). Skips rows where the
 preview stage marked 'no_match' — those go to ingestion_status='no_preview'
-via promote.py without ever running ML.
+via PreviewStage's own terminal verdict, without ever running ML.
 
 Does NOT write embeddings — that's EmbeddingStage's job (separate GPU
 pass using the raw MERT-v1-95M encoder rather than the trained head).
@@ -62,8 +62,8 @@ class ClassifyStage(Stage):
 
     def fetch_pending(self, conn, limit: int) -> list:
         # Strict gate on DownloadStage — audio must be cached locally.
-        # No URL fallback here; if download failed, promote.py cascades
-        # this row to 'no_match' so it doesn't sit pending forever.
+        # No URL fallback here: if download didn't succeed it never armed
+        # ml_status, so this stage simply never sees the row.
         rows = conn.execute(
             f"SELECT {_FETCH_COLS} FROM tracks "
             f"WHERE ml_status = 'pending' "

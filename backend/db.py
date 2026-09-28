@@ -602,7 +602,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE tracks ADD COLUMN ingestion_attempted_at TIMESTAMP",
         # Per-stage status columns for the v2 modular ingest pipeline in
         # ingest_pipeline/. Values: 'pending' | 'done' | 'no_match' | 'failed'.
-        # ingestion_status is the derived aggregate (see ingest_pipeline/promote.py).
+        # ingestion_status is settled by the stage that reaches a terminal
+        # outcome (see `finalizes` in ingest_pipeline/base.py).
         "ALTER TABLE tracks ADD COLUMN preview_status TEXT DEFAULT 'pending'",
         "ALTER TABLE tracks ADD COLUMN ml_status TEXT DEFAULT 'pending'",
         "ALTER TABLE tracks ADD COLUMN youtube_status TEXT DEFAULT 'pending'",

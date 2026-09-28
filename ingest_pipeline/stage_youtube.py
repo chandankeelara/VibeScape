@@ -21,10 +21,13 @@ log = logging.getLogger("vibescape.ingest.youtube")
 class YoutubeStage(Stage):
     name = "youtube"
     status_column = "youtube_status"
+    finalizes = {STATUS_DONE: "done", STATUS_NO_MATCH: "done"}
     # FINISHER. Armed by EmbeddingStage, i.e. only once preview,
     # download, classify and embedding have all succeeded. It arms
-    # nothing — instead it writes ingestion_status='done' itself, the
-    # transition that makes a track visible to the app.
+    # nothing — instead it settles ingestion_status='done', the
+    # transition that makes a track visible to the app. A no_match
+    # settles it too: a missing video id only costs the video panel its
+    # fallback, it does not make the track any less ingested.
     #
     # It needs no audio (title/artist only) so it could run anywhere,
     # but running it last means a track is never visible half-ingested:
@@ -81,10 +84,6 @@ class YoutubeStage(Stage):
                 status=STATUS_NO_MATCH,
                 fields={
                     "youtube_queried_at": iso_now(),
-                    # No video found, but the track is still fully
-                    # ingested and playable — a missing youtube_id only
-                    # costs the video panel its fallback.
-                    "ingestion_status":   "done",
                 },
             )
         return RowResult(
@@ -93,9 +92,6 @@ class YoutubeStage(Stage):
             fields={
                 "youtube_id":         vid,
                 "youtube_queried_at": iso_now(),
-                # The finishing write: everything upstream succeeded and
-                # the video id is in hand.
-                "ingestion_status":   "done",
             },
         )
 

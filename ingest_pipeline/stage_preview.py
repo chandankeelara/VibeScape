@@ -35,6 +35,9 @@ class PreviewStage(Stage):
     # INSERT writes literally (backend/app.py). The other six rely on a
     # column DEFAULT that exists locally but not in Turso.
     arms = ("download_status",)
+    # No provider had a preview: the track can never be analysed, so this
+    # settles it. Was promote()'s ->no_preview rule.
+    finalizes = {STATUS_NO_MATCH: "no_preview"}
     # Kept low because the iTunes Search API rate-limits aggressively
     # (~20 req/min per IP) and ItunesPreview already serializes behind
     # a global lock. More workers here would just spin waiting for the
