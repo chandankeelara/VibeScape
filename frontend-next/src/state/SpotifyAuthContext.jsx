@@ -224,6 +224,14 @@ export function SpotifyAuthProvider({ userId, children }) {
     spotifyMedia.setPremium(profile?.product === 'premium');
   }, [profile]);
 
+  // Disconnect the SDK when this provider goes away — sign-out, or a switch
+  // to a different VibeScape user. Leaving it connected would keep a Premium
+  // device registered against the previous account's token.
+  useEffect(() => () => {
+    spotifyMedia.setToken(null);
+    spotifyMedia.disconnect();
+  }, []);
+
   const value = useMemo(
     () => ({
       token,

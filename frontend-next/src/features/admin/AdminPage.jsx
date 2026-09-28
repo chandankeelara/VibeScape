@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Navigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as api from '../../lib/api';
 import { getToken } from '../../lib/session';
@@ -176,11 +177,11 @@ export default function AdminPage() {
     if (ok) del.mutate(userId);
   }
 
-  // Signed out → the legacy landing page owns auth for now.
-  if (!hasToken || meQuery.error) {
-    window.location.replace('/');
-    return null;
-  }
+  // Session died mid-view (AuthGate already covers the no-token case before
+  // this ever renders). Declarative redirect rather than a location.replace
+  // during render — that is a side effect in the render phase and fires twice
+  // under StrictMode. "/" is the React app, which shows the auth card.
+  if (!hasToken || meQuery.error) return <Navigate to="/" replace />;
 
   if (meQuery.isPending) {
     return <main className={styles.main}><div className={styles.loading}>Checking session…</div></main>;

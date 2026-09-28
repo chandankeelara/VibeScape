@@ -11,9 +11,11 @@
  *      app) and is read through useSyncExternalStore, so a sign-in or sign-out
  *      anywhere in the tree re-renders every consumer.
  *
- * Deliberately NOT ported: the legacy sign-out also tore down the player,
- * Spotify SDK, queue and recs. Those modules don't exist here yet; clearing the
- * whole React Query cache is the equivalent and is all this layer should know.
+ * Teardown of the player, Spotify SDK, queue and recs is NOT done here, by
+ * design: this layer only knows about tokens. Sign-out makes AuthGate stop
+ * rendering the app, which unmounts PlayerProvider and SpotifyAuthProvider,
+ * and their own unmount effects stop playback and disconnect the SDK. Keeping
+ * that knowledge in the providers means any other unmount path is covered too.
  */
 
 import { createContext, useCallback, useContext, useMemo, useSyncExternalStore } from 'react';

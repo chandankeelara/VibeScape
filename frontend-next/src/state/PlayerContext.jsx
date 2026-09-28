@@ -60,10 +60,20 @@ export function PlayerProvider({ children }) {
 
   useEffect(() => {
     player.init();
-    return player.subscribe((s) => {
+    const unsubscribe = player.subscribe((s) => {
       setPlaying(s.playing);
       if (s.source !== undefined) setSource(s.source);
     });
+    return () => {
+      unsubscribe();
+      // The media layer is a module singleton living OUTSIDE React, so
+      // unmounting this provider drops the subscription but would otherwise
+      // leave audio playing. That happens on sign-out, when AuthGate swaps
+      // the whole app for the login card — legacy's signOutOfVibeScape tore
+      // the player down explicitly and this is the equivalent.
+      verifyMedia.stop();
+      player.stop();
+    };
   }, []);
 
   useEffect(() => { applyAccent(vibe); }, [vibe]);
