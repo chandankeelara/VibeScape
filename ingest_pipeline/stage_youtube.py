@@ -42,13 +42,28 @@ class YoutubeStage(Stage):
     def fetch_pending(self, conn, limit: int) -> list:
         rows = conn.execute(
             "SELECT id, title, artist FROM tracks "
-            # Own column armed by embedding, AND the upstream really
-            # finished. The second clause is what enforces "last": local
-            # rows carry a stale youtube_status='pending' from the Turso
-            # pull, and without it those get picked up before the audio
-            # stages have run.
+            # Armed by embedding, but the gate spells out EVERY upstream
+            # stage rather than relying on transitivity. embedding_status
+            # ='done' alone implies preview -> download -> ml, but NOT
+            # language: that is a parallel branch armed by download, so a
+            # failed language would have slipped past and let a broken
+            # track reach 'done'.
+            #
+            # Spelling it out is also what enforces "last": local rows
+            # carry a stale youtube_status='pending' forced by the Turso
+            # pull, and on its own that would let youtube run before any
+            # audio stage had.
             "WHERE youtube_status = 'pending' "
+            "AND preview_status = 'done' "
+            "AND download_status = 'done' "
+            "AND ml_status = 'done' "
             "AND embedding_status = 'done' "
+            # Language is the one stage whose success is not spelled
+            # 'done'. Whisper stops at 'whisper_done' pending LLM
+            # verification, and 'no_match' means it ran but had too
+            # little confidence to call. Both are finished outcomes.
+            # 'failed' and 'pending' are not, and are excluded.
+            "AND language_status IN ('done', 'whisper_done', 'no_match') "
             "AND title IS NOT NULL AND title != '' "
             "AND artist IS NOT NULL AND artist != '' "
             "ORDER BY id ASC LIMIT ?",

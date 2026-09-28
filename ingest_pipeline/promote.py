@@ -52,20 +52,30 @@ def promote(conn) -> dict[str, int]:
 
     # ingestion_status='done' — full happy path.
     #
+    # THE INVARIANT: ingestion_status='done' means every stage reached a
+    # successful terminal outcome. Nothing errored, nothing is still
+    # pending. Readers may rely on this.
+    #
     # YoutubeStage writes this itself as its finishing act, so in the
-    # normal flow this statement matches nothing. It is kept as a
-    # backstop for rows that finished before youtube became the
-    # finisher, and it now requires a terminal youtube_status so it can
-    # never promote a row AHEAD of youtube — which would make a track
-    # visible to the app without a video id.
+    # normal flow this statement matches nothing — it is a backstop for
+    # rows that finished before youtube became the finisher. Its
+    # conditions MUST stay identical to YoutubeStage.fetch_pending's
+    # gate, or the two writers disagree and the invariant holds on one
+    # path but not the other. It previously omitted embedding and
+    # language and could promote a row with a failed embedding.
     #
     # Restricted to ingestion_status='pending' so it cannot resurrect a
-    # 'stage_error' or 'no_preview' row.
+    # '<stage>_stage_error' or 'no_preview' row.
     cur = conn.execute(
         "UPDATE tracks SET ingestion_status = 'done' "
         "WHERE preview_status = 'done' "
         "AND download_status = 'done' "
         "AND ml_status = 'done' "
+        "AND embedding_status = 'done' "
+        # Language's success is spelled 'whisper_done' (Whisper ran; LLM
+        # verification still outstanding) or 'no_match' (ran, too little
+        # confidence to call). Both are finished; 'failed'/'pending' are not.
+        "AND language_status IN ('done', 'whisper_done', 'no_match') "
         "AND youtube_status IN ('done', 'no_match') "
         "AND (ingestion_status IS NULL OR ingestion_status = 'pending')"
     )
