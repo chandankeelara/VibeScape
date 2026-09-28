@@ -38,8 +38,11 @@ export const DJ_MAX_SENT_IDS = 20;
  * capped at 12, so without this a long queue produced a correspondingly long
  * `NOT IN (...)` clause — and backend/app.py:1366 inlines those ids as SQL
  * literals on the assumption the list is "bounded (~50-100)".
+ *
+ * 150 covers current + 12 recent + a queue + the 100-event buffer with room to
+ * spare, and stays under the backend's own 200 cap.
  */
-export const DJ_MAX_EXCLUDES = 100;
+export const DJ_MAX_EXCLUDES = 150;
 
 /**
  * No age decay: every event in the 10-slot buffer counts at full base weight.
@@ -227,14 +230,16 @@ export function buildWeights(events) {
  * backend skips per-key resolution for ints, which took a ~50-entry exclude
  * list from ~750ms of DB round-trips down to nothing.
  */
-export function excludeIds({ queue = [], recent = [], current = null }) {
+export function excludeIds({ queue = [], recent = [], current = null, events = [] }) {
   const ids = new Set();
-  const add = (t) => {
-    if (t && t.id != null) {
-      const n = Number(t.id);
-      if (Number.isFinite(n)) ids.add(n);
-    }
+  const addId = (v) => {
+    const n = Number(v);
+    // Ints only. A string here is a spotify_id from a track that isn't in the
+    // library yet, which the backend would have to resolve — and an
+    // un-ingested track can't be a candidate anyway.
+    if (Number.isFinite(n)) ids.add(n);
   };
+  const add = (t) => { if (t && t.id != null) addId(t.id); };
   // Order matters once capped — the entries most redundant to recommend must
   // survive the trim.
   //   current : playing right now
@@ -245,6 +250,13 @@ export function excludeIds({ queue = [], recent = [], current = null }) {
   add(current);
   [...recent].reverse().forEach(add);
   queue.forEach(add);
+  // Everything in the event buffer has already been heard this session.
+  // Without this, taste memory (100 events) far outran repeat memory (12
+  // recents): a track skipped 13 plays ago stayed a candidate, down-weighted
+  // by pos - 0.4*neg but never actually forbidden. That is the "I skipped
+  // this, why is it back?" case. Newest first so the cap keeps what matters.
+  for (let i = events.length - 1; i >= 0; i--) addId(events[i].track_id);
+
   return Array.from(ids).slice(0, DJ_MAX_EXCLUDES);
 }
 
@@ -272,7 +284,7 @@ export async function fetchDjPicks(seed, { queue, recent, current, events, limit
       mode: 'dj',
       positive_ids: positives,
       negative_ids: negatives,
-      exclude_ids: excludeIds({ queue, recent, current }),
+      exclude_ids: excludeIds({ queue, recent, current, events }),
       limit,
     });
     return res?.tracks || [];
