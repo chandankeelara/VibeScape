@@ -20,6 +20,7 @@
 
 import { createContext, useCallback, useContext, useMemo, useSyncExternalStore } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { persistTokensFor } from './SpotifyAuthContext';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import * as api from '../lib/api';
@@ -55,6 +56,10 @@ export function AuthProvider({ children }) {
     (payload) => {
       if (!payload?.session_token) return;
       setToken(payload.session_token);
+      // A Spotify sign-in already exchanged a code server-side and handed
+      // back a streaming token. Stash it so SpotifyAuthProvider adopts it on
+      // mount — one consent screen gets you both identity AND playback.
+      persistTokensFor(payload.user_id ?? payload.id, payload);
       queryClient.setQueryData(ME_KEY, payload);
     },
     [queryClient]

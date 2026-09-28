@@ -36,6 +36,45 @@ const keysFor = (uid = '_anon') => ({
   scopeVersion: `spotify_${uid}_scope_version`,
 });
 
+/**
+ * Persist tokens that the BACKEND already minted, under the namespace this
+ * provider will read on mount.
+ *
+ * `POST /api/auth/spotify-oauth` performs the token exchange server-side and
+ * returns spotify_access_token / _refresh_token / _expires_in alongside the
+ * session (backend/app.py:606). So signing in with Spotify ALREADY yields a
+ * streaming token — there is no reason to make the user consent a second time
+ * just to connect.
+ *
+ * Called from AuthContext.completeLogin, which runs while this provider is
+ * still unmounted (it lives below AuthGate). Writing to storage rather than
+ * calling adoptTokens() is what bridges that gap: the provider's restore
+ * effect picks them up when it mounts with the resolved userId.
+ */
+export function persistTokensFor(userId, payload) {
+  if (!payload?.spotify_access_token) return;
+  const k = keysFor(userId ?? '_anon');
+  const expiresAt = Date.now() + (payload.spotify_expires_in || 3600) * 1000;
+  try {
+    localStorage.setItem(k.token, payload.spotify_access_token);
+    if (payload.spotify_refresh_token) localStorage.setItem(k.refresh, payload.spotify_refresh_token);
+    localStorage.setItem(k.expiry, String(expiresAt));
+    // The login scope string is kept identical to SCOPE below, so the stored
+    // version is honest and the restore path won't force a re-consent.
+    localStorage.setItem(k.scopeVersion, String(SCOPE_VERSION));
+    // Synthesize the /v1/me shape from what the login response already told
+    // us, so isPremium is correct on the first render — no extra round-trip.
+    localStorage.setItem(k.profile, JSON.stringify({
+      id: payload.spotify_user_id ?? null,
+      display_name: payload.spotify_display_name ?? null,
+      email: payload.spotify_email ?? null,
+      country: payload.spotify_country ?? null,
+      product: payload.spotify_product ?? null,
+      images: payload.avatar_url ? [{ url: payload.avatar_url }] : [],
+    }));
+  } catch { /* private mode — falls back to the connect button */ }
+}
+
 /* ------------------------------------------------------------ PKCE helpers */
 
 function base64UrlEncode(bytes) {
