@@ -42,7 +42,7 @@ function useIsMobile() {
 export default function QueueSidebar() {
   const {
     queue, enqueue, enqueueAt, dequeueAt, clearQueue, reorderQueue,
-    loadTrack, current, recent, setNextFallback,
+    loadTrack, current, recent, setNextFallback, getSeenIds,
   } = usePlayer();
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -169,7 +169,7 @@ export default function QueueSidebar() {
     const picks = await queryClient.fetchQuery({
       queryKey: interimKey,
       staleTime: 5000,
-      queryFn: () => fetchDjPicks(current, { queue, recent, current, events, limit: RECS_LIMIT }),
+      queryFn: () => fetchDjPicks(current, { queue, recent, current, events, seen: getSeenIds(), limit: RECS_LIMIT }),
     });
     if (!picks?.length) return null;
     const [top, ...rest] = picks;
@@ -181,7 +181,7 @@ export default function QueueSidebar() {
     queryClient.setQueryData(interimKey, rest);
     queryClient.setQueryData(['queue-recs', apiKey(top), 'dj', sig], rest);
     return top;
-  }, [djEnabled, current, queue, recent, recordTransitionNow, flashConsume, queryClient]);
+  }, [djEnabled, current, queue, recent, recordTransitionNow, flashConsume, queryClient, getSeenIds]);
 
   // Registered only while DJ is on; clearing it restores the random vibe pull.
   useEffect(() => {

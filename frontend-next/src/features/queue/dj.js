@@ -230,7 +230,7 @@ export function buildWeights(events) {
  * backend skips per-key resolution for ints, which took a ~50-entry exclude
  * list from ~750ms of DB round-trips down to nothing.
  */
-export function excludeIds({ queue = [], recent = [], current = null, events = [] }) {
+export function excludeIds({ queue = [], recent = [], current = null, events = [], seen = [] }) {
   const ids = new Set();
   const addId = (v) => {
     const n = Number(v);
@@ -256,6 +256,10 @@ export function excludeIds({ queue = [], recent = [], current = null, events = [
   // by pos - 0.4*neg but never actually forbidden. That is the "I skipped
   // this, why is it back?" case. Newest first so the cap keeps what matters.
   for (let i = events.length - 1; i >= 0; i--) addId(events[i].track_id);
+  // The session seen-set: everything played or queued, however it was
+  // reached — search, recs, queue, DJ, the trail. PlayerContext owns it and
+  // hands it over newest-first, so the cap keeps the most recent.
+  seen.forEach(addId);
 
   return Array.from(ids).slice(0, DJ_MAX_EXCLUDES);
 }
@@ -274,7 +278,7 @@ export const bufferSignature = (events) =>
  * degrades to plain similarity until `similarTracksDj` is added there (see the
  * note in the port report). The shape of the response is identical either way.
  */
-export async function fetchDjPicks(seed, { queue, recent, current, events, limit = 8 }) {
+export async function fetchDjPicks(seed, { queue, recent, current, events, seen = [], limit = 8 }) {
   const key = apiKey(seed);
   if (!key) return [];
 
@@ -284,7 +288,7 @@ export async function fetchDjPicks(seed, { queue, recent, current, events, limit
       mode: 'dj',
       positive_ids: positives,
       negative_ids: negatives,
-      exclude_ids: excludeIds({ queue, recent, current, events }),
+      exclude_ids: excludeIds({ queue, recent, current, events, seen }),
       limit,
     });
     return res?.tracks || [];

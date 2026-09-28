@@ -28,6 +28,23 @@ const PlayerCtx = createContext(null);
 
 export const RECENT_MAX = 12;
 
+/**
+ * Session "seen" set — every track the user has interacted with, so the DJ
+ * never recommends something already encountered this session.
+ *
+ * Distinct from `recent` (12, drives the trail UI) and from the DJ event
+ * buffer (100, weights the taste vector). Those have their own jobs and their
+ * own sizes; this one exists purely to answer "have I already put this in
+ * front of the user?".
+ *
+ * Deliberately in-memory, not persisted: across sessions it would mean never
+ * hearing a song twice, which is not the goal.
+ *
+ * The bound matters — the backend inlines these as SQL literals in a
+ * NOT IN (...) clause and caps at 200 of its own accord.
+ */
+export const SEEN_MAX = 180;
+
 export function PlayerProvider({ children }) {
   const toast = useToast();
 
@@ -44,6 +61,11 @@ export function PlayerProvider({ children }) {
 
   // Guards against a slow request for an old vibe clobbering a newer one.
   const fetchToken = useRef(0);
+
+  // Insertion-ordered so the cap drops the OLDEST. A ref, not state: this
+  // changes on every play and must not re-render the tree, and the recs
+  // queryFn reads it through getSeenIds() at fetch time anyway.
+  const seenRef = useRef(new Map());
 
   // Optional override for what plays when a track ends with an empty queue.
   // DJ mode registers an async picker here so the just-finished track's signal
@@ -98,6 +120,26 @@ export function PlayerProvider({ children }) {
 
   /* ----------------------------------------------------------------- vibe */
 
+  /** Record a track as encountered. Idempotent; re-marking refreshes recency. */
+  const markSeen = useCallback((t) => {
+    const n = Number(t?.id);
+    if (!Number.isFinite(n)) return; // un-ingested Spotify result — no internal id
+    const m = seenRef.current;
+    m.delete(n); // re-insert so it moves to the end (most recent)
+    m.set(n, true);
+    if (m.size > SEEN_MAX) {
+      const drop = m.size - SEEN_MAX;
+      let i = 0;
+      for (const k of m.keys()) {
+        if (i++ >= drop) break;
+        m.delete(k);
+      }
+    }
+  }, []);
+
+  /** Newest first, so a downstream cap keeps the most relevant. */
+  const getSeenIds = useCallback(() => [...seenRef.current.keys()].reverse(), []);
+
   const setVibe = useCallback((v) => {
     setVibeState(Math.max(0, Math.min(100, Math.round(v))));
   }, []);
@@ -137,13 +179,14 @@ export function PlayerProvider({ children }) {
       if (!t) return;
       setCurrent(t);
       pushRecent(t);
+      markSeen(t);
       // Legacy syncs on explicit picks (search / queue / recs / DJ / trail)
       // but NOT on the random vibe fetch — that track is already inside the
       // requested band, so snapping would drift the slider on every skip.
       if (syncVibe) setVibeFromTrack(t);
       player.loadTrack(t, { mode });
     },
-    [mode, pushRecent, setVibeFromTrack]
+    [mode, pushRecent, setVibeFromTrack, markSeen]
   );
 
   /** Pull a random track in the current vibe band, excluding recents. */
@@ -264,20 +307,22 @@ export function PlayerProvider({ children }) {
   /* ---------------------------------------------------------------- queue */
 
   const enqueue = useCallback((t) => {
+    markSeen(t);
     setQueue((q) => (q.some((x) => trackKey(x) === trackKey(t)) ? q : [...q, t]));
-  }, []);
+  }, [markSeen]);
 
   const dequeueAt = useCallback((i) => setQueue((q) => q.filter((_, idx) => idx !== i)), []);
   const clearQueue = useCallback(() => setQueue([]), []);
 
   /** Insert at a position — needed by drag-to-queue from search/recs. */
   const enqueueAt = useCallback((t, i) => {
+    markSeen(t);
     setQueue((q) => {
       if (q.some((x) => trackKey(x) === trackKey(t))) return q;
       const at = Math.max(0, Math.min(i, q.length));
       return [...q.slice(0, at), t, ...q.slice(at)];
     });
-  }, []);
+  }, [markSeen]);
 
   /** Move an item within the queue — drag-to-reorder. */
   const reorderQueue = useCallback((from, to) => {
@@ -349,11 +394,12 @@ export function PlayerProvider({ children }) {
       verifying, startVerify, stopVerify, canVerify: canVerify(current),
       source,
       queue, enqueue, enqueueAt, dequeueAt, clearQueue, reorderQueue,
+      markSeen, getSeenIds,
       recent,
     }),
     [vibe, setVibe, shiftVibe, current, loadTrack, fetchForVibe, loadingTrack, setVibeFromTrack,
      playing, togglePlay, seek, next, prev, setNextFallback, mode, setPlaybackMode, videoState, resolveYoutubeId, verifying, startVerify, stopVerify, source,
-     queue, enqueue, enqueueAt, dequeueAt, clearQueue, reorderQueue, recent]
+     queue, enqueue, enqueueAt, dequeueAt, clearQueue, reorderQueue, markSeen, getSeenIds, recent]
   );
 
   return <PlayerCtx.Provider value={value}>{children}</PlayerCtx.Provider>;
