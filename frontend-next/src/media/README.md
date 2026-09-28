@@ -15,7 +15,7 @@ usefully render (current track, is-playing, queue).
 |---|---|
 | `glow.js` | `ctx.createMediaElementSource(el)` is callable **once per element, ever**. A second call throws `InvalidStateError` — permanently, there is no teardown. React StrictMode double-invokes effects in dev, so a naive `useEffect` crashes on the second run. Because audio is routed through `ctx.destination`, the symptom is **silence, not an error**. |
 | `youtube.js` | `window.onYouTubeIframeAPIReady` is a one-shot global set by an external `<script>`; it fires once and never again. `new YT.Player(nodeId)` takes over a real DOM node and replaces it with an `<iframe>` — if React's reconciler recreates that node, playback dies mid-song and the player instance is orphaned. |
-| `spotify.js` | `window.onSpotifyWebPlaybackSDKReady` — same one-shot global problem. Also browser-only: there is no native SDK, which is why a React Native / Flutter client was ruled out. |
+| `spotify.js` | `window.onSpotifyWebPlaybackSDKReady` — same one-shot global problem. Note the SDK does run in mobile browsers (Android + iOS, Premium required); background playback works on Android but not iOS, and that limit comes from the browser rather than the SDK. |
 | `glow.js` (rAF loop) | Reads RMS off an `AnalyserNode` and writes `--art-glow-alpha` at ~60fps. It must write the CSS variable directly via `documentElement.style.setProperty`. Routed through `useState`, it would re-render the player tree 60×/second. |
 
 ## Porting rule

@@ -4,8 +4,17 @@
  * CRITICAL — read src/media/README.md:
  *   - `window.onSpotifyWebPlaybackSDKReady` is a ONE-SHOT global. Assigned at
  *     module scope, never from a component.
- *   - Browser-only SDK; there is no native equivalent. This is why a React
- *     Native / Flutter client was ruled out for mobile.
+ *   - Runs in mobile browsers too (Chrome/Firefox/Safari/Edge on Android and
+ *     iOS, out of beta since 2021) — NOT desktop-only. Premium required;
+ *     mobile-only Premium tiers are excluded.
+ *
+ * Background / lock-screen behaviour, which is imposed by the BROWSER, not by
+ * the SDK:
+ *   - Android browsers: background playback works.
+ *   - iOS: backgrounding does not work, and music stops when the device locks.
+ *   - Spotify's advice for real background playback is their native iOS /
+ *     Android SDKs, which do exist — a Capacitor or native shell is the route
+ *     if lock-screen full-track playback on iOS ever becomes a requirement.
  *
  * Only Premium accounts get a playback device. Everything here degrades to
  * no-ops when there's no token or no device, which is the common case.
