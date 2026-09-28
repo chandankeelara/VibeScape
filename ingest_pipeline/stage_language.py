@@ -26,7 +26,7 @@ from pathlib import Path
 from .base import (
     RowResult, Stage,
     STATUS_DONE, STATUS_FAILED, STATUS_NO_MATCH, STATUS_WHISPER_DONE,
-    iso_now,
+    id_filter, iso_now,
 )
 
 
@@ -65,7 +65,7 @@ class LanguageStage(Stage):
         self._ml = _ml_backend()
         self._model_size = model_size
 
-    def fetch_pending(self, conn, limit: int) -> list:
+    def fetch_pending(self, conn, limit: int, only_ids=None) -> list:
         # Strict gate on DownloadStage — no URL fallback.
         rows = conn.execute(
             "SELECT id, spotify_id, title, artist, audio_path "
@@ -73,8 +73,9 @@ class LanguageStage(Stage):
             "WHERE language_status = 'pending' "
             "AND download_status = 'done' "
             "AND audio_path IS NOT NULL AND audio_path != '' "
+            f"{id_filter(only_ids)[0]}"
             "ORDER BY id ASC LIMIT ?",
-            (limit,),
+            (*id_filter(only_ids)[1], limit),
         ).fetchall()
         return list(rows)
 

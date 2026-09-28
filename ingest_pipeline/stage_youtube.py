@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import logging
 
-from .base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, STATUS_NO_MATCH, iso_now
+from .base import (RowResult, Stage, STATUS_DONE, STATUS_FAILED,
+                   STATUS_NO_MATCH, id_filter, iso_now)
 
 
 log = logging.getLogger("vibescape.ingest.youtube")
@@ -42,7 +43,7 @@ class YoutubeStage(Stage):
         except ImportError as e:
             raise SystemExit(f"YoutubeStage requires yt-dlp: {e}")
 
-    def fetch_pending(self, conn, limit: int) -> list:
+    def fetch_pending(self, conn, limit: int, only_ids=None) -> list:
         rows = conn.execute(
             "SELECT id, title, artist FROM tracks "
             # Armed by embedding, but the gate spells out EVERY upstream
@@ -70,8 +71,9 @@ class YoutubeStage(Stage):
             "AND language_status IN ('done', 'whisper_done', 'no_match') "
             "AND title IS NOT NULL AND title != '' "
             "AND artist IS NOT NULL AND artist != '' "
+            f"{id_filter(only_ids)[0]}"
             "ORDER BY id ASC LIMIT ?",
-            (limit,),
+            (*id_filter(only_ids)[1], limit),
         ).fetchall()
         return list(rows)
 

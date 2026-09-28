@@ -53,7 +53,8 @@ class Predictor:
         preds, _ = self.predict_with_embedding(audio_path, want_embedding=False)
         return preds
 
-    def predict_with_embedding(self, audio_path: str, want_embedding: bool = True):
+    def predict_with_embedding(self, audio_path: str, want_embedding: bool = True,
+                               crop_duration_s: float = None):
         """
         One encoder forward pass, two outputs: the regression scalars and
         the mean-pooled hidden state.
@@ -65,16 +66,30 @@ class Predictor:
         (ingest_pipeline/stage_embedding.py used to do exactly that with
         the BASE checkpoint).
 
+        crop_duration_s overrides the Predictor's default crop. The
+        ingest pipeline passes 30 s — the full preview — so the stored
+        embedding covers the whole clip rather than a 10 s slice.
+
+        NOTE: the heads were trained on 10 s crops, so a longer window
+        shifts their input statistics (max-pool rises with frame count).
+        Measured over 12 tracks, 10 s vs 30 s: mean |delta| 0.066
+        danceability / 0.043 energy / 0.067 valence, with the means
+        drifting up slightly (e.g. energy 0.5027 -> 0.5199). Small and
+        systematic rather than random, but it is a real bias — retrain on
+        30 s crops to remove it.
+
         Returns (preds_dict, mean_pooled_np_or_None).
         """
+        crop = (int(crop_duration_s * self.sample_rate)
+                if crop_duration_s else self.crop_samples)
         y = _load_audio(audio_path, self.sample_rate)
         if len(y) < self.sample_rate:
             y = np.pad(y, (0, self.sample_rate - len(y)))
-        if len(y) > self.crop_samples:
-            start = max(0, (len(y) - self.crop_samples) // 2)
-            y = y[start : start + self.crop_samples]
+        if len(y) > crop:
+            start = max(0, (len(y) - crop) // 2)
+            y = y[start : start + crop]
         else:
-            y = np.pad(y, (0, self.crop_samples - len(y)))
+            y = np.pad(y, (0, crop - len(y)))
         peak = float(np.max(np.abs(y))) if len(y) else 0.0
         if peak > 1.0:
             y = y / peak

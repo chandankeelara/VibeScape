@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from .base import RowResult, Stage, STATUS_DONE, STATUS_NO_MATCH, iso_now
+from .base import RowResult, Stage, STATUS_DONE, STATUS_NO_MATCH, id_filter, iso_now
 from .preview_providers import PreviewChain, default_chain
 
 
@@ -47,7 +47,7 @@ class PreviewStage(Stage):
     def __init__(self, chain: PreviewChain | None = None):
         self._chain = chain or default_chain(log=log)
 
-    def fetch_pending(self, conn, limit: int) -> list:
+    def fetch_pending(self, conn, limit: int, only_ids=None) -> list:
         rows = conn.execute(
             f"SELECT {_FETCH_COLS} FROM tracks "
             # Entry condition: the app queued this track and no terminal
@@ -59,8 +59,9 @@ class PreviewStage(Stage):
             # would be re-picked every pass until ml_status catches up and
             # promote() finally flips ingestion_status off 'pending'.
             f"AND (preview_status IS NULL OR preview_status = 'pending') "
+            f"{id_filter(only_ids)[0]}"
             f"ORDER BY id ASC LIMIT ?",
-            (limit,),
+            (*id_filter(only_ids)[1], limit),
         ).fetchall()
         return list(rows)
 

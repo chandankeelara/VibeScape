@@ -18,7 +18,8 @@ import logging
 import sys
 from pathlib import Path
 
-from .base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, STATUS_NO_MATCH, iso_now
+from .base import (RowResult, Stage, STATUS_DONE, STATUS_FAILED,
+                   STATUS_NO_MATCH, id_filter, iso_now)
 
 
 log = logging.getLogger("vibescape.ingest.classify")
@@ -60,7 +61,7 @@ class ClassifyStage(Stage):
             log.warning("ml_backend not available (mode=%s); classify stage "
                         "will mark every row failed", self._ml.current_mode())
 
-    def fetch_pending(self, conn, limit: int) -> list:
+    def fetch_pending(self, conn, limit: int, only_ids=None) -> list:
         # Strict gate on DownloadStage — audio must be cached locally.
         # No URL fallback here: if download didn't succeed it never armed
         # ml_status, so this stage simply never sees the row.
@@ -69,8 +70,9 @@ class ClassifyStage(Stage):
             f"WHERE ml_status = 'pending' "
             f"AND download_status = 'done' "
             f"AND audio_path IS NOT NULL AND audio_path != '' "
+            f"{id_filter(only_ids)[0]}"
             f"ORDER BY id ASC LIMIT ?",
-            (limit,),
+            (*id_filter(only_ids)[1], limit),
         ).fetchall()
         return list(rows)
 
@@ -137,11 +139,11 @@ class ClassifyStage(Stage):
             },
         )
 
-    def run_batch(self, conn, limit: int, log_):
+    def run_batch(self, conn, limit: int, log_, only_ids=None):
         """Override: the MERT vector goes to track_embeddings, not tracks."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        rows = self.fetch_pending(conn, limit)
+        rows = self.fetch_pending(conn, limit, only_ids)
         counts = {STATUS_DONE: 0, STATUS_FAILED: 0}
         if not rows:
             log_.info("[%s] no pending rows", self.name)
@@ -173,7 +175,7 @@ class ClassifyStage(Stage):
                     "  model_version  = excluded.model_version, "
                     "  updated_at     = excluded.updated_at",
                     (int(res.track_id), mert_blob,
-                     fields.get("model_version") or "mert_v1_ft_768_10s", now),
+                     fields.get("model_version") or "mert_v1_ft_768_30s", now),
                 )
             counts[res.status] = counts.get(res.status, 0) + 1
         conn.commit()

@@ -34,7 +34,7 @@ import logging
 import sys
 from pathlib import Path
 
-from .base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, iso_now
+from .base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, id_filter, iso_now
 
 log = logging.getLogger("vibescape.ingest.librosa")
 
@@ -61,14 +61,15 @@ class LibrosaStage(Stage):
         except ImportError as e:
             raise SystemExit(f"LibrosaStage requires librosa: {e}")
 
-    def fetch_pending(self, conn, limit: int) -> list:
+    def fetch_pending(self, conn, limit: int, only_ids=None) -> list:
         rows = conn.execute(
             "SELECT id, spotify_id, audio_path FROM tracks "
             "WHERE librosa_status = 'pending' "
             "AND download_status = 'done' "
             "AND audio_path IS NOT NULL AND audio_path != '' "
+            f"{id_filter(only_ids)[0]}"
             "ORDER BY id ASC LIMIT ?",
-            (limit,),
+            (*id_filter(only_ids)[1], limit),
         ).fetchall()
         return list(rows)
 

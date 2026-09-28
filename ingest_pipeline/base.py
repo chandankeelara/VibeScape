@@ -77,6 +77,26 @@ def stage_error_status(stage_name: str) -> str:
 STATUS_WHISPER_DONE = "whisper_done"
 
 
+def id_filter(only_ids, alias: str = "") -> tuple[str, list]:
+    """
+    Build an "AND <alias>id IN (?,?,…)" fragment restricting a stage to a
+    cohort of track ids, plus its params.
+
+    This is what makes a pass carry the SAME tracks through every stage.
+    Without it each stage independently selects its own pending rows, so
+    a pass could classify one set of tracks and fuse a completely
+    different set — which is exactly what happened once fuse_status was
+    'pending' library-wide after a migration.
+
+    `alias` is the table prefix the stage's SQL uses ("t." for the stages
+    that join, "" for the ones that don't).
+    """
+    if not only_ids:
+        return "", []
+    marks = ",".join("?" for _ in only_ids)
+    return f"AND {alias}id IN ({marks}) ", [int(x) for x in only_ids]
+
+
 def iso_now() -> str:
     return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
 
@@ -139,20 +159,24 @@ class Stage(ABC):
     finalizes: dict[str, str] = {}
 
     @abstractmethod
-    def fetch_pending(self, conn, limit: int) -> list:
-        """Return rows to process this pass."""
+    def fetch_pending(self, conn, limit: int, only_ids=None) -> list:
+        """Return rows to process this pass.
+
+        `only_ids` restricts the stage to a cohort so a pass advances the
+        same tracks through every stage. See id_filter().
+        """
 
     @abstractmethod
     def process_row(self, row) -> RowResult:
         """Do the per-row work. Called from worker threads. No DB access."""
 
-    def run_batch(self, conn, limit: int, log) -> dict[str, int]:
+    def run_batch(self, conn, limit: int, log, only_ids=None) -> dict[str, int]:
         """
         Fetch a batch of pending rows, dispatch process_row across a thread
         pool, commit results (one row per UPDATE), and return per-status
         counts. Called by the orchestrator once per pass.
         """
-        rows = self.fetch_pending(conn, limit)
+        rows = self.fetch_pending(conn, limit, only_ids)
         counts = {STATUS_DONE: 0, STATUS_NO_MATCH: 0, STATUS_FAILED: 0}
         if not rows:
             log.info("[%s] no pending rows", self.name)

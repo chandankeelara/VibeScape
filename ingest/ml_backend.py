@@ -28,7 +28,9 @@ log = logging.getLogger("vibescape.ml_backend")
 # than the base m-a-p/MERT-v1-95M ones stage_embedding used to write.
 # Cosine similarity across the two is meaningless, so the version is
 # distinct and every stored vector must be rebuilt before mixing.
-MERT_FT_MODEL_VERSION = "mert_v1_ft_768_10s"
+MERT_FT_MODEL_VERSION = "mert_v1_ft_768_30s"
+# Full preview length. iTunes previews are 30 s.
+MERT_EMBED_CROP_S = 30.0
 
 _MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "vibescape-ml")
 _MODAL_FUNCTION_NAME = os.environ.get("MODAL_FUNCTION_NAME", "predict_from_url")
@@ -405,7 +407,11 @@ def predict_and_embed_from_path(local_path: str):
     if predictor is None:
         return None, None
     try:
-        preds, emb = predictor.predict_with_embedding(local_path)
+        # Full 30 s preview, not the 10 s crop the heads were trained
+        # on: the stored vector should describe the whole clip. See
+        # predict_with_embedding for the measured bias this adds.
+        preds, emb = predictor.predict_with_embedding(
+            local_path, crop_duration_s=MERT_EMBED_CROP_S)
         preds["model_version"] = MERT_FT_MODEL_VERSION
         return preds, emb
     except Exception as e:

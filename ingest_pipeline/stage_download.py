@@ -24,7 +24,8 @@ import os
 import urllib.request
 from pathlib import Path
 
-from .base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, STATUS_NO_MATCH, iso_now
+from .base import (RowResult, Stage, STATUS_DONE, STATUS_FAILED,
+                   STATUS_NO_MATCH, id_filter, iso_now)
 
 
 log = logging.getLogger("vibescape.ingest.download")
@@ -70,7 +71,7 @@ class DownloadStage(Stage):
     def __init__(self):
         _AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
-    def fetch_pending(self, conn, limit: int) -> list:
+    def fetch_pending(self, conn, limit: int, only_ids=None) -> list:
         rows = conn.execute(
             "SELECT id, spotify_id, preview_url, audio_path "
             "FROM tracks "
@@ -78,8 +79,9 @@ class DownloadStage(Stage):
             "AND preview_status = 'done' "
             "AND preview_url IS NOT NULL AND preview_url != '' "
             "AND spotify_id IS NOT NULL AND spotify_id != '' "
+            f"{id_filter(only_ids)[0]}"
             "ORDER BY id ASC LIMIT ?",
-            (limit,),
+            (*id_filter(only_ids)[1], limit),
         ).fetchall()
         return list(rows)
 

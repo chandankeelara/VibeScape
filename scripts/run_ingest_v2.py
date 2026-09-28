@@ -89,20 +89,52 @@ def pending_snapshot(conn) -> dict[str, int]:
     return out
 
 
+def select_cohort(conn, batch: int) -> list[int]:
+    """
+    Pick the tracks this pass will advance, oldest first.
+
+    A cohort is 'pending' work: either never started, or part-way through
+    the chain. Terminal rows (done / no_preview / *_stage_error) are
+    excluded, so a pass never re-touches finished or parked tracks.
+    """
+    rows = conn.execute(
+        "SELECT id FROM tracks "
+        "WHERE ingestion_status = 'pending' OR ingestion_status IS NULL "
+        "ORDER BY id ASC LIMIT ?",
+        (batch,),
+    ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
 def run_pass(stages: list, batch: int) -> int:
-    """One orchestrator pass: run every stage's batch.
+    """One orchestrator pass.
 
-    There is no promote step. Each stage settles ingestion_status itself
-    via `finalizes` (see ingest_pipeline/base.py) in the same UPDATE that
-    writes its own status, so there is no window where a row's stage
-    columns and its ingestion_status disagree.
+    Selects ONE cohort of tracks and walks it through every stage in
+    order, so the same tracks advance together: preview then download
+    then librosa … on the same ids, within the same pass. Stages still
+    process their slice as a batch (thread pools, warm models) — the
+    cohort just pins WHICH rows they are allowed to touch.
 
-    Returns total rows processed across all stages."""
+    Previously each stage independently ran its own SELECT, so a pass
+    could classify one set of tracks and fuse a completely different set.
+    That is not hypothetical: after a migration left fuse_status='pending'
+    library-wide, fuse picked the lowest ids it could find rather than the
+    tracks classify had just encoded.
+
+    Each stage settles ingestion_status itself; there is no promote pass.
+
+    Returns total rows processed across all stages.
+    """
     conn = get_conn()
     total_processed = 0
     try:
+        cohort = select_cohort(conn, batch)
+        if not cohort:
+            return 0
+        log.info("pass cohort: %d tracks (ids %d..%d)",
+                 len(cohort), cohort[0], cohort[-1])
         for stage in stages:
-            counts = stage.run_batch(conn, batch, log)
+            counts = stage.run_batch(conn, batch, log, only_ids=cohort)
             total_processed += sum(counts.values())
     finally:
         conn.close()

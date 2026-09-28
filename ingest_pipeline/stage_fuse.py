@@ -27,12 +27,15 @@ import logging
 
 import numpy as np
 
-from .base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, iso_now
+from .base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, id_filter, iso_now, id_filter
 from .stage_embedding import (
     FUSED_DIM, MERT_DIM, SCALAR_COLS, _build_fused,
 )
 
 log = logging.getLogger("vibescape.ingest.fuse")
+
+# Must match what ClassifyStage stamps on track_embeddings.model_version.
+CURRENT_MERT_VERSION = "mert_v1_ft_768_30s"
 
 # Qualified with the table alias because this stage joins track_embeddings.
 _FETCH_COLS = ", ".join(
@@ -48,10 +51,11 @@ class FuseStage(Stage):
     # Pure numpy on data already in hand — no audio, no GPU, no network.
     max_workers = 4
 
-    def fetch_pending(self, conn, limit: int) -> list:
+    def fetch_pending(self, conn, limit: int, only_ids=None) -> list:
         # Needs the raw MERT vector to fuse, so it joins rather than
         # trusting embedding_status alone: a row whose track_embeddings
         # write was rolled back would otherwise fail per-row every pass.
+        _idf, _idp = id_filter(only_ids, "t.")
         rows = conn.execute(
             f"SELECT {_FETCH_COLS}, te.mert_embedding AS mert_blob "
             f"FROM tracks t "
@@ -61,8 +65,23 @@ class FuseStage(Stage):
             # gate. embedding_status is retired.
             f"AND t.ml_status = 'done' "
             f"AND te.mert_embedding IS NOT NULL "
+            # Only fuse vectors from the CURRENT encoder. Without this,
+            # fusing a leftover base-checkpoint mert_embedding would mint
+            # a brand-new fused vector in the old space and quietly
+            # re-poison the pool the migration is trying to clean. A row
+            # whose mert vector is stale simply waits for classify to
+            # re-encode it.
+            f"AND te.model_version = ? "
+            # Language must have finished. In the default order it always
+            # has (language arms fuse), but a targeted --stages run, or a
+            # fuse_status reset during a migration, can reach a row whose
+            # language is still pending — and fusing then silently buckets
+            # it as 'other', which is a wrong vector rather than a missing
+            # one. 'whisper_done'/'no_match' are finished outcomes.
+            f"AND t.language_status IN ('done', 'whisper_done', 'no_match') "
+            f"{_idf}"
             f"ORDER BY t.id ASC LIMIT ?",
-            (limit,),
+            (CURRENT_MERT_VERSION, *_idp, limit),
         ).fetchall()
         return list(rows)
 
@@ -92,11 +111,11 @@ class FuseStage(Stage):
             },
         )
 
-    def run_batch(self, conn, limit: int, log_):
+    def run_batch(self, conn, limit: int, log_, only_ids=None):
         """Override: the fused blob goes to track_embeddings, not tracks."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        rows = self.fetch_pending(conn, limit)
+        rows = self.fetch_pending(conn, limit, only_ids)
         counts = {STATUS_DONE: 0, STATUS_FAILED: 0}
         if not rows:
             log_.info("[%s] no pending rows", self.name)
