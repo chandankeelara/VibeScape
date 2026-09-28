@@ -1,12 +1,14 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// The React app is served from /next by FastAPI (see backend/app.py), so every
-// emitted asset URL must be prefixed accordingly. The legacy vanilla app keeps
-// serving from / until this one reaches parity.
+// Served from the site root. The /next/ prefix existed only to keep React's
+// files from colliding with the legacy app's /app.js, /style.css and
+// /login.css at the root — with legacy removed that constraint is gone, and a
+// root base is required anyway for the manifest and service worker to sit at
+// / with the right scope.
 export default defineConfig({
   plugins: [react()],
-  base: '/next/',
+  base: '/',
   build: {
     outDir: 'dist',
     emptyOutDir: true,

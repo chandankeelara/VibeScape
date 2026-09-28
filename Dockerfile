@@ -25,12 +25,11 @@ RUN pip install --no-cache-dir \
     "numpy>=1.24"
 
 COPY backend/ /app/backend/
-COPY frontend/ /app/frontend/
 COPY ingest/ /app/ingest/
 COPY config.py /app/config.py
 COPY schema.sql /app/schema.sql
 
-# Built React SPA from stage 1 — served at /next by backend/app.py.
+# Built React SPA from stage 1 — the only UI, served at / by backend/app.py.
 COPY --from=fe /fe/dist /app/frontend-next/dist
 
 COPY data/vibescape.db /app/seed/vibescape.db
