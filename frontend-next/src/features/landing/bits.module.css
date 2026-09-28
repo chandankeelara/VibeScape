@@ -1,0 +1,102 @@
+/* Small shared marketing primitives — the eyebrow chip, the italic serif
+   accent word, and the centred section header. Ported from
+   frontend/login.css:191-221, 293-301, 1358-1388. */
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 6px 12px 6px 10px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--text-2);
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+  flex-shrink: 0;
+  transition:
+    background var(--dur-slow) var(--ease-out),
+    box-shadow var(--dur-slow) var(--ease-out);
+}
+
+.serifEm {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  color: var(--accent);
+  padding: 0 0.03em;
+  transition: color var(--dur-slow) var(--ease-out);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  font-size: 16px;
+  color: var(--text);
+}
+
+.brandMark {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: radial-gradient(
+    circle at 30% 30%,
+    color-mix(in oklab, var(--accent) 80%, white 20%),
+    color-mix(in oklab, var(--accent) 100%, black 5%) 70%
+  );
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--accent) 30%, transparent),
+    0 0 18px -2px color-mix(in oklab, var(--accent) 55%, transparent);
+  transition: box-shadow var(--dur) var(--ease);
+  flex-shrink: 0;
+}
+
+.sectionHead {
+  max-width: 780px;
+  margin: 0 auto 56px;
+  text-align: center;
+}
+
+.tight {
+  margin-bottom: 40px;
+}
+
+.sectionHead h2 {
+  font-size: clamp(34px, 5.2vw, 60px);
+  letter-spacing: -0.032em;
+  line-height: 1.02;
+  font-weight: 600;
+  margin: 18px 0 14px;
+}
+
+.sectionLede {
+  color: var(--text-2);
+  font-size: 16px;
+  line-height: 1.55;
+  margin: 0 auto;
+  max-width: 52ch;
+}
+
+@media (max-width: 640px) {
+  .sectionHead {
+    margin-bottom: 40px;
+  }
+
+  .sectionHead h2 {
+    font-size: clamp(30px, 8vw, 42px);
+  }
+}

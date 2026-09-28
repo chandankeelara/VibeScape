@@ -5,7 +5,7 @@
  * /api/auth/signup take { email, password } (backend/app.py:309-400). The
  * legacy in-app overlay's create view collected a display name + optional
  * 4-digit PIN, which no longer matches any route — see the report / the note
- * in AuthPanel.jsx. The field chrome, the reveal-confirm-on-type behaviour and
+ * in the (now removed) AuthPanel. The field chrome, the reveal-confirm-on-type behaviour and
  * the inline error styling are ported from that view; the *fields* follow the
  * backend contract and the landing page (frontend/login.js `onEmailSubmit`).
  */

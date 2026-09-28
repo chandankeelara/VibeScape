@@ -1,0 +1,264 @@
+/* frontend/login.css:1348-1613 */
+
+.features {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: clamp(72px, 12vh, 140px) clamp(20px, 5vw, 56px);
+  scroll-margin-top: var(--sp-5);
+}
+
+/*
+  Three tiers of visual weight on one 6-column grid:
+  row 1 = two hero cards (span 3), row 2 = three medium (span 2),
+  row 3 = four tight (span 3 — they wrap two-up).
+*/
+.grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: var(--sp-4);
+}
+
+.card {
+  padding: 26px;
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  grid-column: span 2;
+  transition:
+    border-color var(--dur) var(--ease),
+    background var(--dur) var(--ease),
+    transform var(--dur) var(--ease);
+}
+
+.card:hover {
+  border-color: var(--border-strong);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.heroCard {
+  grid-column: span 3;
+  padding: var(--sp-6);
+  background: linear-gradient(
+    160deg,
+    color-mix(in oklab, var(--accent) 6%, rgba(255, 255, 255, 0.02)),
+    rgba(255, 255, 255, 0.015)
+  );
+  border-color: color-mix(in oklab, var(--accent) 16%, var(--border));
+}
+
+.heroCard:hover {
+  border-color: color-mix(in oklab, var(--accent) 32%, var(--border-strong));
+  background: linear-gradient(
+    160deg,
+    color-mix(in oklab, var(--accent) 10%, rgba(255, 255, 255, 0.04)),
+    rgba(255, 255, 255, 0.02)
+  );
+}
+
+.tightCard {
+  padding: 22px;
+  gap: var(--sp-2);
+}
+
+.tag {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.tagNum {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 18px;
+  color: var(--accent);
+  letter-spacing: -0.02em;
+  transition: color var(--dur-slow) var(--ease-out);
+}
+
+.card h3 {
+  font-family: var(--sans);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.018em;
+  line-height: 1.15;
+  margin: 0;
+  color: var(--text);
+}
+
+.heroCard h3 {
+  font-size: 24px;
+}
+
+.card p {
+  color: var(--text-2);
+  line-height: 1.55;
+  font-size: 14.5px;
+  margin: 0;
+}
+
+.tightCard p {
+  font-size: 13.5px;
+}
+
+.card em {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  color: var(--accent);
+  font-size: 1.05em;
+  transition: color var(--dur-slow) var(--ease-out);
+}
+
+.card a {
+  color: var(--accent);
+  border-bottom: 1px solid color-mix(in oklab, var(--accent) 45%, transparent);
+  transition: color var(--dur) var(--ease);
+}
+
+.card a:hover {
+  color: var(--text);
+}
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 6px;
+  min-width: 20px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--sp-1);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  vertical-align: baseline;
+  line-height: 1;
+}
+
+/* ---- the two hero-card visuals ---- */
+
+.visualSlider {
+  margin-top: var(--sp-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.fvTrack {
+  position: relative;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.fvFill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 62%;
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(
+    90deg,
+    #4c5b8a 0%,
+    #00b4d8 25%,
+    #7c3aed 55%,
+    #ec4899 80%,
+    #f97316 100%
+  );
+}
+
+.fvThumb {
+  position: absolute;
+  left: 62%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--text);
+  border: 3px solid #ec4899;
+  box-shadow: 0 0 0 6px rgba(236, 72, 153, 0.16);
+}
+
+.fvTicks {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
+.visualChips {
+  margin-top: var(--sp-1);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fvChip {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px var(--sp-3);
+  border-radius: var(--radius-pill);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+}
+
+.fvChipActive {
+  color: var(--text);
+  background: color-mix(in oklab, var(--c) 20%, var(--surface));
+  border-color: color-mix(in oklab, var(--c) 44%, transparent);
+  box-shadow: 0 0 20px -6px var(--c);
+}
+
+@media (max-width: 960px) {
+  .grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+
+  .card {
+    grid-column: span 2;
+  }
+
+  .heroCard {
+    grid-column: span 4;
+  }
+}
+
+@media (max-width: 640px) {
+  .features {
+    padding: 60px 20px;
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+    gap: var(--sp-3);
+  }
+
+  .card,
+  .heroCard,
+  .tightCard {
+    grid-column: span 1;
+    padding: 22px;
+  }
+
+  .heroCard h3 {
+    font-size: 22px;
+  }
+}

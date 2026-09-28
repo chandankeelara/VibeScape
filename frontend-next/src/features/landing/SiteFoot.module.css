@@ -1,0 +1,58 @@
+/* frontend/login.css:1994-2038 */
+
+.foot {
+  border-top: 1px solid var(--border);
+  padding: var(--sp-5) clamp(20px, 5vw, 56px);
+}
+
+.inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.brand {
+  font-size: 14px;
+}
+
+.mark {
+  width: 18px;
+  height: 18px;
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--text-3);
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+
+.meta a {
+  color: var(--text-2);
+  transition: color var(--dur) var(--ease);
+}
+
+.meta a:hover {
+  color: var(--text);
+}
+
+.sep {
+  color: var(--text-4);
+}
+
+@media (max-width: 640px) {
+  .foot {
+    padding: 20px;
+  }
+
+  .inner {
+    justify-content: center;
+    text-align: center;
+  }
+}

@@ -90,6 +90,9 @@ export const spotifyConfig = () => request('/api/spotify/config', { auth: false 
  */
 export const listUsers = () => request('/api/users', { auth: false });
 
+/** Curated per-mood demo tracks for the landing page hero. */
+export const demoMoods = () => request('/api/demo/moods', { auth: false });
+
 /** Auth is email/password — NOT the user_id/PIN flow the legacy overlay used. */
 export const signup = (payload) => request('/api/auth/signup', { method: 'POST', body: payload, auth: false });
 export const login = (payload) => request('/api/auth/login', { method: 'POST', body: payload, auth: false });

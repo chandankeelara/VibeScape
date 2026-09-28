@@ -3,7 +3,7 @@
  *
  *   <AuthGate><App /></AuthGate>
  *
- * No session -> the auth card (Spotify / guest / email / create).
+ * No session -> the landing page, which carries the auth modal.
  * Session     -> children, with `useAuth()` available anywhere below.
  *
  * Replaces the legacy show/hideAuthOverlay + `body.auth-locked` visibility
@@ -14,7 +14,7 @@
 import { AuthProvider, useAuth } from '../../state/AuthContext';
 import styles from './Auth.module.css';
 import { Spinner } from './parts';
-import AuthPanel from './AuthPanel';
+import LandingPage from '../landing';
 
 function Gate({ children, fallback }) {
   const { user, isLoading, completeLogin } = useAuth();
@@ -31,7 +31,10 @@ function Gate({ children, fallback }) {
     );
   }
 
-  if (!user) return <AuthPanel onAuthenticated={completeLogin} />;
+  // Signed out = the marketing landing page, which carries its own auth
+  // modal (Spotify / email / guest). It reads completeLogin from useAuth
+  // itself; passing it keeps the dependency explicit.
+  if (!user) return <LandingPage onAuthenticated={completeLogin} />;
 
   return children;
 }
