@@ -21,9 +21,15 @@ log = logging.getLogger("vibescape.ingest.youtube")
 class YoutubeStage(Stage):
     name = "youtube"
     status_column = "youtube_status"
-    # Also an ENTRY stage — it needs only title/artist, never audio — so
-    # it triggers off ingestion_status for the same reason preview does.
-    # Arms nothing: youtube_id is a leaf, no stage consumes it.
+    # FINISHER. Armed by EmbeddingStage, i.e. only once preview,
+    # download, classify and embedding have all succeeded. It arms
+    # nothing — instead it writes ingestion_status='done' itself, the
+    # transition that makes a track visible to the app.
+    #
+    # It needs no audio (title/artist only) so it could run anywhere,
+    # but running it last means a track is never visible half-ingested:
+    # by the time it reads 'done' it has a preview, a cached file,
+    # scalar predictions, an embedding and a video id.
     # yt-dlp searches are fairly slow per call (~1-3s); parallelize aggressively.
     max_workers = 6
 
@@ -36,8 +42,13 @@ class YoutubeStage(Stage):
     def fetch_pending(self, conn, limit: int) -> list:
         rows = conn.execute(
             "SELECT id, title, artist FROM tracks "
-            "WHERE ingestion_status = 'pending' "
-            "AND (youtube_status IS NULL OR youtube_status = 'pending') "
+            # Own column armed by embedding, AND the upstream really
+            # finished. The second clause is what enforces "last": local
+            # rows carry a stale youtube_status='pending' from the Turso
+            # pull, and without it those get picked up before the audio
+            # stages have run.
+            "WHERE youtube_status = 'pending' "
+            "AND embedding_status = 'done' "
             "AND title IS NOT NULL AND title != '' "
             "AND artist IS NOT NULL AND artist != '' "
             "ORDER BY id ASC LIMIT ?",
@@ -55,6 +66,10 @@ class YoutubeStage(Stage):
                 status=STATUS_NO_MATCH,
                 fields={
                     "youtube_queried_at": iso_now(),
+                    # No video found, but the track is still fully
+                    # ingested and playable — a missing youtube_id only
+                    # costs the video panel its fallback.
+                    "ingestion_status":   "done",
                 },
             )
         return RowResult(
@@ -63,6 +78,9 @@ class YoutubeStage(Stage):
             fields={
                 "youtube_id":         vid,
                 "youtube_queried_at": iso_now(),
+                # The finishing write: everything upstream succeeded and
+                # the video id is in hand.
+                "ingestion_status":   "done",
             },
         )
 

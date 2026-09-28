@@ -105,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--batch", type=int, default=50,
                         help="max rows per stage per pass (default 50)")
     parser.add_argument("--stages", type=str,
-                        default="preview,download,classify,youtube,language,embedding",
+                        default="preview,download,classify,language,embedding,youtube",
                         help="comma-separated stage names (default: all six in order)")
     parser.add_argument("--loop", action="store_true",
                         help="keep running; sleep --interval when nothing to do")

@@ -50,13 +50,24 @@ def promote(conn) -> dict[str, int]:
         )
         counts[f"cascade_{col.split('_')[0]}"] = cur.rowcount or 0
 
-    # ingestion_status='done' — full happy path
+    # ingestion_status='done' — full happy path.
+    #
+    # YoutubeStage writes this itself as its finishing act, so in the
+    # normal flow this statement matches nothing. It is kept as a
+    # backstop for rows that finished before youtube became the
+    # finisher, and it now requires a terminal youtube_status so it can
+    # never promote a row AHEAD of youtube — which would make a track
+    # visible to the app without a video id.
+    #
+    # Restricted to ingestion_status='pending' so it cannot resurrect a
+    # 'stage_error' or 'no_preview' row.
     cur = conn.execute(
         "UPDATE tracks SET ingestion_status = 'done' "
         "WHERE preview_status = 'done' "
         "AND download_status = 'done' "
         "AND ml_status = 'done' "
-        "AND (ingestion_status IS NULL OR ingestion_status != 'done')"
+        "AND youtube_status IN ('done', 'no_match') "
+        "AND (ingestion_status IS NULL OR ingestion_status = 'pending')"
     )
     counts["->done"] = cur.rowcount or 0
 
@@ -65,7 +76,11 @@ def promote(conn) -> dict[str, int]:
     cur = conn.execute(
         "UPDATE tracks SET ingestion_status = 'no_preview' "
         "WHERE (preview_status = 'no_match' OR download_status = 'no_match') "
-        "AND (ingestion_status IS NULL OR ingestion_status != 'no_preview')"
+        # Only ever promote a row that is still pending. Enumerating the
+        # states to avoid would mean matching every '<stage>_stage_error'
+        # value; restricting to 'pending' covers them all, and also stops
+        # this resurrecting a row already marked done or no_preview.
+        "AND (ingestion_status IS NULL OR ingestion_status = 'pending')"
     )
     counts["->no_preview"] = cur.rowcount or 0
 

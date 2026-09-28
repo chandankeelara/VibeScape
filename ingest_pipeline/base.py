@@ -61,6 +61,17 @@ STATUS_PENDING = "pending"
 STATUS_DONE = "done"
 STATUS_NO_MATCH = "no_match"
 STATUS_FAILED = "failed"
+# Written to ingestion_status (NOT to a stage column) when a stage
+# returns 'failed'. Named after the stage that broke — 'preview_stage_error',
+# 'classify_stage_error', … — so a single GROUP BY on ingestion_status
+# tells you which stage is failing and how often, with no log parsing.
+#
+# It also parks the row: preview's entry gate only matches
+# ingestion_status='pending', so a broken row stops re-entering the
+# pipeline every pass. The stage's own column keeps 'failed', so
+# --retry-failed still knows where to resume.
+def stage_error_status(stage_name: str) -> str:
+    return f"{stage_name}_stage_error"
 # Used by language_status: Whisper produced a tag but LLM hasn't verified yet.
 # The language_verify stage transitions whisper_done → done.
 STATUS_WHISPER_DONE = "whisper_done"
@@ -138,19 +149,37 @@ class Stage(ABC):
         # concurrent writers, and this is fast enough.
         now = iso_now()
         for res in results:
-            fields = dict(res.fields or {})
-            fields[self.status_column] = res.status
-            if res.status == STATUS_DONE:
-                # Arm the next stage(s) in the same UPDATE, so a row can
-                # never be left 'done' here but un-triggered downstream.
-                for col in self.arms:
-                    fields[col] = STATUS_PENDING
+            fields = self._finalize_fields(dict(res.fields or {}), res)
             self._commit_row_update(conn, int(res.track_id), fields, log)
             counts[res.status] = counts.get(res.status, 0) + 1
         conn.commit()
 
         log.info("[%s] batch done: %s", self.name, counts)
         return counts
+
+    def _finalize_fields(self, fields: dict, res: "RowResult") -> dict:
+        """
+        Stamp a result's own status column, arm the next stage(s), and
+        record a failure on the row.
+
+        Shared by run_batch and by EmbeddingStage's override — which has
+        its own commit loop for the embedding blobs, and silently skipped
+        arming until this was factored out. Any future override must call
+        this rather than re-implementing it.
+        """
+        fields[self.status_column] = res.status
+        if res.status == STATUS_DONE:
+            # Arm the next stage(s) in the same UPDATE, so a row can never
+            # be left 'done' here but un-triggered downstream.
+            for col in self.arms:
+                fields[col] = STATUS_PENDING
+        elif res.status == STATUS_FAILED:
+            # Surface the failure on the row, not only in the log, and
+            # stop it re-entering at preview.
+            fields["ingestion_status"] = stage_error_status(self.name)
+            if res.error:
+                fields["ingestion_error"] = f"[{self.name}] {res.error}"[:500]
+        return fields
 
     @staticmethod
     def _commit_row_update(conn, track_id: int, fields: dict, log) -> None:

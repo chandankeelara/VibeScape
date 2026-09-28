@@ -270,6 +270,9 @@ _FETCH_COLS = (
 class EmbeddingStage(Stage):
     name = "embedding"
     status_column = "embedding_status"
+    # Last of the audio stages, so it arms the finisher. YouTube runs
+    # only once a track is otherwise fully ingested.
+    arms = ("youtube_status",)
     # GPU-bound like classify; MERT weights are heavy. Serialize.
     max_workers = 1
 
@@ -401,7 +404,8 @@ class EmbeddingStage(Stage):
             # dims are implicit in the column definition now (F32_BLOB(dim))
             fields.pop("__mert_dim__", None)
             fields.pop("__fused_dim__", None)
-            fields[self.status_column] = res.status
+            # Shared with the base run_batch: status + arming + failure.
+            fields = self._finalize_fields(fields, res)
             self._commit_row_update(conn, int(res.track_id), fields, log_)
             if res.status == STATUS_DONE and mert_blob and fused_blob:
                 # Option A layout: one row per track with both variants inline.
