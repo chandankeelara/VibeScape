@@ -235,12 +235,16 @@ export function excludeIds({ queue = [], recent = [], current = null }) {
       if (Number.isFinite(n)) ids.add(n);
     }
   };
-  // Order matters once capped: what's playing and just played must survive
-  // the trim, since "don't replay this" is overwhelmingly about recency.
-  // Queue entries fill whatever room is left, newest first.
+  // Order matters once capped — the entries most redundant to recommend must
+  // survive the trim.
+  //   current : playing right now
+  //   recent  : pushRecent appends, so reverse gives most-recently-played first
+  //   queue   : NATURAL order — queue[0] is what plays next (next() takes the
+  //             head), so the front is the most important to exclude. Reversing
+  //             this would keep the tail and drop the tracks about to play.
   add(current);
   [...recent].reverse().forEach(add);
-  [...queue].reverse().forEach(add);
+  queue.forEach(add);
   return Array.from(ids).slice(0, DJ_MAX_EXCLUDES);
 }
 
