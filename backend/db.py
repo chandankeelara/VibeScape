@@ -676,7 +676,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
         _backfill_classification_source(conn)
         _backfill_ingestion_status(conn)
-        _backfill_stage_statuses(conn)
+        # _backfill_stage_statuses(conn)  — RETIRED, see the function.
+        #
+        # It stamped a stage 'done' wherever the artefact column was
+        # populated, but never armed the NEXT stage. Under the arming
+        # model in ingest_pipeline/base.py that kills the chain: preview
+        # and download would read 'done' while librosa_status stayed NULL
+        # with nothing to arm it, so every stage reported "no pending
+        # rows" and a full re-ingest did nothing at all. It also marked
+        # youtube_status='done' up front, which stops the finisher from
+        # ever settling ingestion_status.
+        #
+        # It is unnecessary now: each stage short-circuits on its own
+        # artefact (preview on preview_url, download on the cached file,
+        # youtube on youtube_id) and arms the next stage while doing so,
+        # so the same work happens through normal flow, in order.
 
     # track_embeddings shape migration: legacy (track_id, model_version,
     # embedding) → Option A (track_id, mert_embedding, fused_embedding).
@@ -797,6 +811,14 @@ def _migrate_track_embeddings_option_a(conn: sqlite3.Connection) -> None:
 
 def _backfill_stage_statuses(conn: sqlite3.Connection) -> int:
     """
+    RETIRED — no longer called. Kept for reference only.
+
+    Predates the arming model. Writes terminal statuses without arming
+    downstream stages, which severs the chain. Do not re-enable: the
+    per-stage short-circuit guards supersede it and arm correctly.
+
+    Original docstring follows.
+
     Set the four v2 stage-status columns for pre-existing rows so the new
     pipeline (ingest_pipeline/) doesn't re-process work that's already done.
 

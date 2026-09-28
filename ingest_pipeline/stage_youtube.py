@@ -45,7 +45,7 @@ class YoutubeStage(Stage):
 
     def fetch_pending(self, conn, limit: int, only_ids=None) -> list:
         rows = conn.execute(
-            "SELECT id, title, artist FROM tracks "
+            "SELECT id, title, artist, youtube_id FROM tracks "
             # Armed by embedding, but the gate spells out EVERY upstream
             # stage rather than relying on transitivity. embedding_status
             # ='done' alone implies preview -> download -> ml, but NOT
@@ -78,6 +78,21 @@ class YoutubeStage(Stage):
         return list(rows)
 
     def process_row(self, row) -> RowResult:
+        # Already resolved — skip the lookup entirely. Same rule as
+        # PreviewStage and DownloadStage: a status flip must never cost a
+        # network round-trip for something already on the row.
+        #
+        # This one is the most expensive to get wrong: _first_hit runs
+        # two yt-dlp ytsearch queries per track, so re-resolving a full
+        # library is thousands of scrapes for ids we already hold.
+        existing = (row["youtube_id"] or "").strip()
+        if existing:
+            return RowResult(
+                track_id=int(row["id"]),
+                status=STATUS_DONE,
+                fields={"ingestion_attempted_at": iso_now()},
+            )
+
         title = row["title"]
         artist = row["artist"]
         vid = self._first_hit(title, artist)

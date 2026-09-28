@@ -123,28 +123,45 @@ def main() -> int:
     common_cols = [c for c in track_cols if c in local_track_cols and c != "id"]
     print(f"  Copying columns: {len(common_cols)} (dropping 'id' — local re-autonums)")
 
-    # For each pulled track, force every stage-status column to 'pending'
-    # so the v2 pipeline re-runs preview → download → classify → youtube →
-    # language → embedding on it. vibe_score defaults to 0.0 per the
-    # legacy NOT NULL constraint.
+    # Queue every pulled track at the FRONT of the chain and let the
+    # pipeline arm the rest.
+    #
+    # Only ingestion_status is set. The per-stage columns are left NULL,
+    # not 'pending': under the arming model in ingest_pipeline/base.py,
+    # 'pending' means "an upstream stage armed me", and pre-setting it
+    # fabricates that signal for stages nothing armed. That is what
+    # previously let fuse run before language. PreviewStage is the entry
+    # point and triggers off ingestion_status alone.
+    #
+    # Expensive artefacts are NOT wiped. Every stage now short-circuits
+    # on what is already on the row — preview on preview_url, download on
+    # the cached file, youtube on youtube_id — so keeping them turns a
+    # re-ingest of the whole library from thousands of iTunes lookups and
+    # yt-dlp scrapes into a status flip. Wiping youtube_id in particular
+    # cost two ytsearch queries per track for ids we already had.
+    #
+    # Derived values ARE cleared, because they are what the re-run exists
+    # to recompute and a stale value would otherwise be indistinguishable
+    # from a fresh one.
     STAGE_RESET = {
         "ingestion_status":  "pending",
-        "preview_status":    "pending",
-        "download_status":   "pending",
-        "ml_status":         "pending",
-        "youtube_status":    "pending",
-        "language_status":   "pending",
-        "embedding_status":  "pending",
-        # Wipe columns the pipeline should re-compute so promote can't
-        # short-circuit on stale legacy data.
-        "audio_path":         None,
+        "preview_status":     None,
+        "download_status":    None,
+        "librosa_status":     None,
+        "ml_status":          None,
+        "youtube_status":     None,
+        "language_status":    None,
+        "fuse_status":        None,
+        "embedding_status":   None,   # retired stage; kept for old rows
+        # Derived outputs — recomputed by classify / language.
         "activation":         None,
         "valence":            None,
         "vibe_score_ml":      None,
         "vibe_score":         0.0,   # NOT NULL placeholder
-        "youtube_id":         None,
         "language":           None,
         "language_confidence": None,
+        # audio_path is deliberately NOT wiped: DownloadStage re-points it
+        # from the cached file, and wiping it only hides work already done.
     }
 
     inserted = 0
