@@ -169,7 +169,7 @@ export default function QueueSidebar() {
     const picks = await queryClient.fetchQuery({
       queryKey: interimKey,
       staleTime: 5000,
-      queryFn: () => fetchDjPicks(current, { events, seen: getSeenIds(), limit: RECS_LIMIT }),
+      queryFn: () => fetchDjPicks(current, { events, seen: getSeenIds(), queue, limit: RECS_LIMIT }),
     });
     if (!picks?.length) return null;
     const [top, ...rest] = picks;
@@ -181,10 +181,10 @@ export default function QueueSidebar() {
     queryClient.setQueryData(interimKey, rest);
     queryClient.setQueryData(['queue-recs', apiKey(top), 'dj', sig], rest);
     return top;
-    // No `queue`/`recent` deps: the exclude list reads the seen-set instead,
-    // so enqueueing no longer re-creates this callback and re-runs the
-    // setNextFallback effect below on every queue mutation.
-  }, [djEnabled, current, recordTransitionNow, flashConsume, queryClient, getSeenIds]);
+    // No `recent` dep: it is a strict subset of the seen-set, which is read
+    // through a ref at fetch time. `queue` stays — it is unioned into the
+    // exclude list, since a long-queued track can age out of the set.
+  }, [djEnabled, current, queue, recordTransitionNow, flashConsume, queryClient, getSeenIds]);
 
   // Registered only while DJ is on; clearing it restores the random vibe pull.
   useEffect(() => {
