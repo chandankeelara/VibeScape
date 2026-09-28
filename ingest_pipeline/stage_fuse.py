@@ -57,7 +57,9 @@ class FuseStage(Stage):
             f"FROM tracks t "
             f"JOIN track_embeddings te ON te.track_id = t.id "
             f"WHERE t.fuse_status = 'pending' "
-            f"AND t.embedding_status = 'done' "
+            # ClassifyStage writes mert_embedding now, so ml_status is the
+            # gate. embedding_status is retired.
+            f"AND t.ml_status = 'done' "
             f"AND te.mert_embedding IS NOT NULL "
             f"ORDER BY t.id ASC LIMIT ?",
             (limit,),

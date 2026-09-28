@@ -50,6 +50,23 @@ class Predictor:
         self.target_names = list(self.model.target_names)
 
     def predict(self, audio_path: str) -> Dict[str, float]:
+        preds, _ = self.predict_with_embedding(audio_path, want_embedding=False)
+        return preds
+
+    def predict_with_embedding(self, audio_path: str, want_embedding: bool = True):
+        """
+        One encoder forward pass, two outputs: the regression scalars and
+        the mean-pooled hidden state.
+
+        The head consumes cat([mean_pool, max_pool]) -> 2*hidden_size, but
+        the encoder itself emits hidden_size (768) per frame either way.
+        The 768-d mean_pool half IS the track embedding, so computing it
+        here removes a second, independent MERT pass over the same audio
+        (ingest_pipeline/stage_embedding.py used to do exactly that with
+        the BASE checkpoint).
+
+        Returns (preds_dict, mean_pooled_np_or_None).
+        """
         y = _load_audio(audio_path, self.sample_rate)
         if len(y) < self.sample_rate:
             y = np.pad(y, (0, self.sample_rate - len(y)))
@@ -63,12 +80,25 @@ class Predictor:
             y = y / peak
         audio_t = torch.from_numpy(y).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            preds = self.model(audio_t).cpu().numpy()[0]
+            # Inlines MERTVibeRegressor.forward so the pooled halves are
+            # reachable. Must stay in step with it — see ml/src/model.py.
+            x = self.model._preprocess(audio_t)
+            hs = self.model.encoder(x, output_hidden_states=False).last_hidden_state
+            mean_p = hs.mean(dim=1)
+            max_p = hs.max(dim=1).values
+            pooled = torch.cat([mean_p, max_p], dim=-1)
+            preds = torch.stack(
+                [self.model.heads[n](pooled) for n in self.target_names], dim=-1
+            ).cpu().numpy()[0]
+            embedding = (
+                mean_p.squeeze(0).float().cpu().numpy().astype(np.float32)
+                if want_embedding else None
+            )
         out = {name: float(preds[i]) for i, name in enumerate(self.target_names)}
         dance = float(out.get("danceability", 0.0))
         energy = float(out.get("energy", 0.0))
         out["vibe_score"] = VIBE_ENERGY_W * energy + VIBE_DANCE_W * dance
-        return out
+        return out, embedding
 
 
 def main():

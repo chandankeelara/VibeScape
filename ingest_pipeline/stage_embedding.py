@@ -231,6 +231,24 @@ _FETCH_COLS = (
 
 
 class EmbeddingStage(Stage):
+    """
+    RETIRED — deliberately not in run_ingest_v2's stage registry.
+
+    This ran the BASE m-a-p/MERT-v1-95M over 30 s to produce the stored
+    vector, while ClassifyStage ran the FINE-TUNED checkpoint over a 10 s
+    centre crop for the scalars: the same encoder architecture over the
+    same cached file, twice, for every track. ClassifyStage now emits the
+    mean-pooled vector from its own pass (see predict_with_embedding),
+    which halves the GPU cost.
+
+    Running this again would overwrite those vectors with base-checkpoint
+    ones. The two are different vector spaces and cosine similarity
+    across them is meaningless, so it is unreachable by name on purpose.
+
+    The module is kept because SCALAR_COLS, TOP_LANGS and _build_fused
+    live here and stage_fuse imports them.
+    """
+
     name = "embedding"
     status_column = "embedding_status"
     # Encodes MERT and stores the raw vector. Fusion moved to

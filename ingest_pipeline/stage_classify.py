@@ -45,10 +45,9 @@ def _ml_backend():
 class ClassifyStage(Stage):
     name = "classify"
     status_column = "ml_status"
-    # MERT encoding comes next. The fused vector mixes this stage's
-    # scalar predictions in, but fusion is now its own stage that runs
-    # after language — see stage_fuse.py.
-    arms = ("embedding_status",)
+    # Emits the MERT vector itself now, so there is no separate encoding
+    # stage to arm — language is next, then fusion.
+    arms = ("language_status",)
     # Local GPU mode: MERT weights are ~4 GB, so concurrent loads on an
     # 8 GB card OOM. Sequentialize by default. If running against Modal
     # (VIBESCAPE_ML_MODE=modal), bump this back up (Modal runs each call
@@ -88,7 +87,12 @@ class ClassifyStage(Stage):
                         "ingestion_attempted_at": iso_now()},
                 error="cached audio missing",
             )
-        preds = self._ml.predict_from_path(str(local))
+        # ONE forward pass, both outputs. See ml_backend for why: the
+        # head takes cat([mean_pool, max_pool]) but the encoder emits 768
+        # per frame regardless, so the mean_pool half IS the embedding.
+        # EmbeddingStage used to recompute it with the BASE checkpoint,
+        # doubling the GPU cost per track.
+        preds, mert_vec = self._ml.predict_and_embed_from_path(str(local))
         if not preds:
             return RowResult(
                 track_id=int(row["id"]),
@@ -125,5 +129,53 @@ class ClassifyStage(Stage):
                 "ml_predicted_at":    iso_now(),
                 "ingestion_attempted_at": iso_now(),
                 "ingestion_error":    None,
+                # Consumed by run_batch below, not a tracks column.
+                "__mert_blob__": (
+                    mert_vec.astype("float32", copy=False).tobytes()
+                    if mert_vec is not None else None
+                ),
             },
         )
+
+    def run_batch(self, conn, limit: int, log_):
+        """Override: the MERT vector goes to track_embeddings, not tracks."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        rows = self.fetch_pending(conn, limit)
+        counts = {STATUS_DONE: 0, STATUS_FAILED: 0}
+        if not rows:
+            log_.info("[%s] no pending rows", self.name)
+            return counts
+        log_.info("[%s] processing %d rows (max_workers=%d)",
+                  self.name, len(rows), self.max_workers)
+
+        results = []
+        with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+            futs = {ex.submit(self._safe_process, r): r for r in rows}
+            for fut in as_completed(futs):
+                results.append(fut.result())
+
+        now = iso_now()
+        for res in results:
+            fields = dict(res.fields or {})
+            mert_blob = fields.pop("__mert_blob__", None)
+            # Shared with the base run_batch: status + arming + failure.
+            fields = self._finalize_fields(fields, res)
+            self._commit_row_update(conn, int(res.track_id), fields, log_)
+            if res.status == STATUS_DONE and mert_blob:
+                # fused_embedding is FuseStage's and is left untouched.
+                conn.execute(
+                    "INSERT INTO track_embeddings "
+                    "  (track_id, mert_embedding, model_version, updated_at) "
+                    "VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(track_id) DO UPDATE SET "
+                    "  mert_embedding = excluded.mert_embedding, "
+                    "  model_version  = excluded.model_version, "
+                    "  updated_at     = excluded.updated_at",
+                    (int(res.track_id), mert_blob,
+                     fields.get("model_version") or "mert_v1_ft_768_10s", now),
+                )
+            counts[res.status] = counts.get(res.status, 0) + 1
+        conn.commit()
+        log_.info("[%s] batch done: %s", self.name, counts)
+        return counts

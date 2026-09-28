@@ -61,7 +61,6 @@ class YoutubeStage(Stage):
             "AND download_status = 'done' "
             "AND librosa_status = 'done' "
             "AND ml_status = 'done' "
-            "AND embedding_status = 'done' "
             "AND fuse_status = 'done' "
             # Language is the one stage whose success is not spelled
             # 'done'. Whisper stops at 'whisper_done' pending LLM

@@ -24,6 +24,12 @@ from typing import Optional
 
 log = logging.getLogger("vibescape.ml_backend")
 
+# Embeddings from the FINE-TUNED checkpoint are a different vector space
+# than the base m-a-p/MERT-v1-95M ones stage_embedding used to write.
+# Cosine similarity across the two is meaningless, so the version is
+# distinct and every stored vector must be rebuilt before mixing.
+MERT_FT_MODEL_VERSION = "mert_v1_ft_768_10s"
+
 _MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "vibescape-ml")
 _MODAL_FUNCTION_NAME = os.environ.get("MODAL_FUNCTION_NAME", "predict_from_url")
 _MODAL_LANG_FUNCTION_NAME = os.environ.get("MODAL_LANG_FUNCTION_NAME", "predict_language_from_url")
@@ -373,6 +379,38 @@ def predict_from_path(local_path: str) -> Optional[dict]:
     except Exception as e:
         log.warning("[ml_backend] local MERT predict_from_path failed: %s", e)
         return None
+
+
+def predict_and_embed_from_path(local_path: str):
+    """
+    One MERT forward pass returning BOTH the regression scalars and the
+    768-d mean-pooled hidden state.
+
+    ClassifyStage and EmbeddingStage used to each run their own pass over
+    the same cached file — classify with the fine-tuned checkpoint on a
+    10 s centre crop, embedding with the BASE m-a-p/MERT-v1-95M on 30 s.
+    Same encoder architecture, same audio, twice the GPU. The head takes
+    cat([mean_pool, max_pool]) (2*768) but the encoder emits 768 per
+    frame either way, so the mean_pool half is exactly the vector the
+    embedding stage was recomputing.
+
+    Local-only, like predict_from_path: Modal runs in another container
+    and has no access to the cached file.
+
+    Returns (preds_dict_or_None, embedding_np_or_None).
+    """
+    if not local_path:
+        return None, None
+    predictor = _get_local_predictor()
+    if predictor is None:
+        return None, None
+    try:
+        preds, emb = predictor.predict_with_embedding(local_path)
+        preds["model_version"] = MERT_FT_MODEL_VERSION
+        return preds, emb
+    except Exception as e:
+        log.warning("[ml_backend] predict_and_embed_from_path failed: %s", e)
+        return None, None
 
 
 def predict_language_from_url(preview_url: str, model_size: str = "small") -> Optional[dict]:
