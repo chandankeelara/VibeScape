@@ -116,43 +116,6 @@ def _build_fused(row_dict: dict, mert_vec: np.ndarray) -> np.ndarray:
 # ---- Librosa piggyback (extract scalar features from the same waveform) ----
 
 
-def _extract_librosa_scalars(waveform: np.ndarray) -> dict:
-    """Extract just the three scalars the fused vector uses. Uses MERT's
-    sample rate (24 kHz) — negligible drift vs the 22.05 kHz that the
-    legacy ingest/features.py uses, and cheaper than resampling.
-
-    Failures are non-fatal — return an empty dict and the fused vector
-    will fall back to zeros for these dims (same as if the columns were
-    NULL). librosa import is lazy so this module still loads on hosts
-    without it."""
-    try:
-        import librosa
-    except ImportError:
-        return {}
-    out: dict = {}
-    try:
-        tempo, _ = librosa.beat.beat_track(y=waveform, sr=SAMPLE_RATE)
-        out["tempo"] = float(np.asarray(tempo).flatten()[0])
-    except Exception as e:
-        log.warning("librosa tempo failed: %s", e)
-    try:
-        centroid = librosa.feature.spectral_centroid(y=waveform, sr=SAMPLE_RATE)
-        out["brightness"] = float(np.mean(centroid))
-    except Exception as e:
-        log.warning("librosa centroid failed: %s", e)
-    try:
-        y_h, y_p = librosa.effects.hpss(waveform)
-        h_energy = float(np.mean(librosa.feature.rms(y=y_h)))
-        p_energy = float(np.mean(librosa.feature.rms(y=y_p)))
-        out["acousticness"] = float(h_energy / (h_energy + p_energy + 1e-6))
-    except Exception as e:
-        log.warning("librosa hpss failed: %s", e)
-    return out
-
-
-# ---- Audio download + decode ------------------------------------------------
-
-
 def _download_to_tempfile(url: str, suffix: str = ".mp3") -> Optional[str]:
     try:
         fd, path = tempfile.mkstemp(suffix=suffix)
@@ -270,9 +233,9 @@ _FETCH_COLS = (
 class EmbeddingStage(Stage):
     name = "embedding"
     status_column = "embedding_status"
-    # Last of the audio stages, so it arms the finisher. YouTube runs
-    # only once a track is otherwise fully ingested.
-    arms = ("youtube_status",)
+    # Encodes MERT and stores the raw vector. Fusion moved to
+    # stage_fuse.py so it can run after language; this arms language.
+    arms = ("language_status",)
     # GPU-bound like classify; MERT weights are heavy. Serialize.
     max_workers = 1
 
@@ -330,44 +293,18 @@ class EmbeddingStage(Stage):
                     fields={"ingestion_attempted_at": iso_now()},
                     error=f"unexpected MERT dim {mert_vec.size}",
                 )
-            # Piggyback: extract librosa scalar features (acousticness /
-            # tempo / brightness) from the same waveform so the fused
-            # vector below sees real values instead of the zero defaults
-            # that hit when those columns are NULL. Cheap — no second
-            # audio load. Failures here are non-fatal; we just fall
-            # through to zeros for those 3 dims.
-            librosa_scalars = _extract_librosa_scalars(waveform)
-            row_dict = {k: row[k] for k in row.keys()}
-            for k, v in librosa_scalars.items():
-                # Only overwrite when the row's value is missing — never
-                # clobber a legacy value that came from ingest/features.py.
-                if row_dict.get(k) is None:
-                    row_dict[k] = v
-            fused = _build_fused(row_dict, mert_vec.astype(np.float32, copy=True))
-            if fused.shape[0] != FUSED_DIM:
-                return RowResult(
-                    track_id=int(row["id"]),
-                    status=STATUS_FAILED,
-                    fields={"ingestion_attempted_at": iso_now()},
-                    error=f"unexpected fused dim {fused.shape[0]}",
-                )
-            # Persist the librosa scalars back to tracks alongside the
-            # blobs (only for columns that were previously NULL). This is
-            # what makes future fused-vector rebuilds also see real values.
-            persist_fields = {
-                "__mert_blob__":  mert_vec.astype(np.float32, copy=False).tobytes(),
-                "__mert_dim__":   int(mert_vec.size),
-                "__fused_blob__": fused.astype(np.float32, copy=False).tobytes(),
-                "__fused_dim__":  int(fused.shape[0]),
-                "ingestion_attempted_at": iso_now(),
-            }
-            for k in ("acousticness", "tempo", "brightness"):
-                if row[k] is None and k in librosa_scalars:
-                    persist_fields[k] = float(librosa_scalars[k])
+            # No fusion here and no librosa piggyback. Fusion is
+            # stage_fuse.py (it must run after language), and the
+            # feature bank is stage_librosa.py (it does all 17 columns,
+            # not just the 3 that happened to be in SCALAR_COLS).
             return RowResult(
                 track_id=int(row["id"]),
                 status=STATUS_DONE,
-                fields=persist_fields,
+                fields={
+                    "__mert_blob__": mert_vec.astype(np.float32, copy=False).tobytes(),
+                    "__mert_dim__":  int(mert_vec.size),
+                    "ingestion_attempted_at": iso_now(),
+                },
             )
         finally:
             # Only clean up if we downloaded a tempfile; the DownloadStage
@@ -399,27 +336,28 @@ class EmbeddingStage(Stage):
         now = iso_now()
         for res in results:
             fields = dict(res.fields or {})
-            mert_blob  = fields.pop("__mert_blob__", None)
-            fused_blob = fields.pop("__fused_blob__", None)
+            mert_blob = fields.pop("__mert_blob__", None)
             # dims are implicit in the column definition now (F32_BLOB(dim))
             fields.pop("__mert_dim__", None)
-            fields.pop("__fused_dim__", None)
             # Shared with the base run_batch: status + arming + failure.
             fields = self._finalize_fields(fields, res)
             self._commit_row_update(conn, int(res.track_id), fields, log_)
-            if res.status == STATUS_DONE and mert_blob and fused_blob:
-                # Option A layout: one row per track with both variants inline.
-                # UPSERT so re-embeds (e.g. after a model bump) update in place.
+            if res.status == STATUS_DONE and mert_blob:
+                # Option A layout: one row per track, both variants inline.
+                # Only mert_embedding is written here — fused_embedding is
+                # FuseStage's, and is deliberately left untouched so a
+                # re-embed doesn't wipe a good fused vector before the
+                # fuse stage gets a chance to rebuild it.
+                # UPSERT so re-embeds (e.g. a model bump) update in place.
                 conn.execute(
                     "INSERT INTO track_embeddings "
-                    "  (track_id, mert_embedding, fused_embedding, model_version, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?) "
+                    "  (track_id, mert_embedding, model_version, updated_at) "
+                    "VALUES (?, ?, ?, ?) "
                     "ON CONFLICT(track_id) DO UPDATE SET "
-                    "  mert_embedding  = excluded.mert_embedding, "
-                    "  fused_embedding = excluded.fused_embedding, "
-                    "  model_version   = excluded.model_version, "
-                    "  updated_at      = excluded.updated_at",
-                    (int(res.track_id), mert_blob, fused_blob, "mert_v1", now),
+                    "  mert_embedding = excluded.mert_embedding, "
+                    "  model_version  = excluded.model_version, "
+                    "  updated_at     = excluded.updated_at",
+                    (int(res.track_id), mert_blob, "mert_v1", now),
                 )
             counts[res.status] = counts.get(res.status, 0) + 1
         conn.commit()

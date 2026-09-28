@@ -116,6 +116,14 @@ class Stage(ABC):
     # failure forward any more — an unarmed stage simply never runs.
     arms: tuple[str, ...] = ()
 
+    # Which of this stage's statuses count as "succeeded" for arming.
+    # Defaults to 'done'. LanguageStage overrides it because its success
+    # is spelled 'whisper_done' (Whisper ran; LLM verification still
+    # outstanding) and because 'no_match' — ran, too little confidence —
+    # must not stall the chain either: the fused vector simply falls back
+    # to the 'other' language bucket.
+    arms_on: tuple[str, ...] = (STATUS_DONE,)
+
     # Stage status -> the ingestion_status it settles the whole track on.
     # Used where a stage's outcome is terminal for the track, not just for
     # itself: preview/download finding nothing means the track can never
@@ -182,9 +190,9 @@ class Stage(ABC):
         this rather than re-implementing it.
         """
         fields[self.status_column] = res.status
-        if res.status == STATUS_DONE:
+        if res.status in self.arms_on:
             # Arm the next stage(s) in the same UPDATE, so a row can never
-            # be left 'done' here but un-triggered downstream.
+            # be left finished here but un-triggered downstream.
             for col in self.arms:
                 fields[col] = STATUS_PENDING
         elif res.status == STATUS_FAILED:

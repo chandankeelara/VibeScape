@@ -49,6 +49,14 @@ def _ml_backend():
 class LanguageStage(Stage):
     name = "language"
     status_column = "language_status"
+    # Feeds the language one-hot into the fused vector, so fusion waits
+    # for it. This is the whole point of the reorder: fusing before
+    # language meant every new track fused with the 'other' bucket.
+    arms = ("fuse_status",)
+    # This stage never returns plain 'done' — 'whisper_done' is its
+    # success — and a 'no_match' (ran, too little confidence) must not
+    # stall the chain either; fusion just falls back to 'other'.
+    arms_on = (STATUS_WHISPER_DONE, STATUS_NO_MATCH, STATUS_DONE)
     # Whisper on local GPU: same story as ClassifyStage — share the card,
     # no concurrent model loads. Modal mode can bump this back up.
     max_workers = 1

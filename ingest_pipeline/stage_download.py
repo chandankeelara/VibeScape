@@ -55,11 +55,12 @@ def _local_path_for(spotify_id: str, url: str) -> Path:
 class DownloadStage(Stage):
     name = "download"
     status_column = "download_status"
-    # Download is the hinge: it turns a URL into the local file that all
-    # three GPU stages read, so it arms both audio consumers. embedding
-    # is armed by classify instead, since it additionally needs the
-    # scalar predictions.
-    arms = ("ml_status", "language_status")
+    # Download is the hinge: it turns a URL into the local file every
+    # later audio stage reads. It arms librosa, which is now the first
+    # consumer of that file — the rest of the chain is strictly
+    # sequential from there:
+    #   librosa -> classify -> embedding -> language -> fuse -> youtube
+    arms = ("librosa_status",)
     # A URL that won't fetch is the same dead end as no URL at all.
     finalizes = {STATUS_NO_MATCH: "no_preview"}
     # Network I/O only, no GPU — safe to parallelize. iTunes AudioPreview

@@ -51,6 +51,8 @@ from ingest_pipeline.stage_download import DownloadStage  # noqa: E402
 from ingest_pipeline.stage_classify import ClassifyStage  # noqa: E402
 from ingest_pipeline.stage_youtube import YoutubeStage  # noqa: E402
 from ingest_pipeline.stage_language import LanguageStage  # noqa: E402
+from ingest_pipeline.stage_librosa import LibrosaStage  # noqa: E402
+from ingest_pipeline.stage_fuse import FuseStage  # noqa: E402
 from ingest_pipeline.stage_embedding import EmbeddingStage  # noqa: E402
 
 
@@ -61,10 +63,12 @@ def build_stages(names: list[str]) -> list:
     all_stages: dict[str, callable] = {
         "preview":   PreviewStage,
         "download":  DownloadStage,
+        "librosa":   LibrosaStage,
         "classify":  ClassifyStage,
-        "youtube":   YoutubeStage,
-        "language":  LanguageStage,
         "embedding": EmbeddingStage,
+        "language":  LanguageStage,
+        "fuse":      FuseStage,
+        "youtube":   YoutubeStage,
     }
     unknown = [n for n in names if n not in all_stages]
     if unknown:
@@ -74,7 +78,9 @@ def build_stages(names: list[str]) -> list:
 
 def pending_snapshot(conn) -> dict[str, int]:
     out: dict[str, int] = {}
-    for col in ("preview_status", "download_status", "ml_status", "youtube_status", "language_status", "embedding_status"):
+    for col in ("preview_status", "download_status", "librosa_status",
+                "ml_status", "embedding_status", "language_status",
+                "fuse_status", "youtube_status"):
         try:
             n = conn.execute(
                 f"SELECT COUNT(*) FROM tracks WHERE {col} = 'pending'"
@@ -110,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--batch", type=int, default=50,
                         help="max rows per stage per pass (default 50)")
     parser.add_argument("--stages", type=str,
-                        default="preview,download,classify,language,embedding,youtube",
+                        default="preview,download,librosa,classify,embedding,language,fuse,youtube",
                         help="comma-separated stage names (default: all six in order)")
     parser.add_argument("--loop", action="store_true",
                         help="keep running; sleep --interval when nothing to do")

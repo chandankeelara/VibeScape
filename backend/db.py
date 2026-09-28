@@ -610,6 +610,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE tracks ADD COLUMN language_status TEXT DEFAULT 'pending'",
         "ALTER TABLE tracks ADD COLUMN embedding_status TEXT DEFAULT 'pending'",
         "ALTER TABLE tracks ADD COLUMN download_status TEXT DEFAULT 'pending'",
+        # librosa = the classical DSP feature bank (was legacy-only, never
+        # ported to v2). fuse = building the fused vector, split out of the
+        # embedding stage so it runs AFTER language and can be rebuilt
+        # without a GPU re-encode when a language tag is corrected.
+        "ALTER TABLE tracks ADD COLUMN librosa_status TEXT DEFAULT 'pending'",
+        "ALTER TABLE tracks ADD COLUMN fuse_status TEXT DEFAULT 'pending'",
         "ALTER TABLE tracks ADD COLUMN preview_source TEXT",
     ]
     for c in _EXTENDED_COLUMNS:

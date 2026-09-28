@@ -45,8 +45,9 @@ def _ml_backend():
 class ClassifyStage(Stage):
     name = "classify"
     status_column = "ml_status"
-    # The fused embedding mixes MERT audio features with this stage's
-    # scalar predictions, so embedding can only be armed once ml is done.
+    # MERT encoding comes next. The fused vector mixes this stage's
+    # scalar predictions in, but fusion is now its own stage that runs
+    # after language — see stage_fuse.py.
     arms = ("embedding_status",)
     # Local GPU mode: MERT weights are ~4 GB, so concurrent loads on an
     # 8 GB card OOM. Sequentialize by default. If running against Modal
