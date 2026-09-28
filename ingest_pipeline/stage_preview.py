@@ -66,6 +66,28 @@ class PreviewStage(Stage):
         return list(rows)
 
     def process_row(self, row) -> RowResult:
+        # Already resolved — do not touch the network, and do not touch
+        # the row's provenance either.
+        #
+        # The chain would also skip iTunes here, because SpotifyPreview
+        # sits first and returns any stored preview_url. But that is an
+        # accident of provider ORDER, not a guarantee: reorder
+        # DEFAULT_CHAIN, or drop SpotifyPreview, and a status flip would
+        # silently re-query iTunes for the whole library at ~2 req/s
+        # behind a global lock. An explicit guard costs one branch.
+        #
+        # It also fixes a real corruption: going through the chain
+        # returned source='spotify' for a URL that iTunes had supplied,
+        # overwriting preview_source on every re-run. A cached row keeps
+        # whatever provenance it was first given.
+        existing = (row["preview_url"] or "").strip()
+        if existing:
+            return RowResult(
+                track_id=int(row["id"]),
+                status=STATUS_DONE,
+                fields={"ingestion_attempted_at": iso_now()},
+            )
+
         track = {
             "title":       row["title"],
             "artist":      row["artist"],

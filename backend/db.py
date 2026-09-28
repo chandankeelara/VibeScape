@@ -614,8 +614,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # ported to v2). fuse = building the fused vector, split out of the
         # embedding stage so it runs AFTER language and can be rebuilt
         # without a GPU re-encode when a language tag is corrected.
-        "ALTER TABLE tracks ADD COLUMN librosa_status TEXT DEFAULT 'pending'",
-        "ALTER TABLE tracks ADD COLUMN fuse_status TEXT DEFAULT 'pending'",
+        #
+        # NO DEFAULT, unlike the six columns above. Under the arming model
+        # in ingest_pipeline/base.py, 'pending' means "an upstream stage
+        # armed me". ADD COLUMN ... DEFAULT 'pending' writes that value to
+        # every existing row, fabricating an armed signal for rows nothing
+        # armed — including terminal ones. NULL is the honest initial
+        # state: not armed, not queued. Arming sets 'pending' explicitly,
+        # and PreviewStage (the entry) already treats NULL and 'pending'
+        # alike because prod Turso has no defaults either.
+        "ALTER TABLE tracks ADD COLUMN librosa_status TEXT",
+        "ALTER TABLE tracks ADD COLUMN fuse_status TEXT",
         "ALTER TABLE tracks ADD COLUMN preview_source TEXT",
     ]
     for c in _EXTENDED_COLUMNS:
