@@ -1,0 +1,115 @@
+/* frontend/login.css:1895-1992 */
+
+.faq {
+  max-width: 780px;
+  margin: 0 auto;
+  padding: clamp(48px, 8vh, 100px) clamp(20px, 5vw, 56px) clamp(72px, 10vh, 120px);
+  scroll-margin-top: var(--sp-5);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.item {
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  transition: background var(--dur) var(--ease);
+}
+
+.item:last-child {
+  border-bottom: none;
+}
+
+.item[open] {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.item summary {
+  cursor: pointer;
+  padding: 20px 42px 20px var(--sp-1);
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: -0.012em;
+  list-style: none;
+  position: relative;
+  color: var(--text);
+  transition: color var(--dur) var(--ease);
+  border-radius: var(--radius-sm);
+}
+
+.item summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Plus turning into a minus. Two 1px gradients, so no extra element. */
+.item summary::after {
+  content: '';
+  position: absolute;
+  right: var(--sp-1);
+  top: 50%;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  color: var(--text-2);
+  background:
+    linear-gradient(currentColor, currentColor) center / 9px 1px no-repeat,
+    linear-gradient(currentColor, currentColor) center / 1px 9px no-repeat;
+  transform: translateY(-50%);
+  transition:
+    transform var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.item[open] summary::after {
+  background: linear-gradient(currentColor, currentColor) center / 9px 1px no-repeat;
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: translateY(-50%) rotate(180deg);
+}
+
+.item p {
+  margin: 0;
+  padding: 0 var(--sp-1) 22px;
+  color: var(--text-2);
+  line-height: 1.6;
+  font-size: 14.5px;
+  max-width: 66ch;
+}
+
+.item p a {
+  color: var(--accent);
+  border-bottom: 1px solid color-mix(in oklab, var(--accent) 45%, transparent);
+  transition: color var(--dur) var(--ease);
+}
+
+.item p a:hover {
+  color: var(--text);
+}
+
+.item em {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  color: var(--accent);
+  font-size: 1.05em;
+}
+
+@media (max-width: 640px) {
+  .faq {
+    padding: 40px 20px 60px;
+  }
+
+  .item summary {
+    font-size: 15px;
+    padding: 18px 40px 18px var(--sp-1);
+  }
+
+  .item p {
+    font-size: 14px;
+  }
+}

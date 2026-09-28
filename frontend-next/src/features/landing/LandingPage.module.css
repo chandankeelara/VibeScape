@@ -1,0 +1,82 @@
+/*
+  Page shell. `--accent` is written on .page by LandingPage as the hero slider
+  moves, so every descendant recolours without touching :root — the legacy page
+  set it on <html>, which would leak into the rest of the React app.
+
+  The decorative background also lives here rather than on <body> for the same
+  reason: unmounting the landing page must leave no trace.
+  (frontend/login.css:67-103)
+*/
+
+.page {
+  position: relative;
+  min-height: 100dvh;
+  isolation: isolate;
+  color: var(--text);
+  font-family: var(--sans);
+  font-feature-settings: 'ss01', 'ss02', 'cv11';
+  overflow-x: hidden;
+  background:
+    radial-gradient(
+      ellipse 900px 700px at 100% -10%,
+      color-mix(in oklab, var(--accent) 22%, transparent) 0%,
+      transparent 55%
+    ),
+    radial-gradient(
+      ellipse 700px 600px at -5% 110%,
+      color-mix(in oklab, var(--accent) 12%, transparent) 0%,
+      transparent 60%
+    ),
+    var(--bg);
+  transition: background var(--dur-slow) var(--ease-out);
+}
+
+/* Static hairline grid — craft without cost. */
+.page::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 30%, black 20%, transparent 80%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 30%, black 20%, transparent 80%);
+}
+
+.page a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.page ::selection {
+  background: color-mix(in oklab, var(--accent) 42%, transparent);
+  color: var(--text);
+}
+
+.main {
+  position: relative;
+  z-index: 1;
+}
+
+/* Skip link — the page is long and the nav is the first tab stop. */
+.skip {
+  position: absolute;
+  left: var(--sp-4);
+  top: var(--sp-4);
+  z-index: var(--z-sticky);
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  font-size: 13px;
+  transform: translateY(-200%);
+  transition: transform var(--dur) var(--ease);
+}
+
+.skip:focus-visible {
+  transform: translateY(0);
+}

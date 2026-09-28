@@ -1,0 +1,88 @@
+/* Right-anchored inspector panel. Geometry from frontend/style.css
+   (.debug-panel / .metrics-panel), which were identical apart from width. */
+
+.panel {
+  position: fixed;
+  top: calc(env(safe-area-inset-top) + 56px);
+  right: clamp(var(--sp-3), 2.4vw, var(--sp-6));
+  z-index: var(--z-overlay);
+  width: min(calc(100vw - var(--sp-5)), 380px);
+  max-height: min(72dvh, 560px);
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in oklab, var(--surface) 94%, transparent);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-modal), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  overflow: hidden;
+  animation: panelIn 180ms var(--ease);
+}
+
+.wide {
+  width: min(calc(100vw - var(--sp-5)), 420px);
+  max-height: min(78dvh, 640px);
+}
+
+@keyframes panelIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel { animation: none; }
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.title {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-4);
+  cursor: pointer;
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.close:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
+
+.body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+@media (max-width: 420px) {
+  .panel,
+  .wide {
+    left: var(--sp-2);
+    right: var(--sp-2);
+    width: auto;
+    max-height: 70dvh;
+  }
+}

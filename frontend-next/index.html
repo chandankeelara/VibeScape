@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#08080c" />
+
+    <!-- PWA. Moved here from the legacy app, which owned these until it was
+         removed. Files live in public/ so they land at the site root, which
+         the manifest's relative icon paths and the service worker's scope
+         both require. -->
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="application-name" content="VibeScape" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="VibeScape" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+    <!-- SEO. Ported from frontend/login.html — the landing page is now a
+         React route, but this is still the document crawlers read, so the
+         metadata has to live here rather than in the component. -->
+    <title>VibeScape — Sort your music by mood, energy, and vibe</title>
+    <meta name="description" content="A music player that scores every song for energy and mood. Drag a two-axis slider to build vibe-consistent queues from your Spotify library. Free — no signup required." />
+    <meta name="keywords" content="mood music player, sort music by mood, spotify mood playlist, vibe playlist, energy based playlist, mood based music, music recommendations by feeling, audio ml music player" />
+    <link rel="canonical" href="https://vibescape-241988497106.us-central1.run.app/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="VibeScape — Sort your music by mood, energy, and vibe" />
+    <meta property="og:description" content="Drag a slider from chill to hype. VibeScape scores your Spotify library and builds queues that hold a vibe from start to finish." />
+    <meta property="og:site_name" content="VibeScape" />
+    <meta property="og:image" content="https://vibescape-241988497106.us-central1.run.app/og-cover.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="VibeScape — Sort your music by mood, energy, and vibe" />
+    <meta name="twitter:description" content="A music player that groups your songs by how they feel. Free — try the demo in one click." />
+
+    <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "VibeScape",
+    "applicationCategory": "MultimediaApplication",
+    "operatingSystem": "Web, iOS, Android",
+    "description": "A free mood-based music player. Sort your Spotify library along an energy axis, filter by five moods from sleep to beast, and build queues that hold a consistent vibe.",
+    "featureList": [
+      "Vibe slider along an energy axis",
+      "Five mood filters: sleep, chill, steady, hype, beast",
+      "Spotify library sync (liked songs, playlists, top tracks)",
+      "AI-powered similar tracks",
+      "Full-text library search",
+      "YouTube video playback",
+      "Mobile-first responsive design",
+      "Bluetooth transport controls",
+      "One-click Spotify sign-in",
+      "Automatic language detection"
+    ],
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "author": { "@type": "Person", "name": "Chandan Keelara" }
+  }
+  </script>
+    <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "How does VibeScape sort music by mood?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Every track in your library is scored for energy using a fine-tuned audio-ML model. That score places it in one of five mood buckets — sleep, chill, steady, hype, or beast — which become one-tap filters. You can also drag a vibe slider to blend between them."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Do I need a Spotify Premium account?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No. VibeScape works with a free Spotify account for library import, and plays previews or YouTube videos of your tracks. Spotify Premium unlocks in-app streaming of full songs via the Spotify Web Playback SDK."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I try VibeScape without signing up?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. Click Just listen on the landing page to enter a shared demo library instantly, no account required. When you're ready, sign in with Spotify to import your own music — your Spotify account IS your VibeScape identity, no separate password or PIN."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is VibeScape free?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes, VibeScape is free and open source. There are no ads, no paid tiers, and no data sold. Source code lives on GitHub."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Does it work on my phone?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. The mobile layout uses your album art as a full-viewport backdrop, a slide-up queue sheet, and native Bluetooth transport controls via the Media Session API so play, pause, and skip work from your headphones or car."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What languages does VibeScape support?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The library is language-agnostic. VibeScape uses Whisper to detect the sung language of each track — including Indian, Punjabi, Tamil, and other regional catalogs that western music APIs often miss — and labels them in the player. Instrumentals are left untagged rather than guessed."
+        }
+      }
+    ]
+  }
+  </script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <!-- Spotify Web Playback SDK. Assigns
+         window.onSpotifyWebPlaybackSDKReady, which src/media/spotify.js
+         defines at module scope before this finishes loading. -->
+    <script src="https://sdk.scdn.co/spotify-player.js" async defer></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+    <script>
+      // Registered after load so it never competes with the app bundle.
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function () {
+          navigator.serviceWorker.register('/sw.js').catch(function () {});
+        });
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,36 @@
+/* #loginStatus — frontend/login.css:2040-2071 */
+
+.status {
+  position: fixed;
+  top: max(var(--sp-5), env(safe-area-inset-top, 24px));
+  left: 50%;
+  transform: translateX(-50%);
+  padding: var(--sp-3) 18px;
+  border-radius: var(--radius-sm);
+  background: rgba(20, 20, 28, 0.95);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  font-size: 14px;
+  z-index: var(--z-toast);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 20px 60px -20px rgba(0, 0, 0, 0.8);
+  animation: statusIn 250ms var(--ease);
+  max-width: min(560px, 92vw);
+}
+
+.error {
+  border-color: color-mix(in oklab, var(--danger) 55%, transparent);
+  border-left: 3px solid var(--danger);
+}
+
+@keyframes statusIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}

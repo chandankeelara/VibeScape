@@ -1,0 +1,48 @@
+/* Vertical strip of recently-played artwork, rendered left of the hero card.
+   Sizing and the 0.5 resting opacity match legacy .recent-trail-item
+   (frontend/style.css:2946). */
+.trail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.item {
+  cursor: pointer;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--sp-2);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 0;
+  opacity: 0.5;
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease),
+              border-color var(--dur) var(--ease);
+}
+
+.item:hover,
+.item:focus-visible {
+  opacity: 1;
+  transform: scale(1.08);
+  border-color: color-mix(in oklab, var(--vibe-accent, var(--accent)) 45%, var(--border-strong));
+  outline: none;
+}
+
+.item img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* Below the 2-column breakpoint the hero card goes full width; a vertical
+   strip beside it would squeeze the art, so lay it out horizontally above. */
+@media (min-width: 1024px) {
+  .item { width: 44px; height: 44px; }
+}
+
+/* Below the 3-column breakpoint the hero card goes full width; a vertical
+   strip beside it would squeeze the art, so lay it out horizontally above. */
+@media (max-width: 1023px) {
+  .trail { flex-direction: row; justify-content: center; flex-wrap: wrap; }
+}
+
+@media (max-width: 640px) {
+  .trail { display: none; }
+}

@@ -1,0 +1,134 @@
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  border-radius: var(--radius-sm);
+  transition: background var(--dur) var(--ease), opacity var(--dur) var(--ease);
+}
+
+.row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* The row the DJ just consumed as the next track — fades out before the list
+   re-renders without it. Purely decorative. */
+.consuming {
+  opacity: 0.35;
+  transform: translateX(2px);
+  transition: opacity 380ms ease-out, transform 380ms ease-out;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row, .consuming { transition: none; }
+  .consuming { transform: none; }
+}
+
+/* The whole card is one button so the row is a single keyboard stop. */
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.main:focus-visible,
+.grip:focus-visible,
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.art {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  background: var(--surface-2);
+}
+
+.body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.title, .sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.title { font-size: 13px; font-weight: 500; color: var(--text); }
+.sub { font-size: 11.5px; color: var(--text-3); }
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin-top: 2px;
+}
+
+.vibe, .lang, .sdk {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.vibe { color: var(--text-2); border-color: var(--border-strong); }
+.sdk { color: var(--spotify); border-color: rgba(30, 215, 96, 0.35); }
+
+.actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: var(--sp-1);
+}
+
+.grip, .btn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-4);
+  cursor: pointer;
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+
+.grip {
+  cursor: grab;
+  /* Stops the browser claiming a vertical swipe on the grip as a page scroll,
+     so a touch drag actually reaches the pointer handlers. */
+  touch-action: none;
+}
+
+.grip:hover, .btn:hover { color: var(--text-2); background: rgba(255, 255, 255, 0.07); }
+.btn:hover { color: var(--danger); }
+.add:hover { color: var(--accent); }
+
+/* Touch targets: keep the 26px visual box but extend the hit area to 44px. */
+@media (pointer: coarse) {
+  .grip, .btn { width: 40px; height: 40px; }
+}

@@ -1,0 +1,127 @@
+/* Debug panel internals. Panel chrome lives in Panel.module.css. */
+
+.row {
+  display: grid;
+  grid-template-columns: 84px 1fr;
+  align-items: start;
+  gap: var(--sp-3);
+}
+
+.block { display: flex; flex-direction: column; gap: var(--sp-1); }
+
+.label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-4);
+  padding-top: 2px;
+}
+
+.labelInline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+
+.value {
+  font-size: 11.5px;
+  color: var(--text-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Scopes arrive newline-joined; keep the breaks. */
+.scopes {
+  white-space: pre-line;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+
+.miniBtn {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  padding: 2px var(--sp-2);
+  cursor: pointer;
+  text-transform: none;
+  transition: background var(--dur) var(--ease);
+}
+.miniBtn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); color: var(--text); }
+.miniBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.token,
+.output {
+  margin: 0;
+  padding: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.3);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-3);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 110px;
+  overflow-y: auto;
+}
+.token:focus-visible,
+.output:focus-visible { outline: 1px solid var(--accent); }
+
+.output { max-height: 180px; }
+
+.sectionTitle {
+  margin-top: var(--sp-2);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+
+.featGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--sp-2);
+}
+
+.featGrid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.featLabel {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+
+.featVal { font-family: var(--mono); font-size: 12px; color: var(--text); }
+.null { color: var(--text-4); }
+
+.note { margin: 0; font-size: 10px; color: var(--text-4); line-height: 1.5; }
+
+@media (max-width: 420px) {
+  .row { grid-template-columns: 70px 1fr; gap: var(--sp-2); }
+}

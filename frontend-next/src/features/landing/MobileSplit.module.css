@@ -1,0 +1,266 @@
+/* frontend/login.css:1615-1846 */
+
+.split {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: clamp(60px, 10vh, 130px) clamp(20px, 5vw, 56px);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: clamp(40px, 6vw, 96px);
+  align-items: center;
+  scroll-margin-top: var(--sp-5);
+}
+
+.copy h2 {
+  font-size: clamp(32px, 4.8vw, 54px);
+  letter-spacing: -0.028em;
+  line-height: 1.04;
+  font-weight: 600;
+  margin: var(--sp-4) 0 20px;
+}
+
+.lede {
+  color: var(--text-2);
+  line-height: 1.6;
+  font-size: 16px;
+  margin: 0 0 28px;
+  max-width: 48ch;
+}
+
+.checkList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.checkList li {
+  position: relative;
+  padding-left: 28px;
+  color: var(--text-2);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.checkList li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 7px;
+  width: var(--sp-3);
+  height: 7px;
+  border-left: 1.5px solid var(--accent);
+  border-bottom: 1.5px solid var(--accent);
+  transform: rotate(-45deg);
+  transform-origin: left top;
+  transition: border-color var(--dur-slow) var(--ease-out);
+}
+
+/* ---- phone mockup ---- */
+
+.visual {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.frame {
+  width: 280px;
+  aspect-ratio: 9 / 19;
+  border-radius: 42px;
+  padding: var(--sp-3);
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.02));
+  border: 1px solid var(--border-strong);
+  box-shadow:
+    0 40px 100px -30px rgba(0, 0, 0, 0.85),
+    0 0 0 1px color-mix(in oklab, var(--accent) 4%, transparent),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  position: relative;
+  transition: box-shadow var(--dur-slow) var(--ease-out);
+}
+
+.screen {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 34px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.notch {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 96px;
+  height: var(--sp-5);
+  background: #000;
+  border-radius: var(--radius-pill);
+  z-index: 3;
+}
+
+.art {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: radial-gradient(
+    circle at 28% 26%,
+    color-mix(in oklab, var(--accent) 95%, white 5%) 0%,
+    color-mix(in oklab, var(--accent) 65%, black 25%) 55%,
+    color-mix(in oklab, var(--accent) 30%, black 55%) 100%
+  );
+  transition: background var(--dur-slow) var(--ease-out);
+}
+
+.veil {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: linear-gradient(
+    to top,
+    rgba(10, 10, 14, 0.95) 0%,
+    rgba(10, 10, 14, 0.5) 40%,
+    transparent 65%
+  );
+}
+
+.meta {
+  position: absolute;
+  left: 22px;
+  right: 22px;
+  bottom: 128px;
+  z-index: 3;
+  color: var(--text);
+}
+
+.phoneTitle {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  margin-bottom: var(--sp-1);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+
+.phoneSub {
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.72);
+  margin-bottom: var(--sp-3);
+}
+
+.phoneChips {
+  display: flex;
+  gap: 6px;
+}
+
+.phoneChip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px var(--sp-2);
+  border-radius: var(--radius-pill);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--text);
+}
+
+.chipMood {
+  background: color-mix(in oklab, var(--accent) 30%, rgba(0, 0, 0, 0.4));
+  border: 1px solid color-mix(in oklab, var(--accent) 50%, transparent);
+  transition:
+    background var(--dur-slow) var(--ease-out),
+    border-color var(--dur-slow) var(--ease-out);
+}
+
+.chipVibe {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.bottom {
+  position: absolute;
+  left: 22px;
+  right: 22px;
+  bottom: 34px;
+  z-index: 3;
+}
+
+.bar {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.18);
+  margin-bottom: 18px;
+  overflow: hidden;
+}
+
+.bar span {
+  display: block;
+  height: 100%;
+  width: 42%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: background var(--dur-slow) var(--ease-out);
+}
+
+.buttons {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 26px;
+}
+
+.pbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text);
+  opacity: 0.9;
+}
+
+.pbtn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.pbtnLg {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: var(--text);
+  color: #0a0a0e;
+  padding-left: 2px;
+  box-shadow: 0 10px 30px -8px rgba(255, 255, 255, 0.35);
+  opacity: 1;
+}
+
+.pbtnLg svg {
+  width: 20px;
+  height: 20px;
+}
+
+@media (max-width: 960px) {
+  .split {
+    grid-template-columns: 1fr;
+    gap: 40px;
+  }
+
+  .visual {
+    order: -1;
+  }
+}
+
+@media (max-width: 640px) {
+  .split {
+    padding: 60px 20px;
+  }
+
+  .copy h2 {
+    font-size: clamp(30px, 8vw, 44px);
+  }
+
+  .frame {
+    width: 240px;
+  }
+}

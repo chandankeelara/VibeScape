@@ -1,0 +1,287 @@
+/* Sizing ported verbatim from legacy .art-wrap (style.css base + :1902).
+   Base caps at 480px; desktop grows to 62dvh / 640px — the hero card is
+   meant to dominate the stage. */
+.wrap {
+  position: relative;
+  /* Explicit stacking context. Without this a child's negative z-index
+     escapes to the root and paints behind the whole page subtree — which is
+     exactly how the video glow went missing. */
+  isolation: isolate;
+  align-self: center;
+  justify-self: center;
+  width: min(100%, clamp(180px, 58dvh, 480px));
+  aspect-ratio: 1;
+  min-height: 0;
+  margin: 0 auto;
+}
+
+@media (min-width: 1024px) {
+  .wrap {
+    grid-column: 2;
+    grid-row: 1;
+    width: min(100%, clamp(420px, 62dvh, 640px));
+    max-height: 92dvh;
+  }
+}
+
+.glow {
+  position: absolute;
+  inset: -6%;
+  border-radius: 30px;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in oklab, var(--vibe-accent, var(--accent)) 45%, transparent),
+    transparent 70%
+  );
+  filter: blur(16px);
+  opacity: var(--art-glow-alpha, 0.65);
+  transition: background 400ms var(--ease), opacity 120ms linear;
+  z-index: 0;
+  will-change: opacity;
+  pointer-events: none;
+}
+
+.art {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.7),
+              0 0 0 1px rgba(255, 255, 255, 0.02) inset;
+}
+
+.artHidden { visibility: hidden; }
+.artImg { width: 100%; height: 100%; object-fit: cover; }
+.artEmpty { color: var(--text-4); }
+
+/* ------------------------------------------------------------ video stage */
+/* Toggled by VISIBILITY, never unmounted — the YT iframe must survive every
+   re-render. */
+.videoStage { position: absolute; inset: 0; z-index: 1; }
+.videoHidden { visibility: hidden; pointer-events: none; }
+
+/* Once detached the frame is fixed to the viewport, so the stage must stop
+   clipping it. */
+.stageDetached { position: static; }
+
+.videoFrame {
+  position: absolute;
+  inset: 0;
+  /* Deliberately NO overflow:hidden here — .videoInner owns the clip. The
+     glow sits at inset:-6% and the resize handles at -3px, both of which a
+     clip on this element would swallow. */
+  isolation: isolate;
+}
+
+/* The visible card: rounded, clipped, black.
+   The border is accent-tinted rather than plain white-alpha — against a solid
+   black video surface a 0.16 white hairline reads as nothing, where on the
+   album art the same border sits against a colour image and defines an edge.
+   The inset ring adds a second, brighter line just inside it. */
+.videoInner {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  background: #000;
+  border: 1px solid color-mix(in oklab, var(--vibe-accent, var(--accent)) 38%, var(--border-strong));
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--vibe-accent, var(--accent)) 16%, transparent) inset,
+    0 0 24px -4px color-mix(in oklab, var(--vibe-accent, var(--accent)) 40%, transparent),
+    0 30px 80px -30px rgba(0, 0, 0, 0.7);
+  transition: border-color 400ms var(--ease), box-shadow 400ms var(--ease);
+}
+
+/* Same accent glow the album art gets, so the video card reads as the same
+   object rather than a bare black box. Sits outside the frame's bounds via a
+   negative inset, under everything else. */
+.videoGlow {
+  position: absolute;
+  /* Wider and hotter than the album-art glow on purpose. The art card is a
+     full-colour image, so a 6% whisper reads against it; the video card is
+     solid #000 on a near-black page, where the same values vanish. */
+  inset: -14%;
+  z-index: 0;
+  border-radius: 40px;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in oklab, var(--vibe-accent, var(--accent)) 70%, transparent),
+    color-mix(in oklab, var(--vibe-accent, var(--accent)) 22%, transparent) 55%,
+    transparent 78%
+  );
+  filter: blur(30px);
+  /* Floor the alpha: --art-glow-alpha sits at its 0.5 minimum during video
+     because the RMS analyser taps the <audio> element, which is silent. */
+  opacity: max(0.75, var(--art-glow-alpha, 0.65));
+  transition: background 400ms var(--ease), opacity 120ms linear;
+  will-change: opacity;
+  pointer-events: none;
+}
+
+.frameDetached {
+  position: fixed;
+  inset: auto;
+  z-index: var(--z-modal);
+  /* left/top/width/height are written directly by useVideoFrame. */
+}
+
+.videoFrame:global(.is-dragging) { cursor: grabbing; user-select: none; }
+.videoFrame:global(.is-resizing) { user-select: none; }
+
+.ytMount { position: relative; z-index: 1; width: 100%; height: 100%; }
+.ytMount iframe { width: 100%; height: 100%; border: 0; display: block; }
+
+/* --------------------------------------------------------------- chrome */
+
+.videoTopbar {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 6px 10px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.75), transparent);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease);
+}
+.videoFrame:hover .videoTopbar,
+.videoTopbar:focus-within { opacity: 1; }
+
+/* Once detached the bar stays visible. A mis-drag can strand the panel at its
+   240x160 minimum in a corner, and that position persists across reloads —
+   a hover-only dock button on a box that small is close to unrecoverable. */
+.frameDetached .videoTopbar { opacity: 1; }
+
+.grip { display: inline-flex; flex-direction: column; gap: 2px; }
+.grip span { width: 12px; height: 1.5px; background: var(--text-3); border-radius: 1px; }
+
+.topbarHint {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dockBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--sp-2);
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.5);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.dockBtn:hover { color: var(--text); background: rgba(0, 0, 0, 0.75); }
+
+
+/* ------------------------------------------------------------- resize hit */
+
+.resize { position: absolute; z-index: 4; }
+
+.resize_n { top: -7px; left: 14px; right: 14px; height: 8px; cursor: ns-resize; }
+.resize_s { bottom: -7px; left: 14px; right: 14px; height: 8px; cursor: ns-resize; }
+.resize_e { right: -7px; top: 14px; bottom: 14px; width: 8px; cursor: ew-resize; }
+.resize_w { left: -7px; top: 14px; bottom: 14px; width: 8px; cursor: ew-resize; }
+
+.resize_nw, .resize_ne, .resize_sw, .resize_se { width: 16px; height: 16px; }
+.resize_nw { top: -7px; left: -7px; cursor: nwse-resize; }
+.resize_ne { top: -7px; right: -7px; cursor: nesw-resize; }
+.resize_sw { bottom: -7px; left: -7px; cursor: nesw-resize; }
+.resize_se { bottom: -7px; right: -7px; cursor: nwse-resize; }
+
+/* ------------------------------------------------------------- overlays */
+
+.videoOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  color: var(--text-3);
+  background: #000;
+  font-size: 13px;
+}
+.videoOverlay p { margin: 0; }
+
+.spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--vibe-accent, var(--accent));
+  animation: spin 720ms linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 2s; }
+}
+
+/* Touch: no hover to reveal the bar, so keep it visible. */
+@media (hover: none) {
+  .videoTopbar { opacity: 1; }
+}
+
+/* ------------------------------------------------------- verify overlay */
+/* Sits above the album art while the classification clip plays. */
+.verifyOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  border-radius: var(--radius-card);
+  background: color-mix(in oklab, var(--bg) 72%, transparent);
+  backdrop-filter: blur(10px);
+  text-align: center;
+  animation: verifyIn var(--dur) var(--ease-out);
+}
+
+@keyframes verifyIn { from { opacity: 0; } to { opacity: 1; } }
+
+.verifyIcon {
+  color: var(--vibe-accent, var(--accent));
+  display: inline-flex;
+}
+
+.verifyTitle {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.verifySub {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .verifyOverlay { animation: none; }
+}

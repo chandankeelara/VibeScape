@@ -1,0 +1,227 @@
+/*
+ * Search result row. Ported from frontend/style.css .search-item* (3699-3915).
+ * Colours/spacing/radii come from tokens.css; --vibe-accent is the runtime
+ * accent written by lib/vibe.js applyAccent().
+ */
+
+.row {
+  display: grid;
+  grid-template-columns: 40px 1fr auto auto;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  width: 100%;
+  cursor: default;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+
+.interactive { cursor: pointer; }
+
+.interactive:hover,
+.selected {
+  background: color-mix(in oklab, var(--vibe-accent, var(--accent)) 6%, rgba(255, 255, 255, 0.03));
+  border-color: color-mix(in oklab, var(--vibe-accent, var(--accent)) 24%, var(--border));
+}
+
+/* Keyboard cursor gets a ring on top of the hover tint so it is unambiguous
+   which row Enter will activate. */
+.selected {
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--vibe-accent, var(--accent)) 45%, transparent);
+}
+
+.art {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--surface-2) 80%, transparent);
+  object-fit: cover;
+  display: block;
+  flex-shrink: 0;
+}
+
+.body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  letter-spacing: -0.005em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.sub {
+  font-size: 11px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Predicted-vibe chip. Deliberately smaller than the trailing badge so it
+   reads as metadata on the title line, not a peer of the row-level status. */
+.vibe {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  border-radius: var(--radius-pill);
+  background: color-mix(in oklab, var(--vibe-accent, var(--accent)) 10%, transparent);
+  border: 1px solid color-mix(in oklab, var(--vibe-accent, var(--accent)) 28%, var(--border));
+  color: color-mix(in oklab, var(--vibe-accent, var(--accent)) 75%, var(--text));
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* No local audio — Spotify SDK only. Dashed + muted reads as "provisional". */
+.sdkOnly {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 6px;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 500;
+  border-radius: var(--radius-pill);
+  background: color-mix(in oklab, var(--surface-2) 55%, transparent);
+  border: 1px dashed var(--border-strong);
+  color: var(--text-3);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: help;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 10px;
+  font-family: var(--mono);
+  font-size: 10px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in oklab, var(--surface-2) 60%, transparent);
+  border: 1px solid var(--border);
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.badgeLib {
+  color: color-mix(in oklab, var(--vibe-accent, var(--accent)) 80%, var(--text));
+  border-color: color-mix(in oklab, var(--vibe-accent, var(--accent)) 40%, var(--border));
+  background: color-mix(in oklab, var(--vibe-accent, var(--accent)) 12%, transparent);
+}
+
+.add {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid color-mix(in oklab, var(--vibe-accent, var(--accent)) 32%, var(--border-strong));
+  background: color-mix(in oklab, var(--vibe-accent, var(--accent)) 8%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+
+.add:hover {
+  background: color-mix(in oklab, var(--vibe-accent, var(--accent)) 16%, transparent);
+  border-color: color-mix(in oklab, var(--vibe-accent, var(--accent)) 50%, var(--border-strong));
+}
+
+/* The "+ queue" control. Revealed on row hover/focus so idle rows stay calm —
+   but always visible on coarse pointers, where there is no hover. */
+.queue {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease), color var(--dur) var(--ease),
+    background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+
+.row:hover .queue,
+.row:focus-within .queue,
+.selected .queue,
+.queue:focus-visible {
+  opacity: 1;
+}
+
+.queue:hover {
+  color: color-mix(in oklab, var(--vibe-accent, var(--accent)) 80%, var(--text));
+  background: color-mix(in oklab, var(--vibe-accent, var(--accent)) 10%, transparent);
+  border-color: color-mix(in oklab, var(--vibe-accent, var(--accent)) 40%, var(--border-strong));
+}
+
+.add:focus-visible,
+.queue:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--vibe-accent, var(--accent)) 55%, transparent);
+}
+
+.busy { opacity: 0.6; cursor: progress; }
+.add:disabled, .queue:disabled { cursor: progress; }
+
+@media (hover: none) {
+  .queue { opacity: 1; }
+}
+
+/* 375px: drop the artwork column so the title/sub get the room. */
+@media (max-width: 420px) {
+  .row {
+    grid-template-columns: 1fr auto auto;
+    gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-2);
+  }
+  .art { display: none; }
+  .sdkOnly { display: none; }
+  .add span { display: none; }
+  .add { padding: 0 8px; }
+}

@@ -1,0 +1,76 @@
+/* frontend/login.css:121-189 */
+
+.nav {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: 22px clamp(20px, 5vw, 56px);
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.brandLink {
+  display: inline-flex;
+  border-radius: var(--radius-sm);
+}
+
+.links {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  color: var(--text-2);
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.links a {
+  position: relative;
+  padding: 6px 0;
+  transition: color var(--dur) var(--ease);
+}
+
+.links a:hover {
+  color: var(--text);
+}
+
+.links a::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform var(--dur) var(--ease);
+}
+
+.links a:hover::after {
+  transform: scaleX(1);
+}
+
+@media (max-width: 640px) {
+  .nav {
+    padding: 18px 20px;
+  }
+
+  .links {
+    gap: 18px;
+    font-size: 12.5px;
+  }
+}
+
+/* Legacy hid the wordmark below 380px to keep the nav on one line. */
+@media (max-width: 380px) {
+  .brandName {
+    display: none;
+  }
+
+  .links {
+    gap: 14px;
+  }
+}

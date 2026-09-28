@@ -31,8 +31,8 @@ import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, RedirectResponse,
+                               Response, StreamingResponse)
 from pydantic import BaseModel
 
 from db import ensure_db, get_conn
@@ -1060,6 +1060,15 @@ def _l2_normalize(v: np.ndarray) -> np.ndarray:
     return v / n
 
 
+# Server-side caps on client-supplied id lists. The frontend already trims
+# (DJ_MAX_SENT_IDS / DJ_MAX_EXCLUDES in frontend-next/src/features/queue/dj.js),
+# but a request body is user input: without these a large list means one
+# embedding row loaded per positive/negative id, and an arbitrarily long
+# inlined NOT IN (...) clause for excludes.
+_DJ_MAX_WEIGHTED_IDS = 50
+_DJ_MAX_EXCLUDE_IDS = 200
+
+
 class SimilarBody(BaseModel):
     mode: Optional[str] = None
     positive_ids: Optional[list] = None
@@ -1259,8 +1268,14 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id):
         # track_key in the URL is used only for exclusion — it does NOT
         # contribute to the query vector. Recommendations are driven purely
         # by the user's session (completions, skips, queue-adds).
-        pos_pairs = _parse_id_weight_list(body.positive_ids)
-        neg_pairs = _parse_id_weight_list(body.negative_ids)
+        # Strongest weights win when a client sends more than we'll accept.
+        def _cap_pairs(pairs):
+            if len(pairs) <= _DJ_MAX_WEIGHTED_IDS:
+                return pairs
+            return sorted(pairs, key=lambda kw: kw[1], reverse=True)[:_DJ_MAX_WEIGHTED_IDS]
+
+        pos_pairs = _cap_pairs(_parse_id_weight_list(body.positive_ids))
+        neg_pairs = _cap_pairs(_parse_id_weight_list(body.negative_ids))
 
         def _resolve_pairs(pairs):
             """Batch-resolve (key, weight) pairs to (internal_id, weight).
@@ -1332,7 +1347,10 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id):
         # a random slice of the candidate pool below.
 
         # Build exclude set: request excludes + seed itself.
+        # Truncated, not rejected: excludes are a nicety (avoid replaying
+        # something recent), so dropping the tail degrades gracefully.
         exclude_keys = [str(x) for x in (body.exclude_ids or []) if x is not None]
+        exclude_keys = exclude_keys[:_DJ_MAX_EXCLUDE_IDS]
         exclude_ids = set(_resolve_ids_to_track_ids(conn, exclude_keys))
         exclude_ids.add(anchor_id)
 
@@ -1655,7 +1673,18 @@ _CALLBACK_HTML = """<!doctype html>
       if (error) out.set('spotify_error', error);
       if (state) out.set('spotify_state', state);
       var qs = out.toString();
-      window.location.replace('/' + (qs ? ('?' + qs) : ''));
+      // Return to whichever app started the flow. `state` is an opaque marker
+      // chosen by the initiator ('vs_next' from the React app, 'vs_landing'
+      // from the legacy page). Mapping known markers to FIXED paths — rather
+      // than treating state as a URL — means a forged value can only ever
+      // land on the default. No open redirect.
+      // Only one app now, so every flow returns to /. The state marker is
+      // still read rather than ignored: if a second client is ever added,
+      // this is where it routes back, and treating state as a URL here
+      // would be an open redirect.
+      var RETURN_PATHS = { vs_next: '/' };
+      var dest = RETURN_PATHS[state] || '/';
+      window.location.replace(dest + (qs ? ('?' + qs) : ''));
     }
   } catch(e) {
     var el = document.getElementById('msg');
@@ -3883,28 +3912,45 @@ def admin_delete_user(user_id: int, sess: dict = Depends(require_admin)):
     return Response(status_code=204)
 
 
-FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
-FRONTEND_DIR.mkdir(parents=True, exist_ok=True)
+NEXT_DIR = Path(__file__).resolve().parent.parent / "frontend-next" / "dist"
+
+# ---------------------------------------------------------------- routing ---
+# The React app (frontend-next) is the only UI. The legacy vanilla app that
+# used to live under /legacy has been removed now that React is at parity.
+#
+# ORDER MATTERS: the catch-all at the bottom must stay last, after every API
+# route, or it swallows them.
 
 
-@app.get("/", include_in_schema=False)
-def serve_login_page():
-    """Public landing page. login.js redirects to /app if a session exists."""
-    return FileResponse(str(FRONTEND_DIR / "login.html"))
+
+@app.get("/next", include_in_schema=False)
+@app.get("/next/{_path:path}", include_in_schema=False)
+def serve_next_alias(_path: str = ""):
+    """Historical prefix from the strangler phase, when React lived at /next
+    to avoid colliding with the legacy app's root-level files. Kept as a
+    redirect so old links and bookmarks still resolve."""
+    return RedirectResponse(url="/", status_code=308)
 
 
-@app.get("/app", include_in_schema=False)
-def serve_player_page():
-    """Authenticated player. Client-side auth guard lives in app.js."""
-    return FileResponse(str(FRONTEND_DIR / "index.html"))
+@app.get("/{path:path}", include_in_schema=False)
+def serve_react(path: str = ""):
+    """
+    Serve the built React SPA.
 
+    A real file (hashed asset, manifest.json, sw.js, icons/*) is served
+    directly; anything else falls back to index.html so client-side routes
+    resolve on a hard refresh.
 
-@app.get("/admin", include_in_schema=False)
-def serve_admin_page():
-    """Admin-only page. Client-side guard in admin.js redirects to /app
-    if /api/auth/me returns is_admin=false; every API call under
-    /api/admin/* is server-side gated via require_admin anyway."""
-    return FileResponse(str(FRONTEND_DIR / "admin.html"))
-
-
-app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+    This is a catch-all and MUST remain the last route registered.
+    """
+    if not NEXT_DIR.is_dir():
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "frontend_not_built",
+                    "hint": "cd frontend-next && npm install && npm run build"},
+        )
+    candidate = (NEXT_DIR / path).resolve()
+    # Containment check — never serve outside the dist directory.
+    if path and candidate.is_file() and NEXT_DIR.resolve() in candidate.parents:
+        return FileResponse(str(candidate))
+    return FileResponse(str(NEXT_DIR / "index.html"))

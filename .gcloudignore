@@ -64,3 +64,8 @@ ml/experiments/mlruns/
 
 # Deploy scaffolding for OTHER targets
 fly.toml
+
+# React app (frontend-next) — source is uploaded so the Docker build stage
+# can compile it; node_modules and dist are NOT (dist is built in-image).
+frontend-next/node_modules/
+frontend-next/dist/

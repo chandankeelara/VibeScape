@@ -1,0 +1,348 @@
+/* #authModal — frontend/login.css:520-855 (provider list, modal chrome, tabs).
+   The email fields themselves come from the login feature's EmailForm, which
+   brings its own Auth.module.css — hence no .field / .input rules here. */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: fadeIn 220ms var(--ease-out);
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.backdrop {
+  position: absolute;
+  inset: 0;
+  border: none;
+  padding: 0;
+  background: rgba(4, 4, 8, 0.72);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  cursor: default;
+}
+
+.card {
+  position: relative;
+  width: 100%;
+  max-width: 420px;
+  max-height: calc(100dvh - var(--sp-7));
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* No padding here: each block below supplies its own, so the reused
+     EmailForm (which pads itself) lines up with the provider list. */
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow:
+    0 40px 100px -30px rgba(0, 0, 0, 0.9),
+    0 0 0 1px color-mix(in oklab, var(--accent) 8%, transparent);
+  animation: cardIn 260ms var(--ease-out);
+}
+
+@keyframes cardIn {
+  from {
+    transform: translateY(12px) scale(0.98);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+.close {
+  position: absolute;
+  top: var(--sp-3);
+  right: var(--sp-3);
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  z-index: 1;
+  transition:
+    color var(--dur) var(--ease),
+    background var(--dur) var(--ease);
+}
+
+.close:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.close svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.head {
+  padding: var(--sp-6) var(--sp-5) 0;
+}
+
+.title {
+  font-family: var(--sans);
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+  margin: 0 0 var(--sp-2);
+  padding-right: var(--sp-6);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.title .titleSerif {
+  font-size: 22px;
+}
+
+.sub {
+  color: var(--text-2);
+  font-size: 13.5px;
+  line-height: 1.55;
+  margin: 0 0 20px;
+}
+
+/* ------------------------------------------------------- provider list */
+
+.providers {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-5);
+}
+
+.provider {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) 14px;
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color var(--dur) var(--ease),
+    background var(--dur) var(--ease),
+    transform var(--dur) var(--ease);
+}
+
+.provider:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border-strong);
+}
+
+.provider:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.providerIcon {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: #fff;
+}
+
+.providerIcon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.providerLabel {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-2);
+  font-size: 14px;
+  letter-spacing: -0.005em;
+}
+
+.providerLabel strong {
+  color: var(--text);
+  font-weight: 600;
+  margin-left: 2px;
+}
+
+.providerArrow {
+  color: var(--text-3);
+  font-size: 16px;
+  transition:
+    transform var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+
+.provider:hover:not(:disabled) .providerArrow {
+  color: var(--text);
+  transform: translateX(3px);
+}
+
+.badge {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 3px var(--sp-2);
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  color: var(--text-3);
+}
+
+.spotify .providerIcon {
+  background: var(--spotify);
+  color: #0a0a0e;
+}
+
+.spotify:hover:not(:disabled) {
+  border-color: rgba(30, 215, 96, 0.45);
+  background: linear-gradient(135deg, rgba(30, 215, 96, 0.18), rgba(30, 215, 96, 0.03));
+}
+
+.ytmusic .providerIcon {
+  background: #ff0033;
+}
+
+.apple .providerIcon {
+  background: #fa233b;
+}
+
+.amazon .providerIcon {
+  background: #232f3e;
+  color: #ff9900;
+}
+
+.unavailable {
+  margin: var(--sp-3) var(--sp-5) 0;
+  color: var(--text-3);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+/* ----------------------------------------------------- divider + tabs */
+
+.divider {
+  position: relative;
+  text-align: center;
+  margin: 18px var(--sp-5) 20px;
+}
+
+.divider::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: var(--border);
+}
+
+.divider span {
+  position: relative;
+  display: inline-block;
+  padding: 0 var(--sp-3);
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.tabs {
+  display: flex;
+  gap: var(--sp-1);
+  padding: 3px;
+  margin: 0 var(--sp-5);
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+}
+
+.tab {
+  flex: 1;
+  padding: var(--sp-2) var(--sp-3);
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition:
+    background var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+
+.tab:hover {
+  color: var(--text-2);
+}
+
+.tabActive {
+  background: var(--text);
+  color: #0a0a0e;
+}
+
+/* EmailForm's own `.view` supplies the padding below the tabs. Trim its
+   top padding so the gap isn't doubled. */
+.formSlot > :first-child {
+  padding-top: var(--sp-3);
+}
+
+@media (max-width: 400px) {
+  .overlay {
+    padding: var(--sp-3);
+  }
+
+  .head {
+    padding: var(--sp-5) var(--sp-4) 0;
+  }
+
+  .providers,
+  .tabs {
+    padding-left: var(--sp-4);
+    padding-right: var(--sp-4);
+  }
+
+  .tabs {
+    margin-left: var(--sp-4);
+    margin-right: var(--sp-4);
+    padding-left: 3px;
+    padding-right: 3px;
+  }
+
+  .divider {
+    margin-left: var(--sp-4);
+    margin-right: var(--sp-4);
+  }
+
+  .title {
+    font-size: 22px;
+  }
+}
