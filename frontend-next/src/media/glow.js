@@ -30,17 +30,22 @@ const reducedMotion = () =>
   window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /**
- * Touch devices never get the analyser, and this is a hard requirement, not a
- * performance tweak.
+ * Touch devices skip the analyser. This is a PRECAUTION, not a proven fix —
+ * be honest about the evidence before changing it.
  *
- * createMediaElementSource() permanently reroutes the element's output through
- * the AudioContext — there is no way back, since it can only be called once
- * per element for the life of the page. Mobile browsers suspend the
- * AudioContext when the page is backgrounded or the screen locks, so a routed
- * element goes SILENT on lock. That kills lock-screen playback, which matters
- * far more than a decorative glow.
+ * The concern: createMediaElementSource() permanently reroutes the element's
+ * output through an AudioContext (once per element, for the life of the
+ * page — no undo), and mobile browsers suspend that context when the page
+ * backgrounds or the screen locks, which would silence playback.
  *
- * Coarse pointer is the proxy for "phone or tablet". Desktop keeps the glow.
+ * The counter-evidence: the legacy app ran this exact analyser and DID play
+ * on a locked iPhone. What legacy had that the React port initially lacked
+ * was PWA wiring — manifest + apple-mobile-web-app-capable, installed to the
+ * home screen. iOS grants background audio to standalone PWAs, not to Safari
+ * tabs, so that is the more likely explanation for the difference.
+ *
+ * Both are now in place. If lock-screen playback works with the glow
+ * restored on mobile, delete this guard — it costs a visible feature.
  */
 const isTouchDevice = () =>
   window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
