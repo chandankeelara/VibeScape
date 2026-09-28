@@ -45,6 +45,9 @@ def _ml_backend():
 class ClassifyStage(Stage):
     name = "classify"
     status_column = "ml_status"
+    # The fused embedding mixes MERT audio features with this stage's
+    # scalar predictions, so embedding can only be armed once ml is done.
+    arms = ("embedding_status",)
     # Local GPU mode: MERT weights are ~4 GB, so concurrent loads on an
     # 8 GB card OOM. Sequentialize by default. If running against Modal
     # (VIBESCAPE_ML_MODE=modal), bump this back up (Modal runs each call

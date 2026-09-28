@@ -9,6 +9,12 @@ preview_status='done' (needs a URL) but is otherwise independent — a
 Confidence gate: below 0.20 we treat the prediction as no_match (not
 enough signal to trust). Above the gate, we persist all three top guesses
 so the frontend can degrade gracefully.
+
+Terminal state is 'whisper_done', NOT 'done'. A subsequent LLM-verify
+stage (stage_language_verify.py) transitions whisper_done → done after a
+human/LLM confirms the tag. This is because Whisper reliably mispredicts
+on musical audio — Kannada songs frequently misclassify as Telugu /
+Sanskrit / Khmer / Norwegian Nynorsk, and instrumentals drift randomly.
 """
 from __future__ import annotations
 
@@ -17,7 +23,11 @@ import logging
 import sys
 from pathlib import Path
 
-from .base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, STATUS_NO_MATCH, iso_now
+from .base import (
+    RowResult, Stage,
+    STATUS_DONE, STATUS_FAILED, STATUS_NO_MATCH, STATUS_WHISPER_DONE,
+    iso_now,
+)
 
 
 log = logging.getLogger("vibescape.ingest.language")
@@ -96,7 +106,7 @@ class LanguageStage(Stage):
         })
         return RowResult(
             track_id=int(row["id"]),
-            status=STATUS_DONE,
+            status=STATUS_WHISPER_DONE,
             fields={
                 "language":               preds.get("top1_lang"),
                 "language_confidence":    top1_prob,

@@ -30,6 +30,11 @@ _FETCH_COLS = (
 class PreviewStage(Stage):
     name = "preview"
     status_column = "preview_status"
+    # Preview is an ENTRY stage: nothing upstream arms it, so it triggers
+    # off ingestion_status='pending' — the only status column the app's
+    # INSERT writes literally (backend/app.py). The other six rely on a
+    # column DEFAULT that exists locally but not in Turso.
+    arms = ("download_status",)
     # Kept low because the iTunes Search API rate-limits aggressively
     # (~20 req/min per IP) and ItunesPreview already serializes behind
     # a global lock. More workers here would just spin waiting for the
@@ -42,7 +47,15 @@ class PreviewStage(Stage):
     def fetch_pending(self, conn, limit: int) -> list:
         rows = conn.execute(
             f"SELECT {_FETCH_COLS} FROM tracks "
-            f"WHERE preview_status = 'pending' "
+            # Entry condition: the app queued this track and no terminal
+            # verdict has been reached for it yet.
+            f"WHERE ingestion_status = 'pending' "
+            # Not-yet-attempted guard. NULL is the prod-Turso spelling of
+            # 'pending' (no column default there); 'pending' is the local
+            # one. Without this, a row whose preview is already 'done'
+            # would be re-picked every pass until ml_status catches up and
+            # promote() finally flips ingestion_status off 'pending'.
+            f"AND (preview_status IS NULL OR preview_status = 'pending') "
             f"ORDER BY id ASC LIMIT ?",
             (limit,),
         ).fetchall()

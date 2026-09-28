@@ -21,6 +21,9 @@ log = logging.getLogger("vibescape.ingest.youtube")
 class YoutubeStage(Stage):
     name = "youtube"
     status_column = "youtube_status"
+    # Also an ENTRY stage — it needs only title/artist, never audio — so
+    # it triggers off ingestion_status for the same reason preview does.
+    # Arms nothing: youtube_id is a leaf, no stage consumes it.
     # yt-dlp searches are fairly slow per call (~1-3s); parallelize aggressively.
     max_workers = 6
 
@@ -33,7 +36,8 @@ class YoutubeStage(Stage):
     def fetch_pending(self, conn, limit: int) -> list:
         rows = conn.execute(
             "SELECT id, title, artist FROM tracks "
-            "WHERE youtube_status = 'pending' "
+            "WHERE ingestion_status = 'pending' "
+            "AND (youtube_status IS NULL OR youtube_status = 'pending') "
             "AND title IS NOT NULL AND title != '' "
             "AND artist IS NOT NULL AND artist != '' "
             "ORDER BY id ASC LIMIT ?",

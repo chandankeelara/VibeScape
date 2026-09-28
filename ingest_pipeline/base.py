@@ -5,8 +5,27 @@ A Stage:
   - is gated by exactly one status column on tracks (e.g. preview_status)
   - processes only rows where that column = 'pending'
   - writes back its own domain columns AND its own status column
+  - on success, ARMS the next stage(s) by setting their status columns
+    to 'pending' (see `arms`)
   - runs its per-row work concurrently across the fetched batch
     (I/O-bound; a thread pool is plenty)
+
+Arming, and why it exists
+-------------------------
+A stage used to become eligible purely because its status column was
+already 'pending' — which was never written by anything at runtime. It
+came only from the column DEFAULT in backend/db.py's ALTER TABLE
+migration. That holds in local sqlite and does NOT hold in Turso, whose
+tracks table was rebuilt by scripts/_push_local_to_turso.py from
+PRAGMA table_info's `type` field alone, silently dropping every
+DEFAULT 'pending'. Result: app-inserted rows land NULL in all six stage
+columns, `= 'pending'` matches nothing, and the whole pipeline idles on
+a full backlog while looking perfectly healthy.
+
+So stages now arm each other explicitly. Entry stages (preview,
+youtube) trigger off ingestion_status='pending' — the one column the
+app writes literally — and every later stage is armed by the stage
+before it. Nothing depends on a schema default any more.
 
 Status vocabulary (per stage):
     pending  — not yet attempted this stage
@@ -42,6 +61,9 @@ STATUS_PENDING = "pending"
 STATUS_DONE = "done"
 STATUS_NO_MATCH = "no_match"
 STATUS_FAILED = "failed"
+# Used by language_status: Whisper produced a tag but LLM hasn't verified yet.
+# The language_verify stage transitions whisper_done → done.
+STATUS_WHISPER_DONE = "whisper_done"
 
 
 def iso_now() -> str:
@@ -76,6 +98,12 @@ class Stage(ABC):
     name: str = "stage"
     status_column: str = "status"
     max_workers: int = 8
+
+    # Status columns to set to 'pending' when THIS stage returns 'done',
+    # making the next stage eligible. Only on 'done': a 'no_match' or
+    # 'failed' row must not arm anything downstream — promote() cascades
+    # those to 'no_match' instead.
+    arms: tuple[str, ...] = ()
 
     @abstractmethod
     def fetch_pending(self, conn, limit: int) -> list:
@@ -112,6 +140,11 @@ class Stage(ABC):
         for res in results:
             fields = dict(res.fields or {})
             fields[self.status_column] = res.status
+            if res.status == STATUS_DONE:
+                # Arm the next stage(s) in the same UPDATE, so a row can
+                # never be left 'done' here but un-triggered downstream.
+                for col in self.arms:
+                    fields[col] = STATUS_PENDING
             self._commit_row_update(conn, int(res.track_id), fields, log)
             counts[res.status] = counts.get(res.status, 0) + 1
         conn.commit()
