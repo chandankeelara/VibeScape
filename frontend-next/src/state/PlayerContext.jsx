@@ -32,18 +32,21 @@ export const RECENT_MAX = 12;
  * Session "seen" set — every track the user has interacted with, so the DJ
  * never recommends something already encountered this session.
  *
- * Distinct from `recent` (12, drives the trail UI) and from the DJ event
- * buffer (100, weights the taste vector). Those have their own jobs and their
- * own sizes; this one exists purely to answer "have I already put this in
- * front of the user?".
+ * This is the ONLY source the DJ exclude list is built from — see
+ * excludeIds() in features/queue/dj.js. `recent` (12, drives the trail UI)
+ * and the DJ event buffer (100, weights the taste vector) keep their own jobs
+ * and their own sizes, but neither feeds exclusion any more: every track that
+ * reaches either of them passed through markSeen first.
  *
  * Deliberately in-memory, not persisted: across sessions it would mean never
- * hearing a song twice, which is not the goal.
+ * hearing a song twice, which is not the goal. useDj does re-seed it from the
+ * restored event buffer on mount, so a mid-session reload doesn't resurrect
+ * the last 100 tracks — that is recovering this session, not persisting.
  *
- * The bound matters — the backend inlines these as SQL literals in a
- * NOT IN (...) clause and caps at 200 of its own accord.
+ * Must equal DJ_MAX_EXCLUDES. The backend inlines these as SQL literals in a
+ * NOT IN (...) clause and truncates at 200, so 200 is the ceiling.
  */
-export const SEEN_MAX = 180;
+export const SEEN_MAX = 200;
 
 export function PlayerProvider({ children }) {
   const toast = useToast();

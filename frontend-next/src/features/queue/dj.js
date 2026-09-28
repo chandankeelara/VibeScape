@@ -34,15 +34,16 @@ export const DJ_MAX_EVENTS = 100;
 export const DJ_MAX_SENT_IDS = 20;
 
 /**
- * Exclude list cap. queue is unbounded (enqueue just appends) while recent is
- * capped at 12, so without this a long queue produced a correspondingly long
- * `NOT IN (...)` clause — and backend/app.py:1366 inlines those ids as SQL
- * literals on the assumption the list is "bounded (~50-100)".
+ * Exclude list cap. The exclude list IS the seen-set, so this must equal
+ * SEEN_MAX in PlayerContext.jsx — a smaller value here would silently drop
+ * the oldest entries the set still remembers, making tracks eligible again
+ * while the frontend believed they were excluded.
  *
- * 150 covers current + 12 recent + a queue + the 100-event buffer with room to
- * spare, and stays under the backend's own 200 cap.
+ * 200 is the backend's own `_DJ_MAX_EXCLUDE_IDS`, which truncates anything
+ * longer, and backend/app.py:1385 inlines these as SQL literals in a
+ * `NOT IN (...)` clause. At ~7 bytes per id that is ~1.4 KB on the wire.
  */
-export const DJ_MAX_EXCLUDES = 150;
+export const DJ_MAX_EXCLUDES = 200;
 
 /**
  * No age decay: every event in the 10-slot buffer counts at full base weight.
@@ -223,45 +224,32 @@ export function buildWeights(events) {
 }
 
 /**
- * Internal integer track ids the DJ must not pick again: everything queued,
- * recently played, or now playing.
+ * Internal integer track ids the DJ must not pick again.
+ *
+ * This is exactly the session seen-set. PlayerContext marks a track seen at
+ * the three funnel points every track passes through to reach the user —
+ * loadTrack, enqueue, enqueueAt — so `seen` is already a strict superset of
+ * {now playing} u {recent} u {queue} u {everything in the event buffer}.
+ * Unioning those in again only re-derived entries the set already held, and
+ * their competing orderings decided which entries survived the cap. One
+ * source, ordered newest-first by PlayerContext, has neither problem.
  *
  * These are `tracks.id` integers rather than spotify keys on purpose — the
  * backend skips per-key resolution for ints, which took a ~50-entry exclude
  * list from ~750ms of DB round-trips down to nothing.
  */
-export function excludeIds({ queue = [], recent = [], current = null, events = [], seen = [] }) {
-  const ids = new Set();
-  const addId = (v) => {
+export function excludeIds({ seen = [] }) {
+  const ids = [];
+  for (const v of seen) {
     const n = Number(v);
     // Ints only. A string here is a spotify_id from a track that isn't in the
     // library yet, which the backend would have to resolve — and an
     // un-ingested track can't be a candidate anyway.
-    if (Number.isFinite(n)) ids.add(n);
-  };
-  const add = (t) => { if (t && t.id != null) addId(t.id); };
-  // Order matters once capped — the entries most redundant to recommend must
-  // survive the trim.
-  //   current : playing right now
-  //   recent  : pushRecent appends, so reverse gives most-recently-played first
-  //   queue   : NATURAL order — queue[0] is what plays next (next() takes the
-  //             head), so the front is the most important to exclude. Reversing
-  //             this would keep the tail and drop the tracks about to play.
-  add(current);
-  [...recent].reverse().forEach(add);
-  queue.forEach(add);
-  // Everything in the event buffer has already been heard this session.
-  // Without this, taste memory (100 events) far outran repeat memory (12
-  // recents): a track skipped 13 plays ago stayed a candidate, down-weighted
-  // by pos - 0.4*neg but never actually forbidden. That is the "I skipped
-  // this, why is it back?" case. Newest first so the cap keeps what matters.
-  for (let i = events.length - 1; i >= 0; i--) addId(events[i].track_id);
-  // The session seen-set: everything played or queued, however it was
-  // reached — search, recs, queue, DJ, the trail. PlayerContext owns it and
-  // hands it over newest-first, so the cap keeps the most recent.
-  seen.forEach(addId);
-
-  return Array.from(ids).slice(0, DJ_MAX_EXCLUDES);
+    if (Number.isFinite(n)) ids.push(n);
+  }
+  // Defensive: markSeen already bounds the set at SEEN_MAX, which is this
+  // same number. The slice only matters if the two ever drift apart.
+  return ids.slice(0, DJ_MAX_EXCLUDES);
 }
 
 /** Signature of the buffer's current state — used to coalesce redundant fetches. */
@@ -278,7 +266,7 @@ export const bufferSignature = (events) =>
  * degrades to plain similarity until `similarTracksDj` is added there (see the
  * note in the port report). The shape of the response is identical either way.
  */
-export async function fetchDjPicks(seed, { queue, recent, current, events, seen = [], limit = 8 }) {
+export async function fetchDjPicks(seed, { events, seen = [], limit = 8 }) {
   const key = apiKey(seed);
   if (!key) return [];
 
@@ -288,7 +276,7 @@ export async function fetchDjPicks(seed, { queue, recent, current, events, seen 
       mode: 'dj',
       positive_ids: positives,
       negative_ids: negatives,
-      exclude_ids: excludeIds({ queue, recent, current, events, seen }),
+      exclude_ids: excludeIds({ seen }),
       limit,
     });
     return res?.tracks || [];

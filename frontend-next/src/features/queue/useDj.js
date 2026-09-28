@@ -42,11 +42,28 @@ export function PlaybackRatioProbe({ onSample }) {
 }
 
 export function useDj() {
-  const { current } = usePlayer();
+  const { current, markSeen } = usePlayer();
   const toast = useToast();
 
   const [enabled, setEnabled] = useState(loadEnabled);
   const [events, setEvents] = useState(loadEvents);
+
+  /**
+   * Re-seed the seen-set from the restored buffer, once, on mount.
+   *
+   * The exclude list is the seen-set alone, and the seen-set is in-memory
+   * while this buffer is in localStorage. Without this, a reload (or the PWA
+   * relaunching) would make the last 100 tracks candidates again, seconds
+   * after the user heard them. These events are by definition already-played
+   * tracks, so marking them seen restores the session rather than extending
+   * exclusion across genuinely new ones.
+   */
+  useEffect(() => {
+    for (const e of events) markSeen({ id: e.track_id });
+    // Mount only — `events` is the restored buffer; later appends mark
+    // themselves seen through loadTrack.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const currentKey = apiKey(current);
 
