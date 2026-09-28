@@ -19,6 +19,7 @@
  */
 
 import { createContext, useCallback, useContext, useMemo, useSyncExternalStore } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import * as api from '../lib/api';
@@ -59,6 +60,11 @@ export function AuthProvider({ children }) {
     [queryClient]
   );
 
+  // AuthProvider is mounted inside BrowserRouter (main.jsx -> App -> AuthGate),
+  // so this is safe. If AuthGate is ever reused outside a Router, this is the
+  // line that will complain.
+  const navigate = useNavigate();
+
   const signOut = useCallback(async () => {
     // Best-effort — a failed logout must still wipe local state, exactly as the
     // legacy `signOutOfVibeScape` did.
@@ -69,7 +75,12 @@ export function AuthProvider({ children }) {
     }
     clearToken();
     queryClient.clear();
-  }, [queryClient]);
+    // Back to the main page. Without this you stay on whatever route you
+    // signed out from (/admin, say) — the auth card renders over it, and
+    // signing back in drops you there instead of the player. `replace` so
+    // Back doesn't return to a route that would just show the card again.
+    navigate('/', { replace: true });
+  }, [queryClient, navigate]);
 
   const value = useMemo(
     () => ({
