@@ -1674,7 +1674,14 @@ _CALLBACK_HTML = """<!doctype html>
       if (error) out.set('spotify_error', error);
       if (state) out.set('spotify_state', state);
       var qs = out.toString();
-      window.location.replace('/' + (qs ? ('?' + qs) : ''));
+      // Return to whichever app started the flow. `state` is an opaque marker
+      // chosen by the initiator ('vs_next' from the React app, 'vs_landing'
+      // from the legacy page). Mapping known markers to FIXED paths — rather
+      // than treating state as a URL — means a forged value can only ever
+      // land on the default. No open redirect.
+      var RETURN_PATHS = { vs_next: '/', vs_landing: '/legacy' };
+      var dest = RETURN_PATHS[state] || '/';
+      window.location.replace(dest + (qs ? ('?' + qs) : ''));
     }
   } catch(e) {
     var el = document.getElementById('msg');
