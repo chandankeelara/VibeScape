@@ -55,6 +55,7 @@ export function PlayerProvider({ children }) {
   // onEnded handler must be registered exactly once. Route through a ref so
   // the hook always calls the current `next` without re-registering.
   const nextRef = useRef(null);
+  const prevRef = useRef(null);
 
   /* ------------------------------------------------------------ media sync */
 
@@ -83,6 +84,10 @@ export function PlayerProvider({ children }) {
   useEffect(() => {
     player.setHooks({
       onEnded: () => nextRef.current?.(),
+      // Separate from onEnded on purpose: a lock-screen "next" is a SKIP, not
+      // a completed listen, and DJ mode weights those very differently.
+      onNext: () => nextRef.current?.(),
+      onPrevious: () => prevRef.current?.(),
       onNeedsPremium: () =>
         toast('This track requires Spotify Premium to play (no preview available).', 'warning'),
       onVideoError: (info) => toast(info?.message || 'Video unavailable', 'warning'),
@@ -319,6 +324,7 @@ export function PlayerProvider({ children }) {
   }, [loadTrack]);
 
   useEffect(() => { nextRef.current = next; }, [next]);
+  useEffect(() => { prevRef.current = prev; }, [prev]);
 
   /* -------------------------------------------------------------- control */
 

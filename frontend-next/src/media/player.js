@@ -34,6 +34,8 @@ const state = {
 /** Host callbacks (set by PlayerContext) for things only React can decide. */
 let hooks = {
   onEnded: () => {},
+  onNext: () => {},
+  onPrevious: () => {},
   onVideoError: () => {},
   onNeedsPremium: () => {},
   onSpotifyError: () => {},
@@ -44,9 +46,18 @@ function emit() {
   const snapshot = { playing: state.playing, source: state.source, mode: state.mode, track: state.track };
   listeners.forEach((fn) => fn(snapshot));
 }
+let lastPositionPush = 0;
+
 function emitTime(position, duration) {
   const t = { position, duration };
   timeListeners.forEach((fn) => fn(t));
+  // Throttled — the OS only needs it about once a second, and Safari is
+  // unhappy about being hammered.
+  const now = performance.now();
+  if (now - lastPositionPush > 900) {
+    lastPositionPush = now;
+    setSessionPosition(position, duration);
+  }
 }
 
 export function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
@@ -333,10 +344,55 @@ function setSessionState(playing) {
   try { navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'; } catch {}
 }
 
+/**
+ * Tell the OS where we are in the track. This is what draws the scrubber on
+ * the lock screen and in the notification shade; without it the controls show
+ * but the position bar stays empty.
+ */
+function setSessionPosition(position, duration) {
+  if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
+  if (!Number.isFinite(duration) || duration <= 0) return;
+  try {
+    navigator.mediaSession.setPositionState({
+      duration,
+      position: Math.min(Math.max(position, 0), duration),
+      playbackRate: 1,
+    });
+  } catch { /* Safari throws on out-of-range values */ }
+}
+
 function applySessionHandlers() {
   if (!('mediaSession' in navigator)) return;
-  const set = (action, fn) => { try { navigator.mediaSession.setActionHandler(action, fn); } catch {} };
+  const set = (action, fn) => {
+    // Unsupported actions throw rather than no-op; an unset handler means the
+    // OS simply doesn't offer that control.
+    try { navigator.mediaSession.setActionHandler(action, fn); } catch { /* unsupported */ }
+  };
   set('play', play);
   set('pause', pause);
-  set('nexttrack', () => hooks.onEnded());
+  set('nexttrack', () => hooks.onNext());
+  set('previoustrack', () => hooks.onPrevious());
+  set('stop', stop);
+
+  // Scrubbing from the lock screen / car head unit.
+  set('seekto', (details) => {
+    const d = currentDuration();
+    if (d > 0 && Number.isFinite(details?.seekTime)) seek(details.seekTime / d);
+  });
+  set('seekbackward', (details) => seekBy(-(details?.seekOffset || 10)));
+  set('seekforward', (details) => seekBy(details?.seekOffset || 10));
+}
+
+function currentDuration() {
+  if (state.mode === 'video') return youtube.getDuration();
+  const el = state.audioEl;
+  return el && Number.isFinite(el.duration) ? el.duration : 0;
+}
+
+function seekBy(deltaSeconds) {
+  const d = currentDuration();
+  if (d <= 0) return;
+  const el = state.audioEl;
+  const pos = state.mode === 'video' ? 0 : (el?.currentTime || 0);
+  seek((pos + deltaSeconds) / d);
 }

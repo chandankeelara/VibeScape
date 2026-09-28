@@ -23,10 +23,27 @@ const glow = {
   buffer: null,
   rafId: null,
   smoothed: 0.65,
+  visibilityBound: false,
 };
 
 const reducedMotion = () =>
   window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/**
+ * Touch devices never get the analyser, and this is a hard requirement, not a
+ * performance tweak.
+ *
+ * createMediaElementSource() permanently reroutes the element's output through
+ * the AudioContext — there is no way back, since it can only be called once
+ * per element for the life of the page. Mobile browsers suspend the
+ * AudioContext when the page is backgrounded or the screen locks, so a routed
+ * element goes SILENT on lock. That kills lock-screen playback, which matters
+ * far more than a decorative glow.
+ *
+ * Coarse pointer is the proxy for "phone or tablet". Desktop keeps the glow.
+ */
+const isTouchDevice = () =>
+  window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
 
 export function setAlpha(a) {
   document.documentElement.style.setProperty('--art-glow-alpha', String(a));
@@ -34,6 +51,8 @@ export function setAlpha(a) {
 
 function ensure(audioEl) {
   if (reducedMotion()) return false;
+  // Never route mobile audio through Web Audio — see isTouchDevice above.
+  if (isTouchDevice()) return false;
   if (glow.analyser && glow.source) return true;
   try {
     const AC = window.AudioContext || window.webkitAudioContext;
@@ -61,6 +80,17 @@ function ensure(audioEl) {
 export function start(audioEl) {
   if (!ensure(audioEl)) return;
   if (glow.ctx.state === 'suspended') glow.ctx.resume().catch(() => {});
+
+  // A backgrounded desktop tab can suspend the context too; resume on return
+  // so audio doesn't stay dead after the user comes back.
+  if (!glow.visibilityBound) {
+    glow.visibilityBound = true;
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && glow.ctx?.state === 'suspended') {
+        glow.ctx.resume().catch(() => {});
+      }
+    });
+  }
   if (glow.rafId) return;
 
   let lastFrame = 0;
