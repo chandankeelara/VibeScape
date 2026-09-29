@@ -675,7 +675,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.commit()
 
         _backfill_classification_source(conn)
-        _backfill_ingestion_status(conn)
+        # _backfill_ingestion_status(conn)  — RETIRED, same reason as the
+        # backfill below it.
+        #
+        # It set ingestion_status='done' for any pending row where
+        # activation IS NOT NULL — i.e. it declared a track finished
+        # because the OLD synchronous worker had once scored it, without
+        # any stage having run and without arming anything. Under the
+        # arming model that both breaks the invariant (done must mean
+        # every stage passed) and makes a deliberate re-queue impossible:
+        # ensure_db() silently flipped requeued rows straight back to
+        # 'done' on the pipeline's next startup, so a full re-ingest
+        # reported "no pending rows" and did nothing.
         # _backfill_stage_statuses(conn)  — RETIRED, see the function.
         #
         # It stamped a stage 'done' wherever the artefact column was
@@ -718,6 +729,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 def _backfill_ingestion_status(conn: sqlite3.Connection) -> int:
     """
+    RETIRED — no longer called. Kept for reference only.
+
+    Predates the arming model and the async split. Do not re-enable: it
+    marks rows 'done' from a stale column rather than from stage outcomes.
+
+    Original docstring follows.
+
     Existing rows predate the two-phase ingest flow. If they already have
     an activation/vibe_score (i.e. the old inline pipeline actually scored
     them), mark them 'done' so they show up in the library.

@@ -10,6 +10,7 @@ Add a new provider = write a new subclass + prepend/append to DEFAULT_CHAIN.
 """
 from __future__ import annotations
 
+import os
 import random
 import threading
 import time
@@ -69,9 +70,15 @@ class ItunesPreview(PreviewProvider):
     # guards the "last request time" so worker threads take turns.
     _lock = threading.Lock()
     _last_request_ts = 0.0
-    _MIN_GAP_S = 0.5      # >= 500 ms between requests
-    _MAX_RETRIES = 4
-    _BASE_BACKOFF_S = 2.0 # 2, 4, 8, 16 seconds on successive 403s
+    # Tunable from the environment. The defaults suit a steady-state run;
+    # draining a BACKLOG needs far more patience, because Apple's rolling
+    # window stays shut longer than 2+4+8+16 = 30s once tripped. A retry
+    # pass over known-false no_match rows should raise all three, e.g.
+    #   VIBESCAPE_ITUNES_MIN_GAP=2 VIBESCAPE_ITUNES_RETRIES=7
+    #   VIBESCAPE_ITUNES_BACKOFF=5
+    _MIN_GAP_S = float(os.environ.get("VIBESCAPE_ITUNES_MIN_GAP") or 0.5)
+    _MAX_RETRIES = int(os.environ.get("VIBESCAPE_ITUNES_RETRIES") or 4)
+    _BASE_BACKOFF_S = float(os.environ.get("VIBESCAPE_ITUNES_BACKOFF") or 2.0)
 
     def __init__(self, itunes_client, log=None):
         self._client = itunes_client

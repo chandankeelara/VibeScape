@@ -28,9 +28,7 @@ import logging
 import numpy as np
 
 from .base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, id_filter, iso_now, id_filter
-from .stage_embedding import (
-    FUSED_DIM, MERT_DIM, SCALAR_COLS, _build_fused,
-)
+from .fused_vector import FUSED_DIM, MERT_DIM, SCALAR_COLS, _build_fused
 
 log = logging.getLogger("vibescape.ingest.fuse")
 

@@ -64,41 +64,36 @@ ARTIST_TO_LANG = {
     "guru kiran":               "kn",
     "santhosh venky":           "kn",
     "deepak blue":              "kn",
-    # ---------------- Hindi/Bollywood ----------------
-    "pritam":                   "hi",
+    # ---------------- Hindi/Bollywood ---- (Hindi-strict composers) ----
+    # NOTE: playback singers who sing across many Indian languages
+    # (Sonu Nigam, Armaan Malik, Shreya Ghoshal, Arijit Singh, KK,
+    #  Shaan, Asha Bhosle, Sadhana Sargam, Sid Sriram, Karthik, Haricharan)
+    # are DELIBERATELY NOT in this map — their language depends on the
+    # song, not the artist. Title patterns + film-name markers below
+    # decide the language for those.
     "sachin-jigar":             "hi",
     "shankar-ehsaan-loy":       "hi",
     "vishal-shekhar":           "hi",
-    "vishal mishra":            "hi",
     "mithoon":                  "hi",
-    "sonu nigam":               "hi",   # mostly Hindi in this catalog
-    "armaan malik":             "hi",
     "neeti mohan":              "hi",
     "javed ali":                "hi",
     "rashid ali":               "hi",
-    "shreya ghoshal":           "hi",   # multi-lang; correct per-title below
-    "arijit singh":             "hi",
     "amit trivedi":             "hi",
     "gajendra verma":           "hi",
     "yo yo honey singh":        "hi",
     "himesh reshammiya":        "hi",
-    "kk":                       "hi",
-    "shaan":                    "hi",
-    "asha bhosle":              "hi",
-    "sadhana sargam":           "hi",   # often Hindi; title-checked below
     "jatin-lalit":              "hi",
     "prateek kuhad":            "hi",
     "jalraj":                   "hi",
     "sultana":                  "hi",
     "rekha bhardwaj":           "hi",
     "duncan laurence":          "en",
-    # ---------------- Telugu ----------------
-    "sid sriram":               "te",   # mostly Telugu, title-checked below
+    # ---------------- Telugu (Telugu-strict artists only) ----------------
+    # Sid Sriram / Haricharan / Thaman S / Karthik are cross-language —
+    # NOT in this map. Title decides for them.
     "anup rubens":              "te",
     "prithvi harish":           "te",
     "srinidhi venkatesh":       "te",
-    "thaman s":                 "te",
-    "haricharan":               "te",   # multi; title-checked
     "ram miriyala":             "te",
     "jassie gift":              "kn",   # actually Malayalam mostly, but Kannada + Malayalam songs common
     # ---------------- Tamil ----------------
@@ -275,18 +270,20 @@ def main() -> int:
 
     lconn = sqlite3.connect(str(_LOCAL_DB))
     lconn.row_factory = sqlite3.Row
+    # Scan EVERY track. infer_language() returns None when it has no
+    # confident opinion, so unchanged rows are a no-op below. This lets
+    # us also catch high-confidence-but-still-wrong tags like Kannada
+    # songs Whisper labels as Telugu (both Dravidian languages, easily
+    # confused). Artist rules take priority regardless of what Whisper
+    # thought the audio said.
     suspects = lconn.execute(
         """
         SELECT id, spotify_id, title, artist, language, language_confidence
         FROM tracks
-        WHERE language IS NULL
-           OR language_confidence < 0.5
-           OR language IN ('sa','km','nn','jw','la','sn','si','ny','so','mi','cy',
-                           'eu','yo','haw','ga','af','ha','st','sq','ru','it','ko','ja','zh')
         ORDER BY id
         """
     ).fetchall()
-    print(f"suspects: {len(suspects)}")
+    print(f"scanning: {len(suspects)} tracks")
 
     corrections: list[tuple[int, str, str, str, str, str]] = []
     # (id, spotify_id, title, artist, old_lang, new_lang)
