@@ -39,7 +39,8 @@
 - [Ingestion Pipeline](#ingestion-pipeline)
   - [Phase 1 — online, synchronous](#phase-1--online-synchronous-backendapppy)
   - [Phase 2 — offline, batch](#phase-2--offline-batch-ingest_pipeline--scriptsrun_ingest_v2py)
-  - [The Six Stages](#the-six-stages)
+  - [Why async, not synchronous](#why-async-not-synchronous)
+  - [The Seven Stages](#the-seven-stages)
   - [Status vocabulary + promotion cascade](#status-vocabulary--promotion-cascade)
   - [Preview Provider Chain](#preview-provider-chain)
   - [Local Audio Cache](#local-audio-cache)
@@ -275,11 +276,29 @@ A 2×5 **mood grid** is derived from these two axes:
 
 ## Ingestion Pipeline
 
-Ingest is split into a **fast online metadata pass** (runs inside the FastAPI request that a user's Spotify sync fires) and an **offline v2 pipeline of six modular stages** (a separate worker process that drains queued work). The split means the sync-modal returns in seconds — the user's library becomes visible immediately with metadata + previously-cached audio — while heavy per-track work (audio download, MERT inference, embeddings, language, YouTube resolution) happens asynchronously with no bearing on request latency.
+Ingest is split into a **fast online metadata pass** (runs inside the FastAPI request that a user's Spotify sync fires) and an **offline pipeline of seven modular stages** (a separate worker process that drains queued work). The sync-modal returns in seconds — the library becomes visible immediately with metadata — while the heavy per-track work happens out of band.
+
+### Why async, not synchronous
+
+The first version did everything inline: the request that added a track also resolved its preview, downloaded the audio, ran MERT, ran Whisper and searched YouTube, then returned. That worked for one track and fell apart for a library.
+
+| | synchronous | async |
+|---|---|---|
+| 500-track sync | ~500 × (network + GPU) — minutes to hours, holding an HTTP connection | a few hundred ms, 2 INSERTs per new track |
+| One bad track | iTunes 403 or a dead CDN link fails the whole request | that row parks at `<stage>_stage_error`; every other track proceeds |
+| Retry | re-run everything, including work that already succeeded | each stage short-circuits on what is already on the row |
+| GPU | contends with request threads, needs a GPU wherever the API runs | one worker, serialized, on a machine that has one |
+| Rate limits | per-request, unbatchable, no backoff budget | a global lock + tunable backoff across the whole run |
+
+The deeper problem is that the two halves have **incompatible failure models**. An HTTP request must answer in seconds and either succeeds or doesn't. Ingest is long, partial and resumable: a track can have a preview but no embedding, or a language but no video, and that is a normal intermediate state rather than an error. Forcing it into a request meant every partial failure became a 500, and every retry redid work that had already landed.
+
+Splitting them lets each do what it is good at. The request path writes one row and returns. The pipeline owns durability: per-stage status columns record exactly how far each track got, so a crash resumes instead of restarting, and `ingestion_status` reports the aggregate.
+
+The synchronous worker (`_ingest_track_row`) is gone. `backend/app.py` no longer imports `ml_backend`, `features` or `deezer_client` at all — the API process carries no ML dependencies.
 
 ### Phase 1 — online, synchronous (`backend/app.py`)
 
-`_process_track()` writes a metadata-only `tracks` row for anything genuinely new, with `ingestion_status='pending'` and six per-stage status columns each set to `'pending'`. Three short-circuit outcomes:
+`_process_track()` writes a metadata-only `tracks` row for anything genuinely new, with `ingestion_status='pending'`. The per-stage columns are left NULL — the pipeline arms them as it goes (see below). Three short-circuit outcomes:
 
 | Condition | Bucket | Cost |
 |---|---|---|
@@ -291,38 +310,43 @@ A 500-track playlist re-sync where every track is already known completes in a f
 
 ### Phase 2 — offline, batch (`ingest_pipeline/` + `scripts/run_ingest_v2.py`)
 
-A background worker walks the six stages of the v2 pipeline in waves. Each pass fetches all pending rows for stage *N*, dispatches them concurrently (I/O-bound → thread pool), advances to stage *N+1*, and finishes with `promote.py` to derive `ingestion_status` and cascade terminal failures.
+A background worker walks the seven stages. Each pass picks **one cohort** of tracks and carries it through every stage in order, so the same tracks advance together; stages still batch internally (I/O-bound → thread pool). Full design notes live in `ingest_pipeline/README.md`.
 
-Songs move through **stages in waves, not one-by-one across stages** — the whole batch clears preview before any of it starts classify. Simpler orchestration than a per-track state machine, and each stage sees a hot working set.
-
-### The Six Stages
+### The Seven Stages
 
 Each stage lives in its own module under `ingest_pipeline/`, is gated by exactly one status column on `tracks`, and writes only its own domain columns + its own status column.
 
 | # | Stage | File | Status column | Blocks on | Concurrency | What it does |
 |---|---|---|---|---|---|---|
-| 1 | **preview** | `stage_preview.py` | `preview_status` | — | 2 workers | Runs the provider chain to resolve a `preview_url`. Also backfills `apple_id`, `genre`, `track_view_url`, `album`, `artwork_url`, `duration_ms` from the provider hit. Sets `preview_source` to `spotify` / `itunes` / `deezer_isrc` / `deezer_search`. |
-| 2 | **download** | `stage_download.py` | `download_status` | `preview_status='done'` | 8 workers | Fetches `preview_url` and writes to `data/audio/<spotify_id>.<ext>` atomically (`.part` rename). Sets `audio_path`. |
-| 3 | **classify** | `stage_classify.py` | `ml_status` | `download_status='done'` | 1 (GPU) | Runs `MERTVibeRegressor` (10 s crop) on the cached audio via `ml_backend.predict_from_path`. Writes `energy_pred`, `danceability_pred`, `valence_pred`, `vibe_score_ml`, `activation`, `valence`, `vibe_score`, `mood`, `classification_source='ml_mert'`. |
-| 4 | **youtube** | `stage_youtube.py` | `youtube_status` | — (independent) | 6 workers | `yt-dlp ytsearch1` for `"{title} {artist}"`. Takes the first hit, no embed / age / availability check. Writes `youtube_id`, `youtube_queried_at`. |
-| 5 | **language** | `stage_language.py` | `language_status` | `download_status='done'` | 1 (GPU) | Whisper `small` language detection on the cached audio. Writes `language`, `language_confidence`, `language_top3_json`, `language_model_version` when top-1 confidence ≥ 0.20; otherwise `language_status='no_match'`. |
-| 6 | **embedding** | `stage_embedding.py` | `embedding_status` | `download_status='done'` AND `ml_status='done'` | 1 (GPU) | Runs raw MERT-v1-95M encoder (30 s window) → mean-pooled 768-D vector. Writes `mert_v1_95m_fp32_30s` blob to `track_embeddings`. Piggybacks librosa `tempo` / `brightness` / `acousticness` from the same waveform. Builds the fused vector using those scalars + `language` and writes `fused_v1_mert_scalar_lang` (788-D). |
+| 1 | **preview** | `stage_preview.py` | `preview_status` | `ingestion_status='pending'` | 2 | Provider chain resolves a `preview_url`; backfills `apple_id`, `genre`, `track_view_url`, `album`, `artwork_url`, `duration_ms`. Short-circuits when `preview_url` is already set. |
+| 2 | **download** | `stage_download.py` | `download_status` | `preview_status='done'` | 8 | Fetches to `data/audio/<spotify_id>.<ext>` atomically (`.part` rename). Skips if already cached. |
+| 3 | **librosa** | `stage_librosa.py` | `librosa_status` | `download_status='done'` | 3 | The DSP feature bank — 18 columns: `tempo`, `energy`, `brightness`, `bandwidth`, `rolloff`, `spectral_contrast`, `flatness`, `zcr`, `tonnetz_std`, `acousticness`, `mfcc_json`, `chroma_mean_json`, … |
+| 4 | **classify** | `stage_classify.py` | `ml_status` | `librosa_status='done'` | 1 (GPU) | **One** MERT pass over the full 30 s preview with the fine-tuned checkpoint, yielding **both** the vibe scalars and the 768-d mean-pooled embedding. |
+| 5 | **language** | `stage_language.py` | `language_status` | `ml_status='done'` | 1 (GPU) | Whisper `small` detection. Terminal state is `whisper_done`, not `done` — Whisper mispredicts on musical audio, so verification is intended before the tag is trusted. |
+| 6 | **fuse** | `stage_fuse.py` | `fuse_status` | `language_status` terminal | 4 | Builds the 788-d retrieval vector from the stored MERT vector + 9 scalars + language one-hot. Pure numpy — a corrected language tag rebuilds in ms, no GPU. |
+| 7 | **youtube** | `stage_youtube.py` | `youtube_status` | all of the above | 6 | `yt-dlp ytsearch`, first hit, no embed/age check. Skips if `youtube_id` is set. **Finisher** — settles `ingestion_status='done'`. |
 
 **Constraint-collision retry.** An UPDATE that hits the legacy `UNIQUE (user_id, apple_id)` index retries once with `apple_id / track_view_url / genre` stripped. The row's own status column always lands so the pipeline never loops on the same row.
 
-### Status vocabulary + promotion cascade
+### Arming, and the `done` invariant
 
-Each stage-status column takes one of four values: `pending`, `done`, `no_match`, `failed`. `no_match` is terminal but non-error (e.g. iTunes had no hit; audio decoded but Whisper confidence was too low). `failed` is retryable next pass.
+A stage runs when **its own** status column reads `'pending'`. `preview` is the entry point and triggers off `ingestion_status='pending'` — the one column the app's INSERT writes literally. Every later stage is **armed** by the one before it: on success a stage sets the next stage's column to `'pending'`, in the same UPDATE as its own status.
 
-`ingest_pipeline/promote.py` derives the aggregate `ingestion_status`:
+This replaced a design that leaned on `ALTER TABLE ... DEFAULT 'pending'`. That default does not exist in Turso — its table was rebuilt from `PRAGMA table_info`'s `type` field alone, silently dropping every DEFAULT — so app-inserted rows landed NULL, `= 'pending'` matched nothing, and the pipeline idled on a full backlog while looking perfectly healthy.
+
+Arming is not *proof* the upstream ran, though: a column also reaches `'pending'` from a migration default or a manual UPDATE. So every gate additionally spells out its real preconditions rather than trusting that it was armed.
+
+Status vocabulary: `pending`, `done`, `no_match`, `failed`, plus `whisper_done` for language. `no_match` is terminal but non-error — the stage ran and found nothing. On `failed` a stage **arms nothing** and sets `ingestion_status='<stage>_stage_error'`, so the chain stops where it broke and one `GROUP BY ingestion_status` says which stage is failing and how often.
+
+There is no promote pass. Each stage settles `ingestion_status` itself:
 
 ```
-ingestion_status = 'done'        when preview + download + ml all 'done'
-ingestion_status = 'no_preview'  when preview_status='no_match'
-                                 OR download_status='no_match'
+preview  no_match  ->  'no_preview'
+download no_match  ->  'no_preview'
+youtube  done      ->  'done'        (the finisher)
 ```
 
-`youtube_status` and `language_status` are best-effort — never block promotion.
+**The invariant: `ingestion_status='done'` means every stage reached a successful terminal outcome.** `youtube`'s gate requires every upstream stage, spelled out rather than inferred, so nothing can be promoted past a stage that failed.
 
 Promote also **cascades** audio-availability failures downstream so pending counts stay meaningful:
 
@@ -354,7 +378,7 @@ The app never streams from `audio_path` — the frontend streams directly from `
 ### Orchestrator
 
 ```bash
-# One pass across all six stages, up to 50 rows per stage per pass:
+# One pass across all seven stages, up to 50 rows per stage per pass:
 python scripts/run_ingest_v2.py --batch 50
 
 # Loop forever with 30 s idle sleep between empty passes:
@@ -509,8 +533,8 @@ Embeddings are produced inline by the v2 pipeline's `EmbeddingStage` — no sepa
 
 Two ops helpers exist for offline maintenance:
 
-- **`scripts/_backfill_mert_embeddings.py`** — rebuild MERT vectors from local audio files. Use after locally re-processing audio (e.g. bumped `MAX_DURATION_S`).
-- **`scripts/_refuse_embeddings.py`** — rebuild only the *fused* vector for every track from its existing MERT + current scalar columns + current language. No audio, no GPU — pure numpy over blobs we already have. Runs against local and Turso in one invocation. This is what you run after a language-tag correction sweep.
+- **Re-embedding** — set `ml_status='pending'` (full re-encode) or `fuse_status='pending'` (rebuild the fused vector only, no GPU) and re-run the pipeline. The stage gates handle the rest.
+- **Rebuilding fused vectors** is a pipeline stage, not a script: set `fuse_status='pending'` and `stage_fuse.py` rebuilds from the stored MERT vector + current scalars + current language. No audio, no GPU — pure numpy over blobs already on hand. This is what runs after a language-tag correction.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -527,7 +551,7 @@ Grouped by what they buy you:
 - **`sqlite3`-compatible HTTP shim.** `backend/db_client.py` implements a `sqlite3` connection/cursor/row shim over Turso's raw Hrana HTTP pipeline. Every call site keeps its plain `sqlite3` API — `DB_BACKEND=sqlite|turso` switches the whole app between local file and remote DB.
 - **F32_BLOB round-trip quirk.** Turso returns F32_BLOB values as base64-encoded blobs that the HTTP shim doesn't fully decode. Any path that needs the raw vectors (positives/negatives for query-vector construction) uses `vector_extract()` to get the text form and parses it. Wrapped in `_decode_embedding_cell()` — one place to update if libSQL changes the wire format.
 - **Empirical crop-length audit.** Before committing to a 30 s embedding + 10 s scalar prediction split, we measured drift (`scripts/_predict_crop_length_test.py`, `_regressor_window_compare.py`). 0.960 correlation, ~3 pt MAE, systematic 1.83 pt bias — small enough to keep the split, large enough to justify the `model_version` column that makes it queryable.
-- **Language-tag correction workflow.** Whisper hallucinates on musical audio (Kannada film songs often mis-tagged as `sa / km / nn`). `scripts/_fix_language_tags.py` applies an artist→language map + title-substring patterns for ~180 known-wrong tags; `_refuse_embeddings.py` rebuilds fused vectors so DJ mode reflects the corrected language one-hot. Runs against local + Turso in one invocation.
+- **Language-tag correction workflow.** Whisper hallucinates on musical audio (Kannada film songs often mis-tagged as `sa / km / nn`), which is why `language_status` stops at `whisper_done` rather than `done`. `scripts/_llm_verify_export.py` dumps those rows for review and `_llm_verify_apply.py` writes the corrections back, resetting `fuse_status` so the language one-hot is rebuilt — milliseconds, no GPU, because the MERT half is already stored.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -565,7 +589,12 @@ turso db tokens create vibescape   # → TURSO_AUTH_TOKEN
 
 With `DB_BACKEND=turso` the app talks to remote libSQL and `docker-entrypoint.sh` skips local SQLite seed. Left unset, it defaults to `sqlite` and seeds `data/vibescape.db` from the image on first boot — still used for local dev and VM hosts with persistent volumes.
 
-**Data sync.** `scripts/_turso_vs_local_diff.py` and `scripts/_push_local_to_turso.py` are the reproducible seed workflow: build the catalog locally against `sqlite`, then bulk-push metadata + embeddings to Turso when ready to ship. The push is DROP + CREATE for `tracks` and `track_embeddings`; `users` / `sessions` / `user_tracks` are left alone to preserve prod identity.
+**Data sync.** `scripts/_turso_pull_to_local.py` and `scripts/_sync_local_to_turso.py` are the reproducible workflow: build the catalog locally against `sqlite` (GPU work runs on a machine that has a GPU), then push metadata + embeddings to Turso when ready to ship.
+
+The push matches on `spotify_id` and `UPDATE`s in place. It never `DROP`s, never `INSERT`s and never writes `tracks.id` — two reasons, both easy to get wrong:
+
+- `user_tracks.track_id REFERENCES tracks(id) ON DELETE CASCADE`, and Turso runs with `foreign_keys=1`. Dropping `tracks` deletes every user's library, and a backup covering only `tracks` + `track_embeddings` cannot restore it.
+- Local and prod ids have **diverged**: the pull discards `id` and lets SQLite re-autonumber, so ~58% of tracks carry a different id locally. Writing local ids into prod would silently re-point `user_tracks` at the wrong songs — worse than deletion, because nothing errors.
 
 ### ML → Modal
 
@@ -643,15 +672,17 @@ VibeScape/
 │   └── ml_backend.py         # Modal-vs-local-vs-none dispatcher
 │
 ├── ingest_pipeline/          # v2 modular offline pipeline (6 stages)
-│   ├── base.py               # Stage ABC + thread-pool run_batch + status vocab
-│   ├── preview_providers.py  # PreviewChain + Spotify/iTunes/Deezer providers
-│   ├── stage_preview.py      # 1. resolve preview_url (Spotify → iTunes chain)
+│   ├── README.md             # pipeline design notes: arming, invariant, cohorts
+│   ├── base.py               # Stage ABC: arming, finalizes, failure handling, batching
+│   ├── fused_vector.py       # the 788-d recipe: dims, weights, _build_fused
+│   ├── preview_providers.py  # PreviewChain + iTunes rate limiting/backoff
+│   ├── stage_preview.py      # 1. resolve preview_url
 │   ├── stage_download.py     # 2. fetch preview → data/audio/<spotify_id>.<ext>
-│   ├── stage_classify.py     # 3. MERT + head → mood/scalars
-│   ├── stage_youtube.py      # 4. ytsearch1, first hit
+│   ├── stage_librosa.py      # 3. DSP feature bank (18 columns)
+│   ├── stage_classify.py     # 4. one MERT pass → vibe scalars + 768-d embedding
 │   ├── stage_language.py     # 5. Whisper language detection
-│   ├── stage_embedding.py    # 6. raw MERT-95M + librosa piggyback → fused vector
-│   └── promote.py            # derive ingestion_status + cascade audio-failure rules
+│   ├── stage_fuse.py         # 6. build the 788-d retrieval vector
+│   └── stage_youtube.py      # 7. ytsearch, first hit; finisher sets ingestion_status
 │
 ├── ml/
 │   ├── configs/
@@ -670,28 +701,19 @@ VibeScape/
 │   └── experiments/mlruns/   # MLflow tracking store
 │
 ├── scripts/
-│   ├── run_ingest_v2.py                    # v2 orchestrator (loop across the 6 stages)
-│   ├── run_ingest_worker.py                # legacy single-pass worker
+│   ├── run_ingest_v2.py                    # orchestrator: one cohort, all 7 stages
 │   ├── predict_ml.py                       # standalone predict wrapper
 │   ├── prewarm_youtube.py                  # bulk-resolve YouTube IDs
 │   ├── build_cookies_file.py               # yt-dlp cookies helper
-│   ├── _backfill_mert_embeddings.py        # rebuild MERT vectors from local audio
-│   ├── _backfill_fused_embeddings.py       # legacy: build fused from existing MERT
-│   ├── _refuse_embeddings.py               # rebuild fused only; runs on local + Turso
-│   ├── _migrate_track_embeddings_v2.py     # local: transpose to Option A shape
-│   ├── _rescore_regressor_30s.py           # re-run regressor on full 30 s window
-│   ├── _regressor_window_compare.py        # 10 s vs 30 s: bias + correlation
-│   ├── _recommender_feasibility.py         # top-K probe (MERT-only vs MERT+scalars)
-│   ├── _dj_same_track_test.py              # DJ sanity: N-repeat returns itself at cos=1.0
-│   ├── _predict_crop_length_test.py        # 10 s vs 30 s MAE per target
-│   ├── _fix_language_tags.py               # artist→language map + patterns; local + Turso
-│   ├── _turso_vs_local_diff.py             # spotify_id diff between prod Turso and local
-│   ├── _turso_pull_to_local.py             # pull missing tracks Turso → local
-│   ├── _push_local_to_turso.py             # DROP+CREATE + bulk INSERT local → Turso
+│   ├── _turso_pull_to_local.py             # prod Turso → local sqlite
+│   ├── _sync_local_to_turso.py             # local → prod; UPDATE on spotify_id, no DROP
+│   ├── _dedupe_local_by_isrc.py            # merge same-recording duplicates (local)
+│   ├── _dedupe_turso_by_isrc.py            # ...and on prod; re-points user_tracks first
+│   ├── _llm_verify_export.py               # export whisper_done rows for language review
+│   ├── _llm_verify_apply.py                # apply reviewed language corrections
 │   ├── _turso_create_vector_index.py       # DiskANN index attempt (blocked)
-│   ├── _turso_vector_probe.py              # smoke-test vector_distance_cos + vector_extract
+│   ├── _turso_inspect.py                   # schema/row inspection
 │   ├── _turso_verify.py                    # post-push count/schema verifier
-│   ├── _turso_*.py                         # other Turso ops (inventory, smoke, resets)
 │   └── _load_gcp_secrets.ps1               # local: pull Secret Manager values into env
 │
 ├── deploy/cloud-run/
@@ -715,7 +737,6 @@ VibeScape/
 ├── ml/requirements.txt       # training + inference deps (heavy)
 ├── Dockerfile                # container build (Cloud Run via Cloud Build)
 ├── docker-entrypoint.sh      # seeds local SQLite unless DB_BACKEND=turso
-└── fly.toml                  # legacy Fly.io config (superseded by Cloud Run)
 ```
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
@@ -806,7 +827,7 @@ python ml/src/backfill_languages.py
 - Client-side preview streaming with backend fallback (cuts Cloud Run egress)
 - Floating draggable/resizable video panel with mini transport controls
 - Two-phase ingest split — fast online sync + offline worker
-- v2 modular ingest pipeline — six stages, per-stage status columns, cascade rules
+- Modular ingest pipeline — seven stages, per-stage status columns, stages arm the next
 - Local audio cache — one download per song, strict cache gate
 - DJ mode — session-weighted taste vector, no age decay, 50-track exclusion window
 - `/api/tracks/{id}/similar` — `GET` (vibe, L1) and `POST` (DJ, cosine)
@@ -820,7 +841,7 @@ python ml/src/backfill_languages.py
 - Optuna sweeps (head-hidden / dropout / LR ratios)
 - Multi-crop test-time averaging
 - Genre auxiliary head (multi-task)
-- Retire legacy monolithic `_ingest_track_row` / `run_ingest_worker.py`
+- ~~Retire legacy monolithic `_ingest_track_row` / `run_ingest_worker.py`~~ — done; ingestion is async only
 - Modal-backed Classify / Language / Embedding stages (unblocks GPU concurrency)
 
 ### Planned
