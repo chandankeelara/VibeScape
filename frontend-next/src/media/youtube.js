@@ -13,6 +13,23 @@
 
 export const MOUNT_ID = 'ytPlayer';
 
+// The node YT.Player actually consumes. It is created HERE, imperatively,
+// and is never rendered by React.
+//
+// YT.Player(id) REPLACES the element it is given with an <iframe>. If that
+// element is one React rendered, React's fiber still points at a node that
+// is no longer in the tree — and the next time a CONDITIONAL SIBLING mounts
+// (ArtStage's "Loading video…" / "No video for this track" overlays sit just
+// before the mount), React calls insertBefore(newNode, <the replaced div>)
+// and the browser throws:
+//
+//   NotFoundError: Failed to execute 'insertBefore' on 'Node': The node
+//   before which the new node is to be inserted is not a child of this node.
+//
+// So React owns the OUTER div (#ytPlayer, rendered with no children, so
+// React never reconciles inside it) and YouTube destroys this inner one.
+const TARGET_ID = 'ytPlayerTarget';
+
 const YT_ERROR_MSG = {
   2: 'Invalid video reference',
   5: 'HTML5 player error — try refreshing',
@@ -57,9 +74,18 @@ export function init() {
 /** Called once the mount node exists. Safe to call repeatedly. */
 export function createPlayer() {
   if (video.player || !video.apiReady) return;
-  if (!document.getElementById(MOUNT_ID)) return;
+  const mount = document.getElementById(MOUNT_ID);
+  if (!mount) return;
+  // Fresh sacrificial child for YT to replace. React rendered the mount with
+  // no children, so it has no fiber for this and will never touch it.
+  let target = document.getElementById(TARGET_ID);
+  if (!target) {
+    target = document.createElement('div');
+    target.id = TARGET_ID;
+    mount.appendChild(target);
+  }
   try {
-    video.player = new window.YT.Player(MOUNT_ID, {
+    video.player = new window.YT.Player(TARGET_ID, {
       width: '100%',
       height: '100%',
       playerVars: { playsinline: 1, rel: 0, modestbranding: 1, iv_load_policy: 3 },

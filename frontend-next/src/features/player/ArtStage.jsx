@@ -141,8 +141,12 @@ export default function ArtStage() {
               </div>
             )}
 
-            {/* Never key, never conditionally render — YT.Player owns this node
-                and React recreating it would kill playback mid-song. */}
+            {/* Never key, never conditionally render. React owns this div;
+                YT.Player replaces an inner node it creates itself (see
+                media/youtube.js TARGET_ID). Letting YT replace THIS div made
+                React's fiber point at a detached node, and the next time one
+                of the overlays above mounted, insertBefore threw
+                NotFoundError. */}
             <div id={MOUNT_ID} className={styles.ytMount} />
 
           </div>
