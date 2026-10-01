@@ -93,13 +93,26 @@ def select_cohort(conn, batch: int) -> list[int]:
     """
     Pick the tracks this pass will advance, oldest first.
 
-    A cohort is 'pending' work: either never started, or part-way through
-    the chain. Terminal rows (done / no_preview / *_stage_error) are
-    excluded, so a pass never re-touches finished or parked tracks.
+    Two kinds of work qualify:
+
+      1. Tracks still moving through the chain — ingestion_status 'pending'
+         or NULL.
+      2. Tracks that are already 'done' but have had a stage RE-ARMED.
+         Correcting a language tag sets fuse_status='pending' on a finished
+         row; without this clause the orchestrator could not see it and the
+         pass reported processed=0 while the corrections sat unapplied.
+
+    Terminal rows with nothing armed are excluded, so a pass never
+    re-touches genuinely finished or parked tracks.
     """
+    stage_cols = ("preview_status", "download_status", "librosa_status",
+                  "ml_status", "language_status", "fuse_status",
+                  "youtube_status")
+    armed = " OR ".join(f"{c} = 'pending'" for c in stage_cols)
     rows = conn.execute(
         "SELECT id FROM tracks "
         "WHERE ingestion_status = 'pending' OR ingestion_status IS NULL "
+        f"   OR {armed} "
         "ORDER BY id ASC LIMIT ?",
         (batch,),
     ).fetchall()

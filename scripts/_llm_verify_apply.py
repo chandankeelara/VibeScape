@@ -13,13 +13,13 @@ Corrections JSON schema (one object per track):
 Semantics:
   - keep     — Whisper's tag is correct. Set language_status='done'. No other change.
   - change   — Update tracks.language to new_lang. Set language_status='done'.
-               CASCADE: set embedding_status='pending' so the next pipeline
+               CASCADE: set fuse_status='pending' so the next pipeline
                pass rebuilds fused_embedding (which has a 20% language
                one-hot component).
   - no_match — LLM says the track is instrumental / unknowable. Set
                language=NULL, language_status='done'. Also cascade
-               embedding_status so the language slot in fused becomes
-               the 'other' bucket instead of the previous incorrect one.
+               fuse_status so the language slot in fused becomes the
+               'other' bucket instead of the previous incorrect one.
 
 Applies to both local sqlite AND Turso in a single invocation, matched
 by spotify_id so track_id divergence between environments doesn't matter.
@@ -120,7 +120,7 @@ def main() -> int:
     from collections import Counter
     by_action = Counter(o["action"] for o in ops)
     by_change = sum(1 for o in ops if o["will_change"])
-    print(f"  actions: {dict(by_action)}   language changes: {by_change}   cascade to embedding: {by_change}")
+    print(f"  actions: {dict(by_action)}   language changes: {by_change}   cascade to fuse: {by_change}")
 
     if not args.apply:
         print("\ndry-run. Pass --apply to write.")
@@ -138,13 +138,13 @@ def main() -> int:
                 )
             elif o["action"] == "no_match":
                 sql = "UPDATE tracks SET language = NULL, language_status = 'done'"
-                sql += ", embedding_status = 'pending'" if o["will_change"] else ""
+                sql += ", fuse_status = 'pending'" if o["will_change"] else ""
                 sql += " WHERE spotify_id = ?"
                 lconn.execute(sql, (sid,))
             else:  # change
                 sql = ("UPDATE tracks SET language = ?, language_confidence = 1.0, "
                        "language_status = 'done'")
-                sql += ", embedding_status = 'pending'" if o["will_change"] else ""
+                sql += ", fuse_status = 'pending'" if o["will_change"] else ""
                 sql += " WHERE spotify_id = ?"
                 lconn.execute(sql, (o["new_lang"], sid))
         lconn.commit()
@@ -172,13 +172,13 @@ def main() -> int:
                     )
                 elif o["action"] == "no_match":
                     sql = "UPDATE tracks SET language = NULL, language_status = 'done'"
-                    sql += ", embedding_status = 'pending'" if o["will_change"] else ""
+                    sql += ", fuse_status = 'pending'" if o["will_change"] else ""
                     sql += " WHERE spotify_id = ?"
                     tconn.execute(sql, (sid,))
                 else:  # change
                     sql = ("UPDATE tracks SET language = ?, language_confidence = 1.0, "
                            "language_status = 'done'")
-                    sql += ", embedding_status = 'pending'" if o["will_change"] else ""
+                    sql += ", fuse_status = 'pending'" if o["will_change"] else ""
                     sql += " WHERE spotify_id = ?"
                     tconn.execute(sql, (o["new_lang"], sid))
                 n += 1
@@ -188,9 +188,9 @@ def main() -> int:
         tconn.close()
 
     lconn.close()
-    print(f"\ncascade summary: {by_change} track(s) will re-embed on the next pipeline pass "
-          f"(embedding_status='pending').")
-    print("run:  D:/Softwares/MiniConda/python.exe scripts/run_ingest_v2.py --stages embedding")
+    print(f"\ncascade summary: {by_change} track(s) will have their fused vector rebuilt "
+          f"(fuse_status='pending').")
+    print("run:  D:/Softwares/MiniConda/python.exe scripts/run_ingest_v2.py --stages fuse,youtube")
     return 0
 
 
