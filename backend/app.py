@@ -723,24 +723,28 @@ def auth_guest():
             display_name = "Guest"
 
         # Seed the guest library with the full ingested catalog so
-        # "just listen" plays from every done track. Runs whenever the
-        # guest library is empty (covers both first-visit and cases
-        # where an earlier seed silently produced zero rows, e.g. when
-        # the old admin-based seed ran with no admin row present).
-        # Idempotent via INSERT OR IGNORE + the emptiness guard.
+        # "just listen" plays from every done track.
+        #
+        # This runs on EVERY guest login, not just the first. It used to
+        # be guarded by "only if the library is empty", which made it a
+        # one-shot snapshot: it fired once when the catalogue held ~1527
+        # done tracks and never again, so the 2256 tracks ingested after
+        # that were invisible to guests while the code read as if it
+        # seeded "the full catalog".
+        #
+        # Running it unconditionally is what makes it self-healing as
+        # ingestion adds tracks. INSERT OR IGNORE already carries the
+        # idempotency — (user_id, track_id) is the primary key, so rows
+        # that exist are skipped and a guest's play_count/last_played
+        # are never overwritten.
         try:
-            has_any = conn.execute(
-                "SELECT 1 FROM user_tracks WHERE user_id = ? LIMIT 1",
+            conn.execute(
+                "INSERT OR IGNORE INTO user_tracks (user_id, track_id, source) "
+                "SELECT ?, id, 'guest_seed' FROM tracks "
+                "WHERE ingestion_status = 'done'",
                 (user_id,),
-            ).fetchone()
-            if not has_any:
-                conn.execute(
-                    "INSERT OR IGNORE INTO user_tracks (user_id, track_id, source) "
-                    "SELECT ?, id, 'guest_seed' FROM tracks "
-                    "WHERE ingestion_status = 'done'",
-                    (user_id,),
-                )
-                conn.commit()
+            )
+            conn.commit()
         except Exception as e:
             log.warning("guest seed failed: %s", e)
         token = _issue_session(conn, user_id)
