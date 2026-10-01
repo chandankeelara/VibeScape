@@ -309,6 +309,62 @@
   overflow: hidden;
 }
 
+/* ---------------------------------------------------------------- props */
+
+.props {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: var(--sp-4);
+}
+
+.propCell { margin: 0; }
+
+/*
+ * Double the grid cell. The whole complaint was that the props looked cheap,
+ * and that is not answerable at 150px — the detail under review (a specular
+ * arc on vinyl, a keyway bored through a lock) needs the pixels to exist.
+ */
+.propStage {
+  display: grid;
+  place-items: end center;
+  width: 100%;
+  height: 260px;
+  padding: 0;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.propStage:hover { border-color: var(--border-strong); }
+
+.propStage:focus-visible {
+  outline: 2px solid var(--vibe-accent, var(--accent));
+  outline-offset: 2px;
+}
+
+.propRig { height: 232px; width: auto; overflow: visible; }
+
+.propCap { margin-top: var(--sp-2); }
+
+.propName {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.propNote {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-4);
+}
+
 /* ----------------------------------------------------------- the grid */
 
 .group { margin-top: var(--sp-5); }

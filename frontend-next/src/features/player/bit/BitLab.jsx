@@ -28,6 +28,24 @@ import styles from './BitLab.module.css';
 
 const STATES = Object.keys(ANIMATIONS);
 
+/**
+ * Every prop kind, with the state that shows it off best.
+ *
+ * Props are only ever drawn in Bit's hands, so showing them disembodied would
+ * judge the wrong thing — what matters is how one reads at arm's length in a
+ * real pose. Each entry picks the variant where the prop does the most work.
+ */
+const PROPS = [
+  { prop: 'crate', state: 'digging', note: 'stands in for the library, which hides while he holds it' },
+  { prop: 'record', state: 'celebrate', note: 'the most-seen prop - celebrate, catch, sulk' },
+  { prop: 'deck', state: 'cueing', note: 'platter, tonearm and start button all live on it' },
+  { prop: 'rewind', state: 'rewind', note: 'a disc spinning backwards is ambiguous, so the badge states it' },
+  { prop: 'glasses', state: 'watching', note: 'worn on the visor in video mode' },
+  { prop: 'padlock', state: 'locked', note: 'Spotify-only track, nothing to play' },
+  { prop: 'question', state: 'confused', note: 'a symbol, deliberately flat' },
+  { prop: 'zzz', state: 'asleep', note: 'a symbol, deliberately flat' },
+];
+
 /** Where a one-shot lands when the routine finishes, as in the dock. */
 const BASE_FALLBACK = 'groove';
 
@@ -126,10 +144,24 @@ export default function BitLab() {
         </div>
       </section>
 
-      {/* --------------------------------------------------- every variant */}
+      {/* ------------------------------------------------------------ props */}
       <section className={styles.block}>
         <Head
           n="03"
+          title="The props"
+          note="All eight, each in the pose that shows it off, at double the grid size. Props are only ever seen in Bit's hands, so they are judged there rather than laid out on their own."
+        />
+        <div className={styles.props}>
+          {PROPS.map((p) => (
+            <PropCell key={p.prop} {...p} speed={speed} onPick={pick} />
+          ))}
+        </div>
+      </section>
+
+      {/* --------------------------------------------------- every variant */}
+      <section className={styles.block}>
+        <Head
+          n="04"
           title="Every animation"
           note={`${total} clips across ${STATES.length} states. One-shots replay on a timer here; in the player they fire once and hand back. Click any cell to load it into the preview above.`}
         >
@@ -331,6 +363,43 @@ function Cell({ animKey, state, speed, onPick }) {
         <span className={styles.cellTag}>
           {!cls ? 'NO CSS' : !m ? 'NO META' : m.loop ? 'loop' : `${m.ms}ms`}
         </span>
+      </figcaption>
+    </figure>
+  );
+}
+
+/**
+ * One prop, shown in Bit's hands at double the grid size.
+ *
+ * Reuses Cell's replay trick: one-shots fire once and then sit frozen, which
+ * on a review page reads as a missing animation rather than a finished one.
+ */
+function PropCell({ prop, state, note, speed, onPick }) {
+  const animKey = (ANIMATIONS[state] || [])[0];
+  const m = META[animKey];
+  const oneShot = !!m && m.loop === false;
+  const [run, setRun] = useState(0);
+
+  useEffect(() => {
+    if (!oneShot) return undefined;
+    const clip = (m.ms || 800) * speed;
+    const id = setInterval(() => setRun((n) => n + 1), clip + 650);
+    return () => clearInterval(id);
+  }, [oneShot, m, speed]);
+
+  return (
+    <figure className={styles.propCell}>
+      <button
+        type="button"
+        className={styles.propStage}
+        onClick={() => onPick(state, 0)}
+        title="Load this state into the preview above"
+      >
+        <BitRig key={run} className={`${styles.propRig} ${classFor(animKey)}`} prop={prop} />
+      </button>
+      <figcaption className={styles.propCap}>
+        <span className={styles.propName}>{prop}</span>
+        <span className={styles.propNote}>{note}</span>
       </figcaption>
     </figure>
   );
