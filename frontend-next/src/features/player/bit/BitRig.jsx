@@ -146,9 +146,79 @@ function Limb({ d }) {
 }
 
 /**
- * Props are intentionally crude. At 84-128px tall the whole robot is ~110px, so
- * an accessory gets maybe 20px of screen — it has to read as a silhouette, and
- * anything with interior detail turns to mush.
+ * Sleeve positions for the crate.
+ *
+ * Deliberately confined to x -12..9, not the full width of the box. The top
+ * face is a parallelogram, so it is only full depth between its back-edge
+ * corners; a sleeve outside that range rises past the box's back-left edge and
+ * reads as standing BESIDE the crate rather than in it.
+ *
+ * One is pulled proud, as in BitScene's library — a crate with every sleeve
+ * flush reads as stock, not as a crate someone is working through.
+ */
+const CRATE_SLEEVES = [
+  { x: -12, lift: 0, proud: false },
+  { x: -7.8, lift: 0, proud: false },
+  { x: -3.6, lift: 0, proud: false },
+  { x: 0.6, lift: 4, proud: true },
+  { x: 4.8, lift: 0, proud: false },
+  { x: 9, lift: 0, proud: false },
+];
+
+/**
+ * A record.
+ *
+ * Shared by `record`, `rewind` and the loose discs in the crate, so all three
+ * get one treatment and one upgrade. Everything scales from r, because the
+ * same component draws the 11-unit hero record and a 7.5-unit one buried in a
+ * crate.
+ *
+ * Four things carry it, in order of how much they matter at ~150px:
+ *
+ *   - an offset disc behind the face, so the record has THICKNESS and still
+ *     shows an edge when it tumbles. A flat circle has no near side;
+ *   - a rim, so the disc ends somewhere instead of dissolving into the dock;
+ *   - a specular arc over the top-left, which is what makes vinyl read as
+ *     vinyl rather than as felt;
+ *   - a label that is plainly a separate surface — its own rim, its own
+ *     spindle hole punched through it.
+ */
+function Disc({ r = 11 }) {
+  // Gloss: a sweep from the upper-left over the top, at 86% of the radius.
+  const g = r * 0.86;
+  const at = (deg) => {
+    const t = (deg * Math.PI) / 180;
+    return [(g * Math.cos(t)).toFixed(2), (g * Math.sin(t)).toFixed(2)];
+  };
+  const [x1, y1] = at(203);
+  const [x2, y2] = at(291);
+
+  return (
+    <>
+      <circle className={styles.recEdge} cx={r * 0.1} cy={r * 0.16} r={r} />
+      <circle className={styles.recFace} cx="0" cy="0" r={r} />
+      <circle className={styles.groove} cx="0" cy="0" r={r * 0.74} />
+      <circle className={styles.groove} cx="0" cy="0" r={r * 0.56} />
+      <path
+        className={styles.recGloss}
+        d={`M${x1} ${y1} A ${g.toFixed(2)} ${g.toFixed(2)} 0 0 1 ${x2} ${y2}`}
+      />
+      <circle className={styles.recLabel} cx="0" cy="0" r={r * 0.31} />
+      <circle className={styles.spindle} cx="0" cy="0" r={r * 0.075} />
+      {/* Off-centre nick. A perfect disc gives no sense of rotation, so
+          without this a spinning record looks motionless. */}
+      <circle className={styles.nick} cx="0" cy={-r * 0.63} r={r * 0.1} />
+    </>
+  );
+}
+
+/**
+ * Props are no longer crude. Bit renders at ~150px now rather than ~99px, so
+ * an accessory gets 30-35px of screen and the detail is worth drawing — and
+ * the furniture behind him is drawn in projection, which sets the bar. Props
+ * that stand in for a piece of that furniture (`crate`, `deck`) match its
+ * construction exactly; props that are SYMBOLS (`question`, `zzz`) stay flat
+ * and are treated as type.
  */
 function Prop({ kind }) {
   switch (kind) {
@@ -173,11 +243,7 @@ function Prop({ kind }) {
               <line x1="-13" y1="-7.5" x2="-17.3" y2="-10" />
             </g>
           </g>
-          <circle className={styles.vinyl} cx="0" cy="0" r="11" />
-          <circle className={styles.groove} cx="0" cy="0" r="8" />
-          <circle className={styles.groove} cx="0" cy="0" r="5.5" />
-          <circle className={styles.label} cx="0" cy="0" r="3.2" />
-          <circle className={styles.nick} cx="0" cy="-7" r="1.2" />
+          <Disc r={11} />
         </g>
       );
 
@@ -195,25 +261,54 @@ function Prop({ kind }) {
       // y≈82, so a crate sitting on the floor is simply out of range — the arm
       // waved in the air above a box it could never touch. Four units up, plus
       // the body dip the digging animations add, puts the hand at the rim.
+      //
+      // Redrawn in projection to match the library it replaces. It was a flat
+      // rounded rect with five tick marks, and because `using === 'crate'`
+      // stands BitScene's projected library down, the swap was a visible
+      // downgrade in the middle of an animation. Now it is the same object:
+      // three faces on the same (+9,-6) depth vector, sleeves with a lit edge,
+      // one pulled proud so the box reads as in use rather than in storage.
+      //
+      // Paint order is load-bearing, exactly as in BitScene's Crates(): top
+      // face, then sleeves, then front and side LAST so the rim overlaps the
+      // sleeve bottoms and they sit INSIDE the box instead of on it.
       return (
         <g transform="translate(50 99)">
-          <g className={styles.crateDiscA}>
-            <circle className={styles.vinyl} cx="0" cy="0" r="8.5" />
-            <circle className={styles.groove} cx="0" cy="0" r="5.5" />
-            <circle className={styles.label} cx="0" cy="0" r="2.6" />
-          </g>
-          <g className={styles.crateDiscB}>
-            <circle className={styles.vinyl} cx="0" cy="0" r="7.5" />
-            <circle className={styles.label} cx="0" cy="0" r="2.4" />
-          </g>
-          <rect className={styles.crate} x="-19" y="-10" width="38" height="20" rx="3" />
-          <g className={styles.spines}>
-            <line x1="-13" y1="-7" x2="-13" y2="7" />
-            <line x1="-8" y1="-7" x2="-8" y2="7" />
-            <line x1="-3" y1="-7" x2="-3" y2="7" />
-            <line x1="2" y1="-7" x2="2" y2="7" />
-            <line x1="7" y1="-7" x2="7" y2="7" />
-          </g>
+          <ellipse className={styles.propShadow} cx="2" cy="12" rx="25" ry="3.6" />
+
+          {/* Loose records first of all: they have to emerge from behind the
+              front panel, not slide across it. */}
+          <g className={styles.crateDiscA}><Disc r={8.5} /></g>
+          <g className={styles.crateDiscB}><Disc r={7.5} /></g>
+
+          <path className={styles.faceTop} d="M-22 -8 L16 -8 L25 -14 L-13 -14 Z" />
+
+          {CRATE_SLEEVES.map(function (sl) {
+            return (
+              <g key={sl.x}>
+                <path
+                  className={sl.proud ? styles.sleeveProud : styles.sleeve}
+                  d={'M' + sl.x + ' ' + (2 - sl.lift) +
+                     ' L' + (sl.x + 3.4) + ' ' + (2 - sl.lift) +
+                     ' L' + (sl.x + 3.4) + ' ' + (-19 - sl.lift) +
+                     ' L' + sl.x + ' ' + (-19 - sl.lift) + ' Z'}
+                />
+                {/* Lit edge along the depth vector. This is the whole
+                    difference between a sleeve and a strip of paper. */}
+                <path
+                  className={styles.sleeveEdge}
+                  d={'M' + (sl.x + 3.4) + ' ' + (2 - sl.lift) +
+                     ' L' + (sl.x + 5.6) + ' ' + (0.5 - sl.lift) +
+                     ' L' + (sl.x + 5.6) + ' ' + (-20.5 - sl.lift) +
+                     ' L' + (sl.x + 3.4) + ' ' + (-19 - sl.lift) + ' Z'}
+                />
+              </g>
+            );
+          })}
+
+          <path className={styles.faceFront} d="M-22 -8 L16 -8 L16 10 L-22 10 Z" />
+          <path className={styles.faceSide} d="M16 -8 L25 -14 L25 4 L16 10 Z" />
+          <path className={styles.propLip} d="M-22 -8 L16 -8 L16 -5.6 L-22 -5.6 Z" />
         </g>
       );
 
@@ -239,11 +334,11 @@ function Prop({ kind }) {
       return (
         <g transform="translate(50 94)">
           <g className={styles.deckBase}>
-            <path className={styles.deckFront} d="M-25 -3 L20 -3 L20 9 L-25 9 Z" />
-            <path className={styles.deckTop} d="M-25 -3 L20 -3 L29 -10 L-16 -10 Z" />
-            <path className={styles.deckSide} d="M20 -3 L29 -10 L29 2 L20 9 Z" />
+            <path className={styles.faceFront} d="M-25 -3 L20 -3 L20 9 L-25 9 Z" />
+            <path className={styles.faceTop} d="M-25 -3 L20 -3 L29 -10 L-16 -10 Z" />
+            <path className={styles.faceSide} d="M20 -3 L29 -10 L29 2 L20 9 Z" />
             {/* Leading lip, as on the booth — without it the desk is a slab. */}
-            <path className={styles.deckLip} d="M-25 -3 L20 -3 L20 -1 L-25 -1 Z" />
+            <path className={styles.propLip} d="M-25 -3 L20 -3 L20 -1 L-25 -1 Z" />
 
             {/* Start button, beside the platter where the hand can land on it. */}
             <circle className={styles.deckStart} cx="21" cy="-4.5" r="3.8" />
@@ -305,15 +400,20 @@ function Prop({ kind }) {
       // counter-rotates underneath it.
       return (
         <g transform="translate(78 74)">
-          <g className={styles.rwDisc}>
-            <circle className={styles.vinyl} cx="0" cy="0" r="11" />
-            <circle className={styles.groove} cx="0" cy="0" r="7.5" />
-            <circle className={styles.label} cx="0" cy="0" r="3.2" />
-            <circle className={styles.nick} cx="0" cy="-7" r="1.2" />
-          </g>
+          <g className={styles.rwDisc}><Disc r={11} /></g>
+
+          {/* A badge, not two chevrons hanging in space. The plate is what the
+              mark sits ON, and that is the whole difference between a label
+              applied to the record and a glyph that happens to overlap it. Cut
+              wider than the disc is at this height so it reads as stuck over
+              the top rather than printed inside the grooves. */}
           <g className={styles.rwBadge}>
-            <path d="M3 -5 L-3 0 L3 5" />
-            <path d="M10 -5 L4 0 L10 5" />
+            <rect className={styles.badgePlate} x="-11.5" y="-5.6" width="23" height="11.2" rx="5.6" />
+            <rect className={styles.badgeGloss} x="-9.4" y="-4.1" width="18.8" height="3.4" rx="1.7" />
+            <g className={styles.badgeMark}>
+              <path d="M-1.4 -3.1 L-5.4 0 L-1.4 3.1" />
+              <path d="M5.8 -3.1 L1.8 0 L5.8 3.1" />
+            </g>
           </g>
         </g>
       );
@@ -323,13 +423,31 @@ function Prop({ kind }) {
       // head, not a child, so it does not inherit head rotation. The watching
       // animations therefore move .prop in lockstep with .head rather than
       // tilting the head freely — see the watching section in the CSS.
+      //
+      // Frame + lens + glint, rather than two tinted bars. A coloured
+      // rectangle on the visor reads as drawn ON Bit; a rim with the lens
+      // recessed inside it and a diagonal glint reads as something he is
+      // WEARING, which is the entire point of the watching state.
       return (
         <g transform="translate(50 28)">
-          <rect className={styles.lensA} x="-16" y="-6" width="14" height="12" rx="3" />
-          <rect className={styles.lensB} x="2" y="-6" width="14" height="12" rx="3" />
-          <line className={styles.bridge} x1="-2" y1="-1" x2="2" y2="-1" />
-          <line className={styles.bridge} x1="-16" y1="-3" x2="-22" y2="-5" />
-          <line className={styles.bridge} x1="16" y1="-3" x2="22" y2="-5" />
+          {/* Temples first, so the frames overlap the joint. */}
+          <path className={styles.temple} d="M-16.6 -2.4 L-23.5 -4.8" />
+          <path className={styles.temple} d="M16.6 -2.4 L23.5 -4.8" />
+
+          <g className={styles.lensA}>
+            <rect className={styles.lensFill} x="-17" y="-6.4" width="15" height="12.8" rx="3.6" />
+            <path className={styles.glint} d="M-14.8 4.8 L-9.6 -4.8" />
+            <rect className={styles.frame} x="-17" y="-6.4" width="15" height="12.8" rx="3.6" />
+          </g>
+          <g className={styles.lensB}>
+            <rect className={styles.lensFill} x="2" y="-6.4" width="15" height="12.8" rx="3.6" />
+            <path className={styles.glint} d="M4.4 4.8 L9.6 -4.8" />
+            <rect className={styles.frame} x="2" y="-6.4" width="15" height="12.8" rx="3.6" />
+          </g>
+
+          {/* An arched bridge: a straight bar between two lenses is the single
+              detail that makes drawn-on glasses look drawn on. */}
+          <path className={styles.bridge} d="M-2 -2.2 Q0 -4.8 2 -2.2" />
         </g>
       );
 
@@ -338,9 +456,31 @@ function Prop({ kind }) {
       // the torso silhouette.
       return (
         <g transform="translate(81 57)">
-          <path className={styles.shackle} d="M-5 -4 V-8 a5 5 0 0 1 10 0 V-4" />
-          <rect className={styles.lockBody} x="-7.5" y="-4" width="15" height="12" rx="3" />
-          <circle className={styles.keyhole} cx="0" cy="1.5" r="1.8" />
+          {/* Shackle and body are different materials and now look it. The
+              shackle is brushed steel — a dark base stroke with a narrower lit
+              stroke riding on top, the same two-pass trick the limbs use,
+              which is the only way to get a highlight onto an SVG stroke. The
+              body is moulded and accent-coloured. Reading as two materials is
+              most of what separates this from a flat chip with a hole in it.
+
+              .shackle stays the animated wrapper so lockSnap and tugShackle
+              are untouched; it is a group now rather than the path itself. */}
+          <g className={styles.shackle}>
+            <path className={styles.shackleBase} d="M-5.3 -2.6 V-8.6 a5.3 5.3 0 0 1 10.6 0 V-2.6" />
+            <path className={styles.shackleLit} d="M-5.3 -2.6 V-8.6 a5.3 5.3 0 0 1 10.6 0 V-2.6" />
+          </g>
+
+          <rect className={styles.lockBody} x="-8.2" y="-3.2" width="16.4" height="13.4" rx="3.4" />
+          {/* Top-face highlight. Gives the block a lit surface instead of one
+              flat value, which is what the room's boxes get from faceTop. */}
+          <rect className={styles.lockGloss} x="-5.8" y="-1.4" width="11.6" height="2.8" rx="1.4" />
+
+          {/* A real keyhole: bore plus keyway, cut THROUGH to the background
+              rather than painted on in a darker colour. */}
+          <g className={styles.keyhole}>
+            <circle cx="0" cy="3" r="2.1" />
+            <path d="M0 3 L0 7" />
+          </g>
         </g>
       );
 
@@ -349,8 +489,23 @@ function Prop({ kind }) {
       // font happened to load and shift size between first paint and webfont.
       return (
         <g transform="translate(76 9)">
-          <path className={styles.queryMark} d="M-4.5 -4 a4.5 4.5 0 1 1 4.5 5.4 V3.5" />
-          <circle className={styles.queryDot} cx="0" cy="8" r="1.5" />
+          {/* Treated as TYPE, not as an object — no bevel, no projection, no
+              thickness. A question mark is a letterform and everyone knows
+              what it should look like, so a bad one is more conspicuous than a
+              bad crate. The previous glyph was a single arc with a tail: no
+              counter at the top, a stem that did not line up under the bowl,
+              and a dot too small for the weight.
+
+              This is a proper skeleton — bowl sweeping up and over, down the
+              right, curling into the centre, then a short vertical stem — with
+              the dot on the stem's axis and sized to the stroke. The whole
+              glyph is nudged left so its visual mass, which the bowl pulls
+              right, centres on the group origin. */}
+          <path
+            className={styles.queryMark}
+            d="M-5.8 -4.6 C-5.8 -10.2 -1.6 -12.4 1.2 -11.8 C5.2 -11.0 6.2 -6.8 3.8 -4.2 C2.0 -2.2 0.0 -1.0 -0.4 1.2 L-0.4 3.4"
+          />
+          <circle className={styles.queryDot} cx="-0.4" cy="7.8" r="2.1" />
         </g>
       );
 
@@ -370,7 +525,23 @@ function Prop({ kind }) {
   }
 }
 
-/** A single Z, drawn around (0,0) so CSS can place and scale it freely. */
+/**
+ * A single Z, drawn around (0,0) so CSS can place and scale it freely.
+ *
+ * FILLED, not stroked. A stroked zigzag has one weight everywhere, which is
+ * exactly what a real Z does not: its diagonal is heavier than its two bars.
+ * Outlining it is the only way to get that contrast, and it is the difference
+ * between a letter and three lines. Here the bars are 1.7 units and the
+ * diagonal works out at ~2.9 perpendicular.
+ *
+ * Like the question mark this is TYPE and stays flat — no projection, no
+ * thickness, nothing that would push a symbol toward being an object.
+ */
 function Z() {
-  return <path className={styles.zGlyph} d="M-3.5 -3.5 H3.5 L-3.5 3.5 H3.5" />;
+  return (
+    <path
+      className={styles.zGlyph}
+      d="M-4 -4.6 H4 V-2.9 L-0.4 2.9 H4 V4.6 H-4 V2.9 L0.4 -2.9 H-4 Z"
+    />
+  );
 }
