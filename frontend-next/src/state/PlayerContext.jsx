@@ -22,6 +22,7 @@ import * as api from '../lib/api';
 import * as player from '../media/player';
 import * as verifyMedia from '../media/verify';
 import { applyAccent, canVerify, moodFor, trackKey, trackVibe } from '../lib/vibe';
+import { emitMascot } from '../lib/mascotBus';
 import { useToast } from './ToastContext';
 
 const PlayerCtx = createContext(null);
@@ -81,6 +82,9 @@ export function PlayerProvider({ children }) {
   // the hook always calls the current `next` without re-registering.
   const nextRef = useRef(null);
   const prevRef = useRef(null);
+  /* Lets prev() read the live trail without a side effect inside a state
+     updater — see prev() below. */
+  const recentRef = useRef([]);
 
   /* ------------------------------------------------------------ media sync */
 
@@ -353,24 +357,47 @@ export function PlayerProvider({ children }) {
     }
     const fallback = nextFallbackRef.current;
     if (fallback) {
+      // The DJ fallback is a round trip to POST /similar, so it is the one
+      // path where "next" can take a visible moment with nothing on screen
+      // to say so. fetchForVibe() raises this flag itself; this branch never
+      // did, which left the hero card sitting on the previous track's art.
+      setLoadingTrack(true);
       Promise.resolve(fallback())
         .then((t) => (t ? loadTrack(t) : fetchForVibe()))
-        .catch(() => fetchForVibe());
+        .catch(() => fetchForVibe())
+        // fetchForVibe() owns the flag once it takes over, and clears it in
+        // its own finally — but it may also have bailed early on a stale
+        // token, so clearing here too is what guarantees the overlay dies.
+        .finally(() => setLoadingTrack(false));
       return;
     }
     fetchForVibe();
   }, [queue, loadTrack, fetchForVibe]);
 
+  /*
+   * prev() used to do its work INSIDE the setRecent updater, so that it could
+   * read fresh state. Updater functions must be pure: StrictMode calls them
+   * twice in development to surface exactly this, which meant every press
+   * scheduled loadTrack() twice — the track reloaded and restarted, and the
+   * DJ buffer got a duplicate event.
+   *
+   * Reading `recent` through a ref instead keeps the state fresh without a
+   * side effect in the updater, the same indirection nextRef already uses.
+   */
   const prev = useCallback(() => {
-    setRecent((r) => {
-      if (r.length < 2) return r;
-      const target = r[r.length - 2];
-      // loadTrack re-pushes, so drop the tail first to avoid a duplicate.
-      queueMicrotask(() => loadTrack(target));
-      return r.slice(0, -1);
-    });
+    const r = recentRef.current;
+    // On the first track of a session there is nowhere to go back to, so no
+    // state changes and Bit must not act out a rewind that never happened.
+    if (r.length < 2) return;
+    emitMascot('rewind');
+    const target = r[r.length - 2];
+    // loadTrack re-pushes the target, so drop the tail first to avoid a
+    // duplicate entry in the trail.
+    setRecent(r.slice(0, -1));
+    loadTrack(target);
   }, [loadTrack]);
 
+  useEffect(() => { recentRef.current = recent; }, [recent]);
   useEffect(() => { nextRef.current = next; }, [next]);
   useEffect(() => { prevRef.current = prev; }, [prev]);
 
