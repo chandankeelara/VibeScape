@@ -32,15 +32,34 @@ export const ANIMATIONS = {
   /* A track is loaded but paused. The only states allowed to look aimless. */
   idle: ['a_idle_foottap', 'a_idle_lookaround', 'a_idle_stretch', 'a_idle_scratch'],
 
-  /* Playing. ORDER IS MEANINGFUL: low energy -> high. The picker maps the
-     track's mood band onto this index, so inserting a variant in the middle
-     re-bands every song. Append, or re-tune the picker deliberately. */
+  /* Playing. Five mood bands of three moves each, flat here so the lab and
+     the audit can treat groove like any other state; GROOVE_BY_BAND below is
+     what the picker actually selects through.
+
+     ORDER IS MEANINGFUL — lowest energy first, bands in order within it.
+     Nothing indexes this array any more, but keeping it ordered is what makes
+     the escalation auditable by reading down it. */
   groove: [
-    'a_groove_sway',
-    'a_groove_nod',
-    'a_groove_bob',
-    'a_groove_bounce',
-    'a_groove_headbang',
+    // sleep
+    'a_groove_sleep_drift',
+    'a_groove_sleep_roll',
+    'a_groove_sleep_shift',
+    // chill
+    'a_groove_chill_sway',
+    'a_groove_chill_nod',
+    'a_groove_chill_tap',
+    // steady
+    'a_groove_steady_twostep',
+    'a_groove_steady_knee',
+    'a_groove_steady_shoulder',
+    // hype
+    'a_groove_hype_bounce',
+    'a_groove_hype_pump',
+    'a_groove_hype_hips',
+    // beast
+    'a_groove_beast_headbang',
+    'a_groove_beast_jump',
+    'a_groove_beast_stomp',
   ],
 
   /* Choosing the next track. All loops — the wait has no known length. */
@@ -107,11 +126,25 @@ export const META = {
   a_idle_stretch:     { loop: false, ms: 1400 },
   a_idle_scratch:     { loop: false, ms: 1600 },
 
-  a_groove_sway:      { loop: true,  ms: null },
-  a_groove_nod:       { loop: true,  ms: null },
-  a_groove_bob:       { loop: true,  ms: null },
-  a_groove_bounce:    { loop: true,  ms: null },
-  a_groove_headbang:  { loop: true,  ms: null },
+  a_groove_sleep_drift:     { loop: true,  ms: null },
+  a_groove_sleep_roll:      { loop: true,  ms: null },
+  a_groove_sleep_shift:     { loop: true,  ms: null },
+
+  a_groove_chill_sway:      { loop: true,  ms: null },
+  a_groove_chill_nod:       { loop: true,  ms: null },
+  a_groove_chill_tap:       { loop: true,  ms: null },
+
+  a_groove_steady_twostep:  { loop: true,  ms: null },
+  a_groove_steady_knee:     { loop: true,  ms: null },
+  a_groove_steady_shoulder: { loop: true,  ms: null },
+
+  a_groove_hype_bounce:     { loop: true,  ms: null },
+  a_groove_hype_pump:       { loop: true,  ms: null },
+  a_groove_hype_hips:       { loop: true,  ms: null },
+
+  a_groove_beast_headbang:  { loop: true,  ms: null },
+  a_groove_beast_jump:      { loop: true,  ms: null },
+  a_groove_beast_stomp:     { loop: true,  ms: null },
 
   a_digging_flip:     { loop: true,  ms: null },
   a_digging_dive:     { loop: true,  ms: null },
@@ -149,6 +182,32 @@ export const META = {
 
   a_rewind_moonwalk:  { loop: false, ms: 1300 },
   a_rewind_spinback:  { loop: false, ms: 900 },
+};
+
+/**
+ * Mood band -> the groove moves that belong to it, lowest energy first.
+ *
+ * The picker chooses the POOL from the track's mood band and then rolls within
+ * it. Groove is the one state that cannot simply draw at random from
+ * ANIMATIONS, because the band is a real constraint rather than a preference —
+ * but a listener parked on one mood should still see three different moves,
+ * which is exactly what this map buys.
+ *
+ * The keys are the band names in lib/vibe.js MOODS and are looked up BY NAME,
+ * so renaming one here silently empties a band rather than failing. Every key
+ * listed must also appear in ANIMATIONS.groove, and no move may sit in two
+ * bands.
+ *
+ * Note what this map does NOT control: speed. --beat carries the track's real
+ * tempo independently, so a fast chill track and a slow beast track are both
+ * possible and should look it. The band is how BIG, the beat is how FAST.
+ */
+export const GROOVE_BY_BAND = {
+  sleep:   ['a_groove_sleep_drift', 'a_groove_sleep_roll', 'a_groove_sleep_shift'],
+  chill:   ['a_groove_chill_sway', 'a_groove_chill_nod', 'a_groove_chill_tap'],
+  steady:  ['a_groove_steady_twostep', 'a_groove_steady_knee', 'a_groove_steady_shoulder'],
+  hype:    ['a_groove_hype_bounce', 'a_groove_hype_pump', 'a_groove_hype_hips'],
+  beast:   ['a_groove_beast_headbang', 'a_groove_beast_jump', 'a_groove_beast_stomp'],
 };
 
 /**

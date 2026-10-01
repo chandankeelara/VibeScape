@@ -2,7 +2,7 @@
  *
  * This module does two jobs: it skins the rig's parts, and it carries every
  * animation Bit can play. They live together because CSS Modules hash class
- * names per file — a descendant selector like `.a_groove_bob .head` only
+ * names per file — a descendant selector like `.a_groove_steady_knee .head` only
  * resolves if BOTH classes come from this stylesheet. Splitting the skins into
  * their own module would silently break every animation in here.
  *
@@ -576,95 +576,432 @@
 
 /* ========================================================== STATE: groove
  *
- * THE BPM-SYNCED SET. The dock writes `--beat: <seconds>s` (already halved for
- * fast tracks) on an ancestor, and every animation here derives its duration
- * from it. A hardcoded duration in this section is a bug: it would drift out of
- * phase with the song within a few bars, which looks worse than not syncing at
- * all. Multi-beat moves use calc(var(--beat) * N) so they stay on a downbeat.
+ * THE BPM-SYNCED SET, and the state Bit spends the overwhelming majority of
+ * his time in. Fifteen moves in five mood bands of three.
  *
- * The five are ordered low energy -> high, because the picker maps the track's
- * mood band onto that order: sway, nod, bob, bounce, headbang.
+ * TWO INDEPENDENT AXES, and keeping them separate is the whole design:
  *
- * `steps`-free, `linear`-light: --ease gives each beat a snap at the top, which
- * is what makes motion read as hitting a beat rather than floating through it.
+ *   --beat  carries the track's real tempo. It controls HOW FAST.
+ *   the band controls HOW BIG.
+ *
+ * So a 140bpm chill track bobs quickly and smally; a 70bpm beast track moves
+ * slowly and hugely. Collapsing the two — making high energy simply mean fast
+ * — is what makes a dancing mascot look like a sped-up GIF. A hardcoded
+ * duration anywhere in this section is a bug: it drifts out of phase within a
+ * few bars, which looks worse than not syncing at all. Multi-beat moves use
+ * calc(var(--beat) * N) so they still land on a downbeat.
+ *
+ * THE FIFTEEN ARE ONE CURVE, not five unrelated sets. Dragging the mood slider
+ * from sleep to beast has to read as energy climbing continuously, so the
+ * amplitudes below were laid out as a single ramp before any of them were
+ * written:
+ *
+ *   #   move                   bodyY  bodyX  head   arm    leg   airborne
+ *   1   sleep_drift              0      0     2.4     4     0      no
+ *   2   sleep_roll               0      0     5       3     0      no
+ *   3   sleep_shift             0.6    1.8    2       6     3.5    no
+ *   4   chill_sway              0.8    2.2    2.5     9     4      no
+ *   5   chill_nod               1      0      9       4     0      no
+ *   6   chill_tap               1      0      3      12    10      no
+ *   7   steady_twostep          1.4    4      5      14    14      no
+ *   8   steady_knee             2.2    0      8       8     9      no
+ *   9   steady_shoulder         1.2    0      3      16     5      no
+ *   10  hype_bounce             5      0      3      14    12      yes
+ *   11  hype_pump               3.5    0      4     148    10      yes
+ *   12  hype_hips               2      5      5      28    18      no
+ *   13  beast_headbang          7      0     24     140    16      yes
+ *   14  beast_jump             11      0     12     150    26      yes
+ *   15  beast_stomp             4      6     10     100    30      yes
+ *
+ * WITHIN a band the three differ by WHICH LIMB LEADS and WHETHER THE WEIGHT
+ * TRAVELS, never by timing alone — three variations on a head bob is one move
+ * with extra steps. Each band gets one that travels sideways, one that is
+ * purely vertical or static, and one driven by a specific limb.
+ *
+ * --ease gives each beat a snap at the top, which is what makes motion read as
+ * hitting a beat rather than floating through it.
  */
 
-/* --- 1. sway: lowest energy. Whole rig tips side to side over two beats, head
-   counter-rotates so it stays level. Nothing leaves the ground. */
-.a_groove_sway .body  { animation: swayBody calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
-.a_groove_sway .head  { animation: swayHead calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
-.a_groove_sway .armL  { animation: swayArmL calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
-.a_groove_sway .armR  { animation: swayArmR calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
-
-@keyframes swayBody { 0%, 100% { transform: rotate(-2.4deg); } 50% { transform: rotate(2.4deg); } }
-@keyframes swayHead { 0%, 100% { transform: rotate(1.6deg); } 50% { transform: rotate(-1.6deg); } }
-@keyframes swayArmL { 0%, 100% { transform: rotate(6deg); } 50% { transform: rotate(-4deg); } }
-@keyframes swayArmR { 0%, 100% { transform: rotate(4deg); } 50% { transform: rotate(-6deg); } }
-
-/* --- 2. nod: head only, one hit per beat. The body stays planted, which is
-   what separates this from bob — it is the "listening closely" groove. */
-.a_groove_nod .head  { animation: nodHead var(--beat, 0.5s) var(--ease) infinite; }
-.a_groove_nod .torso { animation: nodTorso calc(var(--beat, 0.5s) * 4) var(--ease) infinite; }
-.a_groove_nod .bulb  { animation: beatBulb var(--beat, 0.5s) var(--ease) infinite; }
-
-@keyframes nodHead  { 0% { transform: translateY(0) rotate(0deg); } 32% { transform: translateY(3px) rotate(7deg); } 100% { transform: translateY(0) rotate(0deg); } }
-@keyframes nodTorso { 0%, 100% { transform: rotate(-1.4deg); } 50% { transform: rotate(1.4deg); } }
+/* Tempo tell, shared from chill upward: the bulb pulses on every beat even
+   when the move itself is half-time, so the real BPM stays visible. */
 @keyframes beatBulb { 0% { opacity: 1; transform: scale(1.25); } 60%, 100% { opacity: 0.4; transform: scale(0.85); } }
 
-/* --- 3. bob: head nod plus a foot tap on the offbeat. Offsetting the foot by
-   half a beat is what gives this one a shuffle feel instead of a march. */
-.a_groove_bob .body  { animation: bobBody var(--beat, 0.5s) var(--ease) infinite; }
-.a_groove_bob .head  { animation: nodHead var(--beat, 0.5s) var(--ease) infinite; }
-.a_groove_bob .legR  { animation: bobLeg calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
-.a_groove_bob .armR  { animation: bobArm calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
-.a_groove_bob .armL  { animation: bobArm calc(var(--beat, 0.5s) * 2) var(--ease) infinite reverse; }
-.a_groove_bob .bulb  { animation: beatBulb var(--beat, 0.5s) var(--ease) infinite; }
+/* =============================================================== 1. SLEEP
+ * 0-20. Swaying in his sleep, not dancing. Everything runs on a FOUR beat
+ * cycle, so even at 160bpm the movement is languid — this is the clearest
+ * demonstration that the band controls size and the beat controls speed.
+ * Eyes stay nearly shut throughout, which does more to sell the band than any
+ * amount of amplitude reduction. */
 
-@keyframes bobBody { 0% { transform: translateY(0); } 35% { transform: translateY(1.8px); } 100% { transform: translateY(0); } }
-@keyframes bobLeg  { 0%, 45%, 100% { transform: rotate(0deg); } 70% { transform: rotate(-13deg); } }
-@keyframes bobArm  { 0%, 100% { transform: rotate(-7deg); } 50% { transform: rotate(9deg); } }
+.a_groove_sleep_drift .eyeL,
+.a_groove_sleep_drift .eyeR,
+.a_groove_sleep_roll .eyeL,
+.a_groove_sleep_roll .eyeR,
+.a_groove_sleep_shift .eyeL,
+.a_groove_sleep_shift .eyeR {
+  animation: sleepLid calc(var(--beat, 0.5s) * 4) var(--ease) infinite;
+}
 
-/* --- 4. bounce: leaves the ground on every beat. Torso squashes on the
-   landing and the shadow tightens on the way up — the two together are what
-   give it weight; the translate alone looks like a floating sprite. */
-.a_groove_bounce .body   { animation: bounceBody var(--beat, 0.5s) var(--ease) infinite; }
-.a_groove_bounce .torso  { animation: bounceSquash var(--beat, 0.5s) var(--ease) infinite; }
-.a_groove_bounce .shadow { animation: bounceShadow var(--beat, 0.5s) var(--ease) infinite; }
-.a_groove_bounce .head   { animation: bounceHead var(--beat, 0.5s) var(--ease) infinite; }
-.a_groove_bounce .armR   { animation: pumpArm calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
-.a_groove_bounce .armL   { animation: bobArm calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
-.a_groove_bounce .legL   { animation: tuckLeg var(--beat, 0.5s) var(--ease) infinite; }
-.a_groove_bounce .legR   { animation: tuckLeg var(--beat, 0.5s) var(--ease) infinite reverse; }
-.a_groove_bounce .bulb   { animation: beatBulb var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_sleep_drift .bulb,
+.a_groove_sleep_roll .bulb,
+.a_groove_sleep_shift .bulb {
+  animation: sleepBulb calc(var(--beat, 0.5s) * 4) var(--ease) infinite;
+}
 
-@keyframes bounceBody   { 0%, 100% { transform: translateY(0); } 40% { transform: translateY(-5px); } 72% { transform: translateY(0.5px); } }
-@keyframes bounceSquash { 0%, 100% { transform: scaleY(0.95) scaleX(1.04); } 40% { transform: scaleY(1.05) scaleX(0.97); } }
-@keyframes bounceShadow { 0%, 100% { transform: scaleX(1.06); opacity: 0.55; } 40% { transform: scaleX(0.84); opacity: 0.32; } }
-@keyframes bounceHead   { 0%, 100% { transform: translateY(1.5px) rotate(3deg); } 45% { transform: translateY(-1px) rotate(-3deg); } }
-@keyframes pumpArm      { 0%, 100% { transform: rotate(10deg); } 45% { transform: rotate(-120deg); } }
-@keyframes tuckLeg      { 0%, 100% { transform: rotate(0deg); } 45% { transform: rotate(-16deg); } }
+@keyframes sleepLid  { 0%, 100% { transform: scaleY(0.3); } 50% { transform: scaleY(0.19); } }
+@keyframes sleepBulb { 0%, 100% { opacity: 0.22; transform: scale(0.82); } 50% { opacity: 0.45; transform: scale(0.95); } }
 
-/* --- 5. headbang: maximum. Big head throw on every beat, both arms up, a jump
-   every two beats so the loop still has a shape instead of being uniform
-   violence. The antenna whips a beat behind the head — overshoot on a trailing
-   part is cheap secondary motion and does most of the work here. */
-.a_groove_headbang .head    { animation: bangHead var(--beat, 0.5s) var(--ease) infinite; }
-.a_groove_headbang .antenna { animation: bangAntenna var(--beat, 0.5s) var(--ease) infinite; }
-.a_groove_headbang .body    { animation: bangBody calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
-.a_groove_headbang .torso   { animation: bounceSquash var(--beat, 0.5s) var(--ease) infinite; }
-.a_groove_headbang .shadow  { animation: bounceShadow calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
-.a_groove_headbang .armL    { animation: bangArmL calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
-.a_groove_headbang .armR    { animation: bangArmR calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
-.a_groove_headbang .legL    { animation: tuckLeg calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
-.a_groove_headbang .legR    { animation: tuckLeg calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
-.a_groove_headbang .bulb    { animation: beatBulb var(--beat, 0.5s) var(--ease) infinite; }
-.a_groove_headbang .chest   { animation: beatBulb var(--beat, 0.5s) var(--ease) infinite; }
+/* --- drift: the whole rig tips, and the head arrives late. Body leads, no
+   travel. The lag is a real animation-delay rather than shifted percentages
+   because a trailing head is the only secondary motion in the band and it has
+   to be exact; `backwards` is mandatory, or the head sits at its authored
+   angle for the first half-beat and the lag reads as a stutter. */
+.a_groove_sleep_drift .body { animation: driftBody calc(var(--beat, 0.5s) * 4) var(--ease) infinite; }
+.a_groove_sleep_drift .head {
+  animation: driftHead calc(var(--beat, 0.5s) * 4) var(--ease) infinite backwards;
+  animation-delay: calc(var(--beat, 0.5s) * 0.55);
+}
+.a_groove_sleep_drift .armL { animation: driftArmL calc(var(--beat, 0.5s) * 4) var(--ease) infinite backwards; animation-delay: calc(var(--beat, 0.5s) * 0.4); }
+.a_groove_sleep_drift .armR { animation: driftArmR calc(var(--beat, 0.5s) * 4) var(--ease) infinite backwards; animation-delay: calc(var(--beat, 0.5s) * 0.4); }
+.a_groove_sleep_drift .torso { animation: driftTorso calc(var(--beat, 0.5s) * 4) var(--ease) infinite; }
 
-@keyframes bangHead    { 0% { transform: rotate(-16deg) translateY(-1px); } 38% { transform: rotate(22deg) translateY(4px); } 100% { transform: rotate(-16deg) translateY(-1px); } }
+@keyframes driftBody  { 0%, 100% { transform: rotate(-1.8deg); } 50% { transform: rotate(1.8deg); } }
+@keyframes driftHead  { 0%, 100% { transform: rotate(-2.4deg) translateY(2px); } 50% { transform: rotate(2.4deg) translateY(2px); } }
+@keyframes driftArmL  { 0%, 100% { transform: rotate(4deg); } 50% { transform: rotate(-3deg); } }
+@keyframes driftArmR  { 0%, 100% { transform: rotate(3deg); } 50% { transform: rotate(-4deg); } }
+@keyframes driftTorso { 0%, 100% { transform: rotate(0.8deg); } 50% { transform: rotate(-0.8deg); } }
+
+/* --- roll: head leads and the body is dead still, which is what separates it
+   from drift. The head traces a slow circle rather than an arc — a rotation
+   alone reads as a shake, a circle reads as a doze. */
+.a_groove_sleep_roll .head    { animation: rollHead calc(var(--beat, 0.5s) * 4) linear infinite; }
+.a_groove_sleep_roll .antenna { animation: rollAntenna calc(var(--beat, 0.5s) * 4) linear infinite backwards; animation-delay: calc(var(--beat, 0.5s) * 0.5); }
+.a_groove_sleep_roll .torso   { animation: sleepBreath calc(var(--beat, 0.5s) * 4) var(--ease) infinite; }
+
+@keyframes rollHead {
+  0%, 100% { transform: translate(0, -0.8px) rotate(0deg); }
+  25% { transform: translate(2px, 0.4px) rotate(5deg); }
+  50% { transform: translate(0, 1.8px) rotate(0deg); }
+  75% { transform: translate(-2px, 0.4px) rotate(-5deg); }
+}
+@keyframes rollAntenna { 0%, 100% { transform: rotate(5deg); } 50% { transform: rotate(-5deg); } }
+@keyframes sleepBreath { 0%, 100% { transform: scaleY(0.99); } 50% { transform: scaleY(1.015); } }
+
+/* --- shift: the only sleep move where WEIGHT TRAVELS. Hip to hip, legs taking
+   it in turns, head hanging. Lowest-energy move that still involves the feet,
+   so it is the natural bridge up into chill. */
+.a_groove_sleep_shift .body   { animation: shiftBody calc(var(--beat, 0.5s) * 4) var(--ease) infinite; }
+.a_groove_sleep_shift .shadow { animation: shiftShadow calc(var(--beat, 0.5s) * 4) var(--ease) infinite; }
+.a_groove_sleep_shift .legL   { animation: shiftLegL calc(var(--beat, 0.5s) * 4) var(--ease) infinite; }
+.a_groove_sleep_shift .legR   { animation: shiftLegR calc(var(--beat, 0.5s) * 4) var(--ease) infinite; }
+.a_groove_sleep_shift .torso  { animation: shiftTorso calc(var(--beat, 0.5s) * 4) var(--ease) infinite; }
+.a_groove_sleep_shift .head   { animation: shiftHead calc(var(--beat, 0.5s) * 4) var(--ease) infinite; }
+
+@keyframes shiftBody   { 0%, 100% { transform: translate(-1.8px, 0.6px); } 50% { transform: translate(1.8px, 0.6px); } }
+@keyframes shiftShadow { 0%, 100% { transform: translateX(-1.2px); } 50% { transform: translateX(1.2px); } }
+@keyframes shiftLegL   { 0%, 100% { transform: rotate(3.5deg); } 50% { transform: rotate(-1deg); } }
+@keyframes shiftLegR   { 0%, 100% { transform: rotate(1deg); } 50% { transform: rotate(-3.5deg); } }
+@keyframes shiftTorso  { 0%, 100% { transform: rotate(1.6deg); } 50% { transform: rotate(-1.6deg); } }
+@keyframes shiftHead   { 0%, 100% { transform: rotate(6deg) translateY(2.4px); } 50% { transform: rotate(8deg) translateY(2.4px); } }
+
+/* =============================================================== 2. CHILL
+ * 20-40. Awake and relaxed. Two-beat cycles, so it is twice the tempo of
+ * sleep before a single amplitude is increased. */
+
+.a_groove_chill_sway .bulb,
+.a_groove_chill_nod .bulb,
+.a_groove_chill_tap .bulb {
+  animation: beatBulb var(--beat, 0.5s) var(--ease) infinite;
+}
+
+/* --- sway: shoulders lead. The torso rotates about the waist so the shoulders
+   travel while the feet stay planted, and the arms hang off them a quarter
+   beat late — passive limbs are what make a sway read as loose rather than
+   driven. */
+.a_groove_chill_sway .torso { animation: swayTorso calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_chill_sway .body  { animation: swayBody calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_chill_sway .head  { animation: swayHead calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_chill_sway .armL  { animation: swayArmL calc(var(--beat, 0.5s) * 2) var(--ease) infinite backwards; animation-delay: calc(var(--beat, 0.5s) * 0.25); }
+.a_groove_chill_sway .armR  { animation: swayArmR calc(var(--beat, 0.5s) * 2) var(--ease) infinite backwards; animation-delay: calc(var(--beat, 0.5s) * 0.25); }
+.a_groove_chill_sway .legL  { animation: swayLegL calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_chill_sway .legR  { animation: swayLegR calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+
+@keyframes swayTorso { 0%, 100% { transform: rotate(-4deg); } 50% { transform: rotate(4deg); } }
+@keyframes swayBody  { 0%, 100% { transform: translate(-2.2px, 0.8px); } 50% { transform: translate(2.2px, 0.8px); } }
+/* Counter-rotates so the head stays level while the shoulders move under it. */
+@keyframes swayHead  { 0%, 100% { transform: rotate(2.5deg); } 50% { transform: rotate(-2.5deg); } }
+@keyframes swayArmL  { 0%, 100% { transform: rotate(9deg); } 50% { transform: rotate(-6deg); } }
+@keyframes swayArmR  { 0%, 100% { transform: rotate(6deg); } 50% { transform: rotate(-9deg); } }
+@keyframes swayLegL  { 0%, 100% { transform: rotate(4deg); } 50% { transform: rotate(-1.5deg); } }
+@keyframes swayLegR  { 0%, 100% { transform: rotate(1.5deg); } 50% { transform: rotate(-4deg); } }
+
+/* --- nod: head leads, nothing travels. Deliberately HALF TIME — the nod lands
+   on every other beat while the bulb keeps every beat, which is the lazy
+   feel. The body is almost out of it entirely. */
+.a_groove_chill_nod .head  { animation: lazyNod calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_chill_nod .torso { animation: lazyTorso calc(var(--beat, 0.5s) * 4) var(--ease) infinite; }
+.a_groove_chill_nod .body  { animation: lazyBody calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_chill_nod .armL  { animation: lazyArmL calc(var(--beat, 0.5s) * 4) var(--ease) infinite; }
+.a_groove_chill_nod .armR  { animation: lazyArmR calc(var(--beat, 0.5s) * 4) var(--ease) infinite; }
+
+@keyframes lazyNod   { 0%, 100% { transform: rotate(-3deg) translateY(0); } 38% { transform: rotate(9deg) translateY(2.6px); } }
+@keyframes lazyTorso { 0%, 100% { transform: rotate(-2deg); } 50% { transform: rotate(2deg); } }
+@keyframes lazyBody  { 0%, 100% { transform: translateY(0); } 38% { transform: translateY(1px); } }
+@keyframes lazyArmL  { 0%, 100% { transform: rotate(4deg); } 50% { transform: rotate(-4deg); } }
+@keyframes lazyArmR  { 0%, 100% { transform: rotate(-4deg); } 50% { transform: rotate(4deg); } }
+
+/* --- tap: a LIMB leads and the rest of him is quiet. The hand keeps time on
+   the beat and the foot answers on the offbeat; that half-beat gap between the
+   two is the entire move, and it is the first appearance of the syncopation
+   that steady and hype build on. */
+.a_groove_chill_tap .armR { animation: tapHand var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_chill_tap .legR { animation: tapFoot calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_chill_tap .head { animation: tapNod var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_chill_tap .body { animation: lazyBody var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_chill_tap .armL { animation: lazyArmL calc(var(--beat, 0.5s) * 4) var(--ease) infinite; }
+
+@keyframes tapHand { 0%, 100% { transform: rotate(-6deg); } 34% { transform: rotate(20deg); } 62% { transform: rotate(-10deg); } }
+/* Lands at 70% of a two-beat cycle, i.e. just after the offbeat. */
+@keyframes tapFoot { 0%, 46%, 100% { transform: rotate(0deg); } 70% { transform: rotate(-16deg); } }
+@keyframes tapNod  { 0%, 100% { transform: rotate(0deg); } 34% { transform: rotate(3deg) translateY(1px); } }
+
+/* ============================================================== 3. STEADY
+ * 40-60. The default groove, and the one most listeners will see most. Down to
+ * one- and two-beat cycles with the whole body involved. */
+
+.a_groove_steady_twostep .bulb,
+.a_groove_steady_knee .bulb,
+.a_groove_steady_shoulder .bulb {
+  animation: beatBulb var(--beat, 0.5s) var(--ease) infinite;
+}
+
+/* --- twostep: LEGS lead and the weight genuinely travels, the first move in
+   the curve where it covers real ground. The dip at each transfer is what
+   makes it a step rather than a slide: weight has to drop onto a foot. */
+.a_groove_steady_twostep .body   { animation: twoStepBody calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_steady_twostep .shadow { animation: twoStepShadow calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_steady_twostep .legL   { animation: stepLegL calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_steady_twostep .legR   { animation: stepLegR calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_steady_twostep .armL   { animation: stepArmL calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_steady_twostep .armR   { animation: stepArmR calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_steady_twostep .head   { animation: stepHead calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_steady_twostep .torso  { animation: stepTorso calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+
+@keyframes twoStepBody {
+  0%, 100% { transform: translate(-4px, 0); }
+  25% { transform: translate(-1.2px, 1.4px); }
+  50% { transform: translate(4px, 0); }
+  75% { transform: translate(1.2px, 1.4px); }
+}
+@keyframes twoStepShadow { 0%, 100% { transform: translateX(-3px) scaleX(1.02); } 50% { transform: translateX(3px) scaleX(1.02); } }
+@keyframes stepLegL { 0%, 100% { transform: rotate(0deg); } 25% { transform: rotate(-14deg); } 55% { transform: rotate(2deg); } }
+@keyframes stepLegR { 0%, 50%, 100% { transform: rotate(0deg); } 75% { transform: rotate(14deg); } }
+@keyframes stepArmL { 0%, 100% { transform: rotate(-14deg); } 50% { transform: rotate(10deg); } }
+@keyframes stepArmR { 0%, 100% { transform: rotate(10deg); } 50% { transform: rotate(-14deg); } }
+@keyframes stepHead { 0%, 100% { transform: rotate(-5deg); } 50% { transform: rotate(5deg); } }
+@keyframes stepTorso { 0%, 100% { transform: rotate(2deg); } 50% { transform: rotate(-2deg); } }
+
+/* --- knee: purely VERTICAL, no travel at all, which is what distinguishes it
+   from twostep at the same energy. The knees absorb on every beat and the
+   torso squashes a frame behind them. */
+.a_groove_steady_knee .body  { animation: kneeBody var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_steady_knee .legL  { animation: kneeLegL var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_steady_knee .legR  { animation: kneeLegR var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_steady_knee .torso { animation: kneeTorso var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_steady_knee .head  { animation: kneeHead var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_steady_knee .armL  { animation: kneeArmL calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_steady_knee .armR  { animation: kneeArmR calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+
+@keyframes kneeBody  { 0%, 100% { transform: translateY(0); } 42% { transform: translateY(2.2px); } }
+@keyframes kneeLegL  { 0%, 100% { transform: rotate(0deg); } 42% { transform: rotate(9deg); } }
+@keyframes kneeLegR  { 0%, 100% { transform: rotate(0deg); } 42% { transform: rotate(-9deg); } }
+@keyframes kneeTorso { 0%, 100% { transform: scaleY(1); } 52% { transform: scaleY(0.96) scaleX(1.03); } }
+@keyframes kneeHead  { 0%, 100% { transform: rotate(0deg) translateY(0); } 42% { transform: rotate(8deg) translateY(1.4px); } }
+@keyframes kneeArmL  { 0%, 100% { transform: rotate(-8deg); } 50% { transform: rotate(6deg); } }
+@keyframes kneeArmR  { 0%, 100% { transform: rotate(6deg); } 50% { transform: rotate(-8deg); } }
+
+/* --- shoulder: UPPER BODY leads. One shoulder drops as the other lifts, the
+   head stays level through it, and the feet barely move — the "shoulders
+   working" groove, and the only steady move where the arms carry the beat. */
+.a_groove_steady_shoulder .armL  { animation: shoulderArmL calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_steady_shoulder .armR  { animation: shoulderArmR calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_steady_shoulder .torso { animation: shoulderTorso calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_steady_shoulder .head  { animation: shoulderHead calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_steady_shoulder .body  { animation: shoulderBody var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_steady_shoulder .legR  { animation: shoulderLeg calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+
+@keyframes shoulderArmL  { 0%, 100% { transform: rotate(-16deg); } 50% { transform: rotate(10deg); } }
+@keyframes shoulderArmR  { 0%, 100% { transform: rotate(-10deg); } 50% { transform: rotate(16deg); } }
+@keyframes shoulderTorso { 0%, 100% { transform: rotate(-5deg); } 50% { transform: rotate(5deg); } }
+@keyframes shoulderHead  { 0%, 100% { transform: rotate(3deg); } 50% { transform: rotate(-3deg); } }
+@keyframes shoulderBody  { 0%, 100% { transform: translateY(0); } 44% { transform: translateY(1.2px); } }
+@keyframes shoulderLeg   { 0%, 100% { transform: rotate(-5deg); } 50% { transform: rotate(5deg); } }
+
+/* ================================================================ 4. HYPE
+ * 60-80. Committed. The first band where the feet leave the floor, which is
+ * why the shadow starts doing work — a body translating up with a shadow that
+ * does not tighten reads as a floating sprite, not a jump. */
+
+.a_groove_hype_bounce .bulb,
+.a_groove_hype_pump .bulb,
+.a_groove_hype_hips .bulb {
+  animation: beatBulb var(--beat, 0.5s) var(--ease) infinite;
+}
+.a_groove_hype_bounce .chest,
+.a_groove_hype_pump .chest {
+  animation: beatBulb var(--beat, 0.5s) var(--ease) infinite;
+}
+
+/* --- bounce: the whole body is the move. Off the ground every beat, torso
+   squashing on the landing, shadow tightening on the way up. */
+.a_groove_hype_bounce .body   { animation: hypeBounce var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_hype_bounce .torso  { animation: hypeSquash var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_hype_bounce .shadow { animation: hypeShadow var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_hype_bounce .head   { animation: hypeHead var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_hype_bounce .armL   { animation: hypeArmL calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_hype_bounce .armR   { animation: hypeArmR calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_hype_bounce .legL   { animation: hypeTuckL var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_hype_bounce .legR   { animation: hypeTuckR var(--beat, 0.5s) var(--ease) infinite; }
+
+@keyframes hypeBounce { 0%, 100% { transform: translateY(0); } 40% { transform: translateY(-5px); } 72% { transform: translateY(0.6px); } }
+@keyframes hypeSquash { 0%, 100% { transform: scaleY(0.95) scaleX(1.04); } 40% { transform: scaleY(1.05) scaleX(0.97); } }
+@keyframes hypeShadow { 0%, 100% { transform: scaleX(1.06); opacity: 0.55; } 40% { transform: scaleX(0.84); opacity: 0.32; } }
+@keyframes hypeHead   { 0%, 100% { transform: translateY(1.4px) rotate(3deg); } 45% { transform: translateY(-1px) rotate(-3deg); } }
+@keyframes hypeArmL   { 0%, 100% { transform: rotate(-14deg); } 50% { transform: rotate(14deg); } }
+@keyframes hypeArmR   { 0%, 100% { transform: rotate(14deg); } 50% { transform: rotate(-14deg); } }
+/* A leg is a rigid 26-unit segment hanging from the hip, so rotating it swings
+   the foot sideways and raises it almost not at all — at -12deg the foot rises
+   0.4 units and travels 2.5 inward. A tuck therefore has to TRANSLATE. The
+   small rotation that remains is just so the knees read as bending. */
+@keyframes hypeTuckL  { 0%, 100% { transform: translateY(0) rotate(0deg); } 45% { transform: translateY(-3px) rotate(-8deg); } }
+@keyframes hypeTuckR  { 0%, 100% { transform: translateY(0) rotate(0deg); } 45% { transform: translateY(-3px) rotate(8deg); } }
+
+/* --- pump: ARMS lead and stay up for the whole loop, punching higher on each
+   beat while the body bounces underneath. The silhouette is permanently
+   different from bounce, which is what makes the two readable apart at a
+   glance rather than only in motion. */
+.a_groove_hype_pump .armL   { animation: pumpUpL var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_hype_pump .armR   { animation: pumpUpR var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_hype_pump .body   { animation: pumpBody var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_hype_pump .head   { animation: pumpHead var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_hype_pump .torso  { animation: hypeSquash var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_hype_pump .shadow { animation: hypeShadow var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_hype_pump .legL   { animation: hypeTuckL var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_hype_pump .legR   { animation: hypeTuckR var(--beat, 0.5s) var(--ease) infinite; }
+
+@keyframes pumpUpL  { 0%, 100% { transform: rotate(108deg); } 44% { transform: rotate(132deg); } }
+@keyframes pumpUpR  { 0%, 100% { transform: rotate(-108deg); } 44% { transform: rotate(-132deg); } }
+@keyframes pumpBody { 0%, 100% { transform: translateY(0); } 44% { transform: translateY(-3.5px); } }
+@keyframes pumpHead { 0%, 100% { transform: rotate(2deg) translateY(1px); } 44% { transform: rotate(-4deg) translateY(-1px); } }
+
+/* --- hips: HIPS lead and the weight travels, so this is the hype answer to
+   twostep. The torso swings hard about the waist, the head counter-rotates to
+   stay level, and the arms trail the hips rather than driving. Stays on the
+   floor — the band's one grounded move, which keeps the escalation from
+   reading as "everything is airborne now". */
+.a_groove_hype_hips .torso  { animation: hipsTorso calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_hype_hips .body   { animation: hipsBody calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_hype_hips .shadow { animation: hipsShadow calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_hype_hips .head   { animation: hipsHead calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_hype_hips .armL   { animation: hipsArmL calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_hype_hips .armR   { animation: hipsArmR calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_hype_hips .legL   { animation: hipsLegL calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_hype_hips .legR   { animation: hipsLegR calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+
+@keyframes hipsTorso  { 0%, 100% { transform: rotate(-9deg); } 50% { transform: rotate(9deg); } }
+@keyframes hipsBody   { 0%, 100% { transform: translate(-5px, 0); } 25% { transform: translate(0, 2px); } 50% { transform: translate(5px, 0); } 75% { transform: translate(0, 2px); } }
+@keyframes hipsShadow { 0%, 100% { transform: translateX(-4px); } 50% { transform: translateX(4px); } }
+@keyframes hipsHead   { 0%, 100% { transform: rotate(5deg); } 50% { transform: rotate(-5deg); } }
+@keyframes hipsArmL   { 0%, 100% { transform: rotate(28deg); } 50% { transform: rotate(-18deg); } }
+@keyframes hipsArmR   { 0%, 100% { transform: rotate(18deg); } 50% { transform: rotate(-28deg); } }
+@keyframes hipsLegL   { 0%, 100% { transform: rotate(18deg); } 50% { transform: rotate(-6deg); } }
+@keyframes hipsLegR   { 0%, 100% { transform: rotate(6deg); } 50% { transform: rotate(-18deg); } }
+
+/* =============================================================== 5. BEAST
+ * 80-100. Full send. Everything that was a hint lower down is now explicit:
+ * feet clear the floor, the head throws, both arms are up. */
+
+.a_groove_beast_headbang .bulb,
+.a_groove_beast_jump .bulb,
+.a_groove_beast_stomp .bulb,
+.a_groove_beast_headbang .chest,
+.a_groove_beast_jump .chest,
+.a_groove_beast_stomp .chest {
+  animation: beatBulb var(--beat, 0.5s) var(--ease) infinite;
+}
+
+/* --- headbang: HEAD leads, hardest. Big throw on every beat with the body
+   bouncing on the half time underneath, so the loop has a shape instead of
+   being uniform violence. The antenna whips a beat behind the head — overshoot
+   on a trailing part is cheap secondary motion and does most of the work. */
+.a_groove_beast_headbang .head    { animation: bangHead var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_beast_headbang .antenna { animation: bangAntenna var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_beast_headbang .body    { animation: bangBody calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_beast_headbang .torso   { animation: hypeSquash var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_beast_headbang .shadow  { animation: hypeShadow calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_beast_headbang .armL    { animation: bangArmL calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_beast_headbang .armR    { animation: bangArmR calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_beast_headbang .legL    { animation: hypeTuckL calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_beast_headbang .legR    { animation: hypeTuckR calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+
+@keyframes bangHead    { 0% { transform: rotate(-18deg) translateY(-1px); } 38% { transform: rotate(24deg) translateY(4px); } 100% { transform: rotate(-18deg) translateY(-1px); } }
 @keyframes bangAntenna { 0% { transform: rotate(18deg); } 48% { transform: rotate(-26deg); } 100% { transform: rotate(18deg); } }
 @keyframes bangBody    { 0%, 100% { transform: translateY(0); } 25% { transform: translateY(-7px); } 50% { transform: translateY(0); } 62% { transform: translateY(-2px); } 80% { transform: translateY(0); } }
-@keyframes bangArmL    { 0%, 100% { transform: rotate(140deg); } 50% { transform: rotate(118deg); } }
-@keyframes bangArmR    { 0%, 100% { transform: rotate(-118deg); } 50% { transform: rotate(-140deg); } }
+@keyframes bangArmL    { 0%, 100% { transform: rotate(132deg); } 50% { transform: rotate(112deg); } }
+@keyframes bangArmR    { 0%, 100% { transform: rotate(-132deg); } 50% { transform: rotate(-112deg); } }
+
+/* --- jump: the biggest vertical in the whole set. A real crouch, a real
+   launch every two beats, legs tucked at the apex and the shadow collapsing to
+   two thirds. The second smaller hop stops the gap between jumps reading as a
+   pause. */
+.a_groove_beast_jump .body   { animation: beastJump calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_beast_jump .shadow { animation: beastJumpShadow calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_beast_jump .legL   { animation: beastTuckL calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_beast_jump .legR   { animation: beastTuckR calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_beast_jump .armL   { animation: beastArmL calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_beast_jump .armR   { animation: beastArmR calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_beast_jump .torso  { animation: beastSquash calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_beast_jump .head   { animation: beastJumpHead calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+
+@keyframes beastJump       { 0%, 100% { transform: translateY(0); } 10% { transform: translateY(2.6px); } 38% { transform: translateY(-11px); } 60% { transform: translateY(1.6px); } 78% { transform: translateY(-4px); } 92% { transform: translateY(0); } }
+@keyframes beastJumpShadow { 0%, 100% { transform: scale(1); opacity: 0.55; } 10% { transform: scale(1.08); opacity: 0.6; } 38% { transform: scale(0.68); opacity: 0.26; } 60% { transform: scale(1.06); opacity: 0.55; } 78% { transform: scale(0.82); opacity: 0.36; } }
+/* Same fix, bigger. At -26deg alone BOTH feet converged on x=50 and sat there
+   overlapping at floor height, which read as crossed ankles rather than a
+   tuck. Raised 8 units and swung only 16, the feet finish 9 apart and clearly
+   off the ground. */
+@keyframes beastTuckL      { 0%, 100% { transform: translateY(0) rotate(0deg); } 10% { transform: rotate(8deg); } 38%, 78% { transform: translateY(-8px) rotate(-16deg); } }
+@keyframes beastTuckR      { 0%, 100% { transform: translateY(0) rotate(0deg); } 10% { transform: rotate(-8deg); } 38%, 78% { transform: translateY(-8px) rotate(16deg); } }
+/* 150deg put the left hand at (24.7,35), which is exactly inside the left
+   headphone cup (x 21-32, y 22-39) — the far arm is drawn behind the head, so
+   it vanished and the pose read as one-armed. 134 lands it at (18,38), outside
+   the cup. Anything meant to be a two-armed pose has to clear x=21. */
+@keyframes beastArmL       { 0%, 100% { transform: rotate(0deg); } 10% { transform: rotate(-28deg); } 38%, 78% { transform: rotate(134deg); } }
+@keyframes beastArmR       { 0%, 100% { transform: rotate(0deg); } 10% { transform: rotate(28deg); } 38%, 78% { transform: rotate(-134deg); } }
+@keyframes beastSquash     { 0%, 100% { transform: scaleY(1); } 10%, 60% { transform: scaleY(0.88) scaleX(1.07); } 38%, 78% { transform: scaleY(1.07) scaleX(0.96); } }
+@keyframes beastJumpHead   { 0%, 100% { transform: rotate(0deg); } 10% { transform: rotate(6deg) translateY(2px); } 38%, 78% { transform: rotate(-12deg) translateY(-2px); } }
+
+/* --- stomp: LEGS lead and the weight travels, so beast gets its own answer to
+   twostep and hips. Knee up, foot down hard, arms slamming down with each
+   impact, and the shadow spreading on contact. The alternation is the point:
+   it is the only move in the set that is asymmetric beat to beat, which is
+   what stops the top of the curve feeling like one note held. */
+.a_groove_beast_stomp .legL   { animation: stompLegL calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_beast_stomp .legR   { animation: stompLegR calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_beast_stomp .body   { animation: stompBody calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_beast_stomp .shadow { animation: stompShadow var(--beat, 0.5s) var(--ease) infinite; }
+.a_groove_beast_stomp .armL   { animation: stompArmL calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_beast_stomp .armR   { animation: stompArmR calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_beast_stomp .torso  { animation: stompTorso calc(var(--beat, 0.5s) * 2) var(--ease) infinite; }
+.a_groove_beast_stomp .head   { animation: stompHead var(--beat, 0.5s) var(--ease) infinite; }
+
+@keyframes stompLegL   { 0%, 100% { transform: rotate(0deg); } 22% { transform: rotate(-30deg); } 44% { transform: rotate(3deg); } }
+@keyframes stompLegR   { 0%, 50%, 100% { transform: rotate(0deg); } 72% { transform: rotate(30deg); } 94% { transform: rotate(-3deg); } }
+@keyframes stompBody   { 0%, 100% { transform: translate(-6px, 0); } 22% { transform: translate(-3px, -2.5px); } 46% { transform: translate(6px, 1.6px); } 72% { transform: translate(3px, -2.5px); } 96% { transform: translate(-6px, 1.6px); } }
+@keyframes stompShadow { 0%, 100% { transform: scaleX(1); opacity: 0.55; } 18% { transform: scaleX(0.88); opacity: 0.4; } 46% { transform: scaleX(1.22); opacity: 0.7; } }
+@keyframes stompArmL   { 0%, 100% { transform: rotate(-16deg); } 22% { transform: rotate(-100deg); } 46% { transform: rotate(-6deg); } }
+@keyframes stompArmR   { 0%, 50%, 100% { transform: rotate(16deg); } 72% { transform: rotate(100deg); } 96% { transform: rotate(6deg); } }
+@keyframes stompTorso  { 0%, 100% { transform: rotate(-6deg); } 50% { transform: rotate(6deg); } }
+@keyframes stompHead   { 0%, 100% { transform: rotate(0deg); } 30% { transform: rotate(10deg) translateY(2.6px); } }
 
 /* ========================================================= STATE: digging
  * Choosing the next track. This is the loading state, so it is seen more than
@@ -793,7 +1130,7 @@
    speed. A constant rotation from the first frame reads as already playing,
    which is the one thing this state must not say. */
 @keyframes spinUp    { 0%, 58% { transform: rotate(0deg); } 100% { transform: rotate(900deg); } }
-@keyframes dropArmR  { 0% { transform: rotate(-146deg); } 58% { transform: rotate(49deg); } 76% { transform: rotate(32deg); } 100% { transform: rotate(6deg); } }
+@keyframes dropArmR  { 0% { transform: rotate(-134deg); } 58% { transform: rotate(49deg); } 76% { transform: rotate(32deg); } 100% { transform: rotate(6deg); } }
 @keyframes dropArmL  { 0% { transform: rotate(26deg); } 58% { transform: rotate(-16deg); } 100% { transform: rotate(0deg); } }
 @keyframes cueDip    { 0% { transform: translateY(0); } 55% { transform: translateY(10px); } 80% { transform: translateY(4px); } 100% { transform: translateY(0); } }
 @keyframes cueLean   { 0% { transform: rotate(0deg); } 55% { transform: rotate(5deg); } 100% { transform: rotate(0deg); } }
@@ -922,7 +1259,7 @@
   68% { transform: translate(38px, -62px) scale(1.7); opacity: 0.4; }
   100% { transform: translate(48px, -70px) scale(2.2); opacity: 0; }
 }
-@keyframes dustArmR  { 0% { transform: rotate(0deg); } 22%, 52% { transform: rotate(-146deg); } 84% { transform: rotate(49deg); } 100% { transform: rotate(4deg); } }
+@keyframes dustArmR  { 0% { transform: rotate(0deg); } 22%, 52% { transform: rotate(-134deg); } 84% { transform: rotate(49deg); } 100% { transform: rotate(4deg); } }
 @keyframes dustArmL  { 0%, 100% { transform: rotate(0deg); } 30%, 60% { transform: rotate(-18deg); } }
 /* Leans toward the record for the blow, then recoils from its own dust. */
 @keyframes dustHead  { 0% { transform: rotate(0deg); } 34% { transform: rotate(-10deg) translateX(2px); } 46% { transform: rotate(-16deg) translateX(3px); } 62% { transform: rotate(4deg) translateX(-1px); } 84% { transform: rotate(10deg) translateY(2px); } 100% { transform: rotate(0deg); } }
@@ -995,8 +1332,8 @@
   100% { transform: translate(0, 0) rotate(1080deg); }
 }
 @keyframes burstCatch { 0%, 74% { opacity: 0; transform: scale(0.35); } 80% { opacity: 1; transform: scale(0.8); } 94% { opacity: 0; transform: scale(1.8); } 100% { opacity: 0; transform: scale(1.8); } }
-@keyframes tossUpArm  { 0% { transform: rotate(0deg); } 12% { transform: rotate(40deg); } 30% { transform: rotate(-96deg); } 60% { transform: rotate(-54deg); } 78% { transform: rotate(-86deg); } 90% { transform: rotate(-126deg); } 100% { transform: rotate(0deg); } }
-@keyframes tossUpArmL { 0%, 55% { transform: rotate(0deg); } 90% { transform: rotate(126deg); } 100% { transform: rotate(0deg); } }
+@keyframes tossUpArm  { 0% { transform: rotate(0deg); } 12% { transform: rotate(40deg); } 30% { transform: rotate(-96deg); } 60% { transform: rotate(-54deg); } 78% { transform: rotate(-86deg); } 90% { transform: rotate(-120deg); } 100% { transform: rotate(0deg); } }
+@keyframes tossUpArmL { 0%, 55% { transform: rotate(0deg); } 90% { transform: rotate(120deg); } 100% { transform: rotate(0deg); } }
 @keyframes tossUpHead { 0% { transform: rotate(0deg); } 30%, 62% { transform: rotate(-14deg) translateY(-2px); } 80% { transform: rotate(6deg) translateY(1px); } 100% { transform: rotate(0deg); } }
 @keyframes tossUpBody { 0%, 100% { transform: translateY(0); } 12% { transform: translateY(3px); } 30% { transform: translateY(-2px); } 80% { transform: translateY(2px); } 90% { transform: translateY(-4px); } }
 
@@ -1528,20 +1865,112 @@
   .a_idle_scratch .armR { transform: rotate(-158deg); }
   .a_idle_scratch .head { transform: rotate(-10deg); }
 
-  /* groove — one frozen frame per energy level, so the mood band is still
-     legible from posture alone. */
-  .a_groove_sway .body { transform: rotate(-2.4deg); }
-  .a_groove_nod .head { transform: translateY(3px) rotate(7deg); }
-  .a_groove_bob .head { transform: translateY(3px) rotate(7deg); }
-  .a_groove_bob .legR { transform: rotate(-12deg); }
-  .a_groove_bounce .body { transform: translateY(-4px); }
-  .a_groove_bounce .armR { transform: rotate(-110deg); }
-  .a_groove_bounce .shadow { transform: scaleX(0.86); opacity: 0.34; }
-  .a_groove_headbang .head { transform: rotate(20deg) translateY(4px); }
-  .a_groove_headbang .armL { transform: rotate(132deg); }
-  .a_groove_headbang .armR { transform: rotate(-132deg); }
-  .a_groove_headbang .body { transform: translateY(-5px); }
-  .a_groove_headbang .shadow { transform: scaleX(0.84); opacity: 0.3; }
+  /* groove — ONE pose per mood band, shared by that band's three moves. The
+     three differ by which limb leads, and with the motion gone that
+     distinction cannot survive anyway; what has to survive is the band, so
+     each pose is the most extreme frame of its band's strongest move. Stepped
+     through sleep to beast they still read as a climb. */
+  /* sleep */
+  .a_groove_sleep_drift .body,
+  .a_groove_sleep_roll .body,
+  .a_groove_sleep_shift .body { transform: rotate(-1.8deg); }
+  .a_groove_sleep_drift .head,
+  .a_groove_sleep_roll .head,
+  .a_groove_sleep_shift .head { transform: rotate(7deg) translateY(2.6px); }
+  .a_groove_sleep_drift .armL,
+  .a_groove_sleep_roll .armL,
+  .a_groove_sleep_shift .armL { transform: rotate(4deg); }
+  .a_groove_sleep_drift .armR,
+  .a_groove_sleep_roll .armR,
+  .a_groove_sleep_shift .armR { transform: rotate(-4deg); }
+  .a_groove_sleep_drift .eyeL,
+  .a_groove_sleep_roll .eyeL,
+  .a_groove_sleep_shift .eyeL,
+  .a_groove_sleep_drift .eyeR,
+  .a_groove_sleep_roll .eyeR,
+  .a_groove_sleep_shift .eyeR { transform: scaleY(0.26); }
+  .a_groove_sleep_drift .bulb,
+  .a_groove_sleep_roll .bulb,
+  .a_groove_sleep_shift .bulb { opacity: 0.3; }
+  /* chill */
+  .a_groove_chill_sway .torso,
+  .a_groove_chill_nod .torso,
+  .a_groove_chill_tap .torso { transform: rotate(-4deg); }
+  .a_groove_chill_sway .body,
+  .a_groove_chill_nod .body,
+  .a_groove_chill_tap .body { transform: translateX(-2.2px); }
+  .a_groove_chill_sway .head,
+  .a_groove_chill_nod .head,
+  .a_groove_chill_tap .head { transform: rotate(7deg) translateY(2px); }
+  .a_groove_chill_sway .armL,
+  .a_groove_chill_nod .armL,
+  .a_groove_chill_tap .armL { transform: rotate(9deg); }
+  .a_groove_chill_sway .armR,
+  .a_groove_chill_nod .armR,
+  .a_groove_chill_tap .armR { transform: rotate(-6deg); }
+  /* steady */
+  .a_groove_steady_twostep .body,
+  .a_groove_steady_knee .body,
+  .a_groove_steady_shoulder .body { transform: translate(-4px, 1.4px); }
+  .a_groove_steady_twostep .legL,
+  .a_groove_steady_knee .legL,
+  .a_groove_steady_shoulder .legL { transform: rotate(-12deg); }
+  .a_groove_steady_twostep .head,
+  .a_groove_steady_knee .head,
+  .a_groove_steady_shoulder .head { transform: rotate(7deg) translateY(1.4px); }
+  .a_groove_steady_twostep .armL,
+  .a_groove_steady_knee .armL,
+  .a_groove_steady_shoulder .armL { transform: rotate(-14deg); }
+  .a_groove_steady_twostep .armR,
+  .a_groove_steady_knee .armR,
+  .a_groove_steady_shoulder .armR { transform: rotate(10deg); }
+  .a_groove_steady_twostep .shadow,
+  .a_groove_steady_knee .shadow,
+  .a_groove_steady_shoulder .shadow { transform: translateX(-3px); }
+  /* hype */
+  .a_groove_hype_bounce .body,
+  .a_groove_hype_pump .body,
+  .a_groove_hype_hips .body { transform: translateY(-4.5px); }
+  .a_groove_hype_bounce .armL,
+  .a_groove_hype_pump .armL,
+  .a_groove_hype_hips .armL { transform: rotate(120deg); }
+  .a_groove_hype_bounce .armR,
+  .a_groove_hype_pump .armR,
+  .a_groove_hype_hips .armR { transform: rotate(-120deg); }
+  .a_groove_hype_bounce .legL,
+  .a_groove_hype_pump .legL,
+  .a_groove_hype_hips .legL { transform: rotate(-11deg); }
+  .a_groove_hype_bounce .legR,
+  .a_groove_hype_pump .legR,
+  .a_groove_hype_hips .legR { transform: rotate(11deg); }
+  .a_groove_hype_bounce .head,
+  .a_groove_hype_pump .head,
+  .a_groove_hype_hips .head { transform: rotate(-3deg) translateY(-1px); }
+  .a_groove_hype_bounce .shadow,
+  .a_groove_hype_pump .shadow,
+  .a_groove_hype_hips .shadow { transform: scaleX(0.86); opacity: 0.34; }
+  /* beast */
+  .a_groove_beast_headbang .body,
+  .a_groove_beast_jump .body,
+  .a_groove_beast_stomp .body { transform: translateY(-8px); }
+  .a_groove_beast_headbang .head,
+  .a_groove_beast_jump .head,
+  .a_groove_beast_stomp .head { transform: rotate(22deg) translateY(4px); }
+  .a_groove_beast_headbang .armL,
+  .a_groove_beast_jump .armL,
+  .a_groove_beast_stomp .armL { transform: rotate(134deg); }
+  .a_groove_beast_headbang .armR,
+  .a_groove_beast_jump .armR,
+  .a_groove_beast_stomp .armR { transform: rotate(-134deg); }
+  .a_groove_beast_headbang .legL,
+  .a_groove_beast_jump .legL,
+  .a_groove_beast_stomp .legL { transform: rotate(-22deg); }
+  .a_groove_beast_headbang .legR,
+  .a_groove_beast_jump .legR,
+  .a_groove_beast_stomp .legR { transform: rotate(22deg); }
+  .a_groove_beast_headbang .shadow,
+  .a_groove_beast_jump .shadow,
+  .a_groove_beast_stomp .shadow { transform: scale(0.76); opacity: 0.28; }
 
   /* digging — bent over the crate. `pull` gets its disc shown at eye level,
      because a record in the hand is the only thing separating it from a robot
@@ -1585,7 +2014,7 @@
   .a_cueing_scratch .deckNick { transform: rotate(-115deg); }
   .a_cueing_dust .deckDisc { transform: translate(18px, -43px) scaleY(1.9); }
   .a_cueing_dust .deckDust { transform: translate(30px, -56px) scale(1.4); opacity: 0.6; }
-  .a_cueing_dust .armR { transform: rotate(-146deg); }
+  .a_cueing_dust .armR { transform: rotate(-134deg); }
   .a_cueing_dust .armL { transform: rotate(-18deg); }
   .a_cueing_dust .head { transform: rotate(-15deg) translateX(3px); }
   .a_cueing_dust .eyeL, .a_cueing_dust .eyeR { transform: scaleY(0.35); }
