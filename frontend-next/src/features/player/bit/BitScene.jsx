@@ -17,7 +17,28 @@ import styles from './BitScene.module.css';
  * furniture on purpose — the space above is headroom for records thrown in
  * the air, and must stay empty.
  */
-export default function BitScene({ playing }) {
+export default function BitScene({ playing, using }) {
+  /*
+   * Bit brings his OWN animated crate and deck as props, and he performs at
+   * the exact spot the static one stands. Drawing both gives two crates a
+   * few pixels apart, or — worse — lets him flip a phantom deck while the
+   * real booth sits untouched beside it.
+   *
+   * So the static piece stands down while he is handling his copy. Read as a
+   * cross-fade it looks like the furniture coming alive, which is the effect
+   * we wanted anyway.
+   */
+  const hideCrates = using === 'crate';
+  const hideBooth = using === 'deck';
+
+  /*
+   * Inline rather than a class. A .standBy class tied with the .booth rule on
+   * specificity and lost in the cascade — the class landed on the element and
+   * matched it, but opacity and transform both stayed at their defaults. An
+   * inline style cannot lose that argument, and this is one declaration on one
+   * element, not a pattern worth generalising.
+   */
+  const standBy = (hide) => (hide ? { opacity: 0, transform: 'translateY(6px)' } : undefined);
   return (
     <div className={styles.scene} aria-hidden="true">
       {/* A horizon rather than a hard line: the stage above has no border, so
@@ -25,7 +46,7 @@ export default function BitScene({ playing }) {
       <div className={styles.floor} />
 
       {/* ---------------------------------------------------- record library */}
-      <svg className={styles.crates} viewBox="0 0 90 70">
+      <svg className={styles.crates} style={standBy(hideCrates)} viewBox="0 0 90 70">
         {/* Back shelf, slightly smaller and dimmer — cheap depth. */}
         <g className={styles.shelfBack}>
           <rect x="8" y="22" width="34" height="26" rx="2" />
@@ -52,7 +73,7 @@ export default function BitScene({ playing }) {
       </svg>
 
       {/* -------------------------------------------------------- the decks */}
-      <svg className={styles.booth} viewBox="0 0 150 70">
+      <svg className={styles.booth} style={standBy(hideBooth)} viewBox="0 0 150 70">
         <rect className={styles.boothBody} x="2" y="30" width="146" height="38" rx="4" />
         {/* Front panel highlight — stops the booth reading as a flat slab. */}
         <rect className={styles.boothLip} x="2" y="30" width="146" height="4" rx="2" />

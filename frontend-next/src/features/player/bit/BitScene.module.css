@@ -35,7 +35,12 @@
   bottom: 0;
   height: auto;
   overflow: visible;
+  transition: opacity 260ms var(--ease), transform 260ms var(--ease);
 }
+
+/* The stand-down itself is an inline style set in BitScene.jsx; see the
+   comment there for why. This transition is what makes it a fade rather than
+   a cut — a hard cut reads as a glitch at this size. */
 
 /* Stations the rig travels between live in BitDock.module.css; these are the
    furniture positions those stations are derived from. */

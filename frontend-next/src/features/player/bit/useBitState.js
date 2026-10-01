@@ -101,9 +101,16 @@ export default function useBitState({
   source,
   vibe,
 }) {
+  /*
+   * The event is {name, n} rather than a bare string. `n` is a nonce bumped
+   * on every fire, so re-firing the SAME event still produces a new object
+   * and re-runs the picker — a plain string would be swallowed as an
+   * identical setState and the second skip in a row would do nothing.
+   */
   const [event, setEvent] = useState(null);
   const [animKey, setAnimKey] = useState(null);
   const lastByState = useRef({});
+  const nonce = useRef(0);
 
   const base = useMemo(() => {
     if (!current) return 'asleep';
@@ -117,7 +124,7 @@ export default function useBitState({
     return playing ? 'groove' : 'idle';
   }, [current, loadingTrack, verifying, mode, source, playing]);
 
-  const state = event || base;
+  const state = event ? event.name : base;
 
   // Choose an animation whenever the state changes.
   useEffect(() => {
@@ -140,7 +147,8 @@ export default function useBitState({
     const next = pickDifferent(pool, lastByState.current[state]);
     lastByState.current[state] = next;
     setAnimKey(next);
-  }, [state, vibe]);
+    // event?.n is in the deps so a repeat of the same event re-picks.
+  }, [state, vibe, event && event.n]);
 
   // A one-shot returns to the base state once its clip is done. Length comes
   // from the manifest rather than a guess, so the hand-off is seamless.
@@ -169,13 +177,19 @@ export default function useBitState({
     return () => clearInterval(id);
   }, [state, event]);
 
-  /** Trigger a one-shot reaction. Ignored if the state has no animations. */
+  /**
+   * Trigger a one-shot reaction. Ignored if the state has no animations.
+   *
+   * This used to clear the event and re-set it inside requestAnimationFrame
+   * to force a restart. That silently broke whenever the tab was not
+   * painting: rAF callbacks do not run in a background tab, so the second
+   * setState never happened and Bit ignored every skip while you were on
+   * another tab. The nonce does the same job with no dependency on paint.
+   */
   const fire = useCallback((name) => {
     if (!ANIMATIONS[name] || ANIMATIONS[name].length === 0) return;
-    // Re-fires of the SAME event must restart the clip, not be swallowed by a
-    // no-op setState. Clearing first forces the pick effect to run again.
-    setEvent(null);
-    requestAnimationFrame(() => setEvent(name));
+    nonce.current += 1;
+    setEvent({ name, n: nonce.current });
   }, []);
 
   const beat = useMemo(() => beatSeconds(current && current.tempo), [current]);

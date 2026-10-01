@@ -49,7 +49,7 @@ function BitDockInner() {
       // real control or an aria-live region elsewhere in the player.
       aria-hidden="true"
     >
-      <BitScene playing={playing} />
+      <BitScene playing={playing} using={prop} />
 
       <div className={styles.spot}>
         <BitRig className={`${styles.rig} ${classFor(animKey)}`} prop={prop} />

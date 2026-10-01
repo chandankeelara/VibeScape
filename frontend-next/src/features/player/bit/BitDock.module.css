@@ -75,9 +75,11 @@
   will-change: left;
 }
 
-.dock[data-station='crates'] .spot { left: 13%; }
+/* Centres of the matching set pieces, so Bit stands exactly where the
+   static furniture was before it stood down. */
+.dock[data-station='crates'] .spot { left: 8%; }
 .dock[data-station='centre'] .spot { left: 42%; }
-.dock[data-station='decks']  .spot { left: 58%; }
+.dock[data-station='decks']  .spot { left: 63%; }
 .dock[data-station='right']  .spot { left: 80%; }
 
 /* The set pieces vanish on narrower stages (see BitScene.module.css), so the
