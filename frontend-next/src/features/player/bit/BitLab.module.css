@@ -91,6 +91,30 @@
 
 .row { display: flex; flex-wrap: wrap; gap: var(--sp-4); }
 
+/* ------------------------------------------------------------- the room */
+
+.rooms {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: var(--sp-4);
+}
+
+.roomCell { margin: 0; }
+
+/*
+ * Same shape as the real dock: a wide, short strip with the furniture on the
+ * floor and empty headroom above. Previewing the scene in a square would
+ * flatter it and hide exactly the proportion problems worth catching.
+ */
+.roomStage {
+  position: relative;
+  height: 190px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
 .cell { margin: 0; width: 150px; }
 
 /* A mid-tone backdrop, not --bg: Bit's body is --surface-2 and its outline is

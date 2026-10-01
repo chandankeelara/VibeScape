@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import BitRig from './BitRig';
+import BitScene from './BitScene';
 import { ANIMATIONS, META, SUGGESTED_PROP, classFor } from './manifest';
 import styles from './BitLab.module.css';
 
@@ -72,6 +73,21 @@ export default function BitLab() {
         </span>
       </header>
 
+      {/* The room, at the width it actually ships at. Shown first because
+          the furniture is what sets the scale Bit is drawn against. */}
+      <section className={styles.group}>
+        <h2 className={styles.h}>
+          the room
+          <span className={styles.meta}>isometric | set dressing | beat-reactive</span>
+        </h2>
+        <div className={styles.rooms}>
+          <Room label="playing" playing />
+          <Room label="stopped" />
+          <Room label="using the crate - library stands down" playing using="crate" />
+          <Room label="using the deck - booth stands down" playing using="deck" />
+        </div>
+      </section>
+
       {states.map((state) => (
         <section key={state} className={styles.group}>
           <h2 className={styles.h}>
@@ -138,6 +154,27 @@ function Cell({ animKey, state, slow }) {
         <span className={styles.tag}>
           {!cls ? 'NO CSS' : !m ? 'NO META' : m.loop ? 'loop' : `${m.ms}ms`}
         </span>
+      </figcaption>
+    </figure>
+  );
+}
+
+/**
+ * One preview of the set dressing at a realistic width.
+ *
+ * Mirrors the dock's own box - a wide, short strip with the furniture on the
+ * floor and empty headroom above - so the proportions here match what ships.
+ * Previewing the scene in a square would flatter it and hide exactly the
+ * problems worth catching.
+ */
+function Room({ label, playing = false, using = null }) {
+  return (
+    <figure className={styles.roomCell}>
+      <div className={styles.roomStage}>
+        <BitScene playing={playing} using={using} />
+      </div>
+      <figcaption className={styles.cap}>
+        <span className={styles.key}>{label}</span>
       </figcaption>
     </figure>
   );

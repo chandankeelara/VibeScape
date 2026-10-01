@@ -1,18 +1,34 @@
 /* ---------------------------------------------------------- Bit's world
  *
- * Set dressing along the floor of the dock. Nothing here reacts to Bit's
- * state — only to the beat — so the decks keep spinning while he is across
- * the room at the crates.
+ * Isometric set dressing along the floor of the dock. The geometry lives in
+ * BitScene.jsx; this file is almost entirely about TONE, because that is what
+ * makes an isometric box read as a box.
+ *
+ * Three faces, three values. Without the separation the silhouette collapses
+ * into a flat hexagon no matter how correct the projection is.
  *
  * Everything is bottom-anchored. The dock is deliberately much taller than
  * any of this, and the space above the furniture is headroom for thrown
  * records; keeping it empty is the point.
  */
 
+/* Vinyl reads as black only by being DARKER than the page, so it is derived
+   from --bg rather than hardcoded — tokens.css calls a raw hex a smell. */
 .scene {
   position: absolute;
   inset: 0;
   pointer-events: none;
+
+  /*
+   * Face tones, derived rather than hardcoded so the whole room re-lights
+   * with the mood accent. The warm tint on the top face is the cheap trick
+   * that implies a light source above the booth.
+   */
+  --face-top: color-mix(in oklab, var(--vibe-accent, var(--accent)) 12%, var(--surface-2));
+  --face-front: var(--surface-2);
+  --face-side: color-mix(in oklab, var(--bg) 55%, var(--surface-2));
+  --edge: var(--text-4);
+  --vinyl: color-mix(in oklab, var(--bg) 82%, black);
 }
 
 /* A horizon, not a drawn line — the stage above has no border, so a hard rule
@@ -30,6 +46,20 @@
   );
 }
 
+/*
+ * The room is laid out so Bit's routine reads LEFT TO RIGHT:
+ *
+ *   [spkL]   library -> decks            dance floor            [spkR]
+ *     3%       20%      28%                  ~62%                88%
+ *
+ * He digs at the library, plays it on the decks immediately to its right,
+ * then walks out to the open middle to dance. Putting the library and booth
+ * adjacent is what makes that one gesture rather than a trek, and leaving the
+ * right half clear is what gives the groove somewhere to happen.
+ *
+ * Stations in BitDock.module.css are the CENTRES of these pieces and must
+ * move with them.
+ */
 .crates, .booth, .speaker {
   position: absolute;
   bottom: 0;
@@ -38,91 +68,111 @@
   transition: opacity 260ms var(--ease), transform 260ms var(--ease);
 }
 
-/* The stand-down itself is an inline style set in BitScene.jsx; see the
-   comment there for why. This transition is what makes it a fade rather than
-   a cut — a hard cut reads as a glitch at this size. */
+.crates { left: 20%; width: clamp(70px, 7.6vw, 112px); }
+.booth { left: 28%; width: clamp(130px, 15vw, 214px); }
 
-/*
- * The room is laid out so Bit's routine reads LEFT TO RIGHT:
- *
- *   [spkL]   library -> decks            dance floor            [spkR]
- *     3%       20%      28%                  ~62%                88%
- *
- * He digs at the library, plays it on the decks immediately to its right,
- * then walks out to the open middle to dance. Putting the library and the
- * booth adjacent is what makes that a single gesture rather than a trek, and
- * leaving the right half clear is what gives the groove somewhere to happen.
- *
- * Stations in BitDock.module.css are the CENTRES of these pieces and must
- * move with them.
- */
-.crates { left: 20%; width: clamp(64px, 7vw, 104px); }
-.booth { left: 28%; width: clamp(120px, 14vw, 200px); }
-
-.speaker { width: clamp(34px, 4vw, 56px); }
+.speaker { width: clamp(40px, 4.6vw, 66px); }
 .speakerL { left: 3%; }
 .speakerR { left: 88%; }
 
-/* ------------------------------------------------------------- materials */
+/* ------------------------------------------------------------ the faces */
 
-.crate rect, .shelfBack > rect:first-child {
-  fill: var(--surface-2);
-  stroke: var(--border-strong);
-  stroke-width: 1.2;
+.faceTop,
+.faceFront,
+.faceSide {
+  stroke: var(--edge);
+  stroke-width: 1;
+  stroke-linejoin: round;
 }
 
-.sleeve, .sleeveOut { fill: var(--surface); stroke: var(--border); stroke-width: 0.6; }
-.sleeveOut { fill: color-mix(in oklab, var(--vibe-accent, var(--accent)) 28%, var(--surface)); }
+.faceTop { fill: var(--face-top); }
+.faceFront { fill: var(--face-front); }
+.faceSide { fill: var(--face-side); }
 
-/* Back shelf is dimmer and desaturated — depth without drawing perspective. */
-.shelfBack { opacity: 0.45; }
-.sleeveBack { fill: var(--surface); stroke: var(--border); stroke-width: 0.5; }
+/* Set-back pieces lose contrast as well as size — atmospheric perspective
+   does more for depth here than the projection alone. */
+.far { opacity: 0.4; }
 
-.leaner circle:first-child { fill: #07070b; stroke: var(--border-strong); stroke-width: 1; }
+/* A LIGHT pool on the ground, not a dark one: the page background is already
+   near-black, so a dark shadow is invisible. */
+.groundShadow {
+  fill: var(--text);
+  opacity: 0.05;
+}
+
+.lip { fill: color-mix(in oklab, var(--text) 9%, transparent); stroke: none; }
+
+/* ------------------------------------------------------------ the crate */
+
+.sleeve { fill: var(--surface); stroke: var(--border); stroke-width: 0.7; }
+.sleeveEdge { fill: color-mix(in oklab, var(--bg) 45%, var(--surface)); stroke: none; }
+
+.sleeveProud {
+  fill: color-mix(in oklab, var(--vibe-accent, var(--accent)) 30%, var(--surface));
+  stroke: var(--border-strong);
+  stroke-width: 0.7;
+}
+
+/* Tilted off the vertical so the record reads as RESTING against the crate.
+   Upright, it looks like it is hovering beside one. */
+.leaner {
+  transform-box: view-box;
+  transform-origin: 88px 70px; /* where it touches the floor, so it pivots there */
+  transform: rotate(-9deg);
+}
+
+.leanerDisc { fill: var(--vinyl); stroke: var(--edge); stroke-width: 1; }
 .leanerLabel { fill: var(--vibe-accent, var(--accent)); }
 
-.boothBody { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 1.2; }
-.boothLip { fill: color-mix(in oklab, var(--text) 6%, transparent); }
+/* ------------------------------------------------------------ the decks */
 
-.platter { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1; }
-.disc { fill: #07070b; stroke: var(--border); stroke-width: 0.8; }
+.platter { fill: var(--face-side); stroke: var(--edge); stroke-width: 1; }
+.disc { fill: var(--vinyl); stroke: var(--border); stroke-width: 0.7; }
+.groove { fill: none; stroke: var(--border); stroke-width: 0.6; }
 .discLabel { fill: var(--vibe-accent, var(--accent)); }
-.discNick { fill: var(--vibe-accent-2, var(--accent)); }
-.tonearm { stroke: var(--text-4); stroke-width: 1.4; stroke-linecap: round; }
+.nick { fill: var(--vibe-accent-2, var(--accent)); }
 
-.mixer rect:first-child { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1; }
-.fader { fill: var(--bg); }
-.knob { fill: var(--vibe-accent-2, var(--accent)); opacity: 0.8; }
+.tonearm { fill: none; stroke: var(--text-4); stroke-width: 1.6; stroke-linecap: round; }
+.pivot { fill: var(--face-top); stroke: var(--edge); stroke-width: 1; }
 
-.cab { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 1.2; }
-.cone { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1; }
-.tweeter { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1; }
+.mixerFront { fill: var(--surface); stroke: var(--edge); stroke-width: 1; }
+.faderSlot { fill: var(--bg); }
+.led { fill: var(--vibe-accent-2, var(--accent)); opacity: 0.8; }
+
+/* --------------------------------------------------------- the speakers */
+
+.cone,
+.tweeter {
+  fill: var(--face-side);
+  stroke: var(--edge);
+  stroke-width: 1;
+}
+
 .coneInner { fill: var(--vibe-accent, var(--accent)); }
 
 /* --------------------------------------------------------------- motion */
 
 /*
- * The platters spin only while something is playing, and at the TRACK's
- * tempo: --beat is written onto the dock by BitDock, so the decks and Bit's
- * groove are locked to the same clock. Eight beats per revolution keeps it
- * readable — one beat per turn is a blur at 120 BPM.
+ * The orbiting nick is what shows rotation, and it runs at the TRACK's tempo:
+ * --beat is written onto the dock by BitDock, so the decks and Bit's groove
+ * are locked to the same clock. Eight beats per revolution keeps it readable;
+ * one beat per turn is a blur at 120 BPM.
+ *
+ * transform-box is NOT set here, on purpose. This group is already centred on
+ * the platter by its parent's transform ATTRIBUTE, so rotating about its own
+ * origin is correct — view-box would resolve against the whole viewBox and
+ * fling the nick across the desk.
  */
-.discSpin {
-  transform-box: view-box;
-  transform-origin: center;
-  animation: spin calc(var(--beat, 0.5s) * 8) linear infinite;
+.orbit {
+  animation: orbit calc(var(--beat, 0.5s) * 8) linear infinite;
 }
 
-/* Per-deck origin: transform-box:view-box resolves against the whole viewBox,
-   so each platter needs its own centre rather than `center`. */
-.booth g:nth-of-type(1) .discSpin { transform-origin: 26px 46px; }
-.booth g:nth-of-type(2) .discSpin { transform-origin: 112px 46px; }
-
-@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes orbit { to { transform: rotate(360deg); } }
 
 /* Speaker cones push on the beat. Subtle on purpose — this sits under the
    transport controls and must never pull the eye off them. */
-.cone, .tweeter {
+.cone,
+.tweeter {
   transform-box: fill-box;
   transform-origin: center;
   animation: thump var(--beat, 0.5s) var(--ease) infinite;
@@ -130,38 +180,35 @@
 
 .tweeter { animation-delay: calc(var(--beat, 0.5s) / 2); }
 
-/* Offsets the whole right cabinet by half a beat against the left. */
+/* Offsets the whole right cabinet half a beat against the left. */
 .speakerR .cone { animation-delay: calc(var(--beat, 0.5s) / 2); }
 .speakerR .tweeter { animation-delay: 0s; }
 
 @keyframes thump {
   0%, 100% { transform: scale(1); }
-  18% { transform: scale(1.07); }
+  18% { transform: scale(1.06); }
 }
 
-.knob { animation: led calc(var(--beat, 0.5s) * 2) var(--ease) infinite backwards; }
-.knob:nth-of-type(2) { animation-delay: calc(var(--beat, 0.5s) * 0.3); }
-.knob:nth-of-type(3) { animation-delay: calc(var(--beat, 0.5s) * 0.6); }
+.led { animation: led calc(var(--beat, 0.5s) * 2) var(--ease) infinite backwards; }
+.led:nth-of-type(2) { animation-delay: calc(var(--beat, 0.5s) * 0.3); }
+.led:nth-of-type(3) { animation-delay: calc(var(--beat, 0.5s) * 0.6); }
 
 @keyframes led {
-  0%, 100% { opacity: 0.35; }
+  0%, 100% { opacity: 0.3; }
   50% { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .discSpin, .cone, .tweeter, .knob { animation: none; }
-  .knob { opacity: 0.7; }
+  .orbit, .cone, .tweeter, .led { animation: none; }
+  .led { opacity: 0.7; }
 }
 
-/*
- * Narrow stages cannot hold three set pieces without them colliding with Bit.
- * The crates are the first to go: the decks are what the player is actually
- * doing, and the speaker is the cheapest beat cue on screen.
- */
+/* ----------------------------------------------------------- responsive */
+
 /*
  * Narrowing drops furniture from the OUTSIDE in. The library and decks are
- * the pair that carries the routine, so they are the last to go; a speaker is
- * the cheapest thing on screen to lose.
+ * the pair that carries the routine, so they go last; a speaker is the
+ * cheapest thing on screen to lose.
  */
 @media (max-width: 1100px) {
   .speakerR { display: none; }
