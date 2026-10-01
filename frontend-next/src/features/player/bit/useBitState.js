@@ -43,18 +43,27 @@ import { ANIMATIONS, META, SUGGESTED_PROP } from './manifest';
  * Anything unlisted falls back to 'centre'.
  */
 const STATION = {
-  digging: 'crates',   // hunting through the record library
+  // The routine, in the order the room is laid out: he hunts through the
+  // library, drops the record on the decks beside it, then walks out to the
+  // open middle to dance while it plays.
+  digging: 'crates',
   asleep: 'crates',    // slumped against them, out of the way
-  groove: 'decks',     // working the turntables
-  celebrate: 'decks',  // spinning the record he just played out
-  sulk: 'decks',       // throws it from where he was standing
+
+  // Anything that is ABOUT the record happens at the equipment.
+  celebrate: 'decks',  // spinning out the one he just played
+  sulk: 'decks',       // the deck he wrecks is the one in front of him
+  rewind: 'decks',
   listening: 'decks',
   watching: 'decks',
-  rewind: 'decks',
-  catch: 'right',      // meets a record arriving from the queue sidebar
-  locked: 'centre',
-  confused: 'centre',
-  idle: 'centre',
+
+  // Playing is the one thing he does away from the gear — the whole point of
+  // keeping the right half of the room empty.
+  groove: 'floor',
+
+  catch: 'floor',      // meets a record thrown in from the queue sidebar
+  locked: 'floor',
+  confused: 'floor',
+  idle: 'floor',
 };
 
 /** Re-roll a looping animation this often so a long idle does not go stale. */
@@ -194,7 +203,7 @@ export default function useBitState({
 
   const beat = useMemo(() => beatSeconds(current && current.tempo), [current]);
   const prop = SUGGESTED_PROP[state] || null;
-  const station = STATION[state] || 'centre';
+  const station = STATION[state] || 'floor';
 
   return { state, animKey, prop, beat, station, fire };
 }

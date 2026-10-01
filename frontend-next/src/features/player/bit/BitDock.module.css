@@ -69,28 +69,35 @@
 .spot {
   position: absolute;
   bottom: 0;
-  left: 42%;
+  left: 62%;
   transform: translateX(-50%);
   transition: left 900ms var(--ease-out);
   will-change: left;
 }
 
-/* Centres of the matching set pieces, so Bit stands exactly where the
-   static furniture was before it stood down. */
-.dock[data-station='crates'] .spot { left: 8%; }
-.dock[data-station='centre'] .spot { left: 42%; }
-.dock[data-station='decks']  .spot { left: 63%; }
-.dock[data-station='right']  .spot { left: 80%; }
+/*
+ * Centres of the matching set pieces, so he stands exactly where the static
+ * furniture was before it stood down. These track BitScene.module.css:
+ * crates at 20% (~101px wide) and booth at 28% (~200px wide) at a 1440 dock.
+ */
+.dock[data-station='crates'] .spot { left: 23%; }
+.dock[data-station='decks']  .spot { left: 35%; }
+/* Open right half — far enough from the gear that dancing reads as a move
+   away from it rather than hovering beside it. */
+.dock[data-station='floor']  .spot { left: 62%; }
 
-/* The set pieces vanish on narrower stages (see BitScene.module.css), so the
-   stations have to close up behind them or Bit walks to an empty floor. */
+/* Furniture drops from the outside in as the stage narrows (see
+   BitScene.module.css), so the stations close up behind it. */
 @media (max-width: 1100px) {
-  .dock[data-station='crates'] .spot { left: 24%; }
-  .dock[data-station='decks']  .spot { left: 50%; }
+  .dock[data-station='crates'] .spot { left: 17%; }
+  .dock[data-station='decks']  .spot { left: 31%; }
+  .dock[data-station='floor']  .spot { left: 64%; }
 }
 
 @media (max-width: 860px) {
-  .dock[data-station='right'] .spot { left: 70%; }
+  .dock[data-station='crates'] .spot { left: 9%; }
+  .dock[data-station='decks']  .spot { left: 24%; }
+  .dock[data-station='floor']  .spot { left: 62%; }
 }
 
 .rig {

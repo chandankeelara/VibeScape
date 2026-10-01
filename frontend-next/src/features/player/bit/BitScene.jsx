@@ -102,14 +102,25 @@ export default function BitScene({ playing, using }) {
         </g>
       </svg>
 
-      {/* ------------------------------------------------------- speaker stack */}
-      <svg className={styles.speaker} viewBox="0 0 48 92">
-        <rect className={styles.cab} x="4" y="8" width="40" height="80" rx="4" />
-        <circle className={styles.cone} cx="24" cy="32" r="13" />
-        <circle className={styles.coneInner} cx="24" cy="32" r="5" />
-        <circle className={styles.tweeter} cx="24" cy="66" r="7" />
-        <circle className={styles.coneInner} cx="24" cy="66" r="2.6" />
-      </svg>
+      {/* ------------------------------------------------------ speaker stacks */}
+      {/* A stereo pair bookending the room. Both run off --beat, but the right
+          one is offset half a beat so the pair reads as a groove rather than
+          two things twitching in unison. */}
+      <Speaker className={styles.speakerL} />
+      <Speaker className={styles.speakerR} />
     </div>
+  );
+}
+
+/** One cabinet. Cones push on the beat; see BitScene.module.css. */
+function Speaker({ className }) {
+  return (
+    <svg className={`${styles.speaker} ${className}`} viewBox="0 0 48 92" aria-hidden="true">
+      <rect className={styles.cab} x="4" y="8" width="40" height="80" rx="4" />
+      <circle className={styles.cone} cx="24" cy="32" r="13" />
+      <circle className={styles.coneInner} cx="24" cy="32" r="5" />
+      <circle className={styles.tweeter} cx="24" cy="66" r="7" />
+      <circle className={styles.coneInner} cx="24" cy="66" r="2.6" />
+    </svg>
   );
 }

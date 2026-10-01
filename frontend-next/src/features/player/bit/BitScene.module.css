@@ -42,11 +42,26 @@
    comment there for why. This transition is what makes it a fade rather than
    a cut — a hard cut reads as a glitch at this size. */
 
-/* Stations the rig travels between live in BitDock.module.css; these are the
-   furniture positions those stations are derived from. */
-.crates { left: 4%; width: clamp(64px, 7vw, 104px); }
-.booth { left: 56%; width: clamp(120px, 14vw, 200px); }
-.speaker { left: 86%; width: clamp(34px, 4vw, 56px); }
+/*
+ * The room is laid out so Bit's routine reads LEFT TO RIGHT:
+ *
+ *   [spkL]   library -> decks            dance floor            [spkR]
+ *     3%       20%      28%                  ~62%                88%
+ *
+ * He digs at the library, plays it on the decks immediately to its right,
+ * then walks out to the open middle to dance. Putting the library and the
+ * booth adjacent is what makes that a single gesture rather than a trek, and
+ * leaving the right half clear is what gives the groove somewhere to happen.
+ *
+ * Stations in BitDock.module.css are the CENTRES of these pieces and must
+ * move with them.
+ */
+.crates { left: 20%; width: clamp(64px, 7vw, 104px); }
+.booth { left: 28%; width: clamp(120px, 14vw, 200px); }
+
+.speaker { width: clamp(34px, 4vw, 56px); }
+.speakerL { left: 3%; }
+.speakerR { left: 88%; }
 
 /* ------------------------------------------------------------- materials */
 
@@ -115,6 +130,10 @@
 
 .tweeter { animation-delay: calc(var(--beat, 0.5s) / 2); }
 
+/* Offsets the whole right cabinet by half a beat against the left. */
+.speakerR .cone { animation-delay: calc(var(--beat, 0.5s) / 2); }
+.speakerR .tweeter { animation-delay: 0s; }
+
 @keyframes thump {
   0%, 100% { transform: scale(1); }
   18% { transform: scale(1.07); }
@@ -139,12 +158,19 @@
  * The crates are the first to go: the decks are what the player is actually
  * doing, and the speaker is the cheapest beat cue on screen.
  */
+/*
+ * Narrowing drops furniture from the OUTSIDE in. The library and decks are
+ * the pair that carries the routine, so they are the last to go; a speaker is
+ * the cheapest thing on screen to lose.
+ */
 @media (max-width: 1100px) {
-  .crates { display: none; }
-  .booth { left: 48%; }
+  .speakerR { display: none; }
+  .crates { left: 14%; }
+  .booth { left: 24%; }
 }
 
 @media (max-width: 860px) {
-  .speaker { display: none; }
-  .booth { left: 52%; }
+  .speakerL { display: none; }
+  .crates { left: 6%; }
+  .booth { left: 17%; }
 }
