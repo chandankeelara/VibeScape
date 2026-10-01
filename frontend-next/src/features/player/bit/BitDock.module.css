@@ -1,0 +1,133 @@
+/* ------------------------------------------------------------- Bit's dock
+ *
+ * A fixed strip along the bottom of the stage column. See BitDock.jsx for why
+ * it is fixed rather than a grid row.
+ *
+ * z-index sits at --z-sticky (100), BELOW --z-overlay (200) and --z-modal
+ * (300). Three things already live at the bottom of the viewport and all of
+ * them must stay on top of Bit:
+ *   - the queue sidebar's mobile sheet + FAB  (fixed, --z-overlay, <=640px)
+ *   - the queue drag ghost and drop indicator (fixed, --z-overlay, on <body>)
+ *   - a detached video frame                  (fixed, --z-modal, draggable
+ *                                              anywhere by the user)
+ */
+
+.dock {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  /* Full viewport width. The queue sidebar is align-self:start and caps at a
+     10-row budget, so the floor continues underneath it — Bit's room is the
+     whole bottom of the app, not just the stage column. */
+  right: 0;
+  /*
+   * Far taller than the furniture, on purpose.
+   *
+   * The set dressing and Bit are both anchored to the FLOOR; everything above
+   * them is transparent headroom so a thrown record or a jump has somewhere to
+   * go instead of being clipped. Measured at 1440x900 there are 108px free
+   * below the art card and 150px below the mood labels, but overlapping those
+   * costs nothing here — the dock takes no pointer events and the upper region
+   * is empty.
+   */
+  height: clamp(132px, 24dvh, 260px);
+
+  /*
+   * Low on purpose, and lower than it used to be.
+   *
+   * Now that the dock runs under the sidebar it overlaps the bottom of it on
+   * taller screens, and a fixed element paints above non-positioned in-flow
+   * content whatever its z-index. The sidebar is given an explicit z-index in
+   * PlayerPage.module.css so it wins; this has to sit below that. Still far
+   * below --z-overlay (drag ghost, mobile sheet) and --z-modal (detached
+   * video), which must stay on top of the scenery.
+   */
+  z-index: 1;
+
+  /* Non-negotiable. The band covers the full width of the stage, so without
+     this it would eat every click on the transport and the mood slider. */
+  pointer-events: none;
+
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  overflow: hidden;
+}
+
+/*
+ * Bit travels to the station his state belongs to, instead of reacting from
+ * one spot: he digs AT the crates and plays AT the decks.
+ *
+ * Positions are percentages of the dock so they track the furniture in
+ * BitScene.module.css, which is sized in vw. `left` rather than translateX
+ * because the stations are absolute places in the room, not offsets from a
+ * neutral pose.
+ *
+ * The walk is slow enough to read as walking — at --dur-slow (420ms) crossing
+ * the room looked like a teleport.
+ */
+.spot {
+  position: absolute;
+  bottom: 0;
+  left: 42%;
+  transform: translateX(-50%);
+  transition: left 900ms var(--ease-out);
+  will-change: left;
+}
+
+.dock[data-station='crates'] .spot { left: 13%; }
+.dock[data-station='centre'] .spot { left: 42%; }
+.dock[data-station='decks']  .spot { left: 58%; }
+.dock[data-station='right']  .spot { left: 80%; }
+
+/* The set pieces vanish on narrower stages (see BitScene.module.css), so the
+   stations have to close up behind them or Bit walks to an empty floor. */
+@media (max-width: 1100px) {
+  .dock[data-station='crates'] .spot { left: 24%; }
+  .dock[data-station='decks']  .spot { left: 50%; }
+}
+
+@media (max-width: 860px) {
+  .dock[data-station='right'] .spot { left: 70%; }
+}
+
+.rig {
+  display: block;
+  height: clamp(76px, 11dvh, 118px);
+  width: auto;
+  /* The rig draws a soft ground shadow that extends past the body, and the
+     dock clips at the bottom edge. */
+  overflow: visible;
+}
+
+/* ------------------------------------------------------------- responsive */
+
+/* Sidebar collapses under the stage here, so the dock takes the full width. */
+@media (max-width: 900px) {
+  .dock { right: 0; }
+}
+
+/*
+ * Below 640px the queue sidebar becomes a fixed bottom SHEET with a FAB, in
+ * exactly this space — and .stage already reserves padding-bottom: 120px for
+ * it. Two things cannot own the bottom of a phone screen, and the queue is
+ * the one that does something, so Bit stands down.
+ */
+@media (max-width: 640px) {
+  .dock { display: none; }
+}
+
+/*
+ * Short viewports have no spare vertical room: the hero card is sized in dvh
+ * (clamp(420px, 62dvh, 640px)) so it is already fighting for the space Bit
+ * would take.
+ */
+@media (max-height: 620px) {
+  .dock { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Posture still changes per state — the rig's own reduced-motion rules keep
+     a resting pose — but Bit stops walking around the screen. */
+  .spot { transition: none; }
+}

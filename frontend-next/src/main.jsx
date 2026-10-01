@@ -12,7 +12,8 @@ import './styles/global.css';
 // effect. See src/media/README.md for why (StrictMode double-invokes effects,
 // and createMediaElementSource is callable once per element for the lifetime
 // of the page).
-player.init();
+function bootApp() {
+  player.init();
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -28,7 +29,7 @@ const queryClient = new QueryClient({
   },
 });
 
-createRoot(document.getElementById('root')).render(
+  createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
@@ -41,4 +42,25 @@ createRoot(document.getElementById('root')).render(
       </ToastProvider>
     </QueryClientProvider>
   </React.StrictMode>
-);
+  );
+}
+
+/*
+ * Mascot review page: /next/?bit
+ *
+ * Mounts BitLab INSTEAD of the app — no auth gate, no router, no
+ * PlayerProvider — because the rig has to be reviewable before it is wired
+ * into anything. Dynamically imported so the 60KB animation stylesheet stays
+ * out of the main bundle until the mascot actually ships.
+ *
+ * Remove this branch along with BitLab.* when Bit goes live.
+ */
+if (new URLSearchParams(window.location.search).has('bit')) {
+  import('./features/player/bit/BitLab').then(({ default: BitLab }) => {
+    createRoot(document.getElementById('root')).render(
+      <React.StrictMode><BitLab /></React.StrictMode>
+    );
+  });
+} else {
+  bootApp();
+}

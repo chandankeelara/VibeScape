@@ -9,6 +9,7 @@ import Transport from './Transport';
 import MoodSlider from './MoodSlider';
 import RecentTrail from './RecentTrail';
 import useKeyboardShortcuts from './useKeyboardShortcuts';
+import BitDock from './bit/BitDock';
 import styles from './PlayerPage.module.css';
 
 export default function PlayerPage() {
@@ -61,6 +62,10 @@ export default function PlayerPage() {
       <div className={styles.sidebarSlot}>
         <QueueSidebar />
       </div>
+
+      {/* Fixed to the bottom of the stage column and pointer-events:none, so
+          it sits outside the grid and cannot reflow or block anything. */}
+      <BitDock />
 
       <LazyPanels
         metricsOpen={metricsOpen}

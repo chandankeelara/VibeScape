@@ -43,6 +43,13 @@
   grid-row: 3;
   min-width: 0;
   min-height: 0;
+  /*
+   * Above the mascot's dock, which is fixed and spans the full viewport width
+   * so its floor runs under this rail. A grid item takes z-index without
+   * needing position, and without this the scenery would paint over the
+   * bottom rows of the DJ picks.
+   */
+  z-index: 2;
 }
 
 .trailSlot { min-width: 0; }

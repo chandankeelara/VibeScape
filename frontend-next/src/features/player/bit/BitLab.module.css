@@ -1,0 +1,141 @@
+/* Review page chrome for BitLab. Not shipped UI — see BitLab.jsx. */
+
+.page {
+  min-height: 100dvh;
+  padding: 0 var(--sp-5) var(--sp-7);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+}
+
+/* ------------------------------------------------------------------- bar */
+
+.bar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-3) 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand { font-size: 13px; font-weight: 600; }
+
+.ctl, .check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.ctl code, .check span {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-2);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.ctl input[type='range'] { width: 150px; accent-color: var(--vibe-accent, var(--accent)); }
+.check input { accent-color: var(--vibe-accent, var(--accent)); }
+
+.sel {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.swatches { display: inline-flex; gap: 6px; margin-left: auto; }
+
+.swatches button {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------------- groups */
+
+.group { padding-top: var(--sp-5); }
+
+.h {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  margin: 0 0 var(--sp-3);
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.meta {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--text-4);
+}
+
+.row { display: flex; flex-wrap: wrap; gap: var(--sp-4); }
+
+.cell { margin: 0; width: 150px; }
+
+/* A mid-tone backdrop, not --bg: Bit's body is --surface-2 and its outline is
+   a low-alpha white, so on the page background the silhouette washes out and
+   motion is hard to read. */
+.stage {
+  display: grid;
+  place-items: end center;
+  height: 150px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+/* Loud on purpose — a missing class otherwise looks like a calm idle pose. */
+.broken {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.rig { height: 128px; width: auto; overflow: visible; }
+
+.cap {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.key { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag { color: var(--text-4); flex: none; }
+
+/*
+ * Slow motion, for inspecting a single pose mid-animation.
+ *
+ * Rides the rig's OWN duration variables rather than forcing durations with
+ * !important: --beat drives the 34 groove/loop animations and --t is declared
+ * per one-shot state class. Overriding both from a more specific selector
+ * slows everything uniformly and keeps their relative timing intact.
+ *
+ * `.slow .rig` is (0,2,0) and beats the state class's own (0,1,0) --t.
+ */
+.slow { --beat: 1.6s; }
+.slow .rig { --t: 4000ms; }

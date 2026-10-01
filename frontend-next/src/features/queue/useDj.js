@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePlayer, usePlaybackTime } from '../../state/PlayerContext';
 import { useToast } from '../../state/ToastContext';
 import { apiKey } from '../../lib/vibe';
+import { emitMascot } from '../../lib/mascotBus';
 import {
   appendEvent,
   bufferSignature,
@@ -95,6 +96,10 @@ export function useDj() {
     eventsRef.current = next;
     persistEvents(next);
     setEvents(next);
+    // Announced AFTER the buffer actually changed, so a de-duplicated event
+    // (appendEvent returns the same array when it rejects one) cannot make the
+    // mascot react to something that was never recorded.
+    emitMascot(evt.action, evt);
     return next;
   }, []);
 
