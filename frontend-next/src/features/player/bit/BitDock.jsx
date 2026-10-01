@@ -2,7 +2,6 @@ import { Component, useEffect } from 'react';
 import { usePlayer } from '../../../state/PlayerContext';
 import { onMascot } from '../../../lib/mascotBus';
 import BitRig from './BitRig';
-import BitScene from './BitScene';
 import useBitState from './useBitState';
 import { ANIMATIONS, META, classFor } from './manifest';
 import styles from './BitDock.module.css';
@@ -26,7 +25,7 @@ import styles from './BitDock.module.css';
 function BitDockInner() {
   const { current, playing, loadingTrack, verifying, mode, source, vibe } = usePlayer();
 
-  const { state, animKey, prop, beat, station, fire } = useBitState({
+  const { state, animKey, prop, beat, fire } = useBitState({
     current,
     playing,
     loadingTrack,
@@ -44,13 +43,10 @@ function BitDockInner() {
       className={styles.dock}
       style={{ '--beat': `${beat}s` }}
       data-state={state}
-      data-station={station}
       // Purely decorative: every state it reflects is already announced by a
       // real control or an aria-live region elsewhere in the player.
       aria-hidden="true"
     >
-      <BitScene playing={playing} using={prop} />
-
       <div className={styles.spot}>
         <BitRig className={`${styles.rig} ${classFor(animKey)}`} prop={prop} />
       </div>

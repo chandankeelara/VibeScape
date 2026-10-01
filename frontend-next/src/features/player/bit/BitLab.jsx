@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import BitRig from './BitRig';
-import BitScene from './BitScene';
-import { STATION } from './useBitState';
 import { ANIMATIONS, META, SUGGESTED_PROP, classFor } from './manifest';
 import dock from './BitDock.module.css';
 import styles from './BitLab.module.css';
@@ -67,7 +65,6 @@ export default function BitLab() {
   const pool = ANIMATIONS[state] || [];
   const animKey = pool[Math.min(variant, pool.length - 1)];
   const prop = SUGGESTED_PROP[state] || null;
-  const station = STATION[state] || 'floor';
 
   const pick = useCallback((s, v = 0) => { setState(s); setVariant(v); }, []);
 
@@ -83,12 +80,11 @@ export default function BitLab() {
         <Head
           n="01"
           title="In the player"
-          note="Real dock stylesheet, real scale, real station. Nothing here is a mock-up."
+          note="Real dock stylesheet, real scale. Nothing here is a mock-up."
         />
 
         <div className={styles.stageWrap}>
-          <div className={`${dock.dock} ${styles.stageDock}`} data-station={station}>
-            <BitScene playing={state === 'groove'} using={prop} />
+          <div className={`${dock.dock} ${styles.stageDock}`}>
             <div className={dock.spot}>
               <BitRig className={`${dock.rig} ${classFor(animKey)}`} prop={prop} />
             </div>
@@ -124,30 +120,14 @@ export default function BitLab() {
           <span className={styles.vMeta}>
             {META[animKey] && META[animKey].loop ? 'loops' : `${META[animKey] && META[animKey].ms}ms one-shot`}
             {prop ? ` · holds the ${prop}` : ' · no prop'}
-            {` · at the ${station}`}
           </span>
-        </div>
-      </section>
-
-      {/* --------------------------------------------------------- the room */}
-      <section className={styles.block}>
-        <Head
-          n="02"
-          title="The room"
-          note="Isometric set dressing. Depth runs on one shared vector, which is what makes it a space rather than three unrelated props."
-        />
-        <div className={styles.rooms}>
-          <Room label="playing" playing />
-          <Room label="stopped" />
-          <Room label="Bit has the crate — library stands down" playing using="crate" />
-          <Room label="Bit has the deck — booth stands down" playing using="deck" />
         </div>
       </section>
 
       {/* ------------------------------------------------------------ props */}
       <section className={styles.block}>
         <Head
-          n="03"
+          n="02"
           title="The props"
           note="All eight, each in the pose that shows it off, at double the grid size. Props are only ever seen in Bit's hands, so they are judged there rather than laid out on their own."
         />
@@ -161,7 +141,7 @@ export default function BitLab() {
       {/* --------------------------------------------------- every variant */}
       <section className={styles.block}>
         <Head
-          n="04"
+          n="03"
           title="Every animation"
           note={`${total} clips across ${STATES.length} states. One-shots replay on a timer here; in the player they fire once and hand back. Click any cell to load it into the preview above.`}
         >
@@ -177,8 +157,7 @@ export default function BitLab() {
               {s}
               <span className={styles.groupMeta}>
                 {SUGGESTED_PROP[s] ? `prop: ${SUGGESTED_PROP[s]}` : 'no prop'}
-                {` · at the ${STATION[s] || 'floor'}`}
-                {s === 'groove' ? ' · chosen by mood band, not at random' : ''}
+                {s === 'groove' ? ' · 3 moves per mood band, rolled within the band' : ''}
               </span>
             </h3>
             <div className={styles.row}>
@@ -307,17 +286,6 @@ function Routine({ onStep }) {
 }
 
 /* ------------------------------------------------------------------ cells */
-
-function Room({ label, playing = false, using = null }) {
-  return (
-    <figure className={styles.roomCell}>
-      <div className={styles.roomStage}>
-        <BitScene playing={playing} using={using} />
-      </div>
-      <figcaption className={styles.cap}>{label}</figcaption>
-    </figure>
-  );
-}
 
 /**
  * One animation cell.

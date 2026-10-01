@@ -55,49 +55,18 @@
 }
 
 /*
- * Bit travels to the station his state belongs to, instead of reacting from
- * one spot: he digs AT the crates and plays AT the decks.
+ * Bit stands centre stage.
  *
- * Positions are percentages of the dock so they track the furniture in
- * BitScene.module.css, which is sized in vw. `left` rather than translateX
- * because the stations are absolute places in the room, not offsets from a
- * neutral pose.
- *
- * The walk is slow enough to read as walking — at --dur-slow (420ms) crossing
- * the room looked like a teleport.
+ * He used to walk between stations — the crates, the decks, the dance floor —
+ * but those were positions of FURNITURE, and with the room gone there is
+ * nowhere to walk to. Travelling to an empty patch of floor reads as drift,
+ * not purpose, so he holds the middle and the animations carry the life.
  */
 .spot {
   position: absolute;
   bottom: 0;
-  left: 62%;
+  left: 50%;
   transform: translateX(-50%);
-  transition: left 900ms var(--ease-out);
-  will-change: left;
-}
-
-/*
- * Centres of the matching set pieces, so he stands exactly where the static
- * furniture was before it stood down. These track BitScene.module.css:
- * crates at 20% (~101px wide) and booth at 28% (~200px wide) at a 1440 dock.
- */
-.dock[data-station='crates'] .spot { left: 23%; }
-.dock[data-station='decks']  .spot { left: 35%; }
-/* Open right half — far enough from the gear that dancing reads as a move
-   away from it rather than hovering beside it. */
-.dock[data-station='floor']  .spot { left: 62%; }
-
-/* Furniture drops from the outside in as the stage narrows (see
-   BitScene.module.css), so the stations close up behind it. */
-@media (max-width: 1100px) {
-  .dock[data-station='crates'] .spot { left: 17%; }
-  .dock[data-station='decks']  .spot { left: 31%; }
-  .dock[data-station='floor']  .spot { left: 64%; }
-}
-
-@media (max-width: 860px) {
-  .dock[data-station='crates'] .spot { left: 9%; }
-  .dock[data-station='decks']  .spot { left: 24%; }
-  .dock[data-station='floor']  .spot { left: 62%; }
 }
 
 .rig {

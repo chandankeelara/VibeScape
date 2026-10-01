@@ -44,42 +44,6 @@ import * as manifest from './manifest';
  * keyframes it is supposed to feed.
  */
 
-/**
- * Where Bit stands, as a STATION rather than a coordinate.
- *
- * The scene owns where the furniture is, so naming the destination keeps the
- * two from drifting apart — move the crates in BitScene and Bit still digs at
- * them. The percentages themselves live in BitDock.module.css.
- *
- * Anything unlisted falls back to 'centre'.
- */
-export const STATION = {
-  // The routine, in the order the room is laid out: he hunts through the
-  // library, drops the record on the decks beside it, then walks out to the
-  // open middle to dance while it plays.
-  digging: 'crates',
-  asleep: 'crates',    // slumped against them, out of the way
-
-  // Starting the track: the beat between digging it out and dancing to it.
-  cueing: 'decks',
-
-  // Anything that is ABOUT the record happens at the equipment.
-  celebrate: 'decks',  // spinning out the one he just played
-  sulk: 'decks',       // the deck he wrecks is the one in front of him
-  rewind: 'decks',
-  listening: 'decks',
-  watching: 'decks',
-
-  // Playing is the one thing he does away from the gear — the whole point of
-  // keeping the right half of the room empty.
-  groove: 'floor',
-
-  catch: 'floor',      // meets a record thrown in from the queue sidebar
-  locked: 'floor',
-  confused: 'floor',
-  idle: 'floor',
-};
-
 /** Re-roll a looping animation this often so a long idle does not go stale. */
 const VARIETY_MS = 9000;
 
@@ -262,7 +226,6 @@ export default function useBitState({
 
   const beat = useMemo(() => beatSeconds(current && current.tempo), [current]);
   const prop = SUGGESTED_PROP[state] || null;
-  const station = STATION[state] || 'floor';
 
-  return { state, animKey, prop, beat, station, fire };
+  return { state, animKey, prop, beat, fire };
 }
