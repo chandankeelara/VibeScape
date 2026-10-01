@@ -68,10 +68,14 @@
   transition: opacity 260ms var(--ease), transform 260ms var(--ease);
 }
 
-.crates { left: 20%; width: clamp(70px, 7.6vw, 112px); }
-.booth { left: 28%; width: clamp(130px, 15vw, 214px); }
+.crates { left: 20%; width: clamp(70px, 7.6vw, 146px); }
+.booth { left: 28%; width: clamp(130px, 15vw, 280px); }
 
-.speaker { width: clamp(40px, 4.6vw, 66px); }
+/* Ceilings raised so the room keeps pace with Bit on large screens. At the
+   old caps the furniture stopped growing at ~1440 while he carried on, and
+   he drifted from 1.4x the booth height to 1.7x — a mascot looming over a
+   doll's house. */
+.speaker { width: clamp(40px, 4.6vw, 88px); }
 .speakerL { left: 3%; }
 .speakerR { left: 88%; }
 

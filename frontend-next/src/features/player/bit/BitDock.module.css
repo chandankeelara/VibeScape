@@ -30,7 +30,7 @@
    * costs nothing here — the dock takes no pointer events and the upper region
    * is empty.
    */
-  height: clamp(132px, 24dvh, 260px);
+  height: clamp(156px, 28dvh, 310px);
 
   /*
    * Low on purpose, and lower than it used to be.
@@ -102,7 +102,18 @@
 
 .rig {
   display: block;
-  height: clamp(76px, 11dvh, 118px);
+  /*
+   * Sized against the FURNITURE, not the dock.
+   *
+   * At 1440 the booth stands ~108px tall and Bit was 99px — shorter than the
+   * desk he works at, which is why he read as a toy beside it rather than a
+   * DJ using it. He now clears the booth by roughly a head, which is the
+   * proportion that makes the room look inhabited.
+   *
+   * Still well under the dock height: the gap above him is headroom for
+   * thrown records and jumps, and must stay empty.
+   */
+  height: clamp(112px, 17dvh, 184px);
   width: auto;
   /* The rig draws a soft ground shadow that extends past the body, and the
      dock clips at the bottom edge. */
