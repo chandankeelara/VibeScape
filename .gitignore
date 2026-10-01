@@ -11,6 +11,10 @@ data/*.db.*
 data/*.log
 data/*.log.err
 data/recompute_progress.json
+# Language-classification scratch: export queues and correction batches
+# written per run by scripts/_llm_verify_export.py and _llm_verify_apply.py.
+data/_*.json
+data/_*.jsonl
 # YouTube session cookies — treat as secrets
 data/yt_cookies*.txt
 data/yt_*.txt
