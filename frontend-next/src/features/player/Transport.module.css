@@ -108,8 +108,8 @@
   height: 44px;
   color: var(--text-2);
 }
-.ghost:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
-.ghost:active { transform: scale(0.94); }
+.ghost:hover:not(:disabled) { color: var(--text); background: rgba(255, 255, 255, 0.06); }
+.ghost:active:not(:disabled) { transform: scale(0.94); }
 
 /* White, not accent-tinted — the accent lives in its shadow. */
 .play {
@@ -121,8 +121,20 @@
   box-shadow: 0 8px 30px -8px color-mix(in oklab, var(--vibe-accent, var(--accent)) 60%, black);
   transition: transform 120ms var(--ease), box-shadow 400ms var(--ease);
 }
-.play:hover { transform: scale(1.05); }
-.play:active { transform: scale(0.96); }
+.play:hover:not(:disabled) { transform: scale(1.05); }
+.play:active:not(:disabled) { transform: scale(0.96); }
+
+/* Disabled while the next track is being chosen. The :not(:disabled) guards
+   above matter as much as these rules — without them a dimmed button still
+   grew on hover and still depressed on click, which reads as working. */
+.ghost:disabled,
+.play:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.play:disabled { box-shadow: none; }
 
 /* Pinned to the right edge of .controls so the play button stays optically
    centred in the column. */

@@ -1,0 +1,42 @@
+/* Shimmering placeholder bar — see Skeleton.jsx for why these exist. */
+
+.bar {
+  display: inline-block;
+  position: relative;
+  overflow: hidden;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  /* The bar is an inline-block standing in for text, so it would otherwise
+     sit on the text baseline and hang below the line box. */
+  vertical-align: middle;
+}
+
+/* A sweep rather than a pulse: a pulsing block at this size reads as a
+   broken element, where a sweep reads as "content on its way". */
+.bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, var(--text) 8%, transparent),
+    transparent
+  );
+  transform: translateX(-100%);
+  animation: shimmer 1.4s linear infinite;
+}
+
+@keyframes shimmer {
+  to { transform: translateX(100%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Hold the sweep at rest rather than removing it — the bar still needs to
+     look distinct from a real, empty element. */
+  .bar::after {
+    animation: none;
+    transform: none;
+    opacity: 0.5;
+  }
+}

@@ -3,6 +3,7 @@ import { usePlayer, useVerifyCountdown } from '../../state/PlayerContext';
 import { MOUNT_ID, createPlayer } from '../../media/youtube';
 import { classificationLabel } from '../../lib/vibe';
 import useVideoFrame, { RESIZE_DIRS } from './useVideoFrame';
+import DjSearching from './DjSearching';
 import styles from './ArtStage.module.css';
 
 /**
@@ -39,7 +40,7 @@ function VerifyOverlay({ track }) {
 }
 
 export default function ArtStage() {
-  const { current, mode, videoState } = usePlayer();
+  const { current, mode, videoState, loadingTrack } = usePlayer();
   const [artLoaded, setArtLoaded] = useState(false);
   const frameRef = useRef(null);
   const { detached, dock, dragProps, resizeProps } = useVideoFrame(frameRef);
@@ -74,6 +75,11 @@ export default function ArtStage() {
       <div className={styles.glow} aria-hidden="true" />
 
       <VerifyOverlay track={current} />
+
+      {/* Audio mode only: in video mode the art is hidden anyway and the
+          video stage runs its own "Loading video…" overlay, so showing this
+          here would stack two spinners over the same card. */}
+      {loadingTrack && mode !== 'video' && <DjSearching />}
 
       <div className={`${styles.art} ${mode === 'video' ? styles.artHidden : ''}`}>
         {artLoaded ? (

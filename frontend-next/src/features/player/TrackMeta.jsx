@@ -1,5 +1,6 @@
 import { usePlayer } from '../../state/PlayerContext';
 import { trackVibe, moodFor, isMetadataOnly, classificationLabel } from '../../lib/vibe';
+import Skeleton from './Skeleton';
 import styles from './TrackMeta.module.css';
 
 /**
@@ -9,12 +10,33 @@ import styles from './TrackMeta.module.css';
 export default function TrackMeta({ onShowMetrics }) {
   const { current, source, loadingTrack, verifying, startVerify, stopVerify, canVerify } = usePlayer();
 
+  // Checked BEFORE `current`, because during a track change `current` is still
+  // the track that just finished — so without this the hero card shows the
+  // loading robot while the title under it names the previous song. The bar
+  // widths deliberately mismatch so the block reads as text, not as a form.
+  if (loadingTrack) {
+    return (
+      <section className={styles.meta} aria-busy="true">
+        <div className={styles.titleRow}>
+          <Skeleton w="64%" h="clamp(26px, 3.6dvh, 42px)" />
+        </div>
+        <div className={styles.sub}>
+          <Skeleton w="38%" h="clamp(13px, 1.8dvh, 16px)" />
+        </div>
+        <div className={styles.chips}>
+          <Skeleton w="62px" h="22px" r="var(--radius-pill)" />
+          <Skeleton w="52px" h="22px" r="var(--radius-pill)" />
+          <Skeleton w="72px" h="22px" r="var(--radius-pill)" />
+        </div>
+      </section>
+    );
+  }
+
   if (!current) {
     return (
       <section className={styles.meta}>
-        <h1 className={styles.title}>
-          {loadingTrack ? 'Finding a track…' : 'Move the slider to begin'}
-        </h1>
+        {/* Reached only when idle: loadingTrack is handled above. */}
+        <h1 className={styles.title}>Move the slider to begin</h1>
         <div className={styles.sub}><span className={styles.artist}>—</span></div>
       </section>
     );

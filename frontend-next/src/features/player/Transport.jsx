@@ -13,11 +13,15 @@ import styles from './Transport.module.css';
  */
 
 function ProgressBar() {
-  const { seek } = usePlayer();
+  const { seek, loadingTrack } = usePlayer();
   const { position, duration } = usePlaybackTime();
   const trackRef = useRef(null);
 
-  const pct = duration > 0 ? Math.min(100, (position / duration) * 100) : 0;
+  // While the next track is being chosen the time feed still belongs to the
+  // track that just finished — usually parked at 100%. Showing that under a
+  // "finding your next track" card reads as a stuck player, so the bar is
+  // emptied and the clock blanked until the real numbers arrive.
+  const pct = loadingTrack ? 0 : (duration > 0 ? Math.min(100, (position / duration) * 100) : 0);
 
   const fracFromEvent = useCallback((clientX) => {
     const rect = trackRef.current?.getBoundingClientRect();
@@ -26,7 +30,7 @@ function ProgressBar() {
   }, []);
 
   const onKeyDown = (e) => {
-    if (duration <= 0) return;
+    if (loadingTrack || duration <= 0) return;
     const step = 5 / duration;
     if (e.key === 'ArrowRight') { e.preventDefault(); seek(position / duration + step); }
     else if (e.key === 'ArrowLeft') { e.preventDefault(); seek(position / duration - step); }
@@ -40,14 +44,15 @@ function ProgressBar() {
         ref={trackRef}
         className={styles.progress}
         role="slider"
-        tabIndex={0}
+        tabIndex={loadingTrack ? -1 : 0}
         aria-label="Seek"
+        aria-disabled={loadingTrack || undefined}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={Math.round(pct)}
-        aria-valuetext={`${fmtTime(position)} of ${fmtTime(duration)}`}
+        aria-valuetext={loadingTrack ? 'Loading' : `${fmtTime(position)} of ${fmtTime(duration)}`}
         onKeyDown={onKeyDown}
-        onClick={(e) => seek(fracFromEvent(e.clientX))}
+        onClick={loadingTrack ? undefined : (e) => seek(fracFromEvent(e.clientX))}
       >
         <div className={styles.progressTrack}>
           <div className={styles.progressFill} style={{ width: `${pct}%` }} />
@@ -55,30 +60,41 @@ function ProgressBar() {
         </div>
       </div>
       <div className={styles.times}>
-        <span>{fmtTime(position)}</span>
-        <span>{fmtTime(duration)}</span>
+        <span>{loadingTrack ? '--:--' : fmtTime(position)}</span>
+        <span>{loadingTrack ? '--:--' : fmtTime(duration)}</span>
       </div>
     </>
   );
 }
 
 export default function Transport() {
-  const { playing, togglePlay, next, prev, mode, setPlaybackMode, current } = usePlayer();
+  const { playing, togglePlay, next, prev, mode, setPlaybackMode, current, loadingTrack } =
+    usePlayer();
 
-  const hasVideo = !!current?.youtube_id;
+  // While a track is being chosen there is nothing to play, pause, go back
+  // from, or switch to video — those controls act on a track that is on its
+  // way out. `next` stays live on purpose: pressing it again during a slow
+  // pick should skip onward, not be swallowed.
+  const hasVideo = !!current?.youtube_id && !loadingTrack;
 
   return (
     <section className={styles.transport}>
       <ProgressBar />
 
       <div className={styles.controls}>
-        <button className={styles.ghost} type="button" onClick={prev} aria-label="Previous">
+        <button className={styles.ghost} type="button" onClick={prev} aria-label="Previous" disabled={loadingTrack}>
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polygon points="19 20 9 12 19 4 19 20" /><line x1="5" y1="19" x2="5" y2="5" />
           </svg>
         </button>
 
-        <button className={styles.play} type="button" onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'}>
+        <button
+          className={styles.play}
+          type="button"
+          onClick={togglePlay}
+          aria-label={playing ? 'Pause' : 'Play'}
+          disabled={loadingTrack}
+        >
           {playing ? (
             <svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor">
               <rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" />
@@ -99,6 +115,7 @@ export default function Transport() {
         <div className={styles.modeToggle} role="group" aria-label="Playback mode">
           <button
             type="button" role="radio" aria-checked={mode === 'audio'} title="Audio playback"
+            disabled={loadingTrack}
             className={mode === 'audio' ? styles.modeActive : styles.mode}
             onClick={() => setPlaybackMode('audio')}
           >

@@ -1,0 +1,357 @@
+/* ------------------------------------------------------- DJ searching overlay
+ *
+ * Sits above the album art (.art is z-index 1) while the next track is being
+ * chosen. Mirrors .verifyOverlay in ArtStage.module.css so the two transient
+ * states over the hero card read as the same kind of object.
+ *
+ * Every rotation/translation keyframe sets `transform-box: view-box` so the
+ * transform-origin values below are viewBox user units — the same numbers as
+ * the coordinates in the JSX. Without it the origin resolves against the
+ * element's own bounding box and the whole scene flies apart.
+ */
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  border-radius: var(--radius-card);
+  background: color-mix(in oklab, var(--bg) 74%, transparent);
+  backdrop-filter: blur(10px);
+  text-align: center;
+  animation: fadeIn var(--dur) var(--ease-out);
+}
+
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+.scene {
+  width: min(78%, 300px);
+  height: auto;
+  overflow: visible;
+}
+
+/* ------------------------------------------------------------------ caption */
+
+.caption {
+  margin: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-1);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.dots { display: inline-flex; gap: 2px; }
+
+.dots span {
+  width: 3px;
+  height: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--vibe-accent, var(--accent));
+  animation: blink 1.2s var(--ease) infinite backwards;
+}
+
+.dots span:nth-child(2) { animation-delay: 0.16s; }
+.dots span:nth-child(3) { animation-delay: 0.32s; }
+
+@keyframes blink {
+  0%, 60%, 100% { opacity: 0.25; }
+  30%           { opacity: 1; }
+}
+
+/* -------------------------------------------------------------------- scene */
+
+.wash {
+  fill: var(--vibe-accent, var(--accent));
+  opacity: 0.14;
+  filter: blur(14px);
+}
+
+/* ------------------------------------------------------------------- robot */
+
+.torso,
+.skull,
+.neck,
+.cup {
+  fill: var(--surface-2);
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+}
+
+/* Two-pass limb: wide dark stroke, then a narrower surface stroke on top, so
+   an arm is outlined exactly like the torso. */
+.limbOutline,
+.limbFill {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.limbOutline {
+  stroke: var(--border-strong);
+  stroke-width: 9;
+}
+
+.limbFill {
+  stroke: var(--surface-2);
+  stroke-width: 6;
+}
+
+.hand {
+  fill: var(--surface-2);
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+}
+
+.band {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: 3.5;
+  stroke-linecap: round;
+}
+
+.visor {
+  fill: var(--bg);
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.eye {
+  fill: var(--vibe-accent, var(--accent));
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: eyeGlow 2.4s var(--ease) infinite;
+}
+
+@keyframes eyeGlow {
+  /* A blink, not a fade — squashed from the eye's own centre. */
+  0%, 88%, 100% { opacity: 1;   transform: scaleY(1); }
+  93%           { opacity: 0.6; transform: scaleY(0.12); }
+}
+
+/* Kept deliberately faint. At the opacity the eyes use it stops reading as a
+   sweep and starts reading as a rendering glitch sitting on the visor. */
+.scan {
+  fill: var(--vibe-accent-2, var(--accent));
+  transform-box: view-box;
+  animation: scan 1.9s var(--ease) infinite;
+}
+
+@keyframes scan {
+  0%   { transform: translateX(0);    opacity: 0; }
+  15%  { opacity: 0.2; }
+  85%  { opacity: 0.2; }
+  100% { transform: translateX(46px); opacity: 0; }
+}
+
+.antenna {
+  stroke: var(--border-strong);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.bulb {
+  fill: var(--vibe-accent, var(--accent));
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: bulb 1.1s var(--ease) infinite;
+}
+
+@keyframes bulb {
+  0%, 100% { opacity: 0.45; transform: scale(0.85); }
+  50%      { opacity: 1;    transform: scale(1.15); }
+}
+
+.chestLight {
+  fill: var(--vibe-accent-2, var(--accent));
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: bulb 1.1s var(--ease) infinite backwards;
+  animation-delay: 0.55s;
+}
+
+/* The head bobs on the beat; the headphones and antenna ride with it. */
+.head {
+  transform-box: view-box;
+  animation: bob 0.55s var(--ease) infinite alternate;
+}
+
+@keyframes bob {
+  from { transform: translateY(0); }
+  to   { transform: translateY(2.4px); }
+}
+
+/* Whole robot leans into the scratch, a half-beat behind the head. */
+.robot {
+  transform-box: view-box;
+  transform-origin: 125px 110px;
+  animation: lean 1.1s var(--ease) infinite;
+}
+
+@keyframes lean {
+  0%, 100% { transform: rotate(-1.1deg); }
+  50%      { transform: rotate(1.1deg); }
+}
+
+/* --------------------------------------------------------------- the deck */
+
+.deck {
+  fill: var(--surface);
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+
+.vinyl {
+  fill: var(--bg);
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+}
+
+.groove {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.spindle { fill: var(--vibe-accent, var(--accent)); }
+
+.nick { fill: var(--vibe-accent-2, var(--accent)); }
+
+/* Record spins; the scratch below briefly reverses the feel of it. */
+.platter {
+  transform-box: view-box;
+  transform-origin: 48px 121px;
+  animation: spin 1.6s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.pivot {
+  fill: var(--surface-2);
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+}
+
+.tonearm {
+  stroke: var(--border-strong);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+/* Hand works the record back and forth, pivoting at the shoulder so the
+   whole arm articulates rather than the hand sliding on its own. */
+.armScratch {
+  transform-box: view-box;
+  transform-origin: 97px 76px;
+  animation: scratch 0.55s var(--ease) infinite alternate;
+}
+
+@keyframes scratch {
+  from { transform: rotate(-5deg); }
+  to   { transform: rotate(5deg); }
+}
+
+.armRaise {
+  transform-box: view-box;
+  transform-origin: 154px 74px;
+  animation: raise 1.1s var(--ease) infinite alternate;
+}
+
+@keyframes raise {
+  from { transform: rotate(-7deg); }
+  to   { transform: rotate(6deg); }
+}
+
+/* ----------------------------------------------------------------- the eq */
+
+.eq rect {
+  fill: var(--vibe-accent, var(--accent));
+  opacity: 0.55;
+  transform-box: fill-box;
+  transform-origin: bottom;
+}
+
+.bar1 { animation: eq 0.62s var(--ease) infinite alternate backwards; animation-delay: 0s; }
+.bar2 { animation: eq 0.48s var(--ease) infinite alternate backwards; animation-delay: 0.09s; }
+.bar3 { animation: eq 0.70s var(--ease) infinite alternate backwards; animation-delay: 0.04s; }
+.bar4 { animation: eq 0.54s var(--ease) infinite alternate backwards; animation-delay: 0.14s; }
+.bar5 { animation: eq 0.66s var(--ease) infinite alternate backwards; animation-delay: 0.02s; }
+
+@keyframes eq {
+  from { transform: scaleY(0.22); }
+  to   { transform: scaleY(1); }
+}
+
+/* --------------------------------------------------------------- the notes */
+
+.noteStem {
+  fill: none;
+  stroke: var(--vibe-accent-2, var(--accent));
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+.noteHead { fill: var(--vibe-accent-2, var(--accent)); }
+
+.note1,
+.note2,
+.note3 {
+  transform-box: view-box;
+  /* The translate in each keyframe set IS the position — a CSS transform
+     overrides any transform attribute, so these cannot be placed in markup.
+     `backwards` is not optional: during animation-delay an element keeps its
+     UN-animated style, so a staggered note would sit parked at the viewBox
+     origin, fully opaque, until its delay elapsed. */
+  animation: rise 3.2s var(--ease-out) infinite backwards;
+}
+
+.note1 { animation-delay: 0s; }
+.note2 { animation-delay: 1.05s; }
+.note3 { animation-delay: 2.1s; }
+
+@keyframes rise {
+  0%   { transform: translate(170px, 94px) scale(0.6); opacity: 0; }
+  14%  { opacity: 0.9; }
+  70%  { opacity: 0.55; }
+  100% { transform: translate(184px, 30px) scale(1); opacity: 0; }
+}
+
+/* ------------------------------------------------------- reduced motion */
+/*
+ * Keep the scene, drop the movement. The caption still animates its dots at a
+ * much slower rate, because with every other cue frozen it is the only thing
+ * left saying "still working" — a completely static panel reads as a stall.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .overlay,
+  .head,
+  .robot,
+  .platter,
+  .armScratch,
+  .armRaise,
+  .scan,
+  .eye,
+  .bulb,
+  .chestLight,
+  .eq rect,
+  .note1,
+  .note2,
+  .note3 {
+    animation: none;
+  }
+
+  /* Without the animation the notes would collapse onto the origin, so they
+     need a resting position of their own. */
+  .note1 { transform: translate(172px, 82px); opacity: 0.5; }
+  .note2 { transform: translate(180px, 62px); opacity: 0.38; }
+  .note3 { transform: translate(176px, 42px); opacity: 0.26; }
+
+  .dots span { animation: blink 2.4s steps(1, end) infinite; }
+}
