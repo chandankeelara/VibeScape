@@ -1,29 +1,25 @@
 /* ---------------------------------------------------------- Bit's world
  *
- * Isometric set dressing along the floor of the dock. The geometry lives in
- * BitScene.jsx; this file is almost entirely about TONE, because that is what
- * makes an isometric box read as a box.
+ * Materials for the isometric set. Geometry lives in BitScene.jsx; this file
+ * is almost entirely about LIGHT, because that is what separates furniture
+ * from a diagram.
  *
- * Three faces, three values. Without the separation the silhouette collapses
- * into a flat hexagon no matter how correct the projection is.
+ * One light, up and slightly left. Tops brightest, fronts mid, right sides
+ * darkest. Keeping that consistent across all three pieces is what stops them
+ * looking lit separately and pasted together.
  *
- * Everything is bottom-anchored. The dock is deliberately much taller than
- * any of this, and the space above the furniture is headroom for thrown
- * records; keeping it empty is the point.
+ * Gradient stops are set with `stop-color` on classes rather than inline, so
+ * every tone still derives from a token and the whole room re-lights with the
+ * mood accent.
  */
 
-/* Vinyl reads as black only by being DARKER than the page, so it is derived
-   from --bg rather than hardcoded — tokens.css calls a raw hex a smell. */
 .scene {
   position: absolute;
   inset: 0;
   pointer-events: none;
 
-  /*
-   * Face tones, derived rather than hardcoded so the whole room re-lights
-   * with the mood accent. The warm tint on the top face is the cheap trick
-   * that implies a light source above the booth.
-   */
+  /* Base tones. The warm tint on the top face implies a light above the
+     booth; the side is pushed toward the page background so it recedes. */
   --face-top: color-mix(in oklab, var(--vibe-accent, var(--accent)) 12%, var(--surface-2));
   --face-front: var(--surface-2);
   --face-side: color-mix(in oklab, var(--bg) 55%, var(--surface-2));
@@ -47,18 +43,14 @@
 }
 
 /*
- * The room is laid out so Bit's routine reads LEFT TO RIGHT:
+ * The room reads LEFT TO RIGHT, which is the order of Bit's routine:
  *
  *   [spkL]   library -> decks            dance floor            [spkR]
  *     3%       20%      28%                  ~62%                88%
  *
  * He digs at the library, plays it on the decks immediately to its right,
- * then walks out to the open middle to dance. Putting the library and booth
- * adjacent is what makes that one gesture rather than a trek, and leaving the
- * right half clear is what gives the groove somewhere to happen.
- *
- * Stations in BitDock.module.css are the CENTRES of these pieces and must
- * move with them.
+ * then walks out to the open middle to dance. Stations in BitDock.module.css
+ * are the CENTRES of these pieces and must move with them.
  */
 .crates, .booth, .speaker {
   position: absolute;
@@ -71,148 +63,199 @@
 .crates { left: 20%; width: clamp(70px, 7.6vw, 146px); }
 .booth { left: 28%; width: clamp(130px, 15vw, 280px); }
 
-/* Ceilings raised so the room keeps pace with Bit on large screens. At the
-   old caps the furniture stopped growing at ~1440 while he carried on, and
-   he drifted from 1.4x the booth height to 1.7x — a mascot looming over a
-   doll's house. */
 .speaker { width: clamp(40px, 4.6vw, 88px); }
 .speakerL { left: 3%; }
 .speakerR { left: 88%; }
 
-/* ------------------------------------------------------------ the faces */
+/* ------------------------------------------------------- gradient stops */
 
-.faceTop,
-.faceFront,
-.faceSide {
+.topA { stop-color: color-mix(in oklab, var(--face-top) 80%, black); }
+.topB { stop-color: color-mix(in oklab, var(--face-top) 78%, white); }
+.frontA { stop-color: color-mix(in oklab, var(--face-front) 88%, white); }
+.frontB { stop-color: color-mix(in oklab, var(--face-front) 72%, black); }
+.sideA { stop-color: var(--face-side); }
+.sideB { stop-color: color-mix(in oklab, var(--face-side) 70%, black); }
+
+.sheenA { stop-color: var(--text); stop-opacity: 0.16; }
+.sheenB { stop-color: var(--text); stop-opacity: 0; }
+
+.coneA { stop-color: color-mix(in oklab, var(--surface-2) 70%, white); }
+.coneB { stop-color: color-mix(in oklab, var(--bg) 60%, var(--surface-2)); }
+
+/* ------------------------------------------------------------- surfaces */
+
+.top, .front, .side {
   stroke: var(--edge);
-  stroke-width: 1;
+  stroke-width: 0.9;
   stroke-linejoin: round;
 }
 
-.faceTop { fill: var(--face-top); }
-.faceFront { fill: var(--face-front); }
-.faceSide { fill: var(--face-side); }
+/* The lit leading edge. One mark, and it is what separates the top face from
+   the front without an outline having to do it. */
+.lip { fill: color-mix(in oklab, var(--text) 11%, transparent); stroke: none; }
 
-/* Set-back pieces lose contrast as well as size — atmospheric perspective
-   does more for depth here than the projection alone. */
-.far { opacity: 0.4; }
+.foot { fill: color-mix(in oklab, var(--bg) 70%, var(--surface-2)); stroke: none; }
 
-/* A LIGHT pool on the ground, not a dark one: the page background is already
-   near-black, so a dark shadow is invisible. */
-.groundShadow {
-  fill: var(--text);
-  opacity: 0.05;
+/* A LIGHT pool, not a dark one: the page is already near-black, so a dark
+   shadow is invisible. */
+.groundPool { fill: var(--text); opacity: 0.055; }
+
+/* ------------------------------------------------------- record library */
+
+/* Four sleeve tints. A rack of identical spines reads as a barcode, and the
+   variation costs nothing. */
+.spine0 { fill: color-mix(in oklab, var(--surface) 86%, white); }
+.spine1 { fill: var(--surface); }
+.spine2 { fill: color-mix(in oklab, var(--bg) 35%, var(--surface)); }
+.spine3 { fill: color-mix(in oklab, var(--vibe-accent-2, var(--accent)) 14%, var(--surface)); }
+
+.spine0, .spine1, .spine2, .spine3, .spineProud {
+  stroke: var(--border);
+  stroke-width: 0.5;
 }
 
-.lip { fill: color-mix(in oklab, var(--text) 9%, transparent); stroke: none; }
-
-/* ------------------------------------------------------------ the crate */
-
-.sleeve { fill: var(--surface); stroke: var(--border); stroke-width: 0.7; }
-.sleeveEdge { fill: color-mix(in oklab, var(--bg) 45%, var(--surface)); stroke: none; }
-
-.sleeveProud {
-  fill: color-mix(in oklab, var(--vibe-accent, var(--accent)) 30%, var(--surface));
+.spineProud {
+  fill: color-mix(in oklab, var(--vibe-accent, var(--accent)) 34%, var(--surface));
   stroke: var(--border-strong);
-  stroke-width: 0.7;
 }
 
-/* Tilted off the vertical so the record reads as RESTING against the crate.
-   Upright, it looks like it is hovering beside one. */
+.spineEdge { fill: color-mix(in oklab, var(--bg) 52%, var(--surface)); stroke: none; }
+
+/* Tilted off the vertical so the record reads as RESTING against the rack.
+   Upright, it looks like it is hovering beside one. Pivots where it meets
+   the floor, which is the only point that should not move. */
 .leaner {
   transform-box: view-box;
-  transform-origin: 88px 70px; /* where it touches the floor, so it pivots there */
-  transform: rotate(-9deg);
+  transform-origin: 91px 81px;
+  transform: rotate(-8deg);
 }
 
-.leanerDisc { fill: var(--vinyl); stroke: var(--edge); stroke-width: 1; }
-.leanerLabel { fill: var(--vibe-accent, var(--accent)); }
+.stackDisc { fill: color-mix(in oklab, var(--bg) 60%, var(--surface-2)); stroke: var(--edge); stroke-width: 0.7; }
+.stackTop { fill: var(--vinyl); stroke: var(--edge); stroke-width: 0.7; }
 
-/* ------------------------------------------------------------ the decks */
+/* ---------------------------------------------------------- the records */
 
-.platter { fill: var(--face-side); stroke: var(--edge); stroke-width: 1; }
-.disc { fill: var(--vinyl); stroke: var(--border); stroke-width: 0.7; }
-.groove { fill: none; stroke: var(--border); stroke-width: 0.6; }
-.discLabel { fill: var(--vibe-accent, var(--accent)); }
+.vinyl { fill: var(--vinyl); stroke: var(--edge); stroke-width: 0.8; }
+/* Offset copy behind the face, so a record has an edge instead of being a
+   decal. */
+.vinylEdge { fill: color-mix(in oklab, var(--bg) 40%, var(--surface-2)); }
+.vinylSheen { stroke: none; pointer-events: none; }
+.vinylLabel { fill: var(--vibe-accent, var(--accent)); }
+.groove { fill: none; stroke: color-mix(in oklab, var(--text) 9%, transparent); stroke-width: 0.5; }
+.spindle { fill: var(--bg); }
 .nick { fill: var(--vibe-accent-2, var(--accent)); }
 
-.tonearm { fill: none; stroke: var(--text-4); stroke-width: 1.6; stroke-linecap: round; }
-.pivot { fill: var(--face-top); stroke: var(--edge); stroke-width: 1; }
+/* --------------------------------------------------------- the turntable */
 
-.mixerFront { fill: var(--surface); stroke: var(--edge); stroke-width: 1; }
+.deckWell { fill: color-mix(in oklab, var(--bg) 62%, var(--surface-2)); stroke: var(--edge); stroke-width: 0.8; }
+.platterRim { fill: color-mix(in oklab, var(--surface-2) 80%, white); stroke: var(--edge); stroke-width: 0.8; }
+.slipmat { fill: color-mix(in oklab, var(--vibe-accent, var(--accent)) 18%, var(--surface)); stroke: none; }
+
+.strobe { fill: var(--text-4); }
+.strobeOn { fill: var(--vibe-accent-2, var(--accent)); animation: strobe calc(var(--beat, 0.5s) * 2) var(--ease) infinite backwards; }
+
+.armBase { fill: color-mix(in oklab, var(--surface-2) 72%, white); stroke: var(--edge); stroke-width: 0.7; }
+.armWeight { fill: color-mix(in oklab, var(--bg) 45%, var(--surface-2)); stroke: var(--edge); stroke-width: 0.6; }
+.armTube { fill: none; stroke: color-mix(in oklab, var(--text) 42%, transparent); stroke-width: 1.3; stroke-linecap: round; }
+.headshell { fill: color-mix(in oklab, var(--vibe-accent, var(--accent)) 30%, var(--surface-2)); stroke: var(--edge); stroke-width: 0.5; }
+
+.pitchSlot { fill: var(--bg); stroke: var(--edge); stroke-width: 0.5; }
+.pitchKnob { fill: color-mix(in oklab, var(--surface-2) 78%, white); stroke: var(--edge); stroke-width: 0.5; }
+
+.start { fill: color-mix(in oklab, var(--bg) 40%, var(--surface-2)); stroke: var(--edge); stroke-width: 0.6; }
+.startOn {
+  fill: var(--vibe-accent, var(--accent));
+  stroke: none;
+  animation: pulseLed calc(var(--beat, 0.5s) * 4) var(--ease) infinite;
+}
+
+/* ------------------------------------------------------------ the mixer */
+
+.mixerFace { fill: color-mix(in oklab, var(--bg) 30%, var(--surface)); stroke: var(--edge); stroke-width: 0.9; }
+.knob { fill: color-mix(in oklab, var(--surface-2) 74%, white); stroke: var(--edge); stroke-width: 0.5; }
 .faderSlot { fill: var(--bg); }
-.led { fill: var(--vibe-accent-2, var(--accent)); opacity: 0.8; }
+.faderCap { fill: color-mix(in oklab, var(--surface-2) 82%, white); stroke: var(--edge); stroke-width: 0.5; }
+
+.vu { fill: var(--vibe-accent-2, var(--accent)); opacity: 0.3; }
+.vuHot { fill: var(--danger); opacity: 0.3; }
+
+.vu, .vuHot { animation: vu calc(var(--beat, 0.5s) * 2) var(--ease) infinite backwards; }
 
 /* --------------------------------------------------------- the speakers */
 
-.cone,
-.tweeter {
-  fill: var(--face-side);
-  stroke: var(--edge);
-  stroke-width: 1;
-}
+.standCol { fill: color-mix(in oklab, var(--bg) 55%, var(--surface-2)); stroke: var(--edge); stroke-width: 0.7; }
+.standFoot { fill: color-mix(in oklab, var(--bg) 65%, var(--surface-2)); stroke: var(--edge); stroke-width: 0.7; }
 
-.coneInner { fill: var(--vibe-accent, var(--accent)); }
+/* The mesh is a tiled pattern rather than hundreds of circles — same look,
+   one node. */
+.mesh { stroke: none; opacity: 0.5; }
+.meshDot { fill: color-mix(in oklab, var(--bg) 50%, transparent); }
+
+.driverRing { fill: color-mix(in oklab, var(--bg) 45%, var(--surface-2)); stroke: var(--edge); stroke-width: 0.8; }
+.cone { stroke: none; }
+.dustCap { fill: var(--vibe-accent, var(--accent)); }
+.screw { fill: var(--text-4); }
+.port { fill: var(--bg); stroke: var(--edge); stroke-width: 0.5; }
+.powerLed { fill: var(--vibe-accent-2, var(--accent)); animation: pulseLed calc(var(--beat, 0.5s) * 4) var(--ease) infinite; }
+.badge { fill: color-mix(in oklab, var(--text) 14%, transparent); }
 
 /* --------------------------------------------------------------- motion */
 
 /*
- * The orbiting nick is what shows rotation, and it runs at the TRACK's tempo:
- * --beat is written onto the dock by BitDock, so the decks and Bit's groove
- * are locked to the same clock. Eight beats per revolution keeps it readable;
- * one beat per turn is a blur at 120 BPM.
+ * The orbiting nick is what shows rotation, at the TRACK's tempo: --beat is
+ * written onto the dock by BitDock, so the decks and Bit's groove run off one
+ * clock. Eight beats per revolution stays readable; one beat per turn is a
+ * blur at 120 BPM.
  *
- * transform-box is NOT set here, on purpose. This group is already centred on
- * the platter by its parent's transform ATTRIBUTE, so rotating about its own
- * origin is correct — view-box would resolve against the whole viewBox and
- * fling the nick across the desk.
+ * transform-box is NOT set here, deliberately. The group is already centred
+ * on the platter by its parent's transform ATTRIBUTE, so rotating about its
+ * own origin is correct — view-box would resolve against the whole viewBox
+ * and fling the nick across the desk.
  */
-.orbit {
-  animation: orbit calc(var(--beat, 0.5s) * 8) linear infinite;
-}
+.orbit { animation: orbit calc(var(--beat, 0.5s) * 8) linear infinite; }
 
 @keyframes orbit { to { transform: rotate(360deg); } }
 
-/* Speaker cones push on the beat. Subtle on purpose — this sits under the
-   transport controls and must never pull the eye off them. */
-.cone,
-.tweeter {
+.cone {
   transform-box: fill-box;
   transform-origin: center;
   animation: thump var(--beat, 0.5s) var(--ease) infinite;
 }
 
-.tweeter { animation-delay: calc(var(--beat, 0.5s) / 2); }
-
-/* Offsets the whole right cabinet half a beat against the left. */
+/* Half a beat behind the left cabinet, so the pair reads as a groove rather
+   than two things twitching in unison. */
 .speakerR .cone { animation-delay: calc(var(--beat, 0.5s) / 2); }
-.speakerR .tweeter { animation-delay: 0s; }
 
 @keyframes thump {
   0%, 100% { transform: scale(1); }
-  18% { transform: scale(1.06); }
+  18% { transform: scale(1.05); }
 }
 
-.led { animation: led calc(var(--beat, 0.5s) * 2) var(--ease) infinite backwards; }
-.led:nth-of-type(2) { animation-delay: calc(var(--beat, 0.5s) * 0.3); }
-.led:nth-of-type(3) { animation-delay: calc(var(--beat, 0.5s) * 0.6); }
+@keyframes strobe {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
 
-@keyframes led {
-  0%, 100% { opacity: 0.3; }
+@keyframes vu {
+  0%, 100% { opacity: 0.22; }
+  40% { opacity: 1; }
+}
+
+@keyframes pulseLed {
+  0%, 100% { opacity: 0.55; }
   50% { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .orbit, .cone, .tweeter, .led { animation: none; }
-  .led { opacity: 0.7; }
+  .orbit, .cone, .strobeOn, .vu, .vuHot, .powerLed, .startOn { animation: none; }
+  .vu, .vuHot { opacity: 0.6; }
 }
 
 /* ----------------------------------------------------------- responsive */
 
 /*
- * Narrowing drops furniture from the OUTSIDE in. The library and decks are
- * the pair that carries the routine, so they go last; a speaker is the
- * cheapest thing on screen to lose.
+ * Narrowing drops furniture from the OUTSIDE in. The library and decks carry
+ * the routine, so they go last; a speaker is the cheapest thing to lose.
  */
 @media (max-width: 1100px) {
   .speakerR { display: none; }
