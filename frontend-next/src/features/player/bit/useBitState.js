@@ -42,7 +42,7 @@ import { ANIMATIONS, META, SUGGESTED_PROP } from './manifest';
  *
  * Anything unlisted falls back to 'centre'.
  */
-const STATION = {
+export const STATION = {
   // The routine, in the order the room is laid out: he hunts through the
   // library, drops the record on the decks beside it, then walks out to the
   // open middle to dance while it plays.

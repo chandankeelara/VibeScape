@@ -1,14 +1,21 @@
-/* Review page chrome for BitLab. Not shipped UI — see BitLab.jsx. */
+/* ------------------------------------------------------------- Bit's lab
+ *
+ * Review-page chrome. Not shipped UI — see BitLab.jsx.
+ *
+ * Deliberately restrained: this page exists to judge a mascot, and a loud
+ * page would compete with the thing under review. Tokens only, so the lab
+ * re-lights with the accent exactly as the player does.
+ */
 
 .page {
   min-height: 100dvh;
-  padding: 0 var(--sp-5) var(--sp-7);
+  padding: 0 clamp(16px, 4vw, 56px) var(--sp-7);
   background: var(--bg);
   color: var(--text);
   font-family: var(--sans);
 }
 
-/* ------------------------------------------------------------------- bar */
+/* -------------------------------------------------------------- top bar */
 
 .bar {
   position: sticky;
@@ -17,85 +24,272 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--sp-4);
+  gap: clamp(12px, 2vw, 28px);
   padding: var(--sp-3) 0;
-  background: var(--bg);
+  margin-bottom: var(--sp-5);
+  background: color-mix(in oklab, var(--bg) 92%, transparent);
+  backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--border);
 }
 
-.brand { font-size: 13px; font-weight: 600; }
+.brand {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
 
-.ctl, .check {
+.brand em {
+  font-style: normal;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+
+.ctl {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
   font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: 0.1em;
+  font-size: 10px;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--text-3);
+  color: var(--text-4);
 }
 
-.ctl code, .check span {
+.ctl input[type='range'] {
+  width: clamp(90px, 12vw, 170px);
+  accent-color: var(--vibe-accent, var(--accent));
+}
+
+.ctl code {
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-2);
   text-transform: none;
   letter-spacing: 0;
 }
 
-.ctl input[type='range'] { width: 150px; accent-color: var(--vibe-accent, var(--accent)); }
-.check input { accent-color: var(--vibe-accent, var(--accent)); }
+/* Segmented control — reads as one object, which a row of loose buttons
+   does not. */
+.seg {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
 
-.sel {
+.segBtn,
+.segOn {
+  border: 0;
+  cursor: pointer;
+  padding: 3px 11px;
+  border-radius: var(--radius-pill);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  background: none;
+  color: var(--text-4);
+}
+
+.segOn { background: var(--surface-2); color: var(--text); }
+
+.swatches { display: inline-flex; gap: 6px; margin-left: auto; }
+
+.swatches button {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  cursor: pointer;
+}
+
+.warn {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* --------------------------------------------------------------- blocks */
+
+.block { padding: var(--sp-6) 0; border-top: 1px solid var(--border); }
+.block:first-of-type { border-top: 0; padding-top: 0; }
+
+.head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-5);
+}
+
+.headN {
   font-family: var(--mono);
   font-size: 11px;
-  padding: 4px 8px;
+  color: var(--vibe-accent, var(--accent));
+  flex: none;
+}
+
+.headText { min-width: 0; }
+.headTitle { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.015em; }
+
+.headNote {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-3);
+  max-width: 68ch;
+}
+
+.sel {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 5px 9px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong);
   background: var(--surface-2);
   color: var(--text);
 }
 
-.swatches { display: inline-flex; gap: 6px; margin-left: auto; }
+/* ------------------------------------------------------ in-context stage */
 
-.swatches button {
-  width: 22px;
-  height: 22px;
+.stageWrap { position: relative; }
+
+/*
+ * The dock is position:fixed in the player; here it has to sit in the page.
+ * Position is the ONE property overridden — height, the station offsets,
+ * pointer-events and the rig size all come from the real stylesheet, which
+ * is the entire point of importing it rather than rebuilding it.
+ */
+.stageDock {
+  position: relative;
+  left: auto;
+  right: auto;
+  bottom: auto;
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.routine {
+  position: absolute;
+  top: var(--sp-3);
+  right: var(--sp-3);
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  padding: 7px 14px;
   border-radius: var(--radius-pill);
   border: 1px solid var(--border-strong);
-  cursor: pointer;
-}
-
-/* ---------------------------------------------------------------- groups */
-
-.group { padding-top: var(--sp-5); }
-
-.h {
-  display: flex;
-  align-items: baseline;
-  gap: var(--sp-3);
-  margin: 0 0 var(--sp-3);
-  font-family: var(--mono);
-  font-size: 12px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  background: color-mix(in oklab, var(--surface-2) 88%, transparent);
   color: var(--text);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
 }
 
-.meta {
-  font-size: 10px;
-  letter-spacing: 0.08em;
+.routine:hover:not(:disabled) { border-color: var(--vibe-accent, var(--accent)); }
+.routine:disabled { opacity: 0.55; cursor: default; }
+
+.routine em {
+  font-style: normal;
+  font-size: 9px;
+  letter-spacing: 0.1em;
   color: var(--text-4);
 }
 
-.row { display: flex; flex-wrap: wrap; gap: var(--sp-4); }
+/* -------------------------------------------------------------- pickers */
 
-/* ------------------------------------------------------------- the room */
+.picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: var(--sp-4);
+}
+
+.chip,
+.chipOn {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-3);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.chip:hover { color: var(--text-2); border-color: var(--border-strong); }
+
+.chipOn {
+  background: color-mix(in oklab, var(--vibe-accent, var(--accent)) 16%, var(--surface-2));
+  border-color: color-mix(in oklab, var(--vibe-accent, var(--accent)) 50%, var(--border-strong));
+  color: var(--text);
+}
+
+.chip em,
+.chipOn em { font-style: normal; font-size: 9px; color: var(--text-4); }
+
+.variants {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: var(--sp-3);
+}
+
+.vLabel {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-4);
+  margin-right: 2px;
+}
+
+.v,
+.vOn {
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.v:hover { color: var(--text-2); }
+.vOn { background: var(--surface-2); border-color: var(--border-strong); color: var(--text); }
+
+.vMeta {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-4);
+  margin-left: var(--sp-2);
+}
+
+/* ---------------------------------------------------------------- rooms */
 
 .rooms {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
   gap: var(--sp-4);
 }
 
@@ -108,35 +302,68 @@
  */
 .roomStage {
   position: relative;
-  height: 190px;
+  height: 180px;
   border-radius: var(--radius);
   background: var(--surface);
   border: 1px solid var(--border);
   overflow: hidden;
 }
 
-.cell { margin: 0; width: 150px; }
+/* ----------------------------------------------------------- the grid */
 
-/* A mid-tone backdrop, not --bg: Bit's body is --surface-2 and its outline is
-   a low-alpha white, so on the page background the silhouette washes out and
-   motion is hard to read. */
-.stage {
+.group { margin-top: var(--sp-5); }
+
+.groupH {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  margin: 0 0 var(--sp-3);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.groupMeta {
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: none;
+  color: var(--text-4);
+}
+
+.row { display: flex; flex-wrap: wrap; gap: var(--sp-3); }
+
+.cell { margin: 0; width: 148px; }
+
+/* A mid-tone backdrop, not --bg: Bit's body is --surface-2 and his outline is
+   low-alpha white, so against the page background the silhouette washes out
+   and the motion becomes hard to read. */
+.cellStage {
   display: grid;
   place-items: end center;
+  width: 100%;
   height: 150px;
+  padding: 0;
   border-radius: var(--radius);
   background: var(--surface);
   border: 1px solid var(--border);
   overflow: hidden;
+  cursor: pointer;
+}
+
+.cellStage:hover { border-color: var(--border-strong); }
+
+.cellStage:focus-visible {
+  outline: 2px solid var(--vibe-accent, var(--accent));
+  outline-offset: 2px;
 }
 
 /* Loud on purpose — a missing class otherwise looks like a calm idle pose. */
-.broken {
-  border-color: var(--danger);
-  background: var(--danger-soft);
-}
+.broken { border-color: var(--danger); background: var(--danger-soft); }
 
-.rig { height: 128px; width: auto; overflow: visible; }
+.cellRig { height: 128px; width: auto; overflow: visible; }
 
 .cap {
   display: flex;
@@ -146,20 +373,8 @@
   margin-top: 6px;
   font-family: var(--mono);
   font-size: 10px;
+  color: var(--text-3);
 }
 
-.key { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tag { color: var(--text-4); flex: none; }
-
-/*
- * Slow motion, for inspecting a single pose mid-animation.
- *
- * Rides the rig's OWN duration variables rather than forcing durations with
- * !important: --beat drives the 34 groove/loop animations and --t is declared
- * per one-shot state class. Overriding both from a more specific selector
- * slows everything uniformly and keeps their relative timing intact.
- *
- * `.slow .rig` is (0,2,0) and beats the state class's own (0,1,0) --t.
- */
-.slow { --beat: 1.6s; }
-.slow .rig { --t: 4000ms; }
+.cellKey { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cellTag { color: var(--text-4); flex: none; }
