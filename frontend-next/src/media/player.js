@@ -89,7 +89,7 @@ export function init() {
   el.addEventListener('loadedmetadata', () => emitTime(el.currentTime || 0, el.duration || 0));
 
   youtube.setHandlers({
-    onPlaying: () => { state.playing = true; emit(); setSessionState(true); },
+    onPlaying: () => { state.playing = true; emit(); setSessionState(true); reassertSession(); },
     onPaused: () => { state.playing = false; emit(); setSessionState(false); },
     onEnded: () => { state.playing = false; emit(); hooks.onEnded(); },
     onError: (info) => hooks.onVideoError(info),
@@ -172,6 +172,10 @@ export function loadTrack(track, { mode = state.mode } = {}) {
   if (mode === 'video') {
     quietAudio();
     spotify.pause();
+    // setMode() also starts this, but loading a NEW track while already in
+    // video mode never goes through setMode — so without this the anchor
+    // would be missing on every track change after the first.
+    startSessionAnchor();
     state.source = null;
     emit();
     return; // the video feature resolves the id and calls cueVideo()
@@ -187,6 +191,8 @@ export function loadTrack(track, { mode = state.mode } = {}) {
     // No local audio — /api/stream would 404. Refusing with a clear message
     // beats a silent network failure.
     quietAudio();
+    // Nothing is going to play, so do not hold a session hostage with silence.
+    stopSessionAnchor();
     state.source = null;
     state.playing = false;
     emit();
@@ -196,6 +202,10 @@ export function loadTrack(track, { mode = state.mode } = {}) {
 
   if (useSpotify) {
     quietAudio();
+    // Spotify plays through the SDK's OWN iframe, so just like video mode the
+    // page is left owning no playing media and the SDK takes the OS session.
+    // Without this the media keys drive Spotify's session, not ours.
+    startSessionAnchor();
     state.source = 'spotify';
     // The SDK stream can't be tapped by AudioContext — glow goes static.
     glow.stop();
@@ -204,6 +214,8 @@ export function loadTrack(track, { mode = state.mode } = {}) {
     spotify.playTrack(track.spotify_id).then((ok) => {
       // Couldn't take over the device — better a 30s preview than silence.
       if (!ok && state.track === track) {
+        // Real element is about to play, so it owns the session on its own.
+        stopSessionAnchor();
         state.source = 'preview';
         emit();
         setPreviewSource(track);
@@ -213,6 +225,10 @@ export function loadTrack(track, { mode = state.mode } = {}) {
     return;
   }
 
+  // Preview mode needs no anchor: the real <audio> element is playing the
+  // song, so the page already owns the session. A second element here would
+  // only compete with it.
+  stopSessionAnchor();
   state.source = 'preview';
   emit();
   setPreviewSource(track);
@@ -251,7 +267,11 @@ export function setMode(mode, track) {
   if (mode === 'video') {
     quietAudio();
     spotify.pause();
+    // Must come AFTER quietAudio(): that is the call that drops our claim on
+    // the OS media session and lets the YouTube iframe take it.
+    startSessionAnchor();
   } else {
+    stopSessionAnchor();
     youtube.stop();
     if (track) loadTrack(track, { mode: 'audio' });
   }
@@ -262,6 +282,7 @@ export function stop() {
   quietAudio();
   spotify.pause();
   youtube.stop();
+  stopSessionAnchor();
   glow.stop();
   glow.setAlpha(0.65);
   state.playing = false;
@@ -315,6 +336,76 @@ export function restoreAfterVerify() {
     if (Number.isFinite(snap.time) && snap.time > 0) el.currentTime = snap.time;
   } catch { /* not seekable yet */ }
   el.play().catch(() => {});
+}
+
+/* ------------------------------------------------ media-session anchor */
+
+/**
+ * A silent, looping <audio> kept playing for as long as VIDEO mode is active,
+ * purely so the page keeps owning the OS media session.
+ *
+ * The OS routes media keys to whichever browsing context most recently
+ * started playing audio. setMode('video') calls quietAudio(), which pauses
+ * our element and strips its src — so the page stopped owning any playing
+ * media and the YouTube IFRAME became the only claimant. The OS panel then
+ * showed the video's title and its next/prev did YouTube's thing, because a
+ * cross-origin iframe's session cannot be overridden from here.
+ *
+ * Keeping this element playing means we still own a session, so our metadata
+ * and our nexttrack/previoustrack handlers stay the ones the OS talks to.
+ *
+ * Starting it is safe under autoplay policy: entering video mode is a click.
+ */
+let anchorEl = null;
+
+/** 8 kHz mono 8-bit PCM, 0.25s. Built here so no 2.7KB base64 blob lands in source. */
+function silentWavUrl() {
+  const rate = 8000;
+  const frames = rate / 4;
+  const buf = new Uint8Array(44 + frames);
+  const view = new DataView(buf.buffer);
+  const tag = (off, s) => { for (let i = 0; i < s.length; i++) buf[off + i] = s.charCodeAt(i); };
+  tag(0, 'RIFF'); view.setUint32(4, 36 + frames, true); tag(8, 'WAVE');
+  tag(12, 'fmt '); view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true); view.setUint32(28, rate, true);
+  view.setUint16(32, 1, true); view.setUint16(34, 8, true);
+  tag(36, 'data'); view.setUint32(40, frames, true);
+  // Silence in 8-bit PCM is 128, NOT 0 — it is unsigned and centred at mid-scale.
+  // Filling with 0 would emit full-amplitude DC, which is audible as a thump.
+  buf.fill(128, 44);
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+}
+
+function startSessionAnchor() {
+  if (!anchorEl) {
+    anchorEl = document.createElement('audio');
+    anchorEl.id = 'sessionAnchor';
+    anchorEl.loop = true;
+    anchorEl.preload = 'auto';
+    // Deliberately NOT muted. A muted element does not count as playing media
+    // for the Media Session API, which would defeat the entire purpose.
+    anchorEl.volume = 1;
+    anchorEl.src = silentWavUrl();
+    document.body.appendChild(anchorEl);
+  }
+  anchorEl.play().catch(() => { /* blocked without a gesture; video mode has one */ });
+}
+
+function stopSessionAnchor() {
+  try { anchorEl?.pause(); } catch { /* never started */ }
+}
+
+/**
+ * Re-publish our metadata after the video starts.
+ *
+ * The YouTube iframe sets its own session when it begins playing, which can
+ * overwrite what the OS panel shows even while we hold the session. Pushing
+ * ours again afterwards puts the track's real title/artist/art back.
+ */
+function reassertSession() {
+  updateSessionMetadata(state.track);
+  applySessionHandlers();
 }
 
 function quietAudio() {
@@ -392,7 +483,19 @@ function currentDuration() {
 function seekBy(deltaSeconds) {
   const d = currentDuration();
   if (d <= 0) return;
+  seek((currentPosition() + deltaSeconds) / d);
+}
+
+/**
+ * Live playhead for the active source.
+ *
+ * Video used to be hardcoded to 0 here, so every relative seek — the ±10s
+ * media keys, a car head unit's skip — measured from the START of the video
+ * instead of the playhead. Skipping forward from 2:30 landed you at 0:10.
+ */
+function currentPosition() {
+  if (state.mode === 'video') return youtube.getCurrentTime();
+  if (state.source === 'spotify') return spotify.getPosition();
   const el = state.audioEl;
-  const pos = state.mode === 'video' ? 0 : (el?.currentTime || 0);
-  seek((pos + deltaSeconds) / d);
+  return el && Number.isFinite(el.currentTime) ? el.currentTime : 0;
 }

@@ -167,7 +167,30 @@ export function stop() {
 }
 
 export function seekTo(seconds) {
-  try { video.player?.seekTo(seconds, true); } catch {}
+  try {
+    video.player?.seekTo(seconds, true);
+
+    // Push the new position straight away, mirroring spotify.seek().
+    //
+    // The poll timer is the ONLY thing that reports video position, and it is
+    // stopped whenever the video is paused. Without this, seeking while
+    // paused moved the YouTube player but left the VibeScape progress bar
+    // sitting at the old spot until playback resumed. The <audio> path never
+    // had this problem because setting currentTime fires `timeupdate` even
+    // when paused.
+    //
+    // Emits the REQUESTED seconds rather than reading getCurrentTime() back:
+    // seekTo is asynchronous, so the getter can still return the pre-seek
+    // value for a frame or two. The poll corrects any drift once playing.
+    const duration = video.player?.getDuration() || 0;
+    const position = duration > 0 ? Math.min(Math.max(seconds, 0), duration) : Math.max(seconds, 0);
+    handlers.onTime({ position, duration });
+  } catch { /* player torn down mid-seek */ }
+}
+
+/** Live playhead. Needed by relative seeks (media-key skip ±10s). */
+export function getCurrentTime() {
+  try { return video.player?.getCurrentTime() || 0; } catch { return 0; }
 }
 
 export function getDuration() {

@@ -243,3 +243,15 @@ export function disconnect() {
 }
 
 export const getDeviceId = () => sp.deviceId;
+
+/**
+ * Live playhead in seconds.
+ *
+ * Reads the same extrapolated value the progress bar uses rather than the
+ * raw last-known SDK position, which only updates on state CHANGES and would
+ * sit frozen between them.
+ *
+ * Needed because during Spotify playback the <audio> element is detached, so
+ * a caller reading `audioEl.currentTime` for "where are we" gets 0.
+ */
+export const getPosition = () => sp.positionMs / 1000;
