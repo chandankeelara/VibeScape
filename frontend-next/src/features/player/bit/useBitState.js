@@ -1,6 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { MOODS, isMetadataOnly, moodFor } from '../../../lib/vibe';
+import { isMetadataOnly, moodFor } from '../../../lib/vibe';
 import { ANIMATIONS, META, SUGGESTED_PROP } from './manifest';
+/*
+ * Namespace import, deliberately, for one optional export.
+ *
+ * GROOVE_BY_BAND groups the groove moves by mood band. A NAMED import of an
+ * export that does not exist is a hard Rollup build error, which defeats the
+ * runtime fallback below entirely — the app would not build at all while the
+ * animation library was being extended. Reaching through the namespace makes
+ * a missing export a plain `undefined`, which the picker already handles by
+ * falling back to the flat list.
+ */
+import * as manifest from './manifest';
 
 /**
  * Bit's brain.
@@ -146,13 +157,30 @@ export default function useBitState({
       return;
     }
 
-    // Groove is the one state NOT chosen at random. The five variants run
-    // low-energy to high, and the five mood bands do too, so the band picks
-    // the variant — Bit sways through `chill` and headbangs through `beast`.
-    // Rolling dice here would throw away the one thing this app is about.
+    /*
+     * Groove narrows before it rolls.
+     *
+     * The mood band picks the POOL — Bit sways through `chill` and headbangs
+     * through `beast`, because throwing that away would discard the one thing
+     * this app is about — and then a move is chosen at random within it, the
+     * same as every other state. Band first, dice second.
+     *
+     * Speed is not involved: --beat already carries the track's real BPM, so
+     * tempo and energy stay independent. A chill song and a beast song at the
+     * same BPM move at the same rate and look nothing alike, which is the
+     * point.
+     *
+     * Falls back to the flat list if the band map is missing or empty, so a
+     * manifest that has not caught up yet degrades to the old behaviour
+     * instead of leaving Bit standing still.
+     */
     if (state === 'groove') {
-      const i = MOODS.indexOf(moodFor(vibe));
-      setAnimKey(pool[Math.min(pool.length - 1, Math.max(0, i))]);
+      const band = moodFor(vibe).name;
+      const byBand = manifest.GROOVE_BY_BAND && manifest.GROOVE_BY_BAND[band];
+      const bandPool = byBand && byBand.length ? byBand : pool;
+      const next = pickDifferent(bandPool, lastByState.current[`groove:${band}`]);
+      lastByState.current[`groove:${band}`] = next;
+      setAnimKey(next);
       return;
     }
 
@@ -173,21 +201,27 @@ export default function useBitState({
     return () => clearTimeout(t);
   }, [event, animKey]);
 
-  // Looping states re-roll periodically so a long pause does not look frozen.
-  // Groove is excluded: it is locked to the mood band on purpose.
+  /*
+   * Looping states re-roll periodically so a long stretch does not look
+   * frozen. Groove is included now that each band has a pool of its own —
+   * it used to be excluded because the band pinned it to exactly one move.
+   */
   useEffect(() => {
-    if (event || state === 'groove') return undefined;
-    const pool = ANIMATIONS[state];
+    if (event) return undefined;
+    const band = state === 'groove' ? moodFor(vibe).name : null;
+    const byBand = band && manifest.GROOVE_BY_BAND && manifest.GROOVE_BY_BAND[band];
+    const pool = byBand && byBand.length ? byBand : ANIMATIONS[state];
     if (!pool || pool.length < 2) return undefined;
+    const slot = band ? `groove:${band}` : state;
     const id = setInterval(() => {
       setAnimKey((prev) => {
         const next = pickDifferent(pool, prev);
-        lastByState.current[state] = next;
+        lastByState.current[slot] = next;
         return next;
       });
     }, VARIETY_MS);
     return () => clearInterval(id);
-  }, [state, event]);
+  }, [state, event, vibe]);
 
   /**
    * Trigger a one-shot reaction. Ignored if the state has no animations.
