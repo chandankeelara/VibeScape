@@ -4,7 +4,55 @@
   gap: var(--sp-5);
   width: 320px;
   padding: var(--sp-4);
-  overflow-y: auto;
+  /*
+   * The RAIL does not scroll — each section scrolls its own list instead.
+   *
+   * This used to be overflow-y:auto, which made the whole column one scroller:
+   * the queue grew to fit its content, shoved the DJ picks below the fold, and
+   * you had to scroll past every queued track to reach the recommendations.
+   * Clipping here is what forces the two lists to share the height.
+   */
+  overflow: hidden;
+  min-height: 0;
+
+  /*
+   * ---- the rail's row budget ----------------------------------------
+   * Spec: at most 8 rows visible across BOTH lists, the queue showing at
+   * most 5 of them, the picks never fewer than 3.
+   *
+   * --qrow is a measured stride, not a guess: QueueRow is a 38px thumbnail
+   * plus 2 x --sp-2 of padding (54px), and .list puts a 2px gap between
+   * rows. Rounding the stride UP by that gap is deliberate — it leaves the
+   * next row peeking a sliver above the fold, which is what tells you the
+   * list scrolls at all.
+   */
+  --qrow: 56px;
+  --qhead: 28px; /* .sectionHead min-height */
+  --qbudget: 10; /* rows visible across both lists */
+
+  /*
+   * min() of the row budget and the space actually available.
+   *
+   * The budget alone is ~688px at 10 rows, which is taller than the content
+   * row on a 768px laptop — the rail would overflow its grid cell and .shell's
+   * overflow:hidden would silently guillotine the bottom of the picks. 100%
+   * resolves because .shell gives row 3 a definite height (minmax(0, 1fr) of
+   * a 100dvh grid), so short screens simply show fewer rows instead.
+   */
+  max-height: min(
+    calc(
+      var(--qbudget) * var(--qrow)  /* the shared row budget */
+      + 2 * var(--qhead)            /* both section headers */
+      + var(--sp-5)                 /* gap between the two sections */
+      + 2 * var(--sp-2)             /* header -> list gap, each section */
+      + 2 * var(--sp-4)             /* the rail's own padding */
+    ),
+    100%
+  );
+
+  /* Hug that height instead of stretching to fill the grid row, so a tall
+     window leaves the space below the rail genuinely free. */
+  align-self: start;
   /* Deliberately borderless and transparent so the rail blends into the page
      rather than reading as a separate panel. The mobile sheet below re-adds a
      surface background and top border, because there it IS an overlay. */
@@ -16,7 +64,55 @@
 /* Sheet chrome is mobile-only; on desktop the panel is just a sidebar. */
 .sheetHead { display: none; }
 
-.section { display: flex; flex-direction: column; gap: var(--sp-2); }
+/*
+ * `min-height: 0` is the whole trick. A flex child defaults to
+ * min-height:auto, which refuses to shrink below its content — so an inner
+ * overflow:auto never engages and the content pushes the parent open instead.
+ *
+ * `flex: 1 1 auto` lets both sections start at their natural size and shrink
+ * when they do not both fit. Shrinkage is proportional to content, so a long
+ * queue gives up far more room than a short list of picks — which is the
+ * behaviour we want: the picks stay roughly their natural size.
+ */
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Headers stay pinned; only the list below them moves. */
+.sectionHead { flex: 0 0 auto; }
+
+/*
+ * The queue is RIGID: it takes min(its content, 5 rows) and gives up nothing.
+ * The picks absorb the whole shortfall instead, down to their 3-row floor.
+ *
+ * This ordering is the spec. Letting flex share the shortfall proportionally
+ * — which is what it does by default, weighted by content size — crushed a
+ * 20-track queue to 1.7 visible rows while the picks kept 6.3.
+ */
+.section:first-of-type { flex: 0 0 auto; }
+.section:last-of-type { flex: 1 1 auto; }
+
+.section:first-of-type .list {
+  flex: 0 1 auto;
+  max-height: calc(5 * var(--qrow));
+}
+
+/*
+ * Picks: never fewer than 3 rows, and takes whatever the queue leaves. With
+ * the budget above that lands on exactly the spec — a full queue gives 5 + 3,
+ * an empty one gives the picks all 8.
+ */
+.section:last-of-type .list {
+  flex: 1 1 auto;
+  min-height: calc(3 * var(--qrow));
+}
+
+/* Placeholders are fixed-size cards, never a scroll area. */
+.empty, .recsState { flex: 0 0 auto; }
 
 .sectionHead {
   display: flex;
@@ -114,6 +210,41 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+
+  /* The actual scroller. */
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain; /* don't chain scroll to the page behind */
+
+  /* Floor, not a shrink-lock: an explicit min-height still allows shrinking
+     below content (which is all min-height:0 does), while stopping either
+     list from collapsing to nothing when the other is enormous. ~1.5 rows. */
+  min-height: 64px;
+
+  /* Room for the scrollbar so rows do not sit under it. */
+  padding-right: 2px;
+
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+/* WebKit needs the explicit parts; the two declarations above cover Firefox
+   and modern Chrome. */
+.list::-webkit-scrollbar { width: 8px; }
+.list::-webkit-scrollbar-track { background: transparent; }
+
+.list::-webkit-scrollbar-thumb {
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+  /* Transparent border + background-clip insets the thumb inside the track,
+     so it reads as a floating pill rather than a full-width bar. */
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.list::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--vibe-accent, var(--accent)) 55%, var(--border-strong));
+  background-clip: padding-box;
 }
 
 .empty, .recsState {
@@ -233,6 +364,9 @@
     align-items: center;
     row-gap: var(--sp-2);
     margin-bottom: var(--sp-1);
+    /* The grabber and close button must never be squeezed out when the sheet
+       is full — the lists below absorb the shortfall instead. */
+    flex: 0 0 auto;
   }
 
   .grabber {
