@@ -64,6 +64,23 @@
   letter-spacing: -0.005em;
 }
 
+/* Suppress the global :focus-visible ring (global.css) on this field only.
+ *
+ * That ring is 2px of --accent, the fixed brand cyan — it does not follow
+ * --vibe-accent, so it clashed with the mood-tinted halo on .inputWrap. It
+ * also carries border-radius: var(--radius-sm), drawing a 10px-rounded
+ * rectangle inside a 999px pill.
+ *
+ * The `outline: none` on .input above is NOT enough: a class and a
+ * pseudo-class have equal specificity, so which one wins comes down to
+ * bundle order. The compound selector here settles it.
+ *
+ * Accessibility is unaffected — .inputWrap:focus-within still tints the
+ * border and raises a halo, so focus stays plainly visible to keyboard
+ * users. The ring is removed, not the affordance.
+ */
+.input:focus-visible { outline: none; }
+
 .input::placeholder { color: var(--text-3); }
 .input::-webkit-search-cancel-button { display: none; }
 
