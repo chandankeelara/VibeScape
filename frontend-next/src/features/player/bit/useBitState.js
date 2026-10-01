@@ -49,6 +49,9 @@ const STATION = {
   digging: 'crates',
   asleep: 'crates',    // slumped against them, out of the way
 
+  // Starting the track: the beat between digging it out and dancing to it.
+  cueing: 'decks',
+
   // Anything that is ABOUT the record happens at the equipment.
   celebrate: 'decks',  // spinning out the one he just played
   sulk: 'decks',       // the deck he wrecks is the one in front of him
@@ -200,6 +203,28 @@ export default function useBitState({
     nonce.current += 1;
     setEvent({ name, n: nonce.current });
   }, []);
+
+
+  /*
+   * A new track starting is the cue to play it.
+   *
+   * Keyed on the track ID rather than the `current` object: loadTrack hands
+   * back a fresh object on things like a Spotify-to-preview fallback, and Bit
+   * must not re-cue a record that is already spinning.
+   *
+   * Declared AFTER fire() because fire is a const — referencing it from an
+   * effect above would read it before initialisation.
+   */
+  const lastTrackId = useRef(null);
+  useEffect(() => {
+    const id = current ? current.id : null;
+    if (id == null || id === lastTrackId.current) {
+      lastTrackId.current = id;
+      return;
+    }
+    lastTrackId.current = id;
+    fire('cueing');
+  }, [current, fire]);
 
   const beat = useMemo(() => beatSeconds(current && current.tempo), [current]);
   const prop = SUGGESTED_PROP[state] || null;

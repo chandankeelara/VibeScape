@@ -225,20 +225,74 @@ function Prop({ kind }) {
       // Split into `deckBase` and `deckDisc` so the platter can leave without
       // the plinth — one variant hurls just the record, another flips the
       // entire rig. One prop, three different kinds of destruction.
+      //
+      // Redrawn in ISOMETRIC to match BitScene, which went 3D under this file:
+      // three faces along the same (+9,-6) depth vector the room uses (scaled
+      // from its (+14,-8) for this viewBox), top lightest and side darkest. A
+      // flat circular deck sitting where the projected booth stands read as a
+      // sticker on a photograph.
+      //
+      // Every part Bit actually touches is inside abs x 58-78, y 83-92. That
+      // is not styling — it is the only band his 23.8-unit arm can reach once
+      // the cueing animations dip the body ~10px. Parts placed outside it
+      // cannot be operated, only waved at.
       return (
-        <g transform="translate(50 100)">
+        <g transform="translate(50 94)">
           <g className={styles.deckBase}>
-            <rect className={styles.crate} x="-25" y="-9" width="50" height="18" rx="3" />
-            <circle className={styles.pivot} cx="14" cy="-4" r="2.4" />
-            <line className={styles.tonearm} x1="14" y1="-4" x2="2" y2="0" />
-            <circle className={styles.knob} cx="15" cy="4" r="2.2" />
-            <circle className={styles.knob} cx="21" cy="4" r="2.2" />
+            <path className={styles.deckFront} d="M-25 -3 L20 -3 L20 9 L-25 9 Z" />
+            <path className={styles.deckTop} d="M-25 -3 L20 -3 L29 -10 L-16 -10 Z" />
+            <path className={styles.deckSide} d="M20 -3 L29 -10 L29 2 L20 9 Z" />
+            {/* Leading lip, as on the booth — without it the desk is a slab. */}
+            <path className={styles.deckLip} d="M-25 -3 L20 -3 L20 -1 L-25 -1 Z" />
+
+            {/* Start button, beside the platter where the hand can land on it. */}
+            <circle className={styles.deckStart} cx="21" cy="-4.5" r="3.8" />
+
+            {/* Pivot lives OUTSIDE .deckArm: the arm pivots about its own
+                bounding box corner, and a circle centred on that corner would
+                grow the box and move the hinge off the hinge. */}
+            <circle className={styles.knob} cx="25" cy="-11" r="2.2" />
+            <g className={styles.deckArm}>
+              <path className={styles.tonearm} d="M25 -11 L11 -6.4" />
+              <rect className={styles.headshell} x="8" y="-7.4" width="4.6" height="3" rx="1.2" />
+            </g>
           </g>
+
+          {/* Platter. An ELLIPSE, squashed to the projection like the booth's
+              — and the cueing variants that lift it scale it back toward a
+              circle on the way up, because a record held face-on genuinely is
+              one. */}
           <g className={styles.deckDisc}>
-            <circle className={styles.vinyl} cx="-8" cy="-1" r="8.5" />
-            <circle className={styles.groove} cx="-8" cy="-1" r="5.5" />
-            <circle className={styles.label} cx="-8" cy="-1" r="2.6" />
-            <circle className={styles.nick} cx="-8" cy="-7" r="1.1" />
+            <ellipse className={styles.vinyl} cx="6" cy="-7" rx="11.5" ry="6" />
+            <ellipse className={styles.groove} cx="6" cy="-7" rx="7.8" ry="4.1" />
+            <ellipse className={styles.label} cx="6" cy="-7" rx="3.4" ry="1.8" />
+
+            {/* Spin cue, built the way BitScene builds it: the squash is a
+                transform ATTRIBUTE on an inert wrapper (a CSS transform would
+                override it and flatten the orbit back to a circle), and what
+                rotates is a nick riding inside, never the ellipse — a rotated
+                ellipse is a different shape and wobbles.
+
+                The second circle paints nothing. It exists so the group's
+                bounding box is symmetric about the orbit centre, which is the
+                only way `transform-origin: center` lands on the spindle
+                instead of on the nick itself. */}
+            <g transform="translate(6 -7) scale(1 0.52)">
+              <g className={styles.deckNick}>
+                <circle className={styles.nick} cx="8" cy="0" r="1.9" />
+                <circle fill="none" stroke="none" cx="-8" cy="0" r="1.9" />
+              </g>
+            </g>
+          </g>
+
+          {/* Dust, for the blow-off variant. A sibling of .deckDisc, not a
+              child: nesting it would widen the disc's bounding box and shift
+              the centre every sulk rotation pivots on. */}
+          <g className={styles.deckDust}>
+            <circle cx="0" cy="0" r="1.5" />
+            <circle cx="6" cy="-3" r="1.1" />
+            <circle cx="-5" cy="-5" r="1.3" />
+            <circle cx="2" cy="-8" r="0.9" />
           </g>
         </g>
       );

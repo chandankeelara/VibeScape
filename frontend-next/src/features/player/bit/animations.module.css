@@ -145,9 +145,55 @@
 
 .crate  { fill: var(--surface-2); stroke: var(--text-3); stroke-width: 1.7; }
 .spines { stroke: var(--text-4); stroke-width: 1.4; stroke-linecap: round; }
+/* ------------------------------------------------------ the deck, in iso
+ *
+ * Face tones are derived exactly as BitScene derives them, from the same
+ * tokens, so Bit's deck lights the same way as the booth it replaces. If they
+ * were picked independently the prop would read as a different object under a
+ * different lamp standing where the furniture was. */
+.deckBase {
+  --face-top: color-mix(in oklab, var(--vibe-accent, var(--accent)) 12%, var(--surface-2));
+  --face-front: var(--surface-2);
+  --face-side: color-mix(in oklab, var(--bg) 55%, var(--surface-2));
+}
+
+.deckTop,
+.deckFront,
+.deckSide {
+  stroke: var(--text-4);
+  stroke-width: 1;
+  stroke-linejoin: round;
+}
+
+.deckTop   { fill: var(--face-top); }
+.deckFront { fill: var(--face-front); }
+.deckSide  { fill: var(--face-side); }
+.deckLip   { fill: color-mix(in oklab, var(--text) 9%, transparent); stroke: none; }
+
+.deckStart { fill: var(--vibe-accent-2, var(--accent)); stroke: var(--text-4); stroke-width: 1; }
+.headshell { fill: var(--surface-2); stroke: var(--text-3); stroke-width: 1.1; }
+
+/* The arm hinges on the top-RIGHT corner of its own bounding box, which is
+   exactly where the pivot circle sits. `right top` only works because the
+   pivot circle is drawn outside this group — see the rig. */
+.deckArm {
+  transform-box: fill-box;
+  transform-origin: right top;
+}
+
+.deckNick,
+.deckDust {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* Parked invisible: dust only exists during the blow-off. */
+.deckDust { opacity: 0; }
+.deckDust circle { fill: var(--text-3); }
+
 .knob   { fill: var(--surface-2); stroke: var(--text-4); stroke-width: 1.2; }
 .pivot  { fill: var(--surface-2); stroke: var(--text-4); stroke-width: 1.2; }
-.tonearm { stroke: var(--text-3); stroke-width: 1.8; stroke-linecap: round; }
+.tonearm { stroke: var(--text-3); stroke-width: 2.4; stroke-linecap: round; }
 
 .rwBadge path {
   fill: none;
@@ -577,6 +623,194 @@
 @keyframes pullHead  { 0%, 100% { transform: rotate(5deg) translateY(4px); } 34% { transform: rotate(14deg) translateX(2px); } 70% { transform: rotate(10deg) translateX(2px); } }
 @keyframes pullTorso { 0%, 100% { transform: translateY(2.5px) rotate(2deg); } 34%, 70% { transform: translateY(0) rotate(-2deg); } }
 @keyframes pullDip   { 0%, 100% { transform: translateY(7px); } 34%, 70% { transform: translateY(0); } }
+
+/* ========================================================== STATE: cueing
+ *
+ * The beat between digging a record out and dancing to it: Bit is standing at
+ * the decks and physically STARTS the track. Fires as a one-shot the instant a
+ * new track begins, then he walks out to the floor and groove takes over.
+ *
+ * Two constraints shape every variant here and neither is negotiable:
+ *
+ *  1. EVERY ONE ENDS STANDING. The dock walks him off the moment the clip
+ *     finishes, so a variant that ends in a crouch or with an arm flung across
+ *     the body snaps on the way out. All five land with the body upright and
+ *     the arms at or near rest.
+ *
+ *  2. ALL DECK CONTACT IS THE RIGHT ARM. The hand sits 23.8 units from the
+ *     shoulder and sweeps a circle, so mid-chest and anything left of centre
+ *     is simply off that circle — a two-handed hold in front of the chest
+ *     needs a 220-degree windmill to reach. The deck's controls were placed in
+ *     the one band the right hand can cover (abs x 58-78, y 83-92) and the
+ *     body dips ~10px to bring the shoulder down to them. The left arm
+ *     counterbalances and never operates anything.
+ *
+ * Kept to 700-1100ms on purpose: the song is already audible while this plays,
+ * so a long cue leaves Bit fiddling with a deck over music that has started.
+ *
+ * The five differ in BIG SHAPE, not timing — where the record goes, which limb
+ * carries the move, what the body does — because they exist to be compared
+ * side by side.
+ */
+
+/* --- 1. drop: the record itself is the moving object. It comes down out of
+   the air on the right, un-squashing from an ellipse toward a circle on the
+   way (a record lying on a deck is foreshortened; one held up is not), lands
+   on the platter, and the nick spins up. */
+.a_cueing_drop { --t: 950ms; }
+.a_cueing_drop .deckDisc { animation: dropDisc var(--t) var(--ease) both; }
+.a_cueing_drop .deckNick { animation: spinUp var(--t) var(--ease) both; }
+.a_cueing_drop .armR     { animation: dropArmR var(--t) var(--ease) both; }
+.a_cueing_drop .armL     { animation: dropArmL var(--t) var(--ease) both; }
+.a_cueing_drop .body     { animation: cueDip var(--t) var(--ease) both; }
+.a_cueing_drop .head     { animation: dropHead var(--t) var(--ease) both; }
+.a_cueing_drop .torso    { animation: cueLean var(--t) var(--ease) both; }
+
+@keyframes dropDisc {
+  0%  { transform: translate(20px, -52px) scaleY(1.9); }
+  58% { transform: translate(0, 0) scaleY(1); }
+  70% { transform: translate(0, -2px) scaleY(1.06); } /* light bounce on seat */
+  82%, 100% { transform: translate(0, 0) scaleY(1); }
+}
+/* Spin-up, not spin: eased IN so the platter visibly takes a moment to reach
+   speed. A constant rotation from the first frame reads as already playing,
+   which is the one thing this state must not say. */
+@keyframes spinUp    { 0%, 58% { transform: rotate(0deg); } 100% { transform: rotate(900deg); } }
+@keyframes dropArmR  { 0% { transform: rotate(-146deg); } 58% { transform: rotate(49deg); } 76% { transform: rotate(32deg); } 100% { transform: rotate(6deg); } }
+@keyframes dropArmL  { 0% { transform: rotate(26deg); } 58% { transform: rotate(-16deg); } 100% { transform: rotate(0deg); } }
+@keyframes cueDip    { 0% { transform: translateY(0); } 55% { transform: translateY(10px); } 80% { transform: translateY(4px); } 100% { transform: translateY(0); } }
+@keyframes cueLean   { 0% { transform: rotate(0deg); } 55% { transform: rotate(5deg); } 100% { transform: rotate(0deg); } }
+@keyframes dropHead  { 0% { transform: rotate(-6deg); } 55% { transform: rotate(9deg) translateY(2px); } 100% { transform: rotate(0deg); } }
+
+/* --- 2. needle: nothing travels. The move is the TONEARM sweeping in from
+   its rest position onto the disc — a thin line crossing the deck, which is a
+   completely different silhouette from a record falling. Bit leans in over it
+   and straightens up when the needle bites. */
+.a_cueing_needle { --t: 800ms; }
+.a_cueing_needle .deckArm  { animation: swingArm var(--t) var(--ease) both; }
+.a_cueing_needle .armR     { animation: needleArmR var(--t) var(--ease) both; }
+.a_cueing_needle .armL     { animation: needleArmL var(--t) var(--ease) both; }
+.a_cueing_needle .deckNick { animation: spinUpLate var(--t) var(--ease) both; }
+.a_cueing_needle .body     { animation: needleDip var(--t) var(--ease) both; }
+.a_cueing_needle .torso    { animation: cueLean var(--t) var(--ease) both; }
+.a_cueing_needle .head     { animation: needleHead var(--t) var(--ease) both; }
+.a_cueing_needle .chest    { animation: cueFlash var(--t) var(--ease) both; }
+
+/* Parked clear of the platter at -25deg, swung home to 0 with one small
+   overshoot — a needle that arrives dead still reads as a drawing, not a drop. */
+@keyframes swingArm   { 0% { transform: rotate(-48deg); } 56% { transform: rotate(5deg); } 70% { transform: rotate(-5deg); } 84%, 100% { transform: rotate(1deg); } }
+@keyframes needleArmR { 0% { transform: rotate(0deg); } 24% { transform: rotate(-6deg); } 56% { transform: rotate(24deg); } 78% { transform: rotate(14deg); } 100% { transform: rotate(2deg); } }
+@keyframes needleArmL { 0%, 100% { transform: rotate(0deg); } 50% { transform: rotate(-20deg); } }
+@keyframes spinUpLate { 0%, 62% { transform: rotate(0deg); } 100% { transform: rotate(760deg); } }
+@keyframes needleDip  { 0% { transform: translateY(0); } 52% { transform: translateY(11px) translateX(3px); } 100% { transform: translateY(0); } }
+@keyframes needleHead { 0% { transform: rotate(-4deg); } 52% { transform: rotate(17deg) translateY(3px); } 72% { transform: rotate(10deg); } 100% { transform: rotate(-3deg); } }
+@keyframes cueFlash   { 0%, 56% { opacity: 0.4; transform: scale(0.9); } 64% { opacity: 1; transform: scale(1.4); } 100% { opacity: 0.8; transform: scale(1); } }
+
+/* --- 3. slam: the loud one. One arm chops down onto the start button and the
+   WHOLE body punctuates it — rise, drop, shadow spread, deck recoil, all on
+   the same frame. Shortest of the five because a slam that takes a second is
+   a press. */
+.a_cueing_slam { --t: 700ms; }
+.a_cueing_slam .armR      { animation: slamFist var(--t) var(--ease) both; }
+.a_cueing_slam .armL      { animation: slamCounter var(--t) var(--ease) both; }
+.a_cueing_slam .deckStart { animation: buttonPunch var(--t) var(--ease) both; }
+.a_cueing_slam .deckBase  { animation: deckRecoil var(--t) var(--ease) both; }
+.a_cueing_slam .deckDisc  { animation: discJolt var(--t) var(--ease) both; }
+.a_cueing_slam .deckNick  { animation: spinUpHard var(--t) var(--ease) both; }
+.a_cueing_slam .body      { animation: slamPunch var(--t) var(--ease) both; }
+.a_cueing_slam .shadow    { animation: slamSpread var(--t) var(--ease) both; }
+.a_cueing_slam .head      { animation: slamNod var(--t) var(--ease) both; }
+.a_cueing_slam .legR      { animation: slamBrace var(--t) var(--ease) both; }
+.a_cueing_slam .bulb      { animation: cueFlash var(--t) var(--ease) both; }
+
+@keyframes slamFist    { 0% { transform: rotate(0deg); } 26% { transform: rotate(-62deg); } 44% { transform: rotate(9deg); } 60% { transform: rotate(-12deg); } 100% { transform: rotate(0deg); } }
+@keyframes slamCounter { 0%, 100% { transform: rotate(0deg); } 26% { transform: rotate(24deg); } 46% { transform: rotate(-16deg); } }
+@keyframes buttonPunch { 0%, 38% { transform: scale(1); opacity: 0.75; } 44% { transform: scale(0.62); opacity: 1; } 62% { transform: scale(1.18); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
+@keyframes deckRecoil  { 0%, 40% { transform: scaleY(1); } 46% { transform: scaleY(0.93) translateY(1.5px); } 64% { transform: scaleY(1.02); } 100% { transform: scaleY(1); } }
+@keyframes discJolt    { 0%, 40% { transform: translateY(0); } 46% { transform: translateY(1.6px) scaleY(0.9); } 66%, 100% { transform: translateY(0) scaleY(1); } }
+@keyframes spinUpHard  { 0%, 44% { transform: rotate(0deg); } 100% { transform: rotate(1000deg); } }
+@keyframes slamPunch   { 0% { transform: translateY(0); } 26% { transform: translateY(-4px); } 46% { transform: translateY(7px); } 64% { transform: translateY(1px); } 100% { transform: translateY(0); } }
+@keyframes slamSpread  { 0%, 38% { transform: scaleX(1); opacity: 0.55; } 48% { transform: scaleX(1.26); opacity: 0.72; } 72%, 100% { transform: scaleX(1); opacity: 0.55; } }
+@keyframes slamNod     { 0% { transform: rotate(0deg); } 26% { transform: rotate(-9deg); } 46% { transform: rotate(14deg) translateY(3px); } 100% { transform: rotate(0deg); } }
+@keyframes slamBrace   { 0%, 32% { transform: rotate(0deg); } 48% { transform: rotate(13deg); } 100% { transform: rotate(0deg); } }
+
+/* --- 4. scratch: push-pull twice, then let it run. The read is entirely in
+   the NICK reversing — the hand rocking on its own is ambiguous, but a mark on
+   the platter going back, forward, back, then running away forward is not.
+   The body counter-rocks against the hand, which is what every DJ actually
+   does and what separates this shape from the slam's vertical punch. */
+.a_cueing_scratch { --t: 1000ms; }
+.a_cueing_scratch .armR     { animation: scratchHand var(--t) var(--ease) both; }
+.a_cueing_scratch .armL     { animation: scratchBrace var(--t) var(--ease) both; }
+.a_cueing_scratch .deckNick { animation: scratchNick var(--t) var(--ease) both; }
+.a_cueing_scratch .deckDisc { animation: scratchDisc var(--t) var(--ease) both; }
+.a_cueing_scratch .body     { animation: scratchRock var(--t) var(--ease) both; }
+.a_cueing_scratch .head     { animation: scratchWatch var(--t) var(--ease) both; }
+.a_cueing_scratch .torso    { animation: cueLean var(--t) var(--ease) both; }
+
+@keyframes scratchHand {
+  0% { transform: rotate(0deg); }
+  18% { transform: rotate(49deg); }  /* hand lands on the platter */
+  34% { transform: rotate(66deg); }
+  48% { transform: rotate(34deg); }
+  62% { transform: rotate(66deg); }
+  74% { transform: rotate(38deg); }  /* release */
+  88% { transform: rotate(10deg); }
+  100% { transform: rotate(0deg); }
+}
+@keyframes scratchBrace { 0%, 100% { transform: rotate(0deg); } 30%, 70% { transform: rotate(-22deg); } }
+/* Backwards, forwards, backwards — then let go and run. */
+@keyframes scratchNick {
+  0%, 18% { transform: rotate(0deg); }
+  34% { transform: rotate(-120deg); }
+  48% { transform: rotate(70deg); }
+  62% { transform: rotate(-110deg); }
+  74% { transform: rotate(40deg); animation-timing-function: cubic-bezier(0.4, 0, 1, 1); }
+  100% { transform: rotate(880deg); }
+}
+@keyframes scratchDisc  { 0%, 18% { transform: translateX(0); } 34% { transform: translateX(-1.4px); } 48% { transform: translateX(1px); } 62% { transform: translateX(-1.4px); } 76%, 100% { transform: translateX(0); } }
+@keyframes scratchRock  { 0% { transform: translate(0, 0) rotate(0deg); } 18% { transform: translate(0, 10px) rotate(0deg); } 34% { transform: translate(5px, 10px) rotate(4deg); } 48% { transform: translate(-4px, 10px) rotate(-4deg); } 62% { transform: translate(5px, 10px) rotate(4deg); } 80% { transform: translate(-1px, 6px) rotate(-1deg); } 100% { transform: translate(0, 0) rotate(0deg); } }
+@keyframes scratchWatch { 0% { transform: rotate(0deg); } 20% { transform: rotate(13deg) translateY(2px); } 34% { transform: rotate(6deg); } 48% { transform: rotate(18deg); } 62% { transform: rotate(6deg); } 80% { transform: rotate(13deg); } 100% { transform: rotate(0deg); } }
+
+/* --- 5. dust: the only variant that brings the record UP to the face, which
+   is what makes it readable from across the room — every other cue happens at
+   waist height. He holds it up, blows, a puff drifts off, then he sets it
+   down. Longest of the five because the blow needs a held beat to land. */
+.a_cueing_dust { --t: 1100ms; }
+.a_cueing_dust .deckDisc { animation: dustDisc var(--t) var(--ease) both; }
+.a_cueing_dust .deckDust { animation: dustPuff var(--t) var(--ease-out) both; }
+.a_cueing_dust .deckNick { animation: spinUpLate var(--t) var(--ease) both; }
+.a_cueing_dust .armR     { animation: dustArmR var(--t) var(--ease) both; }
+.a_cueing_dust .armL     { animation: dustArmL var(--t) var(--ease) both; }
+.a_cueing_dust .head     { animation: dustHead var(--t) var(--ease) both; }
+.a_cueing_dust .body     { animation: dustBody var(--t) var(--ease) both; }
+.a_cueing_dust .eyeL,
+.a_cueing_dust .eyeR     { animation: dustSquint var(--t) var(--ease) both; }
+
+/* Up to face height un-squashed (held face-on), held through the blow, then
+   back down to the platter and foreshortened again. */
+@keyframes dustDisc {
+  0%  { transform: translate(0, 0) scaleY(1); }
+  22% { transform: translate(18px, -43px) scaleY(1.9); }
+  52% { transform: translate(18px, -43px) scaleY(1.9); }
+  84% { transform: translate(0, 0) scaleY(1); }
+  92% { transform: translate(0, -1.5px) scaleY(1.05); }
+  100% { transform: translate(0, 0) scaleY(1); }
+}
+/* Drifts up and OUTBOARD, away from the body — dust blown off a record held
+   to his right does not travel back across his chest. */
+@keyframes dustPuff {
+  0%, 34% { transform: translate(24px, -50px) scale(0.4); opacity: 0; }
+  42% { transform: translate(27px, -53px) scale(1); opacity: 0.85; }
+  68% { transform: translate(38px, -62px) scale(1.7); opacity: 0.4; }
+  100% { transform: translate(48px, -70px) scale(2.2); opacity: 0; }
+}
+@keyframes dustArmR  { 0% { transform: rotate(0deg); } 22%, 52% { transform: rotate(-146deg); } 84% { transform: rotate(49deg); } 100% { transform: rotate(4deg); } }
+@keyframes dustArmL  { 0%, 100% { transform: rotate(0deg); } 30%, 60% { transform: rotate(-18deg); } }
+/* Leans toward the record for the blow, then recoils from its own dust. */
+@keyframes dustHead  { 0% { transform: rotate(0deg); } 34% { transform: rotate(-10deg) translateX(2px); } 46% { transform: rotate(-16deg) translateX(3px); } 62% { transform: rotate(4deg) translateX(-1px); } 84% { transform: rotate(10deg) translateY(2px); } 100% { transform: rotate(0deg); } }
+@keyframes dustBody  { 0%, 100% { transform: translateY(0); } 30% { transform: translateY(-2px); } 80% { transform: translateY(9px); } 92% { transform: translateY(3px); } }
+@keyframes dustSquint { 0%, 36% { transform: scaleY(1); } 46%, 60% { transform: scaleY(0.35); } 100% { transform: scaleY(1); } }
 
 /* ======================================================= STATE: celebrate
  * The user listened to a whole track — the strongest positive signal we get,
@@ -1119,8 +1353,9 @@
 .prop[data-prop='crate']    { transform-origin: 50px 99px; }
 /* The deck pivots at its FRONT-LEFT corner, not its centre: a table flip
    rotates about the edge you grab, and pivoting at the middle reads as the
-   deck levitating and spinning rather than being thrown over. */
-.prop[data-prop='deck']     { transform-origin: 26px 109px; }
+   deck levitating and spinning rather than being thrown over. Moved with the
+   deck when it was redrawn in projection — local (-25,9) of translate(50,94). */
+.prop[data-prop='deck']     { transform-origin: 25px 103px; }
 .prop[data-prop='rewind']   { transform-origin: 78px 74px; }
 .prop[data-prop='glasses']  { transform-origin: 50px 28px; }
 .prop[data-prop='padlock']  { transform-origin: 81px 57px; }
@@ -1206,6 +1441,37 @@
   .a_digging_pull .armR { transform: rotate(-108deg); }
   .a_digging_pull .head { transform: rotate(14deg) translateX(2px); }
   .a_digging_pull .crateDiscA { transform: translate(30px, -59px) rotate(8deg) scale(1.05); opacity: 1; }
+
+  /* cueing — each holds the frame where the action is happening, not the
+     tidy standing pose it ends on; with motion off, "about to walk away" and
+     "doing nothing" are the same picture. */
+  .a_cueing_drop .deckDisc { transform: translate(10px, -26px) scaleY(1.5); }
+  .a_cueing_drop .armR { transform: rotate(-54deg); }
+  .a_cueing_drop .armL { transform: rotate(12deg); }
+  .a_cueing_drop .body { transform: translateY(8px); }
+  .a_cueing_drop .head { transform: rotate(6deg) translateY(2px); }
+  .a_cueing_needle .deckArm { transform: rotate(-18deg); }
+  .a_cueing_needle .armR { transform: rotate(22deg); }
+  .a_cueing_needle .body { transform: translateY(9px); }
+  .a_cueing_needle .head { transform: rotate(11deg) translateY(2px); }
+  .a_cueing_slam .armR { transform: rotate(6deg); }
+  .a_cueing_slam .armL { transform: rotate(-14deg); }
+  .a_cueing_slam .body { transform: translateY(6px); }
+  .a_cueing_slam .head { transform: rotate(13deg) translateY(3px); }
+  .a_cueing_slam .deckStart { transform: scale(0.66); }
+  .a_cueing_slam .deckBase { transform: scaleY(0.94) translateY(1.5px); }
+  .a_cueing_slam .shadow { transform: scaleX(1.22); opacity: 0.7; }
+  .a_cueing_scratch .armR { transform: rotate(64deg); }
+  .a_cueing_scratch .armL { transform: rotate(-22deg); }
+  .a_cueing_scratch .body { transform: translate(5px, 10px) rotate(4deg); }
+  .a_cueing_scratch .head { transform: rotate(12deg) translateY(2px); }
+  .a_cueing_scratch .deckNick { transform: rotate(-115deg); }
+  .a_cueing_dust .deckDisc { transform: translate(18px, -43px) scaleY(1.9); }
+  .a_cueing_dust .deckDust { transform: translate(30px, -56px) scale(1.4); opacity: 0.6; }
+  .a_cueing_dust .armR { transform: rotate(-146deg); }
+  .a_cueing_dust .armL { transform: rotate(-18deg); }
+  .a_cueing_dust .head { transform: rotate(-15deg) translateX(3px); }
+  .a_cueing_dust .eyeL, .a_cueing_dust .eyeR { transform: scaleY(0.35); }
 
   /* celebrate — the record held high, or caught mid-air for `toss`. */
   .a_celebrate_spin .armR { transform: rotate(-110deg); }

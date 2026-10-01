@@ -46,6 +46,18 @@ export const ANIMATIONS = {
   /* Choosing the next track. All loops — the wait has no known length. */
   digging: ['a_digging_flip', 'a_digging_dive', 'a_digging_pull'],
 
+  /* Starting the track: the beat between digging it out and dancing to it.
+     Fires the instant a new track begins, while Bit is at the decks. All five
+     end standing upright, because the dock walks him to the floor the moment
+     the clip finishes. They differ in big shape, not timing. */
+  cueing: [
+    'a_cueing_drop',
+    'a_cueing_needle',
+    'a_cueing_slam',
+    'a_cueing_scratch',
+    'a_cueing_dust',
+  ],
+
   /* Track played to the end. The record does the work in all three — a body
      move with a disc parked in the hand did not read as celebration. */
   celebrate: ['a_celebrate_spin', 'a_celebrate_toss', 'a_celebrate_jump'],
@@ -105,6 +117,12 @@ export const META = {
   a_digging_dive:     { loop: true,  ms: null },
   a_digging_pull:     { loop: true,  ms: null },
 
+  a_cueing_drop:      { loop: false, ms: 950 },
+  a_cueing_needle:    { loop: false, ms: 800 },
+  a_cueing_slam:      { loop: false, ms: 700 },
+  a_cueing_scratch:   { loop: false, ms: 1000 },
+  a_cueing_dust:      { loop: false, ms: 1100 },
+
   a_celebrate_spin:   { loop: false, ms: 1200 },
   a_celebrate_toss:   { loop: false, ms: 1300 },
   a_celebrate_jump:   { loop: false, ms: 1100 },
@@ -142,6 +160,12 @@ export const META = {
 export const SUGGESTED_PROP = {
   asleep: 'zzz',
   digging: 'crate',
+  // `deck`, not `record`: cueing happens AT the booth, and useBitState already
+  // stands the static BitScene booth down whenever Bit carries his own deck
+  // (`using === 'deck'`). With a bare record he would be cueing into furniture
+  // he cannot touch — the platter, tonearm and start button all have to be
+  // parts of his prop for any of these five to move anything.
+  cueing: 'deck',
   celebrate: 'record',
   // `deck`, not `record`: a rejection needs something with enough mass to be
   // worth destroying, and one variant flips the entire set over.
