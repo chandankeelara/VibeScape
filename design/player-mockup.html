@@ -1,0 +1,1211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VibeScape — player</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ===================================================================
+   VibeScape — working player prototype.
+
+   Composition: direction A (the record is the object) with direction B's
+   vertical fader grafted onto the right edge of the meta column.
+
+   Everything here is live. The fader re-lights the room on every pointer
+   move, picks a track on release, and rewrites the DJ picks. The transport
+   runs. The pool breathes at the current track's BPM.
+
+   Token names match frontend-next/src/styles/tokens.css so this maps 1:1
+   onto the codebase. See design/ui-spec.html for the reasoning.
+   =================================================================== */
+
+/* Registered so they can be TRANSITIONED. Unregistered custom properties
+   are not animatable — the accent crossfade on a track change is a hard
+   cut without these four declarations. */
+@property --vibe-accent      { syntax: '<color>'; inherits: true; initial-value: rgb(24,189,224); }
+@property --vibe-accent-2    { syntax: '<color>'; inherits: true; initial-value: rgb(34,193,227); }
+@property --vibe-accent-text { syntax: '<color>'; inherits: true; initial-value: rgb(26,190,225); }
+@property --vibe-accent-fill { syntax: '<color>'; inherits: true; initial-value: rgb(71,216,251); }
+@property --played           { syntax: '<number>'; inherits: true; initial-value: 0; }
+
+:root {
+  /* surfaces */
+  --bg: #08080c;
+  --bg-2: #0d0d14;
+  --surface: #12121a;
+  --surface-2: #191922;
+  --border: rgba(255,255,255,0.08);
+  --border-strong: rgba(255,255,255,0.16);
+
+  /* text ramp — re-spaced so all four steps clear 4.5:1 */
+  --text:   #f2f2f5;
+  --text-2: rgba(242,242,245,0.78);
+  --text-3: rgba(242,242,245,0.62);
+  --text-4: rgba(242,242,245,0.50);
+  --text-mute: rgba(242,242,245,0.30);   /* NON-TEXT MARKS ONLY */
+
+  --accent: #22c1e3;
+  --danger: #ff5d5d;
+  --vibe-accent-ink: var(--bg);
+
+  /* type */
+  --fs-micro: 10px; --fs-meta: 11.5px; --fs-sm: 13px;
+  --fs-body: 15px;  --fs-title: 19px;  --fs-display: 28px;
+  --sans: 'Space Grotesk', system-ui, sans-serif;
+  --serif: 'Instrument Serif', Georgia, serif;
+  --mono: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
+
+  /* spacing — one 4px grid */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px;
+  --sp-6: 24px; --sp-7: 32px; --sp-8: 40px; --sp-9: 48px;
+
+  --radius-sm: 6px; --radius: 10px; --radius-lg: 16px; --radius-pill: 999px;
+
+  /* material — one light, 118deg, above and in front.
+     On #08080c a shadow cannot lift anything; the EDGE does the lifting
+     and the shadow only kills the surface directly beneath. */
+  --edge-lit: rgba(255,255,255,0.14);
+  --edge-lit-2: rgba(255,255,255,0.26);
+  --edge-dark: rgba(0,0,0,0.55);
+  --contact: 0 1px 2px rgba(0,0,0,0.65);
+  --cast-3: 0 14px 30px -10px rgba(0,0,0,0.70);
+  --cast-4: 0 30px 64px -14px rgba(0,0,0,0.78);
+  --sheen: linear-gradient(118deg, rgba(255,255,255,0.075) 0%, rgba(255,255,255,0.02) 26%, transparent 48%);
+  --vignette: radial-gradient(112% 112% at 50% 44%, transparent 54%, rgba(0,0,0,0.34) 100%);
+
+  /* motion */
+  --ease: cubic-bezier(0.2,0.8,0.2,1);
+  --ease-out: cubic-bezier(0.16,1,0.3,1);
+  --ease-in: cubic-bezier(0.4,0,1,1);
+  --dur-press: 90ms; --dur-fast: 120ms; --dur: 220ms; --dur-slow: 420ms; --dur-art: 640ms;
+
+  /* the breath — written per track by JS */
+  --beat: 0.577s;
+  --breath: 0.09;
+  --glow: 0.65;
+
+  /* the dial, 0..100 — written on every pointermove */
+  --v: 34;
+
+  /* pill geometry, declared once */
+  --pill-h: 22px; --pill-pad: 10px; --pill-track: 0.14em;
+
+  /* the hero sleeve. min() of three positive terms: cannot go negative,
+     and never needs a derived transform. */
+  --art: min(46vh, 30vw, 440px);
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+
+html {
+  background: var(--bg);
+  /* Only enabled during a track change (see .relight), so dragging the
+     fader re-lights instantly and a track change dissolves. */
+  --vibe-accent: rgb(24,189,224);
+  --vibe-accent-2: rgb(34,193,227);
+  --vibe-accent-text: rgb(26,190,225);
+  --vibe-accent-fill: rgb(71,216,251);
+}
+html.relight {
+  transition: --vibe-accent var(--dur-art) var(--ease),
+              --vibe-accent-2 var(--dur-art) var(--ease),
+              --vibe-accent-text var(--dur-art) var(--ease),
+              --vibe-accent-fill var(--dur-art) var(--ease);
+}
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: var(--fs-body);
+  color: var(--text-2);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: auto;
+  overflow-y: hidden;
+  user-select: none;
+}
+
+/* Grain. Not texture for its own sake: the light pool is a low-alpha
+   radial gradient and it bands into visible rings on 8-bit panels.
+   2.2% dither removes the banding. Inert, never moves. */
+body::after {
+  content: '';
+  position: fixed; inset: 0; z-index: 400;
+  pointer-events: none;
+  opacity: 0.022;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+:focus-visible { outline: 2px solid var(--vibe-accent-text); outline-offset: 2px; }
+
+/* ---------------------------------------------------------- shell ---- */
+.app {
+  height: 100dvh;
+  min-width: 1240px;
+  display: grid;
+  grid-template-rows: 56px 50px minmax(0,1fr);
+  grid-template-columns: minmax(0,1fr) 320px;
+  /* The room is lit from above, so the page is not flat. Two luminance
+     steps — more than that and it becomes a gradient panel. */
+  background: linear-gradient(180deg, #0a0a11 0%, var(--bg) 46%);
+  isolation: isolate;
+}
+
+/* ---------------------------------------------------------- topbar --- */
+.topbar {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: var(--sp-6);
+  padding: 0 var(--sp-6);
+  border-bottom: 1px solid var(--border);
+}
+.wordmark { display: flex; align-items: center; gap: 10px; font-size: var(--fs-title); line-height: 1; color: var(--text); }
+/* The tally light. One of exactly two things in this interface that move
+   with the music, and it tells you the tempo. */
+.mark {
+  width: 9px; height: 9px;
+  background: var(--vibe-accent-fill);
+  animation: tally var(--beat) var(--ease-out) infinite;
+}
+@keyframes tally {
+  0%   { transform: scale(1.14); opacity: 1; }
+  55%  { transform: scale(1);    opacity: 0.78; }
+  100% { transform: scale(1);    opacity: 0.78; }
+}
+.wordmark .a { font-weight: 500; letter-spacing: -0.015em; }
+.wordmark .b { font-family: var(--serif); font-style: italic; font-size: 21px; }
+
+.spacer { flex: 1; }
+.mlabel { font-family: var(--mono); font-size: var(--fs-micro); font-weight: 500; letter-spacing: var(--pill-track); text-transform: uppercase; color: var(--text-4); }
+.readout { display: flex; gap: 18px; }
+.readout i { font-style: normal; color: var(--text-4); }
+.readout b { font-weight: 500; color: var(--text-2); }
+
+.iconbtn {
+  display: grid; place-items: center;
+  width: 30px; height: 30px; flex: none;
+  border: 1px solid var(--border); border-top-color: var(--edge-lit);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-3);
+  font-family: var(--mono); font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-press) var(--ease), box-shadow var(--dur-press) var(--ease);
+}
+.iconbtn:hover { color: var(--text); border-color: var(--edge-lit-2); }
+.iconbtn:active { transform: translateY(1px); box-shadow: var(--contact); }
+
+.userpill {
+  display: flex; align-items: center; gap: var(--sp-2);
+  height: 30px; padding: 0 10px 0 4px;
+  border: 1px solid var(--border); border-top-color: var(--edge-lit);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--text-2); font-size: var(--fs-meta);
+}
+.av { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-2); font-family: var(--mono); font-size: 9px; font-weight: 600; }
+
+/* ---------------------------------------------------------- search --- */
+.searchbar {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: 0 var(--sp-6);
+  border-bottom: 1px solid var(--border);
+}
+/* Recessed — elev-1. Dark relative to its bed, lit on the bottom inner
+   lip, because a groove catches light on its far wall. */
+.searchfield {
+  flex: 1; display: flex; align-items: center; gap: var(--sp-3);
+  height: 30px; padding: 0 var(--sp-3);
+  border-radius: var(--radius-sm);
+  background: #05050a;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.6), inset 0 -1px 0 rgba(255,255,255,0.05);
+}
+.gl { width: 12px; height: 12px; border: 1.5px solid var(--text-4); border-radius: 50%; position: relative; flex: none; }
+.gl::after { content: ''; position: absolute; right: -4px; bottom: -3px; width: 6px; height: 1.5px; background: var(--text-4); transform: rotate(45deg); }
+.ph { flex: 1; font-size: var(--fs-sm); color: var(--text-4); }
+kbd { font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em; color: var(--text-4); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 2px 6px; }
+
+/* ----------------------------------------------------------- stage --- */
+.stage {
+  grid-column: 1; grid-row: 3;
+  display: grid;
+  grid-template-columns: var(--art) minmax(300px,1fr) 92px;
+  column-gap: clamp(24px, 2.6vw, 44px);
+  align-items: center;
+  padding: 0 var(--sp-6) var(--sp-5);
+  min-width: 0;
+  position: relative;
+}
+
+/* ------------------------------------------------------- the sleeve -- */
+.artcol { display: flex; flex-direction: column; gap: var(--sp-4); align-items: stretch; }
+
+.stack { position: relative; width: var(--art); height: var(--art); }
+/* Two sheets behind the hero, offset up and inset, showing only their lit
+   top edges. "Up next" is not a list here — it is what is underneath. */
+.u1, .u2 {
+  position: absolute; z-index: -1;
+  height: 24px; border-radius: 4px 4px 0 0;
+  border-top: 1px solid var(--edge-lit-2);
+  box-shadow: var(--contact);
+  transition: transform var(--dur-slow) var(--ease-out), background var(--dur-art) var(--ease);
+}
+.u1 { top: -7px;  left: 10px; right: 10px; }
+.u2 { top: -13px; left: 22px; right: 22px; opacity: 0.72; }
+.stack.advance .u1 { animation: advance var(--dur-slow) var(--ease-out); }
+.stack.advance .u2 { animation: advance var(--dur-slow) var(--ease-out) 40ms; }
+@keyframes advance { 0% { transform: translateY(6px); } 100% { transform: translateY(0); } }
+
+.sleeve {
+  position: relative;
+  background: var(--surface);
+  /* Four edges, not one border. Light from the upper left: top and left
+     catch it, bottom and right fall away. This is what gives a flat
+     square thickness. */
+  border: 1px solid var(--edge-dark);
+  border-top-color: var(--edge-lit-2);
+  border-left-color: var(--edge-lit);
+  overflow: hidden;
+  flex: none;
+}
+.sleeve .field { position: absolute; inset: 0; background:
+  radial-gradient(120% 90% at 78% 14%, color-mix(in oklab, var(--c1) 36%, transparent), transparent 62%),
+  radial-gradient(90% 70% at 10% 94%, color-mix(in oklab, var(--c2) 24%, transparent), transparent 60%); }
+/* Sheen and vignette: the two marks that turn a tone field into a surface.
+   A broad wash at the one light angle, never a glossy streak. */
+.sleeve::after { content: ''; position: absolute; inset: 0; background: var(--sheen), var(--vignette); pointer-events: none; }
+.sleeve .ring { position: absolute; border: 1px solid rgba(255,255,255,0.22); border-radius: 50%; }
+.sleeve .bar  { position: absolute; background: rgba(255,255,255,0.18); }
+.sleeve .cat  { position: absolute; left: 10px; bottom: 7px; font-family: var(--mono); font-size: 9px; letter-spacing: 0.18em; color: rgba(255,255,255,0.66); z-index: 2; }
+
+/* Four sleeve compositions, so a track change is legible as more than a
+   colour shift. Driven by data-art on the sleeve. */
+.sleeve[data-art="0"] .ring { left: 50%; top: 52%; width: 58%; aspect-ratio: 1; transform: translate(-50%,-50%); }
+.sleeve[data-art="0"] .ring::after { content: ''; position: absolute; left: 50%; top: 50%; width: 9%; aspect-ratio: 1; transform: translate(-50%,-50%); border-radius: 50%; background: rgba(255,255,255,0.24); }
+.sleeve[data-art="1"] .ring { left: 62%; top: 38%; width: 46%; aspect-ratio: 1; transform: translate(-50%,-50%); }
+.sleeve[data-art="1"] .bar  { left: 12%; right: 12%; top: 72%; height: 1px; }
+.sleeve[data-art="2"] .ring { left: 50%; top: 50%; width: 70%; aspect-ratio: 1; transform: translate(-50%,-50%); }
+.sleeve[data-art="2"] .bar  { left: 50%; top: 50%; width: 34%; aspect-ratio: 1; transform: translate(-50%,-50%); border: 1px solid rgba(255,255,255,0.22); border-radius: 50%; background: none; }
+.sleeve[data-art="3"] .ring { left: 30%; top: 68%; width: 50%; aspect-ratio: 1; transform: translate(-50%,-50%); }
+.sleeve[data-art="3"] .bar  { left: 68%; top: 0; bottom: 0; width: 1px; }
+
+.hero {
+  width: 100%; height: 100%;
+  border-radius: 4px; border-top-width: 2px;
+  box-shadow: var(--cast-4), var(--contact);
+}
+/* The track change. It falls DOWN, out of its own pool — that is what
+   reads as "finished" rather than "slid away". */
+.hero.out { animation: artOut 320ms var(--ease-in) forwards; }
+.hero.in  { animation: artIn var(--dur-slow) var(--ease-out); }
+@keyframes artOut { to { transform: translateY(10px); opacity: 0; } }
+@keyframes artIn  { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* The one deliberate violation of the single-lamp model: the record is
+   the other light in the room. It breathes at the track's own tempo,
+   off the metadata — phase-locked, correct through an intro, no
+   per-frame JS. A visualiser reacts; this one knows. */
+.pool {
+  position: absolute; left: 50%; bottom: -46px;
+  width: 118%; height: 92px;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in oklab, var(--vibe-accent) 44%, transparent), transparent);
+  filter: blur(16px);
+  opacity: var(--glow);
+  z-index: -1;
+  animation: breathe var(--beat) var(--ease-out) infinite;
+}
+@keyframes breathe {
+  0%   { opacity: calc(var(--glow) * (1 + var(--breath))); }
+  55%  { opacity: calc(var(--glow) * (1 - var(--breath))); }
+  100% { opacity: calc(var(--glow) * (1 - var(--breath))); }
+}
+.pool.dip { animation: none; opacity: calc(var(--glow) * 0.3); transition: opacity var(--dur-art) var(--ease-out); }
+
+.artfoot { display: flex; justify-content: space-between; padding-top: var(--sp-2); border-top: 1px solid var(--border); }
+
+/* The trail goes horizontal and small. A left-hand column of sleeves
+   would crowd the print, and crowding it is the one thing this
+   composition cannot do. */
+.trailrow { display: flex; align-items: center; gap: var(--sp-2); }
+.trailrow .sleeve { width: 26px; height: 26px; border-radius: 2px; cursor: pointer; transition: transform var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease); }
+.trailrow .sleeve:hover { transform: translateY(-2px); opacity: 1 !important; }
+
+/* ------------------------------------------------------------ meta --- */
+.metacol { display: flex; flex-direction: column; gap: var(--sp-4); min-width: 0; }
+.eyebrow { display: flex; align-items: baseline; gap: var(--sp-3); }
+.live { color: var(--vibe-accent-text); }
+
+.titleblock { transition: opacity 160ms var(--ease), transform 160ms var(--ease); }
+.titleblock.fade { opacity: 0; transform: translateY(1px); }
+
+/* The art is already the headline, so the title steps DOWN. Two things
+   cannot both be the loudest. */
+.ttitle { margin: 0; font-family: var(--serif); font-weight: 400; font-size: clamp(22px, 2.1vw, 30px); line-height: 1.12; letter-spacing: -0.005em; color: var(--text); }
+.tsub { margin-top: 6px; font-size: var(--fs-sm); color: var(--text-2); }
+.tsub .sep { color: var(--text-mute); margin: 0 7px; }
+.tsub .album { color: var(--text-3); }
+
+/* The liner notes. The same facts the old chip row carried, set as a
+   specimen label where they can be read instead of scanned past. */
+.liner { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2) var(--sp-7); margin: 0; }
+.liner div { display: flex; justify-content: space-between; gap: var(--sp-3); border-bottom: 1px solid var(--border); padding-bottom: 5px; }
+.liner dt { font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: var(--pill-track); text-transform: uppercase; color: var(--text-4); }
+.liner dd { margin: 0; font-family: var(--mono); font-size: var(--fs-meta); color: var(--text-2); text-align: right; font-variant-numeric: tabular-nums; }
+.liner dd.hl { color: var(--vibe-accent-text); }
+
+.rule { height: 1px; background: var(--border); }
+
+/* ------------------------------------------------------- transport --- */
+/* The ring around the play disc is for KNOWING; this bar is for SEEKING.
+   It sits back until you reach for the transport. */
+.seek { opacity: 0.45; transition: opacity var(--dur) var(--ease); cursor: pointer; }
+.transport:hover .seek, .seek:focus-visible, .seek.act { opacity: 1; }
+.prog { position: relative; height: 2px; background: rgba(255,255,255,0.1); }
+.prog .fill { position: absolute; inset: 0 auto 0 0; background: var(--vibe-accent); width: 0; }
+.prog .pthumb { position: absolute; left: 0; top: 50%; width: 9px; height: 9px; border-radius: 50%; transform: translate(-50%,-50%); background: var(--vibe-accent-fill); box-shadow: var(--contact); opacity: 0; transition: opacity var(--dur) var(--ease); }
+.transport:hover .pthumb, .seek.act .pthumb { opacity: 1; }
+.seek .hit { position: absolute; left: 0; right: 0; top: -9px; height: 20px; }
+.times { display: flex; justify-content: space-between; margin-top: 7px; font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.06em; color: var(--text-4); font-variant-numeric: tabular-nums; }
+
+.controls { display: flex; align-items: center; gap: var(--sp-5); }
+.tbtn { width: 34px; height: 34px; display: grid; place-items: center; border: 0; background: none; color: var(--text-3); cursor: pointer; transition: color var(--dur-fast) var(--ease), transform var(--dur-press) var(--ease); }
+.tbtn:hover { color: var(--text); }
+.tbtn:active { transform: translateY(1px) scale(0.96); }
+
+/* A machined disc: lit top inset, dark bottom inset, a real cast. On
+   press it travels 1px down and the cast tightens — it goes INTO the
+   page rather than lighting up. */
+.play {
+  position: relative; flex: none;
+  width: 58px; height: 58px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--vibe-accent-fill);
+  color: var(--vibe-accent-ink);
+  border: 0; cursor: pointer;
+  box-shadow: var(--cast-3), inset 0 1px 0 rgba(255,255,255,0.4), inset 0 -1px 0 rgba(0,0,0,0.28);
+  transition: transform var(--dur-press) var(--ease), box-shadow var(--dur-press) var(--ease), filter var(--dur-fast) var(--ease);
+}
+.play:hover { filter: brightness(1.06); }
+.play:active { transform: translateY(1px); box-shadow: var(--contact), inset 0 1px 0 rgba(255,255,255,0.3); }
+/* The ring IS the playhead. The most looked-at object in the app also
+   tells you where you are. Linear, because progress is constant-rate. */
+.play::before {
+  content: ''; position: absolute; inset: -7px; border-radius: 50%;
+  background: conic-gradient(var(--vibe-accent-text) calc(var(--played) * 360deg), rgba(255,255,255,0.09) 0);
+  -webkit-mask: radial-gradient(closest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+          mask: radial-gradient(closest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+}
+.gap { flex: 1; }
+.modeToggle { display: flex; border: 1px solid var(--border); border-top-color: var(--edge-lit); border-radius: var(--radius-sm); overflow: hidden; }
+.modeToggle button { padding: 5px 11px; border: 0; background: none; font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: var(--pill-track); text-transform: uppercase; color: var(--text-4); cursor: pointer; }
+.modeToggle button.on { background: var(--surface-2); color: var(--text); box-shadow: inset 0 1px 0 var(--edge-lit); }
+
+/* ----------------------------------------------------------- fader --- */
+.faderCol { display: flex; flex-direction: column; align-items: center; gap: var(--sp-3); justify-self: center; }
+.vibenum { font-family: var(--mono); font-size: 30px; font-weight: 500; letter-spacing: -0.02em; color: var(--text); line-height: 1; text-align: center; font-variant-numeric: tabular-nums; }
+.vibemood { font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.22em; text-transform: uppercase; color: var(--vibe-accent-text); text-align: center; margin-top: 5px; }
+
+.fader { position: relative; width: 92px; height: min(420px, 54vh); cursor: ns-resize; touch-action: none; border-radius: var(--radius-sm); }
+/* Recessed groove — elev-1, the inverse of a raised surface from the
+   same one lamp. */
+.groove {
+  position: absolute; left: 48px; top: 0; bottom: 0; width: 10px;
+  transform: translateX(-50%);
+  border-radius: var(--radius-pill);
+  background: #05050a;
+  box-shadow: inset 1px 0 2px rgba(0,0,0,0.75), inset -1px 0 0 rgba(255,255,255,0.05);
+  overflow: hidden;
+}
+/* The road ahead stays visible: the full spectrum at 18% above the cap,
+   full strength below it. Grey ahead of the value would hide the one
+   thing this control is for. */
+.groove .spec { position: absolute; left: 0; right: 0; bottom: 0; top: 0; background: linear-gradient(0deg,
+  rgb(76,91,138) 0%, rgb(91,127,189) 20%, rgb(0,180,216) 30%, rgb(34,193,227) 40%,
+  rgb(124,58,237) 50%, rgb(167,139,250) 60%, rgb(236,72,153) 70%, rgb(244,63,94) 80%,
+  rgb(249,115,22) 90%, rgb(220,38,38) 100%); opacity: 0.18; }
+.groove .lit { position: absolute; left: 0; right: 0; bottom: 0; overflow: hidden; height: calc(var(--v) * 1%); }
+.groove .lit .spec { opacity: 1; height: min(420px, 54vh); bottom: 0; top: auto; }
+
+.names { position: absolute; left: 0; top: 0; bottom: 0; width: 32px; }
+.names span { position: absolute; right: 0; transform: translateY(50%); font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-mute); transition: color var(--dur-fast) var(--ease); white-space: nowrap; }
+.names span.on { color: var(--vibe-accent-text); }
+.ticks { position: absolute; left: 64px; top: 0; bottom: 0; width: 18px; }
+.ticks span { position: absolute; right: 0; height: 1px; background: var(--text-mute); }
+.ticks span.lg { background: var(--text-4); width: 18px; }
+
+/* The cap rides IN the slot without covering the printed scale. */
+.cap {
+  position: absolute; left: 48px; width: 28px; height: 20px;
+  bottom: calc(var(--v) * 1%);
+  transform: translate(-50%, 50%);
+  border-radius: 3px;
+  background: linear-gradient(180deg, #24242f, #14141c);
+  border: 1px solid var(--edge-dark);
+  border-top-color: var(--edge-lit-2);
+  box-shadow: var(--cast-3);
+}
+.cap::before { content: ''; position: absolute; left: 3px; right: 3px; top: 50%; height: 2px; transform: translateY(-50%); background: var(--vibe-accent-fill); border-radius: 1px; }
+.cap::after  { content: ''; position: absolute; left: 3px; right: 3px; top: 4px; height: 1px; background: rgba(255,255,255,0.07); box-shadow: 0 9px 0 rgba(255,255,255,0.07); }
+.fader:hover .cap { border-top-color: #fff6; }
+.fader.settling .cap { transition: bottom 260ms var(--ease-out); }
+.fader:focus-visible { outline: 2px solid var(--vibe-accent-text); outline-offset: 4px; }
+
+/* --------------------------------------------------------- sidebar --- */
+.sidebar {
+  grid-column: 2; grid-row: 3;
+  display: flex; flex-direction: column; gap: var(--sp-6);
+  padding: var(--sp-4) var(--sp-5);
+  border-left: 1px solid var(--border);
+  min-height: 0;
+}
+.qsection { display: flex; flex-direction: column; gap: var(--sp-2); min-height: 0; }
+.sectionHead { display: flex; align-items: center; gap: var(--sp-2); min-height: 22px; }
+.sectionTitle { flex: 1; margin: 0; font-family: var(--mono); font-size: var(--fs-micro); font-weight: 500; letter-spacing: var(--pill-track); text-transform: uppercase; color: var(--text-3); }
+
+/* One pill geometry. Bordered = pressable, filled tag = a count. */
+.pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: var(--pill-h); padding: 0 var(--pill-pad);
+  padding-right: calc(var(--pill-pad) - var(--pill-track));
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: transparent;
+  font-family: var(--mono); font-size: var(--fs-micro); font-weight: 500;
+  letter-spacing: var(--pill-track); text-transform: uppercase;
+  color: var(--text-3); white-space: nowrap; cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.pill:hover { color: var(--text); border-color: var(--edge-lit-2); }
+.pill.tag { border-color: transparent; background: var(--surface-2); cursor: default; }
+.pill.on { border-color: color-mix(in oklab, var(--vibe-accent) 55%, transparent); background: color-mix(in oklab, var(--vibe-accent) 12%, transparent); color: var(--text); }
+.pill .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--text-mute); }
+.pill.on .dot { background: var(--vibe-accent-fill); }
+
+.qlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+/* Rows separated by a 1px rule at a fixed 54px stride. On near-black a
+   rule costs nothing and reads as a list; eight floating cards read as
+   a dashboard. */
+.qrow {
+  display: flex; align-items: center; gap: var(--sp-3);
+  height: 54px; flex: none; padding: 0 var(--sp-1);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.qrow:last-child { border-bottom: 0; }
+/* Hover gains a surface and a 2px mood rule — not a glow. A 2px mark is
+   cheaper to read and survives any accent the artwork produces. */
+.qrow:hover { background: var(--surface); box-shadow: inset 2px 0 0 var(--vibe-accent), inset 0 1px 0 var(--edge-lit); }
+.qrow:active { background: var(--surface-2); }
+.qrow .sleeve { width: 36px; height: 36px; border-radius: 3px; }
+.qbody { min-width: 0; flex: 1; }
+.qtitle { font-size: var(--fs-sm); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.35; }
+.qsub { font-size: var(--fs-meta); color: var(--text-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qdur { font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-4); letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
+.qrow:hover .qdur { color: var(--text-3); }
+.qnum { font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-mute); width: 14px; text-align: right; }
+
+.hint { position: absolute; left: var(--sp-6); bottom: 0; display: flex; gap: var(--sp-5); color: var(--text-mute); }
+.hint b { color: var(--text-4); font-weight: 500; }
+
+/* ------------------------------------------------------- reduced ----- */
+@media (prefers-reduced-motion: reduce) {
+  /* The resting state is the mid value, fully lit — never the trough,
+     and never a half-faded sleeve. */
+  .pool, .mark { animation: none !important; opacity: 1; }
+  .pool { opacity: var(--glow); }
+  .hero.out, .hero.in, .stack.advance .u1, .stack.advance .u2 { animation: none !important; }
+  * { transition-duration: 1ms !important; }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <header class="topbar">
+    <div class="wordmark"><span class="mark" aria-hidden="true"></span><span class="a">Vibe</span><span class="b">Scape</span></div>
+    <div class="spacer"></div>
+    <div class="readout mlabel">
+      <span><i>library</i> <b>2,418</b></span>
+      <span><i>analysed</i> <b>2,391</b></span>
+      <span><i>queue</i> <b id="qcount">9</b></span>
+    </div>
+    <button class="iconbtn" aria-label="Sync library" title="Sync library">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
+        <path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10"/><path d="M20.5 15a9 9 0 0 1-14.9 3.4L1 14"/>
+      </svg>
+    </button>
+    <button class="iconbtn" aria-label="Keyboard shortcuts" title="Space play/pause · N next · P previous · arrows on the dial">?</button>
+    <div class="userpill"><span class="av" aria-hidden="true">CK</span>Chandan</div>
+  </header>
+
+  <div class="searchbar">
+    <div class="searchfield">
+      <span class="gl" aria-hidden="true"></span>
+      <span class="ph">Search 2,418 tracks by title, artist or album</span>
+    </div>
+    <kbd>/</kbd>
+  </div>
+
+  <main class="stage">
+
+    <!-- the record -->
+    <div class="artcol">
+      <div class="stack" id="stack">
+        <span class="u1" id="u1" aria-hidden="true"></span>
+        <span class="u2" id="u2" aria-hidden="true"></span>
+        <div class="sleeve hero" id="hero" data-art="0">
+          <span class="field"></span><span class="ring"></span><span class="bar"></span>
+          <span class="cat" id="cat">DOC095 / A2</span>
+        </div>
+        <span class="pool" id="pool" aria-hidden="true"></span>
+      </div>
+      <div class="artfoot">
+        <span class="mlabel" id="side">side a &nbsp;·&nbsp; track 2</span>
+        <span class="mlabel" id="label" style="color:var(--text-3)">dead oceans &nbsp;·&nbsp; 2020</span>
+      </div>
+      <div class="trailrow" id="trail" aria-label="Recently played"><span class="mlabel" style="margin-right:4px">played</span></div>
+    </div>
+
+    <!-- the label -->
+    <div class="metacol">
+      <div class="eyebrow">
+        <span class="mlabel live">now playing</span>
+        <span class="mlabel" id="pos">1 of 10 this session</span>
+      </div>
+
+      <div class="titleblock" id="titleblock">
+        <h1 class="ttitle" id="title">So We Won&rsquo;t Forget</h1>
+        <div class="tsub"><span id="artist">Khruangbin</span><span class="sep">/</span><span class="album" id="album">Mordechai</span></div>
+      </div>
+
+      <dl class="liner" id="liner">
+        <div><dt>tempo</dt><dd id="d-bpm">104 BPM</dd></div>
+        <div><dt>key</dt><dd id="d-key">D minor</dd></div>
+        <div><dt>vibe</dt><dd class="hl" id="d-vibe">34 · chill</dd></div>
+        <div><dt>energy</dt><dd id="d-energy">0.31</dd></div>
+        <div><dt>source</dt><dd>Spotify</dd></div>
+        <div><dt>length</dt><dd id="d-len">4:12</dd></div>
+      </dl>
+
+      <div class="rule"></div>
+
+      <div class="transport">
+        <div class="controls">
+          <button class="tbtn" id="prev" aria-label="Previous track">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2h1.7v12H4z"/><path d="M14 2 6.4 8 14 14z"/></svg>
+          </button>
+          <button class="play" id="play" aria-label="Pause">
+            <svg id="icoPause" width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.6 2.6h2.6v10.8H4.6zM8.8 2.6h2.6v10.8H8.8z"/></svg>
+            <svg id="icoPlay" width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="display:none"><path d="M5 3.2 13 8l-8 4.8z"/></svg>
+          </button>
+          <button class="tbtn" id="next" aria-label="Next track">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M10.3 2H12v12h-1.7z"/><path d="M2 2l7.6 6L2 14z"/></svg>
+          </button>
+          <span class="gap"></span>
+          <div class="modeToggle" role="group" aria-label="Playback mode">
+            <button class="on" id="mAudio">audio</button><button id="mVideo">video</button>
+          </div>
+        </div>
+
+        <div class="seek" id="seek" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" style="margin-top:var(--sp-4)">
+          <div class="prog">
+            <span class="fill" id="pfill"></span>
+            <span class="pthumb" id="pthumb"></span>
+            <span class="hit"></span>
+          </div>
+          <div class="times"><span id="tNow">0:00</span><span id="tEnd">4:12</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- the dial -->
+    <div class="faderCol">
+      <div>
+        <div class="vibenum" id="vnum">34</div>
+        <div class="vibemood" id="vmood">chill</div>
+      </div>
+      <div class="fader" id="fader" role="slider" tabindex="0"
+           aria-label="Vibe — drag, or use the arrow keys"
+           aria-valuemin="0" aria-valuemax="100" aria-valuenow="34" aria-valuetext="34, chill" aria-orientation="vertical">
+        <div class="groove"><span class="spec"></span><span class="lit"><span class="spec"></span></span></div>
+        <div class="names" id="names">
+          <span style="bottom:90%">beast</span>
+          <span style="bottom:70%">hype</span>
+          <span style="bottom:50%">steady</span>
+          <span style="bottom:30%">chill</span>
+          <span style="bottom:10%">sleep</span>
+        </div>
+        <div class="ticks" id="ticks"></div>
+        <div class="cap" id="cap"></div>
+      </div>
+      <span class="mlabel" style="color:var(--text-mute)">vibe</span>
+    </div>
+
+    <div class="hint mlabel">
+      <span><b>drag</b> the dial</span>
+      <span><b>space</b> play</span>
+      <span><b>n</b> / <b>p</b> skip</span>
+      <span><b>&larr; &rarr;</b> seek</span>
+    </div>
+  </main>
+
+  <aside class="sidebar">
+    <div class="qsection" style="flex:0 0 auto">
+      <div class="sectionHead">
+        <h2 class="sectionTitle">Up next</h2>
+        <span class="pill tag" id="upcount">9</span>
+        <button class="pill" id="clear">clear</button>
+      </div>
+      <ul class="qlist" id="upnext" style="max-height:276px"></ul>
+    </div>
+    <div class="qsection" style="flex:1 1 auto">
+      <div class="sectionHead">
+        <h2 class="sectionTitle">DJ picks</h2>
+        <button class="pill on" id="djToggle"><span class="dot"></span>auto</button>
+      </div>
+      <ul class="qlist" id="picks" style="min-height:162px"></ul>
+    </div>
+  </aside>
+
+</div>
+
+<script>
+/* ===================================================================
+   THE ACCENT CONTRACT.
+
+   --vibe-accent is decided by the music and is unknowable at authoring
+   time. Measured across the ten band endpoints its contrast on --bg
+   swings 3.02:1 to 9.34:1, and switching black/white ink per track still
+   bottoms out at 4.32:1 — below AA. So the raw accent never carries or
+   backs text. Two derived tones do, and they are computed here, once per
+   change, by lifting OKLab L to a floor and clipping back to sRGB.
+     --vibe-accent-text  okL >= 0.74  ->  6.93:1 worst case on --bg
+     --vibe-accent-fill  okL >= 0.82  ->  8.23:1 worst case with --bg ink
+   =================================================================== */
+const OKL_TEXT = 0.74, OKL_FILL = 0.82;
+
+const s2l = c => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+const l2s = c => { const v = c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+                   return Math.max(0, Math.min(255, Math.round(v * 255))); };
+
+function toOklab([R, G, B]) {
+  const r = s2l(R), g = s2l(G), b = s2l(B);
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  return [0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+          1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+          0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s];
+}
+function toRgb([L, a, bb]) {
+  const l = Math.pow(L + 0.3963377774 * a + 0.2158037573 * bb, 3);
+  const m = Math.pow(L - 0.1055613458 * a - 0.0638541728 * bb, 3);
+  const s = Math.pow(L - 0.0894841775 * a - 1.2914855480 * bb, 3);
+  return [l2s( 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
+          l2s(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
+          l2s(-0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s)];
+}
+/* Raise L to a floor, keep hue and chroma, clip into sRGB. Clipping is
+   deliberate: the contrast figures above were measured on the clipped
+   results, so a chroma-reducing gamut map would need re-measuring. */
+function liftL(rgb, floor) {
+  const ok = toOklab(rgb);
+  if (ok[0] < floor) ok[0] = floor;
+  return toRgb(ok);
+}
+const css = c => 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+
+/* The five mood bands, exactly as lib/vibe.js has them. */
+const MOODS = [
+  { name: 'sleep',  min: 0,   max: 20,  a: [76, 91, 138],  b: [91, 127, 189] },
+  { name: 'chill',  min: 20,  max: 40,  a: [0, 180, 216],  b: [34, 193, 227] },
+  { name: 'steady', min: 40,  max: 60,  a: [124, 58, 237], b: [167, 139, 250] },
+  { name: 'hype',   min: 60,  max: 80,  a: [236, 72, 153], b: [244, 63, 94] },
+  { name: 'beast',  min: 80,  max: 100, a: [249, 115, 22], b: [220, 38, 38] },
+];
+function accentFor(v) {
+  const m = MOODS.find(m => v >= m.min && v < m.max) || MOODS[4];
+  const t = Math.min(1, Math.max(0, (v - m.min) / (m.max - m.min)));
+  return { mood: m.name, a: m.a.map((c, i) => Math.round(c + (m.b[i] - c) * t)), b: m.b };
+}
+
+const root = document.documentElement;
+function applyAccent(v) {
+  const { a, b, mood } = accentFor(v);
+  root.style.setProperty('--vibe-accent', css(a));
+  root.style.setProperty('--vibe-accent-2', css(b));
+  root.style.setProperty('--vibe-accent-text', css(liftL(a, OKL_TEXT)));
+  root.style.setProperty('--vibe-accent-fill', css(liftL(a, OKL_FILL)));
+  return mood;
+}
+
+/* ------------------------------------------------------- the library */
+const T = [
+  { t: 'Peace Piece',        ar: 'Bill Evans Trio', al: 'Everybody Digs Bill Evans', lb: 'Riverside',  yr: 1959, cat: 'RLP1129',  sec: 402, bpm: 60,  key: 'C major',    en: 0.12, v: 8,  side: 'side b · track 4', art: 2 },
+  { t: 'Mohabbat',           ar: 'Arooj Aftab',     al: 'Vulture Prince',            lb: 'New Amsterdam', yr: 2021, cat: 'NWAM127', sec: 454, bpm: 68,  key: 'B♭ minor',   en: 0.18, v: 17, side: 'side a · track 3', art: 1 },
+  { t: 'Space 1.8',          ar: 'Nala Sinephro',   al: 'Space 1.8',                 lb: 'Warp',       yr: 2021, cat: 'WARP321',  sec: 399, bpm: 72,  key: 'E minor',    en: 0.24, v: 26, side: 'side b · track 1', art: 0 },
+  { t: 'So We Won’t Forget', ar: 'Khruangbin', al: 'Mordechai',                 lb: 'Dead Oceans', yr: 2020, cat: 'DOC095',  sec: 252, bpm: 104, key: 'D minor',    en: 0.31, v: 34, side: 'side a · track 2', art: 0 },
+  { t: 'Rust',               ar: 'Yussef Dayes',    al: 'Black Classical Music',     lb: 'Brownswood', yr: 2023, cat: 'BWOOD291', sec: 327, bpm: 88,  key: 'F minor',    en: 0.44, v: 45, side: 'side c · track 2', art: 3 },
+  { t: 'Birth4000',          ar: 'Floating Points', al: 'Cascade',                   lb: 'Ninja Tune', yr: 2024, cat: 'ZEN287',   sec: 358, bpm: 128, key: 'A minor',    en: 0.62, v: 56, side: 'side a · track 1', art: 2 },
+  { t: 'Red Room',           ar: 'Hiatus Kaiyote',  al: 'Mood Valiant',              lb: 'Brainfeeder', yr: 2021, cat: 'BF112',   sec: 289, bpm: 101, key: 'G minor',    en: 0.70, v: 66, side: 'side b · track 2', art: 1 },
+  { t: 'Mumbay',             ar: 'Sarathy Korwar',  al: 'More Arriving',             lb: 'The Leaf Label', yr: 2019, cat: 'BAY104', sec: 321, bpm: 118, key: 'D minor',   en: 0.76, v: 71, side: 'side a · track 4', art: 3 },
+  { t: 'Point and Kill',     ar: 'Little Simz',     al: 'Sometimes I Might Be Introvert', lb: 'AGE 101', yr: 2021, cat: 'AGE1019', sec: 228, bpm: 112, key: 'E♭ minor', en: 0.82, v: 77, side: 'side b · track 5', art: 0 },
+  { t: 'Afrique Victime',    ar: 'Mdou Moctar',     al: 'Afrique Victime',           lb: 'Matador',    yr: 2021, cat: 'OLE1710',  sec: 432, bpm: 134, key: 'F# minor',   en: 0.91, v: 88, side: 'side b · track 3', art: 1 },
+];
+
+const fmt = s => { s = Math.max(0, Math.floor(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+const $ = id => document.getElementById(id);
+/* The transport loop writes these ~60 times a second; looking them up
+   every frame is the one piece of per-frame work worth avoiding. */
+let EL = {};
+const cacheEls = () => { EL = {
+  pfill: $('pfill'), pthumb: $('pthumb'), tNow: $('tNow'), seek: $('seek'),
+  pool: $('pool'), mark: document.querySelector('.mark'),
+}; };
+
+let cur = 3;              /* Khruangbin, vibe 34 */
+let vibe = 34;
+let pos = 0;              /* seconds into the track */
+let playing = true;
+let played = [];          /* indices, most recent first */
+let seq = 0;              /* cancels in-flight track changes */
+let changing = false;     /* tick() would otherwise re-fire go() on every frame at p >= 1 */
+let timers = [];
+
+/* Paints a sleeve element from a track: the two tone-field colours and
+   the composition index. Both are derived from the track's own accent,
+   so every sleeve re-lights with its own mood, not the current one. */
+function paintSleeve(el, i) {
+  const { a, b } = accentFor(T[i].v);
+  el.style.setProperty('--c1', css(a));
+  el.style.setProperty('--c2', css(b));
+  el.dataset.art = String(T[i].art);
+}
+function sleeveHTML() {
+  return '<span class="field"></span><span class="ring"></span><span class="bar"></span>';
+}
+function newSleeve(i, cls) {
+  const d = document.createElement('div');
+  d.className = 'sleeve ' + (cls || '');
+  d.innerHTML = sleeveHTML();
+  paintSleeve(d, i);
+  return d;
+}
+
+/* --------------------------------------------------------- the dial */
+const fader = $('fader'), cap = $('cap');
+const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* Printed scale: a tick every 10 units, long at a band boundary. */
+(function ticks() {
+  let h = '';
+  for (let i = 0; i <= 10; i++) {
+    h += '<span class="' + (i % 2 === 0 ? 'lg' : '') + '" style="bottom:' + (i * 10) + '%;width:' + (i % 2 === 0 ? 18 : 9) + 'px"></span>';
+  }
+  $('ticks').innerHTML = h;
+})();
+
+/* Called on every pointer move. No transition anywhere in this path —
+   a transition here would feel like drag on the control itself. */
+function setVibe(v, live) {
+  vibe = Math.max(0, Math.min(100, Math.round(v)));
+  root.style.setProperty('--v', vibe);
+  const mood = applyAccent(vibe);
+  $('vnum').textContent = vibe;
+  $('vmood').textContent = mood;
+  fader.setAttribute('aria-valuenow', vibe);
+  fader.setAttribute('aria-valuetext', vibe + ', ' + mood);
+
+  /* The labels LEAD the thumb by two units. Anticipation is what makes a
+     control feel like it has a mind rather than a readout. */
+  const lead = accentFor(Math.min(100, vibe + 2)).mood;
+  [...$('names').children].forEach(s => s.classList.toggle('on', s.textContent === lead));
+
+  /* Dragging the dial visibly rewrites what the DJ would play next.
+     That is the true thing this gesture tells you. */
+  if (live) renderPicks();
+}
+
+function faderValueFromY(clientY) {
+  const r = fader.getBoundingClientRect();
+  return (1 - (clientY - r.top) / r.height) * 100;
+}
+
+let dragging = false;
+fader.addEventListener('pointerdown', e => {
+  dragging = true;
+  fader.setPointerCapture(e.pointerId);
+  /* Cancel whatever the last release left running. An in-flight settle
+     transition would otherwise make the cap lag the pointer. */
+  fader.classList.remove('settling');
+  cap.style.transition = 'none';
+  clearTimeout(fader._kt);
+  clearTimeout(fader._st);
+  fader.focus();
+  setVibe(faderValueFromY(e.clientY), true);
+});
+fader.addEventListener('pointermove', e => { if (dragging) setVibe(faderValueFromY(e.clientY), true); });
+fader.addEventListener('pointerup', e => {
+  if (!dragging) return;
+  dragging = false;
+  settle();
+  pickForVibe();
+});
+fader.addEventListener('pointercancel', () => { dragging = false; });
+
+/* WCAG 2.2 requires a non-drag path for every drag control, so the dial
+   is a full keyboard slider as well — and clicking anywhere on it jumps
+   there, which is the single-pointer alternative. */
+fader.addEventListener('keydown', e => {
+  const step = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1, PageUp: 10, PageDown: -10 }[e.key];
+  let v = null;
+  if (step !== undefined) v = vibe + step;
+  else if (e.key === 'Home') v = 0;
+  else if (e.key === 'End') v = 100;
+  if (v === null) return;
+  e.preventDefault();
+  fader.classList.add('settling');
+  setVibe(v, true);
+  clearTimeout(fader._kt);
+  fader._kt = setTimeout(pickForVibe, 420);
+});
+
+/* On release the RENDERED cap overshoots by 1.5% of travel and decays
+   back. The committed value never overshoots — only the paint has
+   inertia. This is on the cap's position, never on `vibe`. */
+function settle() {
+  if (reduced) return;
+  const over = Math.max(0, Math.min(100, vibe + (vibe > 50 ? -1.5 : 1.5)));
+  cap.style.transition = 'bottom 90ms var(--ease-out)';
+  cap.style.bottom = over + '%';
+  fader._st = setTimeout(() => {
+    cap.style.transition = 'bottom 260ms var(--ease-out)';
+    cap.style.bottom = '';
+    fader._st = setTimeout(() => { cap.style.transition = ''; }, 280);
+  }, 95);
+}
+
+/* The dial picks a track: nearest vibe that is not the current one. */
+function pickForVibe() {
+  let best = -1, bd = 1e9;
+  T.forEach((t, i) => {
+    if (i === cur) return;
+    const d = Math.abs(t.v - vibe);
+    if (d < bd) { bd = d; best = i; }
+  });
+  if (best >= 0 && bd <= 26) go(best);
+  else renderPicks();
+}
+
+/* ---------------------------------------------------- track change */
+/* 640ms, overlapping. The order is the whole trick: the image changes,
+   then the room catches up. Reversed, it reads as a bug. */
+function go(i) {
+  if (i === cur || changing) return;
+  changing = true;
+  const my = ++seq;
+  timers.forEach(clearTimeout); timers = [];
+
+  played.unshift(cur);
+  played = played.slice(0, 5);
+
+  const hero = $('hero'), stack = $('stack'), pool = $('pool');
+
+  if (reduced) {
+    cur = i;
+    applyAccent(T[i].v);
+    setVibeSilently(T[i].v);
+    paintNow(); renderAll(); restartBreath();
+    changing = false;
+    return;
+  }
+
+  /* t=0 — it falls out of its own pool, and the room takes one breath. */
+  hero.classList.remove('in');
+  hero.classList.add('out');
+  pool.classList.add('dip');
+  $('titleblock').classList.add('fade');
+
+  /* t=120 — overlap at 40%: the stack advances and the new record rises. */
+  timers.push(setTimeout(() => {
+    if (my !== seq) return;
+    cur = i;
+    paintNow();
+    renderAll();
+    hero.classList.remove('out');
+    hero.classList.add('in');
+    stack.classList.add('advance');
+    $('titleblock').classList.remove('fade');
+    /* The accent is the SLOWEST element, so the room finishes re-lighting
+       after the art has settled. */
+    root.classList.add('relight');
+    applyAccent(T[i].v);
+    setVibeSilently(T[i].v);
+  }, 300));
+
+  /* t=640 — breath restarts in phase with the new tempo, or the old
+     track's BPM bleeds into the new record. */
+  timers.push(setTimeout(() => {
+    if (my !== seq) return;
+    pool.classList.remove('dip');
+    $('stack').classList.remove('advance');
+    root.classList.remove('relight');
+    restartBreath();
+    changing = false;
+  }, 660));
+}
+
+/* Moves the dial to follow the track without triggering another pick. */
+function setVibeSilently(v) {
+  vibe = v;
+  root.style.setProperty('--v', v);
+  const mood = accentFor(v).mood;
+  $('vnum').textContent = v;
+  $('vmood').textContent = mood;
+  fader.setAttribute('aria-valuenow', v);
+  fader.setAttribute('aria-valuetext', v + ', ' + mood);
+  fader.classList.add('settling');
+  [...$('names').children].forEach(s => s.classList.toggle('on', s.textContent === mood));
+}
+
+function restartBreath() {
+  [EL.pool, EL.mark].forEach(el => {
+    el.style.animation = 'none';
+    void el.offsetWidth;          /* forces a reflow, which restarts it in phase */
+    el.style.animation = '';
+    /* The shorthand reset above also clears animation-play-state, which
+       would start a paused player breathing again. */
+    el.style.animationPlayState = playing ? 'running' : 'paused';
+  });
+}
+
+/* ------------------------------------------------------- rendering */
+function paintNow() {
+  const t = T[cur];
+  paintSleeve($('hero'), cur);
+  const m = t.side.match(/side (\w).*?(\d+)/);
+  $('cat').textContent = t.cat + (m ? ' / ' + m[1].toUpperCase() + m[2] : '');
+  $('side').textContent = t.side;
+  $('label').textContent = t.lb.toLowerCase() + ' · ' + t.yr;
+  $('title').textContent = t.t;
+  $('artist').textContent = t.ar;
+  $('album').textContent = t.al;
+  $('d-bpm').textContent = t.bpm + ' BPM';
+  $('d-key').textContent = t.key;
+  $('d-vibe').textContent = t.v + ' · ' + accentFor(t.v).mood;
+  $('d-energy').textContent = t.en.toFixed(2);
+  $('d-len').textContent = fmt(t.sec);
+  $('tEnd').textContent = fmt(t.sec);
+  $('pos').textContent = (played.length + 1) + ' of ' + T.length + ' this session';
+
+  /* The breath: tempo sets the speed, energy sets the size. A ballad
+     barely moves; a beast track visibly throbs. Unknown BPM would mean
+     no breath at all — never a guess at 120. */
+  root.style.setProperty('--beat', (60 / t.bpm).toFixed(3) + 's');
+  root.style.setProperty('--breath', (0.04 + 0.16 * t.en).toFixed(3));
+
+  pos = 0; tick(true);
+}
+
+/* The two sheets behind the hero are the next two tracks, tinted with
+   their own accents. The stack IS the queue. */
+function paintStack() {
+  const q = upcoming();
+  [['u1', 0], ['u2', 1]].forEach(([id, n]) => {
+    const el = $(id);
+    const idx = q[n];
+    if (idx === undefined) { el.style.background = 'var(--surface)'; return; }
+    const { a } = accentFor(T[idx].v);
+    el.style.background = 'color-mix(in oklab, ' + css(a) + ' ' + (n === 0 ? 26 : 18) + '%, var(--surface))';
+  });
+}
+
+function upcoming() {
+  if (cleared) return [];
+  const out = [];
+  for (let k = 1; k <= 9; k++) out.push((cur + k) % T.length);
+  return out;
+}
+
+function row(i, n) {
+  const li = document.createElement('li');
+  li.className = 'qrow';
+  li.tabIndex = 0;
+  li.setAttribute('role', 'button');
+  li.setAttribute('aria-label', 'Play ' + T[i].t + ' by ' + T[i].ar);
+  const num = document.createElement('span');
+  num.className = 'qnum'; num.textContent = n;
+  const sl = newSleeve(i);
+  const body = document.createElement('div');
+  body.className = 'qbody';
+  body.innerHTML = '<div class="qtitle"></div><div class="qsub"></div>';
+  body.querySelector('.qtitle').textContent = T[i].t;
+  body.querySelector('.qsub').textContent = T[i].ar;
+  const dur = document.createElement('span');
+  dur.className = 'qdur'; dur.textContent = fmt(T[i].sec);
+  li.append(num, sl, body, dur);
+  const fire = () => go(i);
+  li.addEventListener('click', fire);
+  li.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fire(); } });
+  return li;
+}
+
+function renderQueue() {
+  const ul = $('upnext');
+  ul.innerHTML = '';
+  if (cleared) {
+    /* A dashed rule is this interface's one sign for "a thing is absent".
+       Two lines, no illustration, no call to action. */
+    const d = document.createElement('div');
+    d.style.cssText = 'border:1px dashed var(--border);border-radius:var(--radius);padding:var(--sp-5) var(--sp-4);text-align:center';
+    d.innerHTML = '<p style="margin:0 0 6px;font-size:var(--fs-sm);color:var(--text-2)">Nothing queued</p>' +
+                  '<p style="margin:0;font-size:var(--fs-meta);line-height:1.6;color:var(--text-4)">Tracks you add from search sit here and play in order. Until then the DJ keeps choosing.</p>';
+    ul.append(d);
+    $('upcount').textContent = '0';
+    $('qcount').textContent = '0';
+    return;
+  }
+  const q = upcoming();
+  q.forEach((i, n) => ul.append(row(i, n + 1)));
+  $('upcount').textContent = q.length;
+  $('qcount').textContent = q.length;
+}
+
+/* Recomputed live as the dial moves — three tracks nearest the current
+   vibe. This is what makes dragging the dial tell you something true. */
+let picksKey = '';
+function renderPicks() {
+  const ranked = T.map((t, i) => ({ i, d: Math.abs(t.v - vibe) }))
+                  .filter(x => x.i !== cur)
+                  .sort((a, b) => a.d - b.d)
+                  .slice(0, 3);
+  /* Dragging fires pointermove ~60 times a second. Rebuilding three rows
+     each time is wasted work and visible jitter, so only rebuild when the
+     ranking actually changes. */
+  const key = ranked.map(x => x.i + ':' + (x.d <= 6 ? 1 : 0)).join(',');
+  if (key === picksKey) return;
+  picksKey = key;
+  const ul = $('picks');
+  ul.innerHTML = '';
+  ranked.forEach(({ i, d }) => {
+    const li = row(i, '·');
+    li.querySelector('.qsub').textContent =
+      T[i].ar + '  ·  vibe ' + T[i].v + (d <= 6 ? '  ·  close match' : '');
+    ul.append(li);
+  });
+}
+
+function renderTrail() {
+  const el = $('trail');
+  el.innerHTML = '<span class="mlabel" style="margin-right:4px">played</span>';
+  if (!played.length) {
+    const s = document.createElement('span');
+    s.className = 'mlabel';
+    s.style.color = 'var(--text-mute)';
+    s.textContent = 'nothing yet';
+    el.append(s);
+    return;
+  }
+  played.forEach((i, n) => {
+    const d = newSleeve(i);
+    d.style.opacity = String(1 - n * 0.17);
+    d.title = T[i].t + ' — ' + T[i].ar;
+    d.addEventListener('click', () => go(i));
+    el.append(d);
+  });
+}
+
+function renderAll() { paintStack(); renderQueue(); renderPicks(); renderTrail(); }
+
+/* --------------------------------------------------------- transport */
+function tick(force) {
+  const t = T[cur];
+  const p = Math.min(1, pos / t.sec);
+  root.style.setProperty('--played', p.toFixed(4));
+  EL.pfill.style.width = (p * 100).toFixed(2) + '%';
+  EL.pthumb.style.left = (p * 100).toFixed(2) + '%';
+  EL.tNow.textContent = fmt(pos);
+  EL.seek.setAttribute('aria-valuenow', Math.round(p * 100));
+  EL.seek.setAttribute('aria-valuetext', fmt(pos) + ' of ' + fmt(t.sec));
+  if (!force && p >= 1) go((cur + 1) % T.length);
+}
+
+let last = performance.now();
+function loop(now) {
+  const dt = (now - last) / 1000; last = now;
+  if (playing) { pos += dt; tick(); }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+function setPlaying(v) {
+  playing = v;
+  $('icoPlay').style.display = v ? 'none' : 'block';
+  $('icoPause').style.display = v ? 'block' : 'none';
+  $('play').setAttribute('aria-label', v ? 'Pause' : 'Play');
+  /* The breath is the tempo. If nothing is playing there is no tempo. */
+  EL.pool.style.animationPlayState = v ? 'running' : 'paused';
+  EL.mark.style.animationPlayState = v ? 'running' : 'paused';
+}
+
+$('play').addEventListener('click', () => setPlaying(!playing));
+$('next').addEventListener('click', () => go((cur + 1) % T.length));
+$('prev').addEventListener('click', () => {
+  if (pos > 4) { pos = 0; tick(true); return; }   /* the real behaviour: restart first */
+  go(played.length ? played[0] : (cur - 1 + T.length) % T.length);
+});
+
+/* Seek. Same WCAG reasoning as the dial: pointer, click-anywhere and
+   keyboard all reach the same value. */
+const seekEl = $('seek');
+function seekTo(clientX) {
+  const r = seekEl.getBoundingClientRect();
+  pos = Math.max(0, Math.min(1, (clientX - r.left) / r.width)) * T[cur].sec;
+  tick(true);
+}
+let seeking = false;
+seekEl.addEventListener('pointerdown', e => { seeking = true; seekEl.setPointerCapture(e.pointerId); seekEl.classList.add('act'); seekTo(e.clientX); });
+seekEl.addEventListener('pointermove', e => { if (seeking) seekTo(e.clientX); });
+seekEl.addEventListener('pointerup', () => { seeking = false; seekEl.classList.remove('act'); });
+seekEl.addEventListener('keydown', e => {
+  const d = { ArrowRight: 5, ArrowLeft: -5, PageUp: 30, PageDown: -30 }[e.key];
+  if (d === undefined) return;
+  e.preventDefault();
+  pos = Math.max(0, Math.min(T[cur].sec, pos + d));
+  tick(true);
+});
+
+[['mAudio', 'mVideo'], ['mVideo', 'mAudio']].forEach(([on, off]) => {
+  $(on).addEventListener('click', () => { $(on).classList.add('on'); $(off).classList.remove('on'); });
+});
+$('djToggle').addEventListener('click', e => e.currentTarget.classList.toggle('on'));
+let cleared = false;
+$('clear').addEventListener('click', () => { cleared = !cleared; renderQueue(); paintStack(); });
+
+document.addEventListener('keydown', e => {
+  if (e.target.closest('[role="slider"]')) return;
+  if (e.code === 'Space') { e.preventDefault(); setPlaying(!playing); }
+  else if (e.key === 'n' || e.key === 'N') go((cur + 1) % T.length);
+  else if (e.key === 'p' || e.key === 'P') go((cur - 1 + T.length) % T.length);
+  else if (e.key === 'ArrowRight') { pos = Math.min(T[cur].sec, pos + 5); tick(true); }
+  else if (e.key === 'ArrowLeft') { pos = Math.max(0, pos - 5); tick(true); }
+});
+
+/* ------------------------------------------------------------- boot */
+cacheEls();
+applyAccent(vibe);
+root.style.setProperty('--v', vibe);
+paintNow();
+renderAll();
+setPlaying(true);
+</script>
+</body>
+</html>
