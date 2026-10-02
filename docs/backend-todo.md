@@ -65,7 +65,7 @@ query that compares `vibe_score` across tracks ingested at different times is
 comparing two different quantities. **[frontend contract]** — whichever
 definition wins is the one the client has been rendering.
 
-### 1.3 The sync picker still truncates at 200 playlists
+### 1.3 ~~The sync picker still truncates at 200 playlists~~ — DONE (2da72af)
 `backend/app.py:2386` vs `ingest/spotify_library.py:181`
 
 **verified.** `get_playlists`'s docstring says the 200 cap "used to" truncate
@@ -76,7 +76,7 @@ rest exist. `_paginate` returns on `fetched >= max_items` with no signal, so
 nothing downstream can tell truncation from "that's all of them".
 **[frontend contract]** — the picker's list gets longer.
 
-### 1.4 Public-playlist ingest never clears `collecting`, so its progress bar never resolves
+### 1.4 ~~Public-playlist ingest never clears `collecting`~~ — DONE (2da72af)
 `backend/app.py:3451`
 
 **verified.** `_run_public_playlist_job` seeds the job dict with
@@ -131,7 +131,7 @@ removes the need for both.
 
 ## 2. Will break
 
-### 2.1 The Hrana BLOB read bug looks like a one-line base64 alphabet mismatch
+### 2.1 The Hrana BLOB read bug is a one-line base64 padding failure — CONFIRMED
 `backend/db_client.py:86-90`
 
 **suspected**, high confidence, and worth settling because it is the root of
