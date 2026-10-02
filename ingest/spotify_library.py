@@ -143,18 +143,39 @@ def _paginate(url: str, token: str, params: Optional[dict] = None, max_items: Op
         next_params = None
 
 
+# The listening window for top tracks. The count endpoint and the fetch MUST
+# use the same one — they describe the same set to the user.
+_TOP_TRACKS_RANGE = "medium_term"
+
+
 def get_liked_count(token: str) -> int:
     data = _get(f"{BASE}/me/tracks", token, {"limit": 1})
     return int(data.get("total") or 0)
 
 
 def get_top_tracks_count(token: str) -> int:
-    # Spotify caps /me/top/tracks pagination at 50 items regardless of the
-    # reported `total` (which is the size of the user's listening-history
-    # pool). Cap the displayed count so the UI matches what will actually
-    # be ingested.
-    data = _get(f"{BASE}/me/top/tracks", token, {"limit": 1})
-    return min(int(data.get("total") or 0), 50)
+    """How many top tracks a sync will actually walk.
+
+    This used to clamp to 50, on the claim that Spotify refuses to paginate
+    /me/top/tracks past one page. That is not true, and it had been wrong
+    since the initial commit. Probed against a real account on 2026-10-02:
+
+        offset=0   http=200 items=50 total=898 next=true
+        offset=50  http=200 items=50 total=898 next=true
+        offset=100 http=200 items=50 total=898 next=true
+        offset=150 http=200 items=50 total=898 next=true
+
+    The clamp was also the only thing that believed it: iter_top_tracks
+    follows `next` with no limit, so the fetch has always pulled everything
+    Spotify offers. The clamp just made the picker under-report by 848 and
+    the "N tracks selected" estimate meaningless.
+
+    `time_range` must match iter_top_tracks (medium_term) or the count
+    describes a different set from the one that gets ingested.
+    """
+    data = _get(f"{BASE}/me/top/tracks", token,
+                {"limit": 1, "time_range": _TOP_TRACKS_RANGE})
+    return int(data.get("total") or 0)
 
 
 def get_playlists(token: str, max_items: int = 500) -> list[dict]:
@@ -189,7 +210,8 @@ def iter_liked(token: str) -> Iterator[dict]:
 
 def iter_top_tracks(token: str) -> Iterator[dict]:
     """Streaming counterpart to fetch_top_tracks. See iter_liked."""
-    for item in _paginate(f"{BASE}/me/top/tracks", token, {"limit": 50, "time_range": "medium_term"}):
+    for item in _paginate(f"{BASE}/me/top/tracks", token,
+                          {"limit": 50, "time_range": _TOP_TRACKS_RANGE}):
         if item and item.get("id"):
             yield item
 
