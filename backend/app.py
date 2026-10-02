@@ -15,7 +15,7 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 # Load .env before any env-var reads (config.py, ADMIN_USER_ID, VIBESCAPE_ML_MODE).
 # No-op on platforms where python-dotenv isn't installed or no .env exists.
@@ -2730,6 +2730,47 @@ def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "
 # out of band and owns every write to those columns.
 
 
+def _iter_tracks(token: str, sources: IngestSources) -> Iterator[tuple[dict, str]]:
+    """Yield (track, source) AS PAGES ARRIVE rather than after the whole fetch.
+
+    Collecting everything first meant the job reported nothing at all until
+    the last Spotify page landed — `total` is only known at the end, so the UI
+    sat at 0/0 for the length of the fetch. On a large Liked Songs library
+    that is 40 sequential round trips and ten-plus seconds of apparent
+    deadlock, and it delayed the first playable track by exactly that long.
+
+    Liked and top tracks stream, because those are the big ones. Playlists
+    still arrive as a list: they are one or two pages each, and their fetcher
+    carries dedup and diagnostic logging worth more than the second it saves.
+
+    Dedup is global across sources, as before — a track in both Liked Songs
+    and a playlist is yielded once.
+    """
+    seen: set[str] = set()
+
+    def _fresh(t):
+        tid = t.get("id") if isinstance(t, dict) else None
+        if not tid or tid in seen:
+            return False
+        seen.add(tid)
+        return True
+
+    if sources.liked:
+        for t in splib.iter_liked(token):
+            if _fresh(t):
+                yield t, "liked_songs"
+    if sources.top_tracks:
+        for t in splib.iter_top_tracks(token):
+            if _fresh(t):
+                yield t, "top_tracks"
+    for pid in sources.playlist_ids or []:
+        if not pid:
+            continue
+        for t in splib.fetch_playlist_tracks(pid, token):
+            if _fresh(t):
+                yield t, f"playlist:{pid}"
+
+
 def _collect_tracks(token: str, sources: IngestSources) -> list[tuple[dict, str]]:
     seen: set[str] = set()
     out: list[tuple[dict, str]] = []
@@ -2834,57 +2875,78 @@ def _run_ingest_job(job_id: str, token: str, sources: IngestSources, user_id: in
         except Exception as e:
             log.warning("[ingest job=%s] /v1/me preflight failed: %s", job_id, e)
 
-        try:
-            tracks = _collect_tracks(token, sources)
-        except splib.SpotifyAuthError:
-            log.warning("[ingest job=%s] _collect_tracks raised SpotifyAuthError "
-                        "(but /me was OK — endpoint-specific 401?)", job_id)
-            _update_job(job_id, status="error", error_message="spotify_token_expired")
-            return
-        except splib.SpotifyAPIError as e:
-            _update_job(job_id, status="error", error_message=f"spotify_api_error: {e}")
-            return
-
-        # Log the collect count + a small breakdown by source so we can
-        # trace any unexpected shrinkage between fetch and processing.
-        by_src: dict[str, int] = {}
-        for _t, _src in tracks:
-            by_src[_src] = by_src.get(_src, 0) + 1
-        log.info("[ingest job=%s] _collect_tracks returned total=%d by_source=%s",
-                 job_id, len(tracks), by_src)
-        _update_job(job_id, total=len(tracks))
-
         conn = get_conn()
+        by_src: dict[str, int] = {}
         try:
-            tracks = _playable_first(conn, tracks, job_id)
+            """
+            Fetch and process are INTERLEAVED.
+
+            The old shape was collect-everything then process-everything, so
+            `total` was unknown until the final Spotify page landed and the
+            job reported 0/0 for the whole fetch. Now each page is processed
+            as it arrives: the first tracks are written within about a second,
+            which is what lets the player start and the sync window get out of
+            the way almost immediately.
+
+            `total` grows as pages arrive, so it is a running discovery count
+            rather than a target until collection finishes. The job carries
+            `collecting` so the UI can say "found 1,250 so far" instead of
+            showing a percentage of a number that is still moving.
+            """
+            _update_job(job_id, collecting=True)
+            batch: list[tuple[dict, str]] = []
+            seen_total = 0
             cancelled = False
-            for track, src in tracks:
-                if _is_cancelled(job_id):
-                    log.info("[ingest job=%s] cancel_requested — stopping loop", job_id)
-                    cancelled = True
-                    break
-                try:
-                    result = _process_track(conn, track, job_id, user_id, source=src)
-                    # _process_track returns one of four bucket names:
-                    #   added_to_library     — global row was 'done', user_tracks linked
-                    #   already_in_library   — user already had this exact link
-                    #   queued_for_analysis  — new metadata inserted OR pending row linked
-                    #   skip:no_id           — degenerate
-                    if result == "added_to_library":
-                        _bump(job_id, "added_to_library", 1)
-                    elif result == "already_in_library":
-                        _bump(job_id, "already_in_library", 1)
-                    elif result == "queued_for_analysis":
-                        _bump(job_id, "queued_for_analysis", 1)
-                    else:
+
+            def _drain(batch):
+                """Process one page. Partitioned so instant wins land first."""
+                for track, src in _playable_first(conn, batch, job_id):
+                    if _is_cancelled(job_id):
+                        return True
+                    try:
+                        result = _process_track(conn, track, job_id, user_id, source=src)
+                        if result in ("added_to_library", "already_in_library",
+                                      "queued_for_analysis"):
+                            _bump(job_id, result, 1)
+                        else:
+                            _bump(job_id, "skipped", 1)
+                    except splib.SpotifyAuthError:
+                        raise
+                    except Exception as e:
+                        log.exception("track ingest failed: %s", e)
                         _bump(job_id, "skipped", 1)
-                except splib.SpotifyAuthError:
-                    _update_job(job_id, status="error", error_message="spotify_token_expired")
-                    return
-                except Exception as e:
-                    log.exception("track ingest failed: %s", e)
-                    _bump(job_id, "skipped", 1)
-                _bump(job_id, "processed", 1)
+                    _bump(job_id, "processed", 1)
+                return False
+
+            try:
+                for pair in _iter_tracks(token, sources):
+                    by_src[pair[1]] = by_src.get(pair[1], 0) + 1
+                    batch.append(pair)
+                    seen_total += 1
+                    # One Spotify page. Draining per page is what makes the
+                    # first tracks playable while later pages are still in
+                    # flight.
+                    if len(batch) >= 50:
+                        _update_job(job_id, total=seen_total)
+                        if _drain(batch):
+                            cancelled = True
+                            break
+                        batch = []
+                if batch and not cancelled:
+                    _update_job(job_id, total=seen_total)
+                    if _drain(batch):
+                        cancelled = True
+            except splib.SpotifyAuthError:
+                log.warning("[ingest job=%s] SpotifyAuthError mid-stream", job_id)
+                _update_job(job_id, status="error", error_message="spotify_token_expired")
+                return
+            except splib.SpotifyAPIError as e:
+                _update_job(job_id, status="error", error_message=f"spotify_api_error: {e}")
+                return
+
+            _update_job(job_id, total=seen_total, collecting=False)
+            log.info("[ingest job=%s] streamed total=%d by_source=%s cancelled=%s",
+                     job_id, seen_total, by_src, cancelled)
         finally:
             conn.close()
 
@@ -2925,6 +2987,10 @@ def ingest_spotify(req: IngestRequest, sess: dict = Depends(require_user)):
             "current_track": None,
             "total": 0,
             "processed": 0,
+            # True while Spotify pages are still arriving. `total` is a
+            # running discovery count until this flips, so the UI should show
+            # "found N so far" rather than a percentage of a moving target.
+            "collecting": True,
             # Four mutually exclusive buckets (sum == processed) matching
             # the new two-phase ingest flow. See _process_track docstring.
             "added_to_library": 0,     # global row already done, just linked
@@ -3339,6 +3405,10 @@ def ingest_spotify_public(req: PublicPlaylistIngestRequest,
             "note": followed_note,
             "total": 0,
             "processed": 0,
+            # True while Spotify pages are still arriving. `total` is a
+            # running discovery count until this flips, so the UI should show
+            # "found N so far" rather than a percentage of a moving target.
+            "collecting": True,
             # Four mutually exclusive buckets (sum == processed) matching
             # the new two-phase ingest flow. See _process_track docstring.
             "added_to_library": 0,     # global row already done, just linked

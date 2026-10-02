@@ -37,6 +37,9 @@ const ZERO = {
   already_in_library: 0,
   queued_for_analysis: 0,
   skipped: 0,
+  // True while Spotify pages are still arriving, so `total` is a running
+  // discovery count rather than a target.
+  collecting: true,
 };
 
 export function SyncJobProvider({ children }) {
@@ -165,6 +168,7 @@ export function SyncJobProvider({ children }) {
   const value = useMemo(
     () => ({
       jobId, phase, progress, readyNow, errorMsg, summary,
+      collecting: progress.collecting,
       justBecamePlayable, clearPlayableFlag,
       begin, fail, cancel, dismiss,
       isRunning: phase === 'running',

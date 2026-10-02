@@ -164,21 +164,38 @@ def get_playlists(token: str, max_items: int = 200) -> list[dict]:
     return out
 
 
-def fetch_liked(token: str) -> list[dict]:
-    tracks: list[dict] = []
+def iter_liked(token: str) -> Iterator[dict]:
+    """Yield liked tracks AS PAGES ARRIVE, 50 per request.
+
+    _paginate is already lazy; fetch_liked just happened to drain it into a
+    list, which meant a caller could not see a single track until the whole
+    library had been walked. A 2000-track library is 40 sequential round trips
+    to Spotify, so that was ten-plus seconds of a UI with nothing to show.
+
+    Streaming lets the importer start writing rows — and the player start
+    playing — after the first request rather than the last.
+    """
     for item in _paginate(f"{BASE}/me/tracks", token, {"limit": 50}):
         t = _extract_track(item)
         if t and t.get("id"):
-            tracks.append(t)
-    return tracks
+            yield t
+
+
+def iter_top_tracks(token: str) -> Iterator[dict]:
+    """Streaming counterpart to fetch_top_tracks. See iter_liked."""
+    for item in _paginate(f"{BASE}/me/top/tracks", token, {"limit": 50, "time_range": "medium_term"}):
+        if item and item.get("id"):
+            yield item
+
+
+# The list forms are kept because the offline pipeline and other callers want
+# everything at once. They now delegate, so there is one implementation each.
+def fetch_liked(token: str) -> list[dict]:
+    return list(iter_liked(token))
 
 
 def fetch_top_tracks(token: str) -> list[dict]:
-    tracks: list[dict] = []
-    for item in _paginate(f"{BASE}/me/top/tracks", token, {"limit": 50, "time_range": "medium_term"}):
-        if item and item.get("id"):
-            tracks.append(item)
-    return tracks
+    return list(iter_top_tracks(token))
 
 
 def fetch_playlist_tracks(playlist_id: str, token: str) -> list[dict]:

@@ -40,7 +40,7 @@ export default function SyncPill({ onOpen }) {
   if (!job || phase === 'idle') return null;
   if (phase === 'complete' && dismissedDone) return null;
 
-  const { progress, readyNow, summary, errorMsg } = job;
+  const { progress, readyNow, summary, errorMsg, collecting } = job;
   const pct = progress.total
     ? Math.min(100, Math.round((progress.processed / progress.total) * 100))
     : 0;
@@ -56,7 +56,11 @@ export default function SyncPill({ onOpen }) {
     >
       {/* The bar is the background of the pill, not a separate element — at
           this size a discrete track-and-fill reads as clutter. */}
-      {running && <span className={styles.fill} style={{ width: `${pct}%` }} aria-hidden="true" />}
+      {/* No bar while collecting: the denominator is still climbing, so a
+      percentage of it would slide backwards and read as broken. */}
+      {running && !collecting && (
+        <span className={styles.fill} style={{ width: `${pct}%` }} aria-hidden="true" />
+      )}
 
       <span className={styles.body}>
         <span className={styles.label}>
@@ -66,7 +70,9 @@ export default function SyncPill({ onOpen }) {
           {failed
             ? errorMsg
             : running
-              ? `${readyNow} ready to play${progress.total ? ` · ${pct}%` : ''}`
+              ? collecting
+                ? `${readyNow} ready to play · found ${progress.total || 0} so far`
+                : `${readyNow} ready to play${progress.total ? ` · ${pct}%` : ''}`
               : summary}
         </span>
       </span>
