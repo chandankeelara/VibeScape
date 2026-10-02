@@ -2753,6 +2753,61 @@ def _collect_tracks(token: str, sources: IngestSources) -> list[tuple[dict, str]
     return out
 
 
+def _playable_first(conn, tracks, job_id):
+    """Reorder a sync so the tracks that are INSTANTLY playable go first.
+
+    A track already sitting in the catalogue at ingestion_status='done' costs
+    one INSERT into user_tracks and is playable the moment it lands. A track
+    we have never seen costs a metadata insert and then has to wait for the
+    offline pipeline before it can be played at all.
+
+    Processed in playlist order the two are interleaved, so a user importing
+    500 tracks waits for the whole job before their library is usable — even
+    though most of it was ready in the first second. Partitioning front-loads
+    every instant win, which is what lets the UI offer "start listening"
+    almost immediately instead of at 100%.
+
+    This is pure ordering. No track is skipped, dropped or processed
+    differently, and the four result buckets are unchanged — so a failure here
+    must never break the sync. One query decides it; if that query fails for
+    any reason we fall back to the original order and simply lose the
+    optimisation.
+
+    Stable within each half, so playlist order still shows through.
+    """
+    try:
+        ids = [t.get("id") for t, _ in tracks if t.get("id")]
+        if not ids:
+            return tracks
+
+        ready = set()
+        # Chunked to stay under SQLite's variable limit on large libraries.
+        for i in range(0, len(ids), 400):
+            chunk = ids[i:i + 400]
+            ph = ",".join("?" * len(chunk))
+            ready.update(
+                r[0] for r in conn.execute(
+                    f"SELECT spotify_id FROM tracks "
+                    f"WHERE ingestion_status = 'done' AND spotify_id IN ({ph})",
+                    chunk,
+                )
+            )
+
+        if not ready or len(ready) == len(ids):
+            return tracks  # nothing to gain from reordering
+
+        head = [p for p in tracks if p[0].get("id") in ready]
+        tail = [p for p in tracks if p[0].get("id") not in ready]
+        log.info(
+            "[ingest job=%s] playable-first: %d instant, %d need analysis",
+            job_id, len(head), len(tail),
+        )
+        return head + tail
+    except Exception as e:
+        log.warning("[ingest job=%s] playable-first reorder skipped: %s", job_id, e)
+        return tracks
+
+
 def _run_ingest_job(job_id: str, token: str, sources: IngestSources, user_id: int):
     try:
         _update_job(job_id, status="running", current_track="collecting library…")
@@ -2801,6 +2856,7 @@ def _run_ingest_job(job_id: str, token: str, sources: IngestSources, user_id: in
 
         conn = get_conn()
         try:
+            tracks = _playable_first(conn, tracks, job_id)
             cancelled = False
             for track, src in tracks:
                 if _is_cancelled(job_id):

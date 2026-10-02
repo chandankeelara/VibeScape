@@ -88,12 +88,28 @@ function SyncModalInner({ onClose, defaultTab }) {
   const [url, setUrl] = useState('');
   const [urlError, setUrlError] = useState('');
 
+  /*
+   * Dismissing the modal leaves the job RUNNING.
+   *
+   * Legacy cancelled on every dismissal path — X, backdrop, Cancel, Escape —
+   * which held the user hostage to a progress bar for the length of their
+   * library. Importing music is something you should be able to start and
+   * then walk away from, especially since the tracks that are instantly
+   * playable land in the first second or two.
+   *
+   * Cancelling is still available, but it is now an explicit choice rather
+   * than a side effect of closing a window. The job is keyed by id on the
+   * server, so a later session could even reattach to it.
+   */
   const close = useCallback(() => {
-    // Legacy cancels the running job on any dismissal path (X, backdrop,
-    // Cancel, Escape). Fire-and-forget — the backend cleans up regardless.
-    if (phase === 'progress' && jobId) api.cancelIngest(jobId).catch(() => {});
     onClose?.();
-  }, [phase, jobId, onClose]);
+  }, [onClose]);
+
+  /** The only path that actually stops the job. */
+  const cancelJob = useCallback(() => {
+    if (jobId) api.cancelIngest(jobId).catch(() => {});
+    onClose?.();
+  }, [jobId, onClose]);
 
   const cardRef = useFocusTrap(true, close);
 
@@ -287,8 +303,18 @@ function SyncModalInner({ onClose, defaultTab }) {
 
   /* ---------------------------------------------------------------- footer */
 
+  /*
+   * Tracks that were already in the catalogue are playable the instant they
+   * are linked — the server now front-loads them, so there is usually
+   * something to listen to within a second or two of starting.
+   */
+  const readyNow = (progress.added_to_library || 0) + (progress.already_in_library || 0);
+
   const onPrimary = () => {
-    if (phase === 'complete') {
+    // Leaving mid-sync is a first-class action, not an escape hatch: the job
+    // keeps running and the library fills in behind the user while they
+    // listen.
+    if (phase === 'complete' || phase === 'progress') {
       onClose?.();
       fetchForVibe();
       return;
@@ -307,7 +333,16 @@ function SyncModalInner({ onClose, defaultTab }) {
 
   if (phase === 'complete') {
     primaryLabel = 'Play now';
-  } else if (phase === 'progress' || phase === 'error') {
+  } else if (phase === 'progress') {
+    // Offered as soon as ONE track is playable rather than at 100%. Waiting
+    // for the whole job made a 500-track import feel like a 500-track wait,
+    // when most of the library was usable almost immediately.
+    primaryHidden = readyNow < 1;
+    primaryLabel = 'Start listening';
+    meta = readyNow
+      ? `${readyNow} ready to play — the rest keeps importing`
+      : 'Finding tracks…';
+  } else if (phase === 'error') {
     primaryHidden = true;
   } else if (tab === 'url') {
     primaryLabel = 'Add playlist';
@@ -323,7 +358,10 @@ function SyncModalInner({ onClose, defaultTab }) {
     primaryHidden = true;
   }
 
-  const cancelLabel = phase === 'complete' || phase === 'error' ? 'Close' : 'Cancel';
+  // Mid-sync the secondary button means "leave this running", so calling it
+  // Cancel would be a lie. Cancelling moved to its own control inside the
+  // progress view.
+  const cancelLabel = phase === 'progress' ? 'Close' : (phase === 'complete' || phase === 'error' ? 'Close' : 'Cancel');
   const tabsVisible = phase === 'pick';
 
   /* ------------------------------------------------------------------ body */
@@ -428,20 +466,30 @@ function SyncModalInner({ onClose, defaultTab }) {
               <div className={styles.progressCurrent} aria-live="polite">
                 {progress.current_track || '—'}
               </div>
+              {/*
+                * Two numbers, not four buckets. The old labels were the
+                * server's internal result names — "added", "already yours"
+                * and "queued" describe how the backend classified a row, not
+                * anything the listener cares about. What they want to know is
+                * what they can play right now and what is still coming.
+                */}
               <div className={styles.stats}>
-                <div title="Track was already fully analysed in the global library — added to your account and playable now">
-                  <span className={styles.statLabel}>added</span>
-                  <span className={styles.statNum}>{progress.added_to_library || 0}</span>
+                <div title="Already analysed — in your library and playable right now">
+                  <span className={styles.statLabel}>ready to play</span>
+                  <span className={styles.statNum}>{readyNow}</span>
                 </div>
-                <div title="You already had this track — no action taken">
-                  <span className={styles.statLabel}>already yours</span>
-                  <span className={styles.statNum}>{progress.already_in_library || 0}</span>
-                </div>
-                <div title="New track — queued for offline audio analysis. Will appear in your library once the background worker finishes.">
-                  <span className={styles.statLabel}>queued</span>
+                <div title="New to VibeScape — being analysed for mood and tempo before it can be played">
+                  <span className={styles.statLabel}>still analysing</span>
                   <span className={styles.statNum}>{progress.queued_for_analysis || 0}</span>
                 </div>
               </div>
+
+              {/* Closing no longer stops the job, so stopping needs a control
+                  of its own. Understated: leaving it running is the path we
+                  want people to take. */}
+              <button className={styles.linkBtn} type="button" onClick={cancelJob}>
+                Stop importing
+              </button>
             </div>
           )}
 

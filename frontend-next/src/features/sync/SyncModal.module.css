@@ -332,3 +332,32 @@
   .footerMeta { text-align: center; }
   .footerActions > .btn { flex: 1; }
 }
+
+/*
+ * "Stop importing", inside the progress view.
+ *
+ * Deliberately understated — a quiet text button rather than anything that
+ * competes with "Start listening". Closing the modal now leaves the job
+ * running, which is the path we want people to take, so stopping should be
+ * available without being inviting.
+ */
+.linkBtn {
+  align-self: center;
+  margin-top: var(--sp-2);
+  padding: 4px 8px;
+  border: 0;
+  background: none;
+  color: var(--text-4);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.linkBtn:hover { color: var(--danger); }
+
+.linkBtn:focus-visible {
+  outline: 2px solid var(--vibe-accent, var(--accent));
+  outline-offset: 2px;
+}
