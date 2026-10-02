@@ -2383,7 +2383,10 @@ def spotify_library(
     try:
         liked = splib.get_liked_count(token)
         top = splib.get_top_tracks_count(token)
-        playlists_raw = splib.get_playlists(token, max_items=200)
+        # No max_items: get_playlists owns the cap (500). Pinning it here is
+        # how the earlier raise from 200 silently had no effect — the default
+        # moved and the only caller kept overriding it.
+        playlists_raw = splib.get_playlists(token)
         # Fetch the caller's Spotify user id so we can identify which
         # playlists are theirs (the only ones /items reliably returns 200
         # for after the Nov 2024 API lockdown). Fall back gracefully.
@@ -3274,7 +3277,15 @@ def _run_public_playlist_job(job_id: str, playlist_id: str, user_id: int,
             seen.add(tid)
             unique_tracks.append(t)
 
-        _update_job(job_id, total=len(unique_tracks))
+        # collecting=False matters as much as the total here.
+        #
+        # This path fetches the whole playlist up front, so the count is exact
+        # the moment it lands — there is no discovery phase to report. The job
+        # dict still starts at collecting=True to match the streaming library
+        # job's shape, and nothing here ever cleared it: the progress bar
+        # stayed indeterminate for the entire import and remained so after the
+        # status went 'complete'.
+        _update_job(job_id, total=len(unique_tracks), collecting=False)
 
         conn = get_conn()
         try:
