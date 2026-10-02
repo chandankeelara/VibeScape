@@ -105,7 +105,20 @@ export default function useBitState({
     // loading is also "not playing", and would otherwise fall through to idle.
     if (loadingTrack) return 'digging';
     if (verifying) return 'listening';
-    if (mode === 'video') return 'watching';
+    /*
+     * Video mode changes what he WEARS, not what he does.
+     *
+     * This used to return 'watching' outright, which parked him in
+     * a_watching_shades / a_watching_lean — standing poses — so putting a
+     * video on stopped him dancing. A video is still a track playing, and he
+     * should groove through it exactly as he does for audio, in the band the
+     * mood selects. The shades are the whole difference, applied as a prop
+     * override further down.
+     *
+     * Paused in video he goes back to watching, which is the one moment the
+     * standing poses are actually right.
+     */
+    if (mode === 'video' && !playing) return 'watching';
     // No local audio and no Spotify stream — nothing can play at all.
     if (isMetadataOnly(current) && !source) return 'locked';
     return playing ? 'groove' : 'idle';
@@ -225,7 +238,19 @@ export default function useBitState({
   }, [current, fire]);
 
   const beat = useMemo(() => beatSeconds(current && current.tempo), [current]);
-  const prop = SUGGESTED_PROP[state] || null;
+  /*
+   * The shades ride over the continuous states only.
+   *
+   * `watching` already maps to 'glasses', but 'groove' and 'idle' do not —
+   * so in video mode they are overridden here rather than by forking the
+   * groove pool, which would have meant a second copy of all fifteen moves.
+   *
+   * Event animations keep their own prop. Several of them ACT on it —
+   * a_sulk_hurl throws it, a_catch_grab catches it — and swapping in a pair
+   * of glasses would leave them throwing and grabbing nothing.
+   */
+  const wearsShades = mode === 'video' && !event && (state === 'groove' || state === 'idle');
+  const prop = wearsShades ? 'glasses' : (SUGGESTED_PROP[state] || null);
 
   return { state, animKey, prop, beat, fire };
 }
