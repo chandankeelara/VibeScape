@@ -255,7 +255,17 @@ section { padding: var(--sp-11) 0 0; }
 }
 .sh84.s-player  { height: calc(var(--mw) * 0.6065); } /* 752 / 1240 */
 .sh84.s-landing { height: calc(var(--mw) * 0.5790); } /* 718 / 1240 */
-.scale84 { width: 1240px; transform: scale(calc(var(--mw) / 1240)); transform-origin: 0 0; }
+.scale84 {
+  width: 1240px;
+  /* The divisor MUST carry px. --mw is a length, so `/ 1240` yields a length,
+     scale() rejects it, the whole declaration is dropped as invalid, and the
+     1240px mock then sits unscaled inside a 1040px .frame with
+     overflow:hidden — which silently ate the queue sidebar off the right
+     edge of every player mock. length / length gives the unitless number
+     scale() actually wants. */
+  transform: scale(calc(var(--mw) / 1240px));
+  transform-origin: 0 0;
+}
 
 .caption {
   display: flex;
