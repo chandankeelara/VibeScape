@@ -1,0 +1,2636 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VibeScape — Interface Specification</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ===================================================================
+   VibeScape — interface specification.
+
+   The page is built from the same tokens it specifies, so the document
+   is a working demonstration of the system rather than a description of
+   one. Values below are the PROPOSED values; where a token changes, the
+   current value is stated beside it in section 07.
+   =================================================================== */
+
+:root {
+  /* surfaces — unchanged from tokens.css */
+  --bg: #08080c;
+  --bg-2: #0d0d14;
+  --surface: #12121a;
+  --surface-2: #191922;
+
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+
+  /* text — RE-SPACED. Every step is now a legal text colour. */
+  --text:   #f2f2f5;                      /* 15.62:1 on the worst bed */
+  --text-2: rgba(242, 242, 245, 0.78);    /*  9.86:1 */
+  --text-3: rgba(242, 242, 245, 0.62);    /*  6.67:1 */
+  --text-4: rgba(242, 242, 245, 0.50);    /*  4.79:1 */
+  --text-mute: rgba(242, 242, 245, 0.30); /*  2.56:1 — NON-TEXT MARKS ONLY */
+
+  --accent: #22c1e3;
+  --spotify: #1ed760;
+  --danger: #ff5d5d;
+
+  /* Runtime accent. Rewritten per track by lib/vibe.js applyAccent().
+     The document default is the chill band at vibe 34. */
+  --vibe-accent: rgb(24, 189, 224);
+  --vibe-accent-2: rgb(34, 193, 227);
+  --vibe-accent-text: rgb(26, 190, 225);  /* NEW — okL clamped >= 0.74 */
+  --vibe-accent-fill: rgb(71, 216, 251);  /* NEW — okL clamped >= 0.82 */
+  --vibe-accent-ink: var(--bg);           /* NEW — always --bg */
+
+  /* type scale — NEW, seven steps */
+  --fs-micro: 10px;
+  --fs-meta: 11.5px;
+  --fs-sm: 13px;
+  --fs-body: 15px;
+  --fs-title: 19px;
+  --fs-display: 28px;
+  --fs-hero: clamp(44px, 5vw, 64px);
+
+  --sans: 'Space Grotesk', system-ui, sans-serif;
+  --serif: 'Instrument Serif', Georgia, serif;
+  --mono: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
+
+  /* spacing — one 4px grid, renumbered */
+  --sp-0: 2px;  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 20px; --sp-6: 24px; --sp-7: 32px; --sp-8: 40px; --sp-9: 48px;
+  --sp-10: 64px; --sp-11: 96px;
+
+  /* radii — tightened */
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 16px;
+  --radius-card: 20px;
+  --radius-pill: 999px;
+
+  /* motion */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --dur-fast: 120ms;
+  --dur: 220ms;
+  --dur-slow: 420ms;
+  --dur-art: 640ms;
+
+  /* the pill — one geometry, declared once */
+  --pill-h: 22px;
+  --pill-pad: 10px;
+  --pill-track: 0.14em;
+
+  /* ---------------------------------------------------------- material
+     One light, above and slightly in front of the viewer. On #08080c a
+     shadow is almost invisible, so depth is carried by the EDGE: a lit top
+     border and a dark bottom one. The shadow's only remaining job is to
+     kill the surface directly beneath an object (contact), not to lift it. */
+  --edge-lit: rgba(255, 255, 255, 0.14);
+  --edge-lit-2: rgba(255, 255, 255, 0.26);
+  --edge-dark: rgba(0, 0, 0, 0.55);
+  --contact: 0 1px 2px rgba(0, 0, 0, 0.65);
+  --cast-3: 0 14px 30px -10px rgba(0, 0, 0, 0.70);
+  --cast-4: 0 30px 64px -14px rgba(0, 0, 0, 0.78);
+  /* A broad diagonal wash, not a glossy highlight. 118deg is the light
+     direction; every sheen in the product uses this one angle. */
+  --sheen: linear-gradient(118deg, rgba(255,255,255,0.075) 0%, rgba(255,255,255,0.02) 26%, transparent 48%);
+  --vignette: radial-gradient(112% 112% at 50% 44%, transparent 54%, rgba(0,0,0,0.34) 100%);
+  --grain-alpha: 0.022;
+
+  /* ------------------------------------------------------------ motion */
+  --dur-press: 90ms;                     /* NEW — input acknowledgement */
+  --dur-exit: calc(var(--dur) * 0.7);    /* NEW — exits beat entries */
+  --stagger: 60ms;                       /* NEW — overlap, never queue */
+
+  /* -------------------------------------------------------- the breath
+     Written per track: --beat is 60/BPM in seconds, --energy is 0..1.
+     Depth of the pulse scales with energy, so a ballad barely moves and a
+     beast track visibly throbs. Unknown BPM means no breath, never a guess. */
+  --beat: 0.577s;   /* 104 BPM — the document's demo track */
+  --energy: 0.31;
+  --breath: calc(0.04 + 0.16 * var(--energy));
+  --art-glow-alpha: 0.65;
+}
+
+/* Mood presets, used to re-light individual mocks. These are the exact
+   outputs of accentFor() for the stated vibe, so a mock is lit the way the
+   running app would light it. */
+.m-sleep  { --vibe-accent: rgb(90,123,184);  --vibe-accent-2: rgb(91,127,189);  --vibe-accent-text: rgb(136,171,235); --vibe-accent-fill: rgb(160,197,255); }
+.m-chill  { --vibe-accent: rgb(24,189,224);  --vibe-accent-2: rgb(34,193,227);  --vibe-accent-text: rgb(26,190,225);  --vibe-accent-fill: rgb(71,216,251); }
+.m-steady { --vibe-accent: rgb(150,107,245); --vibe-accent-2: rgb(167,139,250); --vibe-accent-text: rgb(181,140,255); --vibe-accent-fill: rgb(206,166,255); }
+.m-hype   { --vibe-accent: rgb(242,66,112);  --vibe-accent-2: rgb(244,63,94);   --vibe-accent-text: rgb(255,99,139);  --vibe-accent-fill: rgb(255,126,164); }
+.m-beast  { --vibe-accent: rgb(237,84,28);   --vibe-accent-2: rgb(220,38,38);   --vibe-accent-text: rgb(255,115,65);  --vibe-accent-fill: rgb(255,142,92); }
+
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  color: var(--text-2);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ------------------------------------------------------- document shell */
+
+.page { width: min(1252px, 100% - 64px); margin: 0 auto; }
+
+/* Content and its margin notes. The note rail is narrow and tinted down on
+   purpose — an annotation must never compete with the mock it annotates for
+   the eye's first pass. */
+.band {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px;
+  column-gap: var(--sp-7);
+  align-items: start;
+}
+
+.notes { display: flex; flex-direction: column; gap: var(--sp-5); padding-top: var(--sp-1); }
+
+.note {
+  border-top: 1px solid var(--border);
+  padding-top: var(--sp-2);
+  font-size: var(--fs-meta);
+  line-height: 1.7;
+  color: var(--text-3);
+}
+
+.note b {
+  display: block;
+  font-family: var(--mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: var(--pill-track);
+  text-transform: uppercase;
+  color: var(--vibe-accent-text);
+  margin-bottom: var(--sp-1);
+}
+
+code, .note code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  color: var(--text-2);
+}
+
+/* ------------------------------------------------------------- sections */
+
+section { padding: var(--sp-11) 0 0; }
+
+.sechead {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px;
+  column-gap: var(--sp-7);
+  align-items: end;
+  padding-bottom: var(--sp-5);
+  margin-bottom: var(--sp-7);
+  border-bottom: 1px solid var(--border);
+}
+
+.secnum {
+  display: block;
+  margin-bottom: var(--sp-2);
+  font-family: var(--mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: var(--pill-track);
+  color: var(--text-4);
+}
+
+.sechead h2 {
+  margin: 0;
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 34px;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.sechead p {
+  margin: 0;
+  grid-column: 2;
+  font-size: var(--fs-meta);
+  line-height: 1.7;
+  color: var(--text-3);
+}
+
+.lede { max-width: 64ch; font-size: var(--fs-sm); color: var(--text-3); }
+.lede strong { color: var(--text-2); font-weight: 500; }
+
+/* ----------------------------------------------------------- mock frames */
+
+/* A mock sits on the page background behind a single hairline. No card, no
+   shadow: the thing being specified must not be wrapped in chrome the
+   product does not have. */
+.frame {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  overflow: hidden;
+}
+
+/* Full-width screens are authored at their real 1240px breakpoint and shown
+   at ~84%, because a mock drawn small lies about type size. The factor is
+   stated so measurements are read off the token, never off the pixel.
+
+   --mw is the content column's own width expressed in viewport terms: the
+   page is min(1252px, 100vw - 64px) and the note rail plus gutter costs
+   212px. The 16px of slack absorbs the scrollbar, which 100vw includes and
+   the layout does not. Without this the frame clips the mock at 1280px. */
+.sh84 {
+  /* The 292px subtrahend is the annotation gutter. Without a floor it goes
+     NEGATIVE on a narrow viewport — a docked side panel, a split window —
+     and every .frame collapses to zero width, so the mocks vanish entirely
+     rather than merely getting small. The max() keeps them legible-ish and
+     scrolling instead of disappearing. */
+  --mw: max(560px, min(1040px, calc(100vw - 292px)));
+  width: calc(var(--mw) + 2px);
+  overflow: hidden;
+}
+.sh84.s-player  { height: calc(var(--mw) * 0.6065); } /* 752 / 1240 */
+.sh84.s-landing { height: calc(var(--mw) * 0.5790); } /* 718 / 1240 */
+.scale84 { width: 1240px; transform: scale(calc(var(--mw) / 1240)); transform-origin: 0 0; }
+
+.caption {
+  display: flex;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  margin-top: var(--sp-3);
+  font-family: var(--mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  color: var(--text-4);
+}
+.caption span::before { content: '\2014\00a0'; color: var(--text-mute); }
+.caption span:first-child::before { content: ''; }
+
+.row2 { display: grid; grid-template-columns: auto auto; gap: var(--sp-7); justify-content: start; align-items: start; }
+.row3 { display: grid; grid-template-columns: repeat(3, auto); gap: var(--sp-5); justify-content: start; align-items: start; }
+
+/* ------------------------------------------------------- shared app bits */
+
+/* THE PILL. One geometry for every pill in the product. Two skins. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--pill-h);
+  padding: 0 var(--pill-pad);
+  /* Letter-spacing adds a trailing sidebearing after the last glyph. Without
+     this correction the pill is optically ~1.5px wider on the right. */
+  padding-right: calc(var(--pill-pad) - var(--pill-track));
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: transparent;
+  font-family: var(--mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: var(--pill-track);
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.pill.tag { border-color: transparent; background: var(--surface-2); }
+.pill.on {
+  border-color: color-mix(in oklab, var(--vibe-accent) 55%, transparent);
+  background: color-mix(in oklab, var(--vibe-accent) 12%, transparent);
+  color: var(--text);
+}
+.pill .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--text-mute); }
+.pill.on .dot { background: var(--vibe-accent-fill); }
+
+/* Mono micro-label. Takes over most of what used to be a decorative pill. */
+.mlabel {
+  font-family: var(--mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: var(--pill-track);
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+
+/* Record sleeve. There is no photographic placeholder anywhere in this
+   document: every sleeve is drawn from the track accent, so nothing here can
+   be mistaken for shipped artwork, and each one re-lights with the mood. */
+.sleeve {
+  position: relative;
+  flex: none;
+  background: var(--surface);
+  /* Four edges, not one border. The light comes from the upper left, so the
+     top and left catch it and the bottom and right fall away. This is what
+     makes a flat square read as a printed card with thickness, and it costs
+     one declaration more than the hairline it replaces. */
+  border: 1px solid var(--edge-dark);
+  border-top-color: var(--edge-lit-2);
+  border-left-color: var(--edge-lit);
+  box-shadow: var(--contact);
+  overflow: hidden;
+}
+.sleeve::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 90% at 78% 14%, color-mix(in oklab, var(--vibe-accent) 34%, transparent), transparent 62%),
+    radial-gradient(90% 70% at 10% 94%, color-mix(in oklab, var(--vibe-accent-2) 22%, transparent), transparent 60%);
+}
+/* Sheen and vignette: the two marks that turn a tone field into a surface.
+   The sheen is a broad diagonal wash at the one light angle — never a glossy
+   streak. The vignette is what a physical print does under a single lamp. */
+.sleeve::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--sheen), var(--vignette);
+  pointer-events: none;
+}
+.sleeve .ring {
+  position: absolute;
+  left: 50%; top: 52%;
+  width: 60%; aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 50%;
+}
+.sleeve .ring::after {
+  content: '';
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 9%; aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.24);
+}
+.sleeve .cat {
+  position: absolute;
+  left: 10px; bottom: 7px;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  /* The vignette paints above this and is darkest in exactly this corner. */
+  color: rgba(255, 255, 255, 0.66);
+}
+</style>
+<style>
+/* ===================================================================
+   01 — THE ROOM, and 02 — PLAYER (three directions).
+   All three directions share this stylesheet. Only the .sA / .sB / .sC
+   stage blocks differ; chrome, material, motion and the queue rail are
+   identical, which is what makes the three comparable.
+   =================================================================== */
+
+/* ---- grain -------------------------------------------------------- */
+/* 2.2% monochrome dither over everything. Its job is not texture for its
+   own sake: the accent light pools are low-alpha radial gradients, and on
+   an 8-bit panel those band into visible rings. A dither at this strength
+   removes the banding outright, and incidentally stops a near-black
+   surface reading as an empty canvas. One element, inert, never moves. */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 9999;            /* in-app: above --z-toast, pointer-events none */
+  pointer-events: none;
+  opacity: var(--grain-alpha);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ---- shell -------------------------------------------------------- */
+.app {
+  width: 1240px;
+  height: 752px;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 320px;
+  /* The room is lit from above, so the page itself is not flat. Two
+     luminance steps — any more and it becomes a gradient panel. */
+  background: linear-gradient(180deg, #0a0a11 0%, var(--bg) 46%);
+  position: relative;
+  isolation: isolate;
+}
+
+.topbar {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: var(--sp-6);
+  height: 56px; padding: 0 var(--sp-6);
+  border-bottom: 1px solid var(--border);
+}
+
+.wordmark { display: flex; align-items: center; gap: 10px; font-size: var(--fs-title); line-height: 1; color: var(--text); }
+/* The tally light. One of exactly two elements in the product that move
+   with the music; see 01.4. Percussive envelope — instant attack on the
+   beat, decay across the bar, rest. */
+.wordmark .mark {
+  width: 9px; height: 9px;
+  background: var(--vibe-accent-fill);
+  animation: tally var(--beat) var(--ease-out) infinite;
+}
+@keyframes tally {
+  0%   { transform: scale(1.1); opacity: 1; }
+  55%  { transform: scale(1);   opacity: 0.8; }
+  100% { transform: scale(1);   opacity: 0.8; }
+}
+.wordmark .a { font-weight: 500; letter-spacing: -0.015em; }
+.wordmark .b { font-family: var(--serif); font-style: italic; font-size: 21px; letter-spacing: 0; }
+
+.topbar .spacer { flex: 1; }
+.readout { display: flex; gap: 18px; }
+.readout i { font-style: normal; color: var(--text-4); }
+.readout b { font-weight: 500; color: var(--text-2); }
+
+.iconbtn {
+  display: grid; place-items: center;
+  width: 30px; height: 30px;
+  border: 1px solid var(--border); border-top-color: var(--edge-lit);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-3);
+  font-family: var(--mono); font-size: var(--fs-sm);
+}
+.userpill {
+  display: flex; align-items: center; gap: var(--sp-2);
+  height: 30px; padding: 0 10px 0 4px;
+  border: 1px solid var(--border); border-top-color: var(--edge-lit);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--text-2); font-size: var(--fs-meta);
+}
+.userpill .av {
+  width: 22px; height: 22px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--surface-2);
+  font-family: var(--mono); font-size: 9px; font-weight: 600; color: var(--text-2);
+}
+
+/* Search is RECESSED — elev-1. Dark relative to its bed, with the light
+   line on the bottom inner lip, because a groove catches light on its far
+   wall. The inverse of a raised surface, from the same one lamp. */
+.searchbar {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: var(--sp-3);
+  height: 50px; padding: 0 var(--sp-6);
+  border-bottom: 1px solid var(--border);
+}
+.searchfield {
+  flex: 1; display: flex; align-items: center; gap: var(--sp-3);
+  height: 30px; padding: 0 var(--sp-3);
+  border-radius: var(--radius-sm);
+  background: #05050a;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.6), inset 0 -1px 0 rgba(255,255,255,0.05);
+}
+.searchfield .gl { width: 12px; height: 12px; border: 1.5px solid var(--text-4); border-radius: 50%; position: relative; flex: none; }
+.searchfield .gl::after { content: ''; position: absolute; right: -4px; bottom: -3px; width: 6px; height: 1.5px; background: var(--text-4); transform: rotate(45deg); }
+.searchfield .ph { flex: 1; font-size: var(--fs-sm); color: var(--text-4); }
+.searchbar kbd { font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em; color: var(--text-4); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 2px 6px; }
+
+/* ---- the sleeve as an object -------------------------------------- */
+/* .hero adds what a 360px print has that a 36px thumbnail does not:
+   a real cast shadow, a deeper edge, and a pool of its own light. */
+.hero { box-shadow: var(--cast-4), var(--contact); border-top-width: 2px; }
+
+/* The stack. Two sheets behind the hero, offset up and inset, showing only
+   their lit top edges. This is "up next" rendered as physical depth rather
+   than as a list — it is literally what is underneath. On a track change
+   the stack advances; see 01.5-B. */
+.stack { position: relative; }
+.stack .u1, .stack .u2 {
+  position: absolute; z-index: -1;
+  height: 22px; border-radius: 4px 4px 0 0;
+  border-top: 1px solid var(--edge-lit-2);
+  box-shadow: var(--contact);
+}
+.stack .u1 { top: -7px;  left: 10px; right: 10px; background: color-mix(in oklab, var(--vibe-accent) 26%, var(--surface)); }
+.stack .u2 { top: -13px; left: 22px; right: 22px; background: color-mix(in oklab, var(--vibe-accent) 18%, var(--surface)); opacity: 0.72; }
+
+/* The pool. The one deliberate violation of the single-lamp model: the
+   record is the only other light source in the room. It breathes at the
+   track's own tempo — metadata, not an analyser, so it is phase-locked,
+   correct during the intro, and costs no per-frame JS. */
+.pool {
+  position: absolute; left: 50%;
+  width: 118%; height: 92px;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in oklab, var(--vibe-accent) 42%, transparent), transparent);
+  filter: blur(16px);
+  opacity: var(--art-glow-alpha);
+  z-index: -1;
+  animation: breathe var(--beat) var(--ease-out) infinite;
+}
+@keyframes breathe {
+  0%   { opacity: calc(var(--art-glow-alpha) * (1 + var(--breath))); }
+  55%  { opacity: calc(var(--art-glow-alpha) * (1 - var(--breath))); }
+  100% { opacity: calc(var(--art-glow-alpha) * (1 - var(--breath))); }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* The resting state is the mid value, fully lit — never the trough. */
+  .pool, .wordmark .mark { animation: none; }
+  .pool { opacity: var(--art-glow-alpha); }
+  .wordmark .mark { opacity: 1; }
+}
+
+/* ---- meta --------------------------------------------------------- */
+.eyebrow { display: flex; align-items: baseline; gap: var(--sp-3); }
+.eyebrow .live { color: var(--vibe-accent-text); }
+
+.ttitle { margin: 0; font-family: var(--serif); font-weight: 400; font-size: var(--fs-display); line-height: 1.12; letter-spacing: -0.005em; color: var(--text); }
+.ttitle.sm { font-size: var(--fs-title); line-height: 1.15; }
+.tsub { font-size: var(--fs-body); color: var(--text-2); }
+.tsub.sm { font-size: var(--fs-sm); }
+.tsub .sep { color: var(--text-mute); margin: 0 7px; }
+.tsub .album { color: var(--text-3); }
+
+.liner { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2) var(--sp-7); padding-top: var(--sp-1); }
+.liner.one { grid-template-columns: 1fr; }
+.liner.three { grid-template-columns: repeat(3, 1fr); }
+.liner div { display: flex; justify-content: space-between; gap: var(--sp-3); border-bottom: 1px solid var(--border); padding-bottom: 5px; }
+.liner dt { font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: var(--pill-track); text-transform: uppercase; color: var(--text-4); }
+.liner dd { margin: 0; font-family: var(--mono); font-size: var(--fs-meta); color: var(--text-2); text-align: right; }
+.liner dd.hl { color: var(--vibe-accent-text); }
+
+.rule { height: 1px; background: var(--border); }
+.artfoot { display: flex; justify-content: space-between; padding-top: var(--sp-2); border-top: 1px solid var(--border); }
+
+/* ---- transport ---------------------------------------------------- */
+/* At rest the seek bar sits at 40%: the ring around the play button is
+   what you glance at, and the bar is the thing you reach for. It comes to
+   full on hover or focus of the transport region. */
+.seek { opacity: 0.4; }
+.prog { position: relative; height: 2px; background: rgba(255,255,255,0.1); }
+.prog .fill { position: absolute; inset: 0 auto 0 0; width: 38%; background: var(--vibe-accent); }
+.prog .thumb { position: absolute; left: 38%; top: 50%; width: 9px; height: 9px; border-radius: 50%; transform: translate(-50%,-50%); background: var(--vibe-accent-fill); box-shadow: var(--contact); }
+.times { display: flex; justify-content: space-between; margin-top: 7px; font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.06em; color: var(--text-4); }
+
+.controls { display: flex; align-items: center; gap: var(--sp-5); }
+.tbtn { width: 34px; height: 34px; display: grid; place-items: center; border: 0; background: none; color: var(--text-3); }
+.tbtn svg { display: block; }
+.controls .gap { flex: 1; }
+
+/* The play button is a machined disc: lit top edge, dark bottom edge, a
+   real cast shadow. On press it travels 1px down and the cast tightens to
+   --contact over --dur-press — it goes INTO the page. */
+.play {
+  position: relative;
+  width: 54px; height: 54px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--vibe-accent-fill);
+  color: var(--vibe-accent-ink);
+  border: 0;
+  box-shadow: var(--cast-3), inset 0 1px 0 rgba(255,255,255,0.4), inset 0 -1px 0 rgba(0,0,0,0.28);
+}
+/* The ring IS the playhead. The most-looked-at object in the app also
+   tells you where you are, which is why the numeric remaining-time can go. */
+.play::before {
+  content: '';
+  position: absolute; inset: -7px;
+  border-radius: 50%;
+  background: conic-gradient(var(--vibe-accent-text) calc(var(--played, 0.38) * 360deg), rgba(255,255,255,0.09) 0);
+  -webkit-mask: radial-gradient(closest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+          mask: radial-gradient(closest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+}
+.play.lg { width: 64px; height: 64px; }
+
+.modeToggle { display: flex; border: 1px solid var(--border); border-top-color: var(--edge-lit); border-radius: var(--radius-sm); overflow: hidden; }
+.modeToggle span { padding: 5px 11px; font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: var(--pill-track); text-transform: uppercase; color: var(--text-4); }
+.modeToggle span.on { background: var(--surface-2); color: var(--text); box-shadow: inset 0 1px 0 var(--edge-lit); }
+
+/* ---- the horizontal mood spectrum (A and C) ----------------------- */
+.vibe { display: flex; flex-direction: column; gap: var(--sp-3); }
+.vibehead { display: flex; align-items: baseline; justify-content: space-between; }
+.vibenum { font-family: var(--mono); font-size: 26px; font-weight: 500; letter-spacing: -0.02em; color: var(--text); line-height: 1; }
+.vibemood { font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.24em; text-transform: uppercase; color: var(--vibe-accent-text); }
+
+/* The groove is recessed; the unfilled portion keeps the spectrum at 18%
+   so you can always see where you are going. Grey ahead of the thumb would
+   hide the one thing this control is for. */
+.vtrack { position: relative; height: 4px; border-radius: var(--radius-pill); background: #05050a; box-shadow: inset 0 1px 2px rgba(0,0,0,0.7), inset 0 -1px 0 rgba(255,255,255,0.05); }
+.vtrack .vghost, .vtrack .vfill { position: absolute; inset: 0 auto 0 0; overflow: hidden; border-radius: var(--radius-pill); }
+.vtrack .vghost { right: 0; width: auto; opacity: 0.18; }
+.vtrack .vfill { width: 34%; }
+.vtrack i { display: block; height: 4px; background: linear-gradient(90deg,
+    rgb(76,91,138) 0%, rgb(91,127,189) 20%, rgb(0,180,216) 30%, rgb(34,193,227) 40%,
+    rgb(124,58,237) 50%, rgb(167,139,250) 60%, rgb(236,72,153) 70%, rgb(244,63,94) 80%,
+    rgb(249,115,22) 90%, rgb(220,38,38) 100%); }
+.vtrack .vthumb {
+  position: absolute; left: 34%; top: 50%;
+  width: 14px; height: 14px; border-radius: 50%;
+  transform: translate(-50%,-50%);
+  background: var(--surface-2);
+  border: 2px solid var(--vibe-accent-fill);
+  box-shadow: var(--contact), inset 0 1px 0 var(--edge-lit);
+}
+.vticks { display: flex; justify-content: space-between; }
+.vticks span { font-family: var(--mono); font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-mute); }
+.vticks span.on { color: var(--text-3); }
+
+/* ---- queue rail (identical in all three) -------------------------- */
+.sidebar {
+  grid-column: 2; grid-row: 3;
+  display: flex; flex-direction: column; gap: var(--sp-6);
+  padding: var(--sp-4) var(--sp-5);
+  border-left: 1px solid var(--border);
+  min-height: 0;
+}
+.qsection { display: flex; flex-direction: column; gap: var(--sp-2); min-height: 0; }
+.sectionHead { display: flex; align-items: center; gap: var(--sp-2); min-height: 22px; }
+.sectionTitle { flex: 1; margin: 0; font-family: var(--mono); font-size: var(--fs-micro); font-weight: 500; letter-spacing: var(--pill-track); text-transform: uppercase; color: var(--text-3); }
+.qlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.qrow { display: flex; align-items: center; gap: var(--sp-3); height: 54px; padding: 0 var(--sp-1); border-bottom: 1px solid var(--border); }
+.qrow:last-child { border-bottom: 0; }
+.qrow .sleeve { width: 36px; height: 36px; border-radius: 3px; }
+.qrow .qbody { min-width: 0; flex: 1; }
+.qrow .qtitle { font-size: var(--fs-sm); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.35; }
+.qrow .qsub { font-size: var(--fs-meta); color: var(--text-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qrow .qdur { font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-4); letter-spacing: 0.04em; }
+.qrow.hov { background: var(--surface); box-shadow: inset 2px 0 0 var(--vibe-accent), inset 0 1px 0 var(--edge-lit); }
+.qrow.hov .qdur { color: var(--text-3); }
+.qnum { font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-mute); width: 14px; text-align: right; }
+.qempty { border: 1px solid var(--border); border-radius: var(--radius); padding: var(--sp-5) var(--sp-4); text-align: center; }
+
+.bitzone {
+  position: absolute; left: 0; bottom: 0;
+  width: 920px; height: 96px;
+  border-top: 1px dashed rgba(255,255,255,0.1);
+  display: flex; align-items: flex-end; padding: 0 0 var(--sp-2) var(--sp-6);
+  pointer-events: none; z-index: 3;
+}
+.bitzone .mlabel { color: var(--text-mute); }
+
+/* ===================== A — THE PRESS ============================== */
+.sA {
+  grid-column: 1; grid-row: 3;
+  display: grid; grid-template-columns: 500px minmax(0, 1fr);
+  column-gap: var(--sp-6);
+  align-items: center;
+  padding: 0 var(--sp-6) var(--sp-4);
+  min-width: 0;
+}
+.sA .artcol { display: flex; flex-direction: column; gap: var(--sp-5); align-items: center; }
+.sA .stack { width: 420px; }
+.sA .art { width: 420px; height: 420px; border-radius: 4px; }
+.sA .art .ring { width: 54%; }
+.sA .pool { top: 404px; }
+.sA .artfoot { width: 420px; }
+/* The trail goes horizontal and small: a left-hand column of sleeves would
+   crowd the print, and crowding it is the one thing this direction cannot do. */
+.sA .trailrow { display: flex; align-items: center; gap: var(--sp-2); width: 420px; }
+.sA .trailrow .sleeve { width: 26px; height: 26px; border-radius: 2px; }
+.sA .metacol { display: flex; flex-direction: column; gap: var(--sp-4); min-width: 0; }
+
+/* ===================== B — THE CONSOLE ============================ */
+.sB {
+  grid-column: 1; grid-row: 3;
+  display: grid; grid-template-columns: 92px minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: var(--sp-7);
+  align-items: center;
+  padding: 0 var(--sp-6) var(--sp-4);
+  min-width: 0;
+}
+/* The fader. A channel strip, not a slider: a recessed groove, a printed
+   scale, and a machined cap with real edges. Energy climbs upward, which is
+   the only orientation a fader can have. */
+.fader { display: flex; flex-direction: column; align-items: center; gap: var(--sp-3); height: 100%; justify-content: center; }
+.faderHead { text-align: center; }
+.faderHead .vibenum { font-size: 30px; }
+.faderBody { position: relative; flex: none; height: 408px; width: 92px; }
+.faderGroove {
+  position: absolute; left: 48px; top: 0; bottom: 0;
+  width: 10px; transform: translateX(-50%);
+  border-radius: var(--radius-pill);
+  background: #05050a;
+  box-shadow: inset 1px 0 2px rgba(0,0,0,0.75), inset -1px 0 0 rgba(255,255,255,0.05);
+  overflow: hidden;
+}
+.faderGroove i {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 100%;
+  background: linear-gradient(0deg,
+    rgb(76,91,138) 0%, rgb(91,127,189) 20%, rgb(0,180,216) 30%, rgb(34,193,227) 40%,
+    rgb(124,58,237) 50%, rgb(167,139,250) 60%, rgb(236,72,153) 70%, rgb(244,63,94) 80%,
+    rgb(249,115,22) 90%, rgb(220,38,38) 100%);
+  opacity: 0.18;
+}
+.faderGroove b { position: absolute; left: 0; right: 0; bottom: 0; height: 34%; overflow: hidden; }
+.faderGroove b i { opacity: 1; height: 408px; }
+/* Scale: a tick every 10 units, long at a band boundary. */
+.faderScale { position: absolute; left: 62px; top: 0; bottom: 0; width: 18px; }
+.faderScale span { position: absolute; right: 0; height: 1px; background: var(--text-mute); }
+.faderScale span.lg { background: var(--text-4); }
+.faderNames { position: absolute; left: 0; top: 0; bottom: 0; width: 32px; }
+.faderNames span { position: absolute; right: 0; transform: translateY(50%); font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-mute); }
+.faderNames span.on { color: var(--vibe-accent-text); }
+.faderCap {
+  position: absolute; left: 48px; width: 28px; height: 20px;
+  transform: translate(-50%, 50%);
+  border-radius: 3px;
+  background: linear-gradient(180deg, #23232e, #14141c);
+  border: 1px solid var(--edge-dark);
+  border-top-color: var(--edge-lit-2);
+  box-shadow: var(--cast-3);
+}
+.faderCap::before { content: ''; position: absolute; left: 4px; right: 4px; top: 50%; height: 2px; transform: translateY(-50%); background: var(--vibe-accent-fill); border-radius: 1px; }
+.faderCap::after { content: ''; position: absolute; left: 3px; right: 3px; top: 4px; height: 1px; background: rgba(255,255,255,0.07); box-shadow: 0 9px 0 rgba(255,255,255,0.07); }
+
+.sB .artcol { display: flex; flex-direction: column; gap: var(--sp-5); align-items: center; }
+.sB .stack { width: 300px; }
+.sB .art { width: 300px; height: 300px; border-radius: 4px; }
+.sB .art .ring { width: 56%; }
+.sB .pool { top: 286px; height: 76px; }
+.sB .artfoot { width: 300px; }
+.sB .metacol { display: flex; flex-direction: column; gap: var(--sp-4); min-width: 0; }
+.sB .trailrow { display: flex; align-items: center; gap: var(--sp-2); }
+.sB .trailrow .sleeve { width: 24px; height: 24px; border-radius: 2px; }
+
+/* ===================== C — THE SESSION ============================ */
+.sC {
+  grid-column: 1; grid-row: 3;
+  position: relative;
+  padding: 0 var(--sp-6);
+  min-width: 0;
+}
+.sC .inner { position: relative; height: 100%; }
+/* The ruler across the top: the weather you set, above the session that
+   runs beneath it. */
+.sC .ruler { position: absolute; left: 0; right: 0; top: 10px; }
+/* The ground. Everything in the session stands on this one line; the
+   segment under the current sleeve is the seek bar. */
+.sC .ground { position: absolute; left: 0; right: 0; top: 452px; height: 1px; background: var(--border); }
+.sC .groundSeek { position: absolute; top: 451px; height: 2px; background: rgba(255,255,255,0.1); }
+.sC .groundSeek i { position: absolute; inset: 0 auto 0 0; width: 38%; background: var(--vibe-accent); }
+.sC .groundSeek b { position: absolute; left: 38%; top: 50%; width: 9px; height: 9px; margin-left: -4.5px; margin-top: -4.5px; border-radius: 50%; background: var(--vibe-accent-fill); box-shadow: var(--contact); }
+.sC .past, .sC .future { position: absolute; display: flex; align-items: flex-end; gap: var(--sp-3); top: 452px; transform: translateY(-100%); }
+.sC .past { left: 0; }
+.sC .future { left: 556px; }
+.sC .past .sleeve, .sC .future .sleeve { border-radius: 2px; }
+.sC .nowart { position: absolute; left: 212px; top: 142px; width: 310px; }
+.sC .nowart .art { width: 310px; height: 310px; border-radius: 4px; }
+.sC .nowart .art .ring { width: 56%; }
+.sC .pool { top: 300px; height: 80px; }
+.sC .plate { position: absolute; left: 212px; top: 476px; right: 0; margin: 0; display: flex; flex-direction: column; gap: var(--sp-3); }
+.sC .tcluster { position: absolute; right: 0; top: 286px; display: flex; flex-direction: column; align-items: flex-end; gap: var(--sp-3); }
+.sC .eyebrowTop { position: absolute; left: 0; top: 84px; display: flex; gap: var(--sp-5); }
+</style>
+
+</head>
+<body>
+<main class="page">
+
+<!-- ============================================================= 00 -->
+<header style="padding:var(--sp-11) 0 0">
+  <div class="band">
+    <div>
+      <span class="secnum">VibeScape &mdash; interface specification &middot; rev 02 &middot; 2026-10-02</span>
+      <h1 style="margin:0 0 var(--sp-6);font-family:var(--serif);font-weight:400;font-size:clamp(46px,5.4vw,68px);line-height:1.02;letter-spacing:-0.02em;color:var(--text);max-width:16ch">
+        The record supplies the colour. The chrome stays out of the way.
+      </h1>
+      <p class="lede" style="font-size:var(--fs-body);color:var(--text-2);max-width:58ch">
+        VibeScape should feel like a well-made piece of listening equipment: a dark
+        instrument face, legible at a glance, where the only thing that changes
+        colour is the music currently playing. Everything here follows from three
+        positions &mdash; and from one physical model, a single light, set out in
+        section 01 and obeyed everywhere.
+      </p>
+
+      <ol style="list-style:none;margin:var(--sp-9) 0 0;padding:0;display:grid;grid-template-columns:repeat(3,1fr);gap:var(--sp-7);border-top:1px solid var(--border);padding-top:var(--sp-5)">
+        <li>
+          <span class="mlabel">i &mdash; monochrome chrome, lit</span>
+          <p style="margin:var(--sp-2) 0 0;font-size:var(--fs-sm);color:var(--text-3);line-height:1.65">
+            Every surface, rule, label and control is a grey &mdash; but a grey
+            <em>under a light</em>, with a lit top edge and a dark bottom one. The
+            mood accent gets exactly one appearance per region. A second accent in
+            the same region is a bug, not emphasis.
+          </p>
+        </li>
+        <li>
+          <span class="mlabel">ii &mdash; type does the structuring</span>
+          <p style="margin:var(--sp-2) 0 0;font-size:var(--fs-sm);color:var(--text-3);line-height:1.65">
+            Hierarchy comes from size, weight, case and a 1px rule &mdash; not from
+            cards, not from shadows, not from a border radius. Three typefaces with
+            three jobs: grotesk for interface, mono for data, serif once per screen.
+          </p>
+        </li>
+        <li>
+          <span class="mlabel">iii &mdash; every mark carries information</span>
+          <p style="margin:var(--sp-2) 0 0;font-size:var(--fs-sm);color:var(--text-3);line-height:1.65">
+            A pill is a count or an action. The stack is the queue. The ring is the
+            playhead. The breath is the tempo. Delight is allowed, but never on its
+            own: if a mark has no referent it is removed and its space is kept.
+          </p>
+        </li>
+      </ol>
+    </div>
+    <div class="notes">
+      <div class="note">
+        <b>Scope of rev 02</b>
+        The player, in three directions, plus the material and motion model
+        they share. The queue, sync and landing mocks are carried over from
+        rev 01 unchanged and will be revisited.
+      </div>
+      <div class="note">
+        <b>Token names</b>
+        Every value here is a token from
+        <code>frontend-next/src/styles/tokens.css</code>. New tokens are flagged
+        <code>NEW</code> with their rationale, in 01 or in 07.
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ============================================================= 01 -->
+<section>
+  <div class="sechead">
+    <div><span class="secnum">01</span><h2>The room</h2></div>
+    <p>Material, light and motion. One model, stated once, obeyed everywhere.</p>
+  </div>
+
+  <div class="band">
+    <div>
+      <p class="lede" style="font-size:var(--fs-body);color:var(--text-2);max-width:60ch;margin-top:0">
+        Restraint on its own reads as austere. What separates expensive dark
+        interfaces from cheap ones is not fewer marks &mdash; it is that the
+        marks behave like <strong>material under a light</strong>. So the product
+        gets a physical model, and everything obeys it.
+      </p>
+
+      <span class="subsec" style="margin-top:var(--sp-8)"><b>01.1</b> &nbsp; the light</span>
+      <p class="lede" style="margin-top:0">
+        <strong>One source, above and slightly in front, at 118&deg;.</strong>
+        Top and left edges catch it; bottom and right edges fall away. A recess
+        inverts: dark at the top lip, lit at the bottom. The critical consequence
+        on a <code>#08080c</code> page is that <strong>a shadow cannot lift
+        anything</strong> &mdash; it is invisible against near-black. Depth is
+        carried by the <em>edge</em>; the shadow&rsquo;s only remaining job is to
+        kill the surface directly underneath an object.
+      </p>
+      <p class="lede">
+        There is exactly one violation, and it is the design position made
+        physical: <strong>the record is the other light in the room.</strong> It
+        lights itself from below, into a pool. Nothing else in the product is
+        ever lit from beneath.
+      </p>
+
+      <table style="margin-top:var(--sp-5)">
+        <tr><th style="width:110px">elevation</th><th style="width:150px">surface</th><th style="width:210px">edge</th><th style="width:150px">shadow</th><th>what sits here</th></tr>
+        <tr><td class="tok">elev-0</td><td class="tok">--bg</td><td>none</td><td>none</td><td>the page. Nothing floats at 0.</td></tr>
+        <tr><td class="tok">elev-1 <span style="color:var(--text-4)">recessed</span></td><td class="tok">#05050a</td><td class="tok">inset 0 -1px 0 lit</td><td class="tok">inset 0 1px 2px</td><td>search field, slider groove, fader groove, progress track.</td></tr>
+        <tr><td class="tok">elev-2 <span style="color:var(--text-4)">flush</span></td><td class="tok">--surface</td><td>none</td><td>none</td><td>row hover, tag pills. Tinted, not lifted.</td></tr>
+        <tr><td class="tok">elev-3 <span style="color:var(--text-4)">raised</span></td><td class="tok">--surface</td><td class="tok">top: --edge-lit</td><td class="tok">--cast-3</td><td>icon buttons, segmented control, play disc, fader cap, modal.</td></tr>
+        <tr><td class="tok">elev-4 <span style="color:var(--text-4)">lifted</span></td><td class="tok">--surface-2</td><td class="tok">top: --edge-lit-2<br>bottom: --edge-dark</td><td class="tok">--cast-4 + --contact</td><td>the hero sleeve, the drag ghost. Two objects, ever.</td></tr>
+      </table>
+
+      <span class="subsec" style="margin-top:var(--sp-9)"><b>01.2</b> &nbsp; the sleeve, as an object</span>
+      <p class="lede" style="margin-top:0">
+        This is a music player; the sleeve is the hero and it is the single
+        biggest lever on how the product reads. Five marks, in order of value
+        per declaration:
+      </p>
+      <table>
+        <tr><th style="width:150px">mark</th><th style="width:300px">recipe</th><th>why it earns its place</th></tr>
+        <tr><td class="tok">edges</td><td class="tok">border 1px --edge-dark; top --edge-lit-2 (2px on .hero); left --edge-lit</td><td>Thickness. Four lines turn a square image into a printed card.</td></tr>
+        <tr><td class="tok">sheen</td><td class="tok">--sheen, one 118&deg; wash</td><td>Light falling <em>across</em> a surface. Never a glossy streak &mdash; a streak reads as plastic.</td></tr>
+        <tr><td class="tok">vignette</td><td class="tok">--vignette, 34% at the corners</td><td>What a physical print does under a single lamp. It also stops the artwork fighting the page edge.</td></tr>
+        <tr><td class="tok">pool</td><td class="tok">radial of --vibe-accent at 42%, blur 16px, under the lower edge</td><td>The record lighting the room. It is also where <code>--art-glow-alpha</code> finally lands.</td></tr>
+        <tr><td class="tok">stack</td><td class="tok">two sheets, &minus;7px and &minus;13px, inset 10/22px, lit top edge only</td><td>The next two tracks as physical depth. &ldquo;Up next&rdquo; stops being a list and becomes what is underneath.</td></tr>
+      </table>
+
+      <span class="subsec" style="margin-top:var(--sp-9)"><b>01.3</b> &nbsp; motion has mass</span>
+      <table>
+        <tr><th style="width:44px"></th><th>rule</th></tr>
+        <tr><td class="tok">1</td><td><strong>Input is acknowledged immediately; the consequence resolves later.</strong> A press responds within <code>--dur-press</code> (90ms) with a 1px depression and a tone change. What it causes takes <code>--dur</code> or longer. Reversing this is what makes an interface feel laggy even when it is fast.</td></tr>
+        <tr><td class="tok">2</td><td><strong>Things settle, they do not stop.</strong> Entrances use <code>--ease-out</code>, whose long tail is the settle. No bounce and no overshoot &mdash; with one exception, below.</td></tr>
+        <tr><td class="tok">3</td><td><strong>Overlap, never queue.</strong> A second element starts at 40% of the first, offset by <code>--stagger</code> (60ms). A whole sequence never exceeds <code>--dur-slow</code>.</td></tr>
+        <tr><td class="tok">4</td><td><strong>Duration follows distance, not importance.</strong> <code>clamp(--dur-fast, --dur &times; &radic;(travel / 100px), --dur-slow)</code>. A 4px nudge and a 300px entrance cannot share a duration.</td></tr>
+        <tr><td class="tok">5</td><td><strong>Exits beat entries.</strong> <code>--dur-exit</code> is 0.7&times; <code>--dur</code>, with <code>--ease-in</code>. A dismissal that lingers feels reluctant.</td></tr>
+        <tr><td class="tok">6</td><td><strong>Layout never animates, and type never travels.</strong> Only colour, opacity and the transform of discrete objects. A title may rise 1px on a crossfade; it may not slide.</td></tr>
+      </table>
+
+      <table style="margin-top:var(--sp-5)">
+        <tr><th style="width:150px">component</th><th>rest &rarr; hover &rarr; press &rarr; focus</th><th style="width:170px">enter / exit</th></tr>
+        <tr><td class="tok">icon button</td><td>border <code>--border</code> &rarr; <code>--edge-lit</code> + text to <code>--text</code> (<code>--dur-fast</code>) &rarr; translateY(1px), shadow to <code>--contact</code> (90ms) &rarr; 2px <code>--vibe-accent-text</code> ring, offset 2</td><td>&mdash;</td></tr>
+        <tr><td class="tok">list row</td><td>flush &rarr; <code>--surface</code> + 2px inset accent rule (<code>--dur-fast</code>) &rarr; row dims 6% &rarr; same ring, inset</td><td>height 0&rarr;55px, <code>--dur</code>, content fades in at 40%</td></tr>
+        <tr><td class="tok">play disc</td><td><code>--cast-3</code> &rarr; +2% light on the top inset &rarr; translateY(1px), cast &rarr; <code>--contact</code> &rarr; ring thickens to 3px</td><td>icon morph 200ms, bars part from the triangle&rsquo;s centroid</td></tr>
+        <tr><td class="tok">slider / fader</td><td>&mdash; &rarr; thumb +1px light &rarr; thumb lifts to <code>--cast-3</code>, groove unchanged &rarr; ring on the thumb</td><td>settle on release, 260ms (see 01.5-A)</td></tr>
+        <tr><td class="tok">sleeve</td><td>never hovers. It is not a control.</td><td>see 01.5-B</td></tr>
+        <tr><td class="tok">modal</td><td>&mdash;</td><td>in: opacity + translateY(8px&rarr;0), <code>--dur-slow</code>, <code>--ease-out</code>. out: <code>--dur-exit</code>, <code>--ease-in</code>, no travel.</td></tr>
+      </table>
+
+      <span class="subsec" style="margin-top:var(--sp-9)"><b>01.4</b> &nbsp; the breath</span>
+      <p class="lede" style="margin-top:0">
+        The app knows the tempo and the energy of every track and currently
+        acknowledges neither. The restrained version of that is not a visualiser.
+        <strong>Exactly two elements move with the music, and they move on the
+        metadata, not on the AnalyserNode:</strong> the light pool under the
+        sleeve, and the 9px square in the wordmark &mdash; a tally light.
+      </p>
+      <table>
+        <tr><th style="width:150px">token</th><th style="width:220px">value</th><th>note</th></tr>
+        <tr><td class="tok">--beat</td><td class="tok">calc(60s / bpm)</td><td>Already written for the Bit rig. Unknown BPM means the breath is <em>off</em> &mdash; never guessed at 120.</td></tr>
+        <tr><td class="tok">--energy</td><td class="tok">0 &hellip; 1</td><td>From the same analysis row as the vibe.</td></tr>
+        <tr><td class="tok">--breath</td><td class="tok">calc(0.04 + 0.16 &times; var(--energy))</td><td>Depth of the pulse: &plusmn;4% for a ballad, &plusmn;18% for a beast track. Tempo sets the speed, energy sets the size &mdash; the same split the mascot&rsquo;s groove bands use.</td></tr>
+        <tr><td class="tok">envelope</td><td class="tok">0% peak &rarr; 55% floor &rarr; rest, <code>--ease-out</code></td><td>Percussive: instant attack on the beat, decay across the bar. A sine wave reads as a lava lamp.</td></tr>
+      </table>
+      <p class="lede" style="margin-top:var(--sp-4)">
+        <strong>Why metadata beats the analyser:</strong> it is phase-locked rather
+        than jittery, correct through an ambient intro, costs zero per-frame
+        JavaScript, and runs on the compositor. A visualiser reacts; this one
+        <em>knows</em>. <strong>Hard rule:</strong> only ever two. Adding a third
+        means removing one. The breath pauses during a track change and restarts
+        in phase with the new track at t&nbsp;=&nbsp;640ms, or the old tempo bleeds
+        into the new record.
+      </p>
+
+      <span class="subsec" style="margin-top:var(--sp-9)"><b>01.5</b> &nbsp; three signature moments</span>
+
+      <p class="lede" style="margin-top:0;margin-bottom:var(--sp-5)">
+        Nobody loves a system. They love three or four specific moments. Each of
+        these also tells the user something true &mdash; that is the test that
+        keeps them out of the decoration bin.
+      </p>
+
+      <div style="border-top:1px solid var(--border-strong);padding-top:var(--sp-4);margin-bottom:var(--sp-6)">
+        <span class="mlabel" style="color:var(--vibe-accent-text)">A &mdash; dragging the dial drags the light</span>
+        <p class="lede" style="margin-top:var(--sp-2)">
+          <code>applyAccent()</code> fires on <code>input</code>, not on
+          <code>change</code>. The entire room &mdash; pool, play ring, slider
+          fill, every accent in the interface &mdash; follows the thumb in real
+          time. Dragging the control is dragging a light across the product.
+          Three layers make it feel mechanical rather than reactive:
+        </p>
+        <table style="margin-top:var(--sp-3)">
+          <tr><th style="width:190px">layer</th><th style="width:120px">timing</th><th>behaviour</th></tr>
+          <tr><td class="tok">live re-light</td><td class="num">0ms</td><td>Accent tracks the pointer with no transition. A transition here would feel like drag on the control itself.</td></tr>
+          <tr><td class="tok">labels lead</td><td class="num">--dur-fast</td><td>A band name lifts from <code>--text-mute</code> to <code>--text-3</code> about two units <em>before</em> the thumb arrives. Anticipation is what makes a control feel like it has a mind.</td></tr>
+          <tr><td class="tok">thumb settles</td><td class="num">260ms</td><td>On release the <em>rendered</em> thumb overshoots by 1.5% of travel and decays back. <strong>The committed value never overshoots</strong> &mdash; only the paint has inertia. Implement it on the thumb&rsquo;s transform, never on the value.</td></tr>
+          <tr><td class="tok">the road ahead</td><td class="num">static</td><td>The unfilled groove holds the full spectrum at 18%, not grey. You can always see where you are going.</td></tr>
+        </table>
+      </div>
+
+      <div style="border-top:1px solid var(--border-strong);padding-top:var(--sp-4);margin-bottom:var(--sp-6)">
+        <span class="mlabel" style="color:var(--vibe-accent-text)">B &mdash; the stack advances</span>
+        <p class="lede" style="margin-top:var(--sp-2)">
+          The track change, 640&thinsp;ms total, overlapping. The order is the whole
+          trick: the image changes, then the room catches up. Reversed, it looks
+          like a bug.
+        </p>
+        <table style="margin-top:var(--sp-3)">
+          <tr><th style="width:90px">t</th><th style="width:230px">what</th><th>why</th></tr>
+          <tr><td class="num">0</td><td>Outgoing sleeve drops 10px and fades out, 320ms <code>--ease-in</code>.</td><td>It falls <em>out of its own pool</em>, which is below it. That is what reads as &ldquo;finished&rdquo; instead of &ldquo;slid away&rdquo;.</td></tr>
+          <tr><td class="num">0</td><td>Pool dims to 30% and recovers by 640ms.</td><td>The room takes one breath. It is also the only moment the pool is allowed to stop breathing.</td></tr>
+          <tr><td class="num">120</td><td>Stack advances: both sheets rise 6px; the new hero rises from +6px and fades in, 420ms <code>--ease-out</code>.</td><td>Overlap at 40% per rule 3. The sheets moving is what makes the queue feel physical.</td></tr>
+          <tr><td class="num">120</td><td>Title and liner notes crossfade, <code>--dur</code>, with a 1px baseline rise.</td><td>Type never travels (rule 6). 1px is the whole allowance.</td></tr>
+          <tr><td class="num">120&ndash;640</td><td>Accent crossfades across all four tokens, <code>--dur-art</code>.</td><td>The slowest element, so the room finishes re-lighting after the art has settled.</td></tr>
+          <tr><td class="num">640</td><td>Breath restarts in phase at the new <code>--beat</code>.</td><td>&mdash;</td></tr>
+          <tr><td class="num">reduced</td><td>No transforms at all: 200ms opacity crossfade on art and title, instant accent swap, pool stays at full.</td><td>The resting state is readable at every point, which dropping the animation alone would not give.</td></tr>
+        </table>
+        <p class="lede" style="margin-top:var(--sp-3)">
+          Custom properties only animate if registered. The four accent tokens
+          need <code>@property</code> with <code>syntax: &lsquo;&lt;color&gt;&rsquo;</code>,
+          or this is a hard cut whatever duration is set.
+        </p>
+      </div>
+
+      <div style="border-top:1px solid var(--border-strong);padding-top:var(--sp-4)">
+        <span class="mlabel" style="color:var(--vibe-accent-text)">C &mdash; the ring is the playhead</span>
+        <p class="lede" style="margin-top:var(--sp-2)">
+          A 2px ring, 7px off the play disc, filled clockwise from the top by a
+          <code>conic-gradient</code> in <code>--vibe-accent-text</code>. The most
+          looked-at and most pressed object in the app also tells you where you
+          are in the track &mdash; a watch-face move, and the reason the numeric
+          remaining-time can go.
+        </p>
+        <p class="lede">
+          <strong>The redundancy is resolved deliberately:</strong> the ring is for
+          <em>knowing</em>, the linear bar is for <em>seeking</em> &mdash; you cannot
+          scrub a 54px ring accurately. So the bar sits at 40% opacity at rest and
+          comes to full on hover or focus of the transport region. Less chrome
+          while you listen, the full control the moment you reach for it. The disc
+          itself is machined: lit top inset, dark bottom inset, <code>--cast-3</code>,
+          and on press it travels 1px down while the cast tightens to
+          <code>--contact</code> over 90ms. It goes <em>into</em> the page.
+        </p>
+      </div>
+    </div>
+
+    <div class="notes">
+      <div class="note">
+        <b>would Braun have done this</b>
+        The test every addition had to pass. It is what killed a gloss
+        highlight on the sleeve, a bounce on the slider, a glow on hover,
+        and an amplitude-reactive pool. It is what kept four edge lines, one
+        wash, and a tally light.
+      </div>
+      <div class="note">
+        <b>premium is not more effects</b>
+        Nothing here adds a layer that does not also carry information. The
+        stack is the queue. The ring is the playhead. The breath is the
+        tempo. The pool is the artwork. Remove the information and the mark
+        goes with it.
+      </div>
+      <div class="note">
+        <b>the grain is load-bearing</b>
+        2.2% dither is not styling. The pools are low-alpha radial gradients
+        and they band into visible rings on 8-bit panels; this removes the
+        banding. If the pools ever go, so does the grain.
+      </div>
+      <div class="note">
+        <b>what still never moves</b>
+        The top bar, the search field, the grid, the queue rail, and all
+        type. The entire motion budget of the player is: the breath, the
+        track change, the dial, and press feedback.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================= 02 -->
+<section>
+  <div class="sechead">
+    <div><span class="secnum">02</span><h2>Player&nbsp;&mdash;&nbsp;three directions</h2></div>
+    <p>Same shell, same tokens, same queue budget. Three different answers to where the weight sits.</p>
+  </div>
+
+  <div class="band">
+    <div>
+      <table>
+        <tr>
+          <th style="width:150px">direction</th>
+          <th style="width:230px">the idea</th>
+          <th style="width:120px">weight sits</th>
+          <th style="width:130px">the sleeve</th>
+          <th style="width:130px">the dial</th>
+          <th>gives up</th>
+        </tr>
+        <tr>
+          <td class="tok" style="color:var(--text)">A &mdash; The Press</td>
+          <td>The record is the object; the interface is its label.</td>
+          <td>Left, on the art.</td>
+          <td>420px, stacked, pooled. Dominant.</td>
+          <td>A quiet rule at the foot of the meta column.</td>
+          <td>Dial discoverability; the vertical recent trail; meta column width.</td>
+        </tr>
+        <tr>
+          <td class="tok" style="color:var(--text)">B &mdash; The Console</td>
+          <td>The dial is the instrument; everything else reports to it.</td>
+          <td>Far left, on the fader.</td>
+          <td>300px. A readout, not the hero.</td>
+          <td>A full-height channel-strip fader with a printed scale.</td>
+          <td>Artwork scale; it is the busiest of the three; the trail shrinks to 24px.</td>
+        </tr>
+        <tr>
+          <td class="tok" style="color:var(--text)">C &mdash; The Session</td>
+          <td>The screen is a timeline; the track is where you are in it.</td>
+          <td>Low and wide, on the ground line.</td>
+          <td>310px, standing on the line, flanked by past and future.</td>
+          <td>A full-width ruler across the top &mdash; the weather for the session.</td>
+          <td>Vertical balance; liner density (6 facts &rarr; 3); it makes the queue rail a list rather than a preview.</td>
+        </tr>
+      </table>
+    </div>
+    <div class="notes">
+      <div class="note">
+        <b>held constant</b>
+        Accent contract, type scale, spacing grid, pill geometry, the
+        320px rail and its 5&#8209;row / 3&#8209;row budget, and every
+        prohibition. Only composition varies.
+      </div>
+      <div class="note">
+        <b>each gives something up</b>
+        A direction that costs nothing has not chosen anything. The
+        trade-offs above are the actual decision.
+      </div>
+    </div>
+  </div>
+
+  <!-- ---------------------------------------------------------- A -->
+  <div class="band" style="margin-top:var(--sp-9)">
+    <div>
+      <div style="display:flex;align-items:baseline;gap:var(--sp-4);margin-bottom:var(--sp-3)">
+        <span class="mlabel" style="color:var(--vibe-accent-text);font-size:var(--fs-meta)">A</span>
+        <h3 style="margin:0;font-family:var(--serif);font-weight:400;font-size:26px;color:var(--text)">The Press</h3>
+        <span style="font-size:var(--fs-sm);color:var(--text-3)">The record is the object; the interface is its label.</span>
+      </div>
+
+      <div class="frame sh84 s-player">
+        <div class="scale84 app m-chill">
+          <div class="topbar">
+            <div class="wordmark"><span class="mark"></span><span class="a">Vibe</span><span class="b">Scape</span></div>
+            <div class="spacer"></div>
+            <div class="readout mlabel"><span><i>library</i> <b>2,418</b></span><span><i>analysed</i> <b>2,391</b></span><span><i>queue</i> <b>12</b></span></div>
+            <button class="iconbtn" aria-label="Sync library">&#8635;</button>
+            <button class="iconbtn" aria-label="Shortcuts">?</button>
+            <div class="userpill"><span class="av">CK</span>Chandan</div>
+          </div>
+          <div class="searchbar">
+            <div class="searchfield"><span class="gl"></span><span class="ph">Search 2,418 tracks by title, artist or album</span></div>
+            <kbd>/</kbd>
+          </div>
+
+          <div class="sA">
+            <div class="artcol">
+              <div class="stack">
+                <span class="u1 m-sleep"></span><span class="u2 m-steady"></span>
+                <div class="sleeve hero art"><span class="ring"></span><span class="cat">DOC095 / A2</span></div>
+                <span class="pool"></span>
+              </div>
+              <div class="artfoot">
+                <span class="mlabel">side a &nbsp;·&nbsp; track 2</span>
+                <span class="mlabel" style="color:var(--text-3)">dead oceans &nbsp;·&nbsp; 2020</span>
+              </div>
+              <div class="trailrow">
+                <span class="mlabel" style="margin-right:4px">played</span>
+                <div class="sleeve m-chill"><span class="ring"></span></div>
+                <div class="sleeve m-sleep" style="opacity:.8"><span class="ring"></span></div>
+                <div class="sleeve m-steady" style="opacity:.62"><span class="ring"></span></div>
+                <div class="sleeve m-chill" style="opacity:.46"><span class="ring"></span></div>
+                <div class="sleeve m-sleep" style="opacity:.32"><span class="ring"></span></div>
+              </div>
+            </div>
+
+            <div class="metacol">
+              <div class="eyebrow"><span class="mlabel live">now playing</span><span class="mlabel">48 of 61</span></div>
+              <div>
+                <h1 class="ttitle sm">So We Won&rsquo;t Forget</h1>
+                <div class="tsub sm" style="margin-top:5px">Khruangbin<span class="sep">/</span><span class="album">Mordechai</span></div>
+              </div>
+              <dl class="liner one">
+                <div><dt>tempo</dt><dd>104 BPM</dd></div>
+                <div><dt>key</dt><dd>D minor</dd></div>
+                <div><dt>vibe</dt><dd class="hl">34 &middot; chill</dd></div>
+                <div><dt>energy</dt><dd>0.31</dd></div>
+                <div><dt>source</dt><dd>Spotify</dd></div>
+                <div><dt>length</dt><dd>4:12</dd></div>
+              </dl>
+              <div class="rule"></div>
+              <div class="controls">
+                <button class="tbtn" aria-label="Previous"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2h1.7v12H4z"/><path d="M14 2 6.4 8 14 14z"/></svg></button>
+                <button class="play" aria-label="Pause"><svg width="17" height="17" viewBox="0 0 16 16" fill="currentColor"><path d="M4.6 2.6h2.6v10.8H4.6zM8.8 2.6h2.6v10.8H8.8z"/></svg></button>
+                <button class="tbtn" aria-label="Next"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M10.3 2H12v12h-1.7z"/><path d="M2 2l7.6 6L2 14z"/></svg></button>
+                <span class="gap"></span>
+                <div class="modeToggle"><span class="on">audio</span><span>video</span></div>
+              </div>
+              <div class="seek">
+                <div class="prog"><span class="fill"></span><span class="thumb"></span></div>
+                <div class="times"><span>1:35</span><span>4:12</span></div>
+              </div>
+              <div class="vibe">
+                <div class="vibehead"><span class="vibenum">34</span><span class="vibemood">chill</span></div>
+                <div class="vtrack"><span class="vghost"><i></i></span><span class="vfill"><i style="width:348px"></i></span><span class="vthumb"></span></div>
+                <div class="vticks"><span>sleep</span><span class="on">chill</span><span>steady</span><span>hype</span><span>beast</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="sidebar">
+            <div class="qsection">
+              <div class="sectionHead"><h2 class="sectionTitle">Up next</h2><span class="pill tag">12</span><span class="pill">clear</span></div>
+              <ul class="qlist">
+                <li class="qrow"><span class="qnum">1</span><div class="sleeve m-sleep" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Space 1.8</div><div class="qsub">Nala Sinephro</div></div><span class="qdur">6:39</span></li>
+                <li class="qrow hov"><span class="qnum">2</span><div class="sleeve m-chill" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Rust</div><div class="qsub">Yussef Dayes</div></div><span class="qdur">5:27</span></li>
+                <li class="qrow"><span class="qnum">3</span><div class="sleeve m-sleep" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Visit Croatia</div><div class="qsub">Alabaster DePlume</div></div><span class="qdur">4:03</span></li>
+                <li class="qrow"><span class="qnum">4</span><div class="sleeve m-steady" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Time Moves Slow</div><div class="qsub">BADBADNOTGOOD</div></div><span class="qdur">4:09</span></li>
+                <li class="qrow"><span class="qnum">5</span><div class="sleeve m-chill" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Devotion</div><div class="qsub">Tirzah</div></div><span class="qdur">3:35</span></li>
+              </ul>
+            </div>
+            <div class="qsection">
+              <div class="sectionHead"><h2 class="sectionTitle">DJ picks</h2><span class="pill on"><span class="dot"></span>auto</span></div>
+              <ul class="qlist">
+                <li class="qrow"><span class="qnum">&middot;</span><div class="sleeve m-steady" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Wildfires</div><div class="qsub">Sault &nbsp;·&nbsp; same key</div></div><span class="qdur">3:21</span></li>
+                <li class="qrow"><span class="qnum">&middot;</span><div class="sleeve m-hype" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Red Room</div><div class="qsub">Hiatus Kaiyote &nbsp;·&nbsp; vibe 41</div></div><span class="qdur">4:49</span></li>
+                <li class="qrow"><span class="qnum">&middot;</span><div class="sleeve m-chill" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Mumbay</div><div class="qsub">Sarathy Korwar &nbsp;·&nbsp; vibe 38</div></div><span class="qdur">5:21</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="bitzone"><span class="mlabel">BitDock — reserved</span></div>
+        </div>
+      </div>
+      <div class="caption"><span>420px hero, stacked, pooled</span><span>title drops to --fs-title: the art is the title</span><span>trail goes horizontal, 26px</span></div>
+    </div>
+
+    <div class="notes">
+      <div class="note">
+        <b>the art is the headline</b>
+        The track title steps <em>down</em> to <code>--fs-title</code>. Two
+        things cannot both be the loudest, and at 420px the sleeve has
+        already said it.
+      </div>
+      <div class="note">
+        <b>one column of liner notes</b>
+        The meta column is narrow, so the specimen goes single-column and
+        gains length. That is the right read for a label &mdash; it scans
+        downward, like a sleeve back.
+      </div>
+      <div class="note">
+        <b>leans on moment B</b>
+        The stack is at its most legible here. The track change is this
+        direction&rsquo;s whole personality.
+      </div>
+      <div class="note">
+        <b>honest cost</b>
+        The dial is a 4px rule at the bottom of a secondary column. Someone
+        may never find the product&rsquo;s best idea.
+      </div>
+    </div>
+  </div>
+
+  <!-- ---------------------------------------------------------- B -->
+  <div class="band" style="margin-top:var(--sp-9)">
+    <div>
+      <div style="display:flex;align-items:baseline;gap:var(--sp-4);margin-bottom:var(--sp-3)">
+        <span class="mlabel" style="color:var(--vibe-accent-text);font-size:var(--fs-meta)">B</span>
+        <h3 style="margin:0;font-family:var(--serif);font-weight:400;font-size:26px;color:var(--text)">The Console</h3>
+        <span style="font-size:var(--fs-sm);color:var(--text-3)">The dial is the instrument; everything else reports to it.</span>
+      </div>
+
+      <div class="frame sh84 s-player">
+        <div class="scale84 app m-chill">
+          <div class="topbar">
+            <div class="wordmark"><span class="mark"></span><span class="a">Vibe</span><span class="b">Scape</span></div>
+            <div class="spacer"></div>
+            <div class="readout mlabel"><span><i>library</i> <b>2,418</b></span><span><i>analysed</i> <b>2,391</b></span><span><i>queue</i> <b>12</b></span></div>
+            <button class="iconbtn" aria-label="Sync library">&#8635;</button>
+            <button class="iconbtn" aria-label="Shortcuts">?</button>
+            <div class="userpill"><span class="av">CK</span>Chandan</div>
+          </div>
+          <div class="searchbar">
+            <div class="searchfield"><span class="gl"></span><span class="ph">Search 2,418 tracks by title, artist or album</span></div>
+            <kbd>/</kbd>
+          </div>
+
+          <div class="sB">
+            <div class="fader">
+              <div class="faderHead">
+                <div class="vibenum">34</div>
+                <div class="vibemood" style="margin-top:4px">chill</div>
+              </div>
+              <div class="faderBody">
+                <div class="faderGroove"><i></i><b><i></i></b></div>
+                <div class="faderNames">
+                  <span style="bottom:90%">beast</span>
+                  <span style="bottom:70%">hype</span>
+                  <span style="bottom:50%">steady</span>
+                  <span class="on" style="bottom:30%">chill</span>
+                  <span style="bottom:10%">sleep</span>
+                </div>
+                <div class="faderScale">
+                  <span class="lg" style="bottom:0;width:18px"></span>
+                  <span style="bottom:10%;width:9px"></span>
+                  <span class="lg" style="bottom:20%;width:18px"></span>
+                  <span style="bottom:30%;width:9px"></span>
+                  <span class="lg" style="bottom:40%;width:18px"></span>
+                  <span style="bottom:50%;width:9px"></span>
+                  <span class="lg" style="bottom:60%;width:18px"></span>
+                  <span style="bottom:70%;width:9px"></span>
+                  <span class="lg" style="bottom:80%;width:18px"></span>
+                  <span style="bottom:90%;width:9px"></span>
+                  <span class="lg" style="bottom:100%;width:18px"></span>
+                </div>
+                <div class="faderCap" style="bottom:34%"></div>
+              </div>
+              <span class="mlabel" style="color:var(--text-mute)">vibe</span>
+            </div>
+
+            <div class="artcol">
+              <div class="stack">
+                <span class="u1 m-sleep"></span><span class="u2 m-steady"></span>
+                <div class="sleeve hero art"><span class="ring"></span><span class="cat">DOC095 / A2</span></div>
+                <span class="pool"></span>
+              </div>
+              <div class="artfoot">
+                <span class="mlabel">side a &nbsp;·&nbsp; track 2</span>
+                <span class="mlabel" style="color:var(--text-3)">2020</span>
+              </div>
+              <div class="trailrow">
+                <span class="mlabel" style="margin-right:4px">played</span>
+                <div class="sleeve m-chill"><span class="ring"></span></div>
+                <div class="sleeve m-sleep" style="opacity:.78"><span class="ring"></span></div>
+                <div class="sleeve m-steady" style="opacity:.58"><span class="ring"></span></div>
+                <div class="sleeve m-chill" style="opacity:.4"><span class="ring"></span></div>
+              </div>
+            </div>
+
+            <div class="metacol">
+              <div class="eyebrow"><span class="mlabel live">now playing</span><span class="mlabel">48 of 61</span></div>
+              <div>
+                <h1 class="ttitle">So We Won&rsquo;t Forget</h1>
+                <div class="tsub" style="margin-top:6px">Khruangbin<span class="sep">/</span><span class="album">Mordechai</span></div>
+              </div>
+              <dl class="liner">
+                <div><dt>tempo</dt><dd>104 BPM</dd></div>
+                <div><dt>key</dt><dd>D minor</dd></div>
+                <div><dt>vibe</dt><dd class="hl">34 &middot; chill</dd></div>
+                <div><dt>energy</dt><dd>0.31</dd></div>
+                <div><dt>source</dt><dd>Spotify</dd></div>
+                <div><dt>length</dt><dd>4:12</dd></div>
+              </dl>
+              <div class="rule"></div>
+              <div class="seek">
+                <div class="prog"><span class="fill"></span><span class="thumb"></span></div>
+                <div class="times"><span>1:35</span><span>4:12</span></div>
+              </div>
+              <div class="controls">
+                <button class="tbtn" aria-label="Previous"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2h1.7v12H4z"/><path d="M14 2 6.4 8 14 14z"/></svg></button>
+                <button class="play lg" aria-label="Pause"><svg width="19" height="19" viewBox="0 0 16 16" fill="currentColor"><path d="M4.6 2.6h2.6v10.8H4.6zM8.8 2.6h2.6v10.8H8.8z"/></svg></button>
+                <button class="tbtn" aria-label="Next"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M10.3 2H12v12h-1.7z"/><path d="M2 2l7.6 6L2 14z"/></svg></button>
+                <span class="gap"></span>
+                <div class="modeToggle"><span class="on">audio</span><span>video</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="sidebar">
+            <div class="qsection">
+              <div class="sectionHead"><h2 class="sectionTitle">Up next</h2><span class="pill tag">12</span><span class="pill">clear</span></div>
+              <ul class="qlist">
+                <li class="qrow"><span class="qnum">1</span><div class="sleeve m-sleep" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Space 1.8</div><div class="qsub">Nala Sinephro</div></div><span class="qdur">6:39</span></li>
+                <li class="qrow"><span class="qnum">2</span><div class="sleeve m-chill" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Rust</div><div class="qsub">Yussef Dayes</div></div><span class="qdur">5:27</span></li>
+                <li class="qrow"><span class="qnum">3</span><div class="sleeve m-sleep" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Visit Croatia</div><div class="qsub">Alabaster DePlume</div></div><span class="qdur">4:03</span></li>
+                <li class="qrow"><span class="qnum">4</span><div class="sleeve m-steady" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Time Moves Slow</div><div class="qsub">BADBADNOTGOOD</div></div><span class="qdur">4:09</span></li>
+                <li class="qrow"><span class="qnum">5</span><div class="sleeve m-chill" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Devotion</div><div class="qsub">Tirzah</div></div><span class="qdur">3:35</span></li>
+              </ul>
+            </div>
+            <div class="qsection">
+              <div class="sectionHead"><h2 class="sectionTitle">DJ picks</h2><span class="pill on"><span class="dot"></span>auto</span></div>
+              <ul class="qlist">
+                <li class="qrow"><span class="qnum">&middot;</span><div class="sleeve m-steady" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Wildfires</div><div class="qsub">Sault &nbsp;·&nbsp; same key</div></div><span class="qdur">3:21</span></li>
+                <li class="qrow"><span class="qnum">&middot;</span><div class="sleeve m-hype" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Red Room</div><div class="qsub">Hiatus Kaiyote &nbsp;·&nbsp; vibe 41</div></div><span class="qdur">4:49</span></li>
+                <li class="qrow"><span class="qnum">&middot;</span><div class="sleeve m-chill" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Mumbay</div><div class="qsub">Sarathy Korwar &nbsp;·&nbsp; vibe 38</div></div><span class="qdur">5:21</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="bitzone"><span class="mlabel">BitDock — reserved</span></div>
+        </div>
+      </div>
+      <div class="caption"><span>92px channel strip, 408px travel</span><span>printed scale: tick every 10, long at a band edge</span><span>machined cap with a 2px accent centre line</span></div>
+    </div>
+
+    <div class="notes">
+      <div class="note">
+        <b>a fader, not a slider</b>
+        Recessed groove (elev-1), printed scale, a cap with a lit top edge
+        and a dark bottom. Energy climbs upward because that is the only
+        orientation a fader can have.
+      </div>
+      <div class="note">
+        <b>the spectrum stays visible</b>
+        The groove holds the full five-band gradient at 18% above the cap
+        and at full below it. The control shows its own range.
+      </div>
+      <div class="note">
+        <b>leans on moment A</b>
+        This is the direction where dragging the light is the point. A
+        408px travel gives the gesture room; the 4px horizontal rule in A
+        does not.
+      </div>
+      <div class="note">
+        <b>honest cost</b>
+        The art drops to 300px and the strip is a lot of chrome for one
+        value. This is the busiest of the three and the one most likely to
+        read as a tool rather than a record player.
+      </div>
+    </div>
+  </div>
+
+  <!-- ---------------------------------------------------------- C -->
+  <div class="band" style="margin-top:var(--sp-9)">
+    <div>
+      <div style="display:flex;align-items:baseline;gap:var(--sp-4);margin-bottom:var(--sp-3)">
+        <span class="mlabel" style="color:var(--vibe-accent-text);font-size:var(--fs-meta)">C</span>
+        <h3 style="margin:0;font-family:var(--serif);font-weight:400;font-size:26px;color:var(--text)">The Session</h3>
+        <span style="font-size:var(--fs-sm);color:var(--text-3)">The screen is a timeline; the track is where you are in it.</span>
+      </div>
+
+      <div class="frame sh84 s-player">
+        <div class="scale84 app m-chill">
+          <div class="topbar">
+            <div class="wordmark"><span class="mark"></span><span class="a">Vibe</span><span class="b">Scape</span></div>
+            <div class="spacer"></div>
+            <div class="readout mlabel"><span><i>library</i> <b>2,418</b></span><span><i>analysed</i> <b>2,391</b></span><span><i>queue</i> <b>12</b></span></div>
+            <button class="iconbtn" aria-label="Sync library">&#8635;</button>
+            <button class="iconbtn" aria-label="Shortcuts">?</button>
+            <div class="userpill"><span class="av">CK</span>Chandan</div>
+          </div>
+          <div class="searchbar">
+            <div class="searchfield"><span class="gl"></span><span class="ph">Search 2,418 tracks by title, artist or album</span></div>
+            <kbd>/</kbd>
+          </div>
+
+          <div class="sC">
+            <div class="inner">
+              <!-- the ruler: the weather you set -->
+              <div class="ruler vibe">
+                <div class="vibehead" style="margin-bottom:9px">
+                  <span class="mlabel">the dial &mdash; what flows in from the right</span>
+                  <span><span class="vibenum" style="font-size:20px">34</span> <span class="vibemood" style="margin-left:6px">chill</span></span>
+                </div>
+                <div class="vtrack"><span class="vghost"><i></i></span><span class="vfill"><i style="width:872px"></i></span><span class="vthumb"></span></div>
+                <div class="vticks" style="margin-top:7px"><span>sleep</span><span class="on">chill</span><span>steady</span><span>hype</span><span>beast</span></div>
+              </div>
+
+              <div class="eyebrowTop">
+                <span class="mlabel live">now playing</span>
+                <span class="mlabel">48 of 61 this session</span>
+                <span class="mlabel">2h 14m elapsed</span>
+              </div>
+
+              <!-- the ground line, and everything standing on it -->
+              <div class="ground"></div>
+              <div class="groundSeek" style="left:212px;width:310px"><i></i><b></b></div>
+
+              <div class="past">
+                <div class="sleeve m-sleep" style="width:26px;height:26px;opacity:.34"><span class="ring"></span></div>
+                <div class="sleeve m-steady" style="width:34px;height:34px;opacity:.5"><span class="ring"></span></div>
+                <div class="sleeve m-chill" style="width:44px;height:44px;opacity:.72"><span class="ring"></span></div>
+              </div>
+
+              <div class="nowart stack">
+                <span class="u1 m-sleep"></span><span class="u2 m-steady"></span>
+                <div class="sleeve hero art"><span class="ring"></span><span class="cat">DOC095 / A2</span></div>
+                <span class="pool"></span>
+              </div>
+
+              <div class="future">
+                <div class="sleeve m-sleep" style="width:58px;height:58px;opacity:.82"><span class="ring"></span></div>
+                <div class="sleeve m-steady" style="width:44px;height:44px;opacity:.54"><span class="ring"></span></div>
+              </div>
+
+              <div class="tcluster">
+                <div class="controls">
+                  <button class="tbtn" aria-label="Previous"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2h1.7v12H4z"/><path d="M14 2 6.4 8 14 14z"/></svg></button>
+                  <button class="play" aria-label="Pause"><svg width="17" height="17" viewBox="0 0 16 16" fill="currentColor"><path d="M4.6 2.6h2.6v10.8H4.6zM8.8 2.6h2.6v10.8H8.8z"/></svg></button>
+                  <button class="tbtn" aria-label="Next"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M10.3 2H12v12h-1.7z"/><path d="M2 2l7.6 6L2 14z"/></svg></button>
+                </div>
+                <div class="modeToggle"><span class="on">audio</span><span>video</span></div>
+                <span class="mlabel">1:35 &nbsp;/&nbsp; 4:12</span>
+              </div>
+
+              <div class="plate">
+                <div>
+                  <h1 class="ttitle">So We Won&rsquo;t Forget</h1>
+                  <div class="tsub" style="margin-top:6px">Khruangbin<span class="sep">/</span><span class="album">Mordechai</span> <span class="sep">/</span> <span class="album">Dead Oceans, 2020</span></div>
+                </div>
+                <dl class="liner three">
+                  <div><dt>tempo</dt><dd>104 BPM</dd></div>
+                  <div><dt>key</dt><dd>D minor</dd></div>
+                  <div><dt>vibe</dt><dd class="hl">34 &middot; chill</dd></div>
+                </dl>
+              </div>
+            </div>
+          </div>
+
+          <div class="sidebar">
+            <div class="qsection">
+              <div class="sectionHead"><h2 class="sectionTitle">Up next</h2><span class="pill tag">12</span><span class="pill">clear</span></div>
+              <ul class="qlist">
+                <li class="qrow"><span class="qnum">1</span><div class="sleeve m-sleep" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Space 1.8</div><div class="qsub">Nala Sinephro</div></div><span class="qdur">6:39</span></li>
+                <li class="qrow"><span class="qnum">2</span><div class="sleeve m-chill" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Rust</div><div class="qsub">Yussef Dayes</div></div><span class="qdur">5:27</span></li>
+                <li class="qrow"><span class="qnum">3</span><div class="sleeve m-sleep" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Visit Croatia</div><div class="qsub">Alabaster DePlume</div></div><span class="qdur">4:03</span></li>
+                <li class="qrow"><span class="qnum">4</span><div class="sleeve m-steady" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Time Moves Slow</div><div class="qsub">BADBADNOTGOOD</div></div><span class="qdur">4:09</span></li>
+                <li class="qrow"><span class="qnum">5</span><div class="sleeve m-chill" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Devotion</div><div class="qsub">Tirzah</div></div><span class="qdur">3:35</span></li>
+              </ul>
+            </div>
+            <div class="qsection">
+              <div class="sectionHead"><h2 class="sectionTitle">DJ picks</h2><span class="pill on"><span class="dot"></span>auto</span></div>
+              <ul class="qlist">
+                <li class="qrow"><span class="qnum">&middot;</span><div class="sleeve m-steady" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Wildfires</div><div class="qsub">Sault &nbsp;·&nbsp; same key</div></div><span class="qdur">3:21</span></li>
+                <li class="qrow"><span class="qnum">&middot;</span><div class="sleeve m-hype" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Red Room</div><div class="qsub">Hiatus Kaiyote &nbsp;·&nbsp; vibe 41</div></div><span class="qdur">4:49</span></li>
+                <li class="qrow"><span class="qnum">&middot;</span><div class="sleeve m-chill" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Mumbay</div><div class="qsub">Sarathy Korwar &nbsp;·&nbsp; vibe 38</div></div><span class="qdur">5:21</span></li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="caption"><span>one ground line: past left, future right</span><span>the segment under the sleeve IS the seek bar</span><span>ruler across the top sets what flows in</span></div>
+    </div>
+
+    <div class="notes">
+      <div class="note">
+        <b>the line is the seek bar</b>
+        The session line runs the full width; the 310px of it directly
+        beneath the current sleeve is the progress track. The record stands
+        on its own playhead.
+      </div>
+      <div class="note">
+        <b>past and future are physical</b>
+        Played sleeves shrink and fade to the left; the next three approach
+        from the right at increasing size. Time reads left to right with no
+        label needed.
+      </div>
+      <div class="note">
+        <b>the dial becomes weather</b>
+        Set at the top, across the whole width, above everything it affects.
+        It is not a control under the transport &mdash; it is the condition
+        the session runs under.
+      </div>
+      <div class="note">
+        <b>honest cost</b>
+        A deliberately low, wide composition with a lot of air above and
+        below. Liner notes drop from six facts to three. And with the future
+        already visible on the line, the queue rail becomes a list rather
+        than a preview.
+      </div>
+      <div class="note">
+        <b>no BitDock</b>
+        The mascot&rsquo;s band is where the caption now lives. If this
+        direction ships, Bit moves to the bottom-right of the stage or does
+        not appear on the player at all. Flagging it rather than pretending
+        it fits.
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ============================================================= 03 -->
+<style>
+/* Standalone rail, shown at 1:1 so row stride can be measured off the page. */
+.rail { width: 320px; background: var(--bg); padding: var(--sp-4) var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-6); }
+
+/* The scroller. The 5-row cap and the peeking sixth row are the existing
+   --qrow budget; only the row chrome changed. */
+/* 5 rows at a 55px stride, plus 17px of the sixth. The sliver is the only
+   thing that tells you the list scrolls at all. */
+.qscroll { position: relative; max-height: 292px; overflow: hidden; }
+.qscroll::after {
+  content: '';
+  position: absolute; left: 0; right: 0; bottom: 0; height: 22px;
+  background: linear-gradient(to top, var(--bg), transparent);
+  pointer-events: none;
+}
+.qbar { position: absolute; right: -4px; top: 0; width: 3px; height: 62%; border-radius: var(--radius-pill); background: var(--border-strong); }
+
+.qempty .qemptyTitle { font-size: var(--fs-sm); color: var(--text-2); margin: 0 0 6px; }
+.qempty .qemptyHint { font-size: var(--fs-meta); line-height: 1.6; color: var(--text-4); margin: 0; }
+.dashed { border-style: dashed; }
+</style>
+
+<section>
+  <div class="sechead">
+    <div><span class="secnum">03</span><h2>Queue&nbsp;&mdash;&nbsp;states</h2></div>
+    <p>Shown at 1:1. Both states occupy the same 320&thinsp;px rail and the same row budget.</p>
+  </div>
+
+  <div class="band">
+    <div class="row2">
+      <div>
+        <div class="frame m-chill"><div class="rail">
+          <div class="qsection">
+            <div class="sectionHead">
+              <h2 class="sectionTitle">Up next</h2>
+              <span class="pill tag">12</span>
+              <span class="pill">clear</span>
+            </div>
+            <div class="qscroll">
+              <ul class="qlist">
+                <li class="qrow"><span class="qnum">1</span><div class="sleeve m-sleep" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Space 1.8</div><div class="qsub">Nala Sinephro</div></div><span class="qdur">6:39</span></li>
+                <li class="qrow"><span class="qnum">2</span><div class="sleeve m-chill" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Rust</div><div class="qsub">Yussef Dayes</div></div><span class="qdur">5:27</span></li>
+                <li class="qrow"><span class="qnum">3</span><div class="sleeve m-sleep" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Visit Croatia</div><div class="qsub">Alabaster DePlume</div></div><span class="qdur">4:03</span></li>
+                <li class="qrow"><span class="qnum">4</span><div class="sleeve m-steady" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Time Moves Slow</div><div class="qsub">BADBADNOTGOOD</div></div><span class="qdur">4:09</span></li>
+                <li class="qrow"><span class="qnum">5</span><div class="sleeve m-chill" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Devotion</div><div class="qsub">Tirzah</div></div><span class="qdur">3:35</span></li>
+                <li class="qrow"><span class="qnum">6</span><div class="sleeve m-beast" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Afrique Victime</div><div class="qsub">Mdou Moctar</div></div><span class="qdur">7:12</span></li>
+              </ul>
+              <span class="qbar"></span>
+            </div>
+          </div>
+
+          <div class="qsection">
+            <div class="sectionHead">
+              <h2 class="sectionTitle">DJ picks</h2>
+              <span class="pill on"><span class="dot"></span>auto</span>
+            </div>
+            <ul class="qlist">
+              <li class="qrow"><span class="qnum">&middot;</span><div class="sleeve m-steady" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Wildfires</div><div class="qsub">Sault &nbsp;·&nbsp; same key</div></div><span class="qdur">3:21</span></li>
+              <li class="qrow"><span class="qnum">&middot;</span><div class="sleeve m-hype" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Red Room</div><div class="qsub">Hiatus Kaiyote &nbsp;·&nbsp; vibe 41</div></div><span class="qdur">4:49</span></li>
+              <li class="qrow"><span class="qnum">&middot;</span><div class="sleeve m-chill" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Mumbay</div><div class="qsub">Sarathy Korwar &nbsp;·&nbsp; vibe 38</div></div><span class="qdur">5:21</span></li>
+            </ul>
+          </div>
+        </div></div>
+        <div class="caption"><span>full &mdash; 12 queued, 5 shown</span><span>stride 54px + 1px rule</span></div>
+      </div>
+
+      <div>
+        <div class="frame m-chill"><div class="rail">
+          <div class="qsection">
+            <div class="sectionHead">
+              <h2 class="sectionTitle">Up next</h2>
+              <span class="pill tag">0</span>
+            </div>
+            <div class="qempty dashed" style="border:1px dashed var(--border);border-radius:var(--radius);padding:var(--sp-5) var(--sp-4);text-align:center">
+              <p class="qemptyTitle">Nothing queued</p>
+              <p class="qemptyHint">Tracks you add from search sit here and play in order. Until then the DJ keeps choosing.</p>
+            </div>
+          </div>
+
+          <div class="qsection">
+            <div class="sectionHead">
+              <h2 class="sectionTitle">DJ picks</h2>
+              <span class="pill on"><span class="dot"></span>auto</span>
+            </div>
+            <ul class="qlist">
+              <li class="qrow"><span class="qnum">&middot;</span><div class="sleeve m-steady" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Wildfires</div><div class="qsub">Sault &nbsp;·&nbsp; same key</div></div><span class="qdur">3:21</span></li>
+              <li class="qrow"><span class="qnum">&middot;</span><div class="sleeve m-hype" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Red Room</div><div class="qsub">Hiatus Kaiyote &nbsp;·&nbsp; vibe 41</div></div><span class="qdur">4:49</span></li>
+              <li class="qrow"><span class="qnum">&middot;</span><div class="sleeve m-chill" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Mumbay</div><div class="qsub">Sarathy Korwar &nbsp;·&nbsp; vibe 38</div></div><span class="qdur">5:21</span></li>
+              <li class="qrow"><span class="qnum">&middot;</span><div class="sleeve m-sleep" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Mohabbat</div><div class="qsub">Arooj Aftab &nbsp;·&nbsp; vibe 22</div></div><span class="qdur">7:34</span></li>
+              <li class="qrow"><span class="qnum">&middot;</span><div class="sleeve m-steady" style="width:36px;height:36px;border-radius:3px"><span class="ring"></span></div><div class="qbody"><div class="qtitle">Peace Piece</div><div class="qsub">Bill Evans Trio &nbsp;·&nbsp; vibe 11</div></div><span class="qdur">6:42</span></li>
+            </ul>
+          </div>
+        </div></div>
+        <div class="caption"><span>empty &mdash; picks take the released rows</span></div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <div class="note">
+        <b>the empty state is a label, not a poster</b>
+        One dashed-bordered block, two lines, no illustration and no button.
+        A dashed rule is the document&rsquo;s single sign for &ldquo;a thing is
+        absent&rdquo;, so it needs no further explanation anywhere it appears.
+      </div>
+      <div class="note">
+        <b>the sliver survives</b>
+        The sixth row still peeks above the fold &mdash; that is what tells you
+        the list scrolls. A bottom fade to <code>--bg</code> is added so the cut
+        row reads as continuation rather than as a clipped bug.
+      </div>
+      <div class="note">
+        <b>counts are tags, actions are rules</b>
+        <code>.pill.tag</code> has no border and a <code>--surface-2</code>
+        fill: it is a readout. <code>.pill</code> with a border is pressable.
+        That is the whole pill vocabulary &mdash; see 07.5.
+      </div>
+      <div class="note">
+        <b>DJ mode</b>
+        Marked by one <code>.pill.on</code> whose dot carries
+        <code>--vibe-accent-fill</code>. The gradient wash behind the section
+        header is dropped: it tinted a region to say one word.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================= 04 -->
+<style>
+/* The scrim plate the modal is shown against, so the rim light can be judged. */
+.scrimplate { padding: var(--sp-8) 0; background: rgba(0,0,0,0.75); display: grid; place-items: center; }
+
+.modal {
+  width: 560px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  /* Rim light along the top edge. A modal on #08080c cannot be lifted with a
+     shadow, so it is lifted with a 1px highlight where a real object would
+     catch the room light, plus a deep shadow that only has to kill the
+     scrim beneath it. */
+  border-top-color: var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 32px 72px rgba(0,0,0,0.6);
+  overflow: hidden;
+}
+.mhead { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-5) var(--sp-6) 0; }
+.mtitle { flex: 1; margin: 0; font-family: var(--serif); font-weight: 400; font-size: var(--fs-title); color: var(--text); letter-spacing: 0; }
+.mclose { width: 26px; height: 26px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); background: none; color: var(--text-3); font-size: var(--fs-sm); }
+
+/* Tabs are a rule, not a segmented pill: a modal already has enough geometry. */
+.mtabs { display: flex; gap: var(--sp-6); padding: 0 var(--sp-6); margin-top: var(--sp-4); border-bottom: 1px solid var(--border); }
+.mtabs span { padding-bottom: 9px; margin-bottom: -1px; font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: var(--pill-track); text-transform: uppercase; color: var(--text-4); }
+.mtabs span.on { color: var(--text); border-bottom: 1px solid var(--vibe-accent-fill); }
+
+.mbody { padding: var(--sp-5) var(--sp-6) var(--sp-6); }
+
+.srow { display: flex; align-items: center; gap: var(--sp-3); padding: 11px 0; border-bottom: 1px solid var(--border); }
+.srow:last-child { border-bottom: 0; }
+.srow .sbody { flex: 1; min-width: 0; }
+.srow .stitle { font-size: var(--fs-sm); color: var(--text); line-height: 1.35; }
+.srow .smeta { font-family: var(--mono); font-size: var(--fs-meta); color: var(--text-4); }
+.check { width: 15px; height: 15px; border: 1px solid var(--border-strong); border-radius: 3px; flex: none; }
+.check.on { background: var(--vibe-accent-fill); border-color: var(--vibe-accent-fill); display: grid; place-items: center; color: var(--vibe-accent-ink); }
+
+.subhead { display: flex; align-items: center; justify-content: space-between; margin: var(--sp-5) 0 var(--sp-1); padding-top: var(--sp-3); border-top: 1px solid var(--border); }
+
+.mfoot { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-4) var(--sp-6); border-top: 1px solid var(--border); background: var(--bg-2); }
+.mfoot .fmeta { flex: 1; font-family: var(--mono); font-size: var(--fs-meta); color: var(--text-4); }
+
+.btn {
+  height: 34px; padding: 0 var(--sp-5);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--sans); font-size: var(--fs-sm); font-weight: 500;
+}
+.btn.primary { background: var(--vibe-accent-fill); border-color: var(--vibe-accent-fill); color: var(--vibe-accent-ink); }
+.btn.quiet { border-color: transparent; color: var(--text-4); padding: 0 var(--sp-2); }
+
+/* Progress. One hairline and one set of numbers. */
+.bigprog { height: 2px; background: rgba(255,255,255,0.1); position: relative; }
+.bigprog i { position: absolute; inset: 0 auto 0 0; width: 63%; background: var(--vibe-accent); display: block; }
+.pmeta { display: flex; justify-content: space-between; margin-top: 10px; font-family: var(--mono); font-size: var(--fs-meta); color: var(--text-3); }
+.pnow { margin-top: var(--sp-5); padding-top: var(--sp-3); border-top: 1px solid var(--border); font-size: var(--fs-sm); color: var(--text-2); }
+.pnow span { color: var(--text-4); }
+
+.stats { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-6); margin-top: var(--sp-5); }
+.stats div { border-top: 1px solid var(--border); padding-top: var(--sp-2); }
+.statnum { font-family: var(--mono); font-size: var(--fs-display); font-weight: 500; letter-spacing: -0.02em; color: var(--text); line-height: 1.1; }
+.statnum.hl { color: var(--vibe-accent-text); }
+
+.donemark { width: 38px; height: 38px; border: 1px solid var(--vibe-accent-fill); border-radius: 50%; display: grid; place-items: center; color: var(--vibe-accent-text); }
+</style>
+
+<section>
+  <div class="sechead">
+    <div><span class="secnum">04</span><h2>Sync</h2></div>
+    <p>One 560&thinsp;px card, three phases. Shown at 1:1 over <code>--scrim</code>.</p>
+  </div>
+
+  <!-- phase 1 -->
+  <div class="band" style="margin-bottom:var(--sp-9)">
+    <div>
+      <div class="frame"><div class="scrimplate m-chill"><div class="modal">
+        <div class="mhead"><h2 class="mtitle">Add music</h2><button class="mclose">&times;</button></div>
+        <div class="mtabs"><span class="on">your library</span><span>playlist link</span></div>
+        <div class="mbody">
+          <div class="srow"><span class="check on"><svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2"><path d="M1.5 5.2 4 7.6 8.6 2.6"/></svg></span><div class="sbody"><div class="stitle">Liked Songs</div><div class="smeta">1,284 tracks</div></div></div>
+          <div class="srow"><span class="check on"><svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2"><path d="M1.5 5.2 4 7.6 8.6 2.6"/></svg></span><div class="sbody"><div class="stitle">Top Tracks</div><div class="smeta">97 tracks &nbsp;·&nbsp; last 6 months</div></div></div>
+
+          <div class="subhead"><span class="mlabel">playlists &mdash; 17</span><span class="mlabel" style="color:var(--text-3)">select all</span></div>
+          <div class="srow"><span class="check on"><svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2"><path d="M1.5 5.2 4 7.6 8.6 2.6"/></svg></span><div class="sbody"><div class="stitle">Late Shift</div><div class="smeta">212 tracks &nbsp;·&nbsp; Chandan Keelara</div></div></div>
+          <div class="srow"><span class="check"></span><div class="sbody"><div class="stitle">Sunday Kitchen</div><div class="smeta">64 tracks &nbsp;·&nbsp; Chandan Keelara</div></div></div>
+          <div class="srow"><span class="check"></span><div class="sbody"><div class="stitle">Monsoon Drive</div><div class="smeta">139 tracks &nbsp;·&nbsp; Chandan Keelara</div></div></div>
+          <div class="srow"><span class="check"></span><div class="sbody"><div class="stitle">Rehearsal Room, Sat</div><div class="smeta">38 tracks &nbsp;·&nbsp; Chandan Keelara</div></div></div>
+        </div>
+        <div class="mfoot">
+          <span class="fmeta">3 selected &nbsp;·&nbsp; 1,593 tracks</span>
+          <button class="btn">Cancel</button>
+          <button class="btn primary">Import 1,593</button>
+        </div>
+      </div></div></div>
+      <div class="caption"><span>SyncModal.module.css .card / .tabs / .row / .footer</span><span>phase: picking sources</span></div>
+    </div>
+    <div class="notes">
+      <div class="note">
+        <b>tabs became a rule</b>
+        Two bordered tab buttons inside a bordered card inside a bordered row
+        was three nested rectangles saying one thing. The tab is now type plus
+        a 1px underline in <code>--vibe-accent-fill</code>.
+      </div>
+      <div class="note">
+        <b>one primary per card</b>
+        The import button is the only accent fill in the modal, and it states
+        the number it will act on. Everything else is a bordered ghost.
+      </div>
+      <div class="note">
+        <b>row metadata is mono</b>
+        Counts and owners are data, so they are set in <code>--mono</code> at
+        <code>--fs-meta</code> / <code>--text-4</code>. That line is one of the
+        main consumers of the repaired <code>--text-4</code>.
+      </div>
+    </div>
+  </div>
+
+  <!-- phase 2 -->
+  <div class="band" style="margin-bottom:var(--sp-9)">
+    <div>
+      <div class="frame"><div class="scrimplate m-chill"><div class="modal">
+        <div class="mhead"><h2 class="mtitle">Importing your library</h2><button class="mclose">&times;</button></div>
+        <div class="mtabs"><span class="on">your library</span><span>playlist link</span></div>
+        <div class="mbody">
+          <div class="bigprog"><i></i></div>
+          <div class="pmeta"><span>1,004 of 1,593</span><span>63%</span></div>
+          <div class="pnow"><span>reading</span> &nbsp; Mdou Moctar &mdash; Afrique Victime</div>
+          <div class="stats">
+            <div><div class="statnum hl">212</div><span class="mlabel">ready to play</span></div>
+            <div><div class="statnum">48</div><span class="mlabel">still analysing</span></div>
+          </div>
+        </div>
+        <div class="mfoot">
+          <span class="fmeta">this keeps running if you close the window</span>
+          <button class="btn quiet">Stop import</button>
+          <button class="btn primary">Keep listening</button>
+        </div>
+      </div></div></div>
+      <div class="caption"><span>phase: running</span><span>progress fill is --vibe-accent, 2px, no track chrome</span></div>
+    </div>
+    <div class="notes">
+      <div class="note">
+        <b>numbers, not a spinner</b>
+        Two readouts in <code>--fs-display</code> mono answer the only two
+        questions during an import: can I listen yet, and how much is left.
+        Both are derived from fields the status poll already returns.
+      </div>
+      <div class="note">
+        <b>the primary is &ldquo;Keep listening&rdquo;</b>
+        <code>useAutoMinimise</code> already closes this window the moment the
+        first track is playable. The button names that behaviour instead of
+        leaving the user to work out that closing is safe.
+      </div>
+      <div class="note">
+        <b>no percentage while collecting</b>
+        Unchanged from today: the denominator is still climbing, so the bar is
+        suppressed rather than allowed to slide backwards.
+      </div>
+    </div>
+  </div>
+
+  <!-- phase 3 -->
+  <div class="band">
+    <div>
+      <div class="frame"><div class="scrimplate m-chill"><div class="modal">
+        <div class="mhead"><h2 class="mtitle">Library synced</h2><button class="mclose">&times;</button></div>
+        <div class="mbody" style="padding-top:var(--sp-6);display:flex;gap:var(--sp-5);align-items:flex-start">
+          <span class="donemark"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 8.4 6.3 11.7 13 5"/></svg></span>
+          <div style="flex:1">
+            <p style="margin:0 0 var(--sp-3);font-size:var(--fs-body);color:var(--text-2);line-height:1.5">
+              1,593 tracks read from three sources. 1,545 are analysed and playable now;
+              the rest finish in the background.
+            </p>
+            <div class="stats" style="margin-top:var(--sp-4)">
+              <div><div class="statnum hl">1,545</div><span class="mlabel">added &amp; analysed</span></div>
+              <div><div class="statnum">48</div><span class="mlabel">queued for analysis</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="mfoot">
+          <span class="fmeta">finished 2 minutes ago</span>
+          <button class="btn">Import more</button>
+          <button class="btn primary">Done</button>
+        </div>
+      </div></div></div>
+      <div class="caption"><span>phase: complete</span><span>tab rule drops &mdash; there is nothing left to choose</span></div>
+    </div>
+    <div class="notes">
+      <div class="note">
+        <b>the mark is a hairline, not a badge</b>
+        A 1px circle with a 1.4px check, in <code>--vibe-accent-text</code>.
+        A filled success disc at this size is the loudest thing on a screen
+        whose news is simply &ldquo;done&rdquo;.
+      </div>
+      <div class="note">
+        <b>same stats block</b>
+        Phase 2 and phase 3 share one component with different labels, so the
+        numbers land in the same place and the card does not reflow as it
+        finishes.
+      </div>
+      <div class="note">
+        <b>left alone</b>
+        The two-tab information architecture, the cancel semantics, and the
+        auto-minimise behaviour. None of those are visual problems.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================= 05 -->
+<style>
+.pillbox {
+  position: relative;
+  width: 364px;
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: 11px var(--sp-3) 11px var(--sp-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-top-color: var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 18px 40px rgba(0,0,0,0.5);
+  overflow: hidden;
+}
+.pillbox .plabel { font-size: var(--fs-sm); color: var(--text); line-height: 1.3; }
+.pillbox .pdetail { font-family: var(--mono); font-size: var(--fs-meta); color: var(--text-4); }
+.pillbox .pbody { flex: 1; min-width: 0; }
+.pillbox .paction { font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: var(--pill-track); text-transform: uppercase; color: var(--text-3); }
+.pillbox .pclose { width: 22px; height: 22px; display: grid; place-items: center; color: var(--text-4); font-size: var(--fs-sm); }
+/* Progress reads along the bottom EDGE rather than as a tinted background.
+   The accent contract forbids an accent wash behind text, and at 63% a
+   background fill also puts half of one line on a different bed. */
+.pillbox .pbar { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--vibe-accent); }
+.pillbox.fail { border-color: color-mix(in oklab, var(--danger) 45%, transparent); }
+.pillbox.fail .plabel { color: var(--danger); }
+</style>
+
+<section>
+  <div class="sechead">
+    <div><span class="secnum">05</span><h2>Sync pill</h2></div>
+    <p>What the import collapses into. Fixed bottom-right, 1:1.</p>
+  </div>
+  <div class="band">
+    <div>
+      <div class="frame" style="padding:var(--sp-7);display:flex;flex-direction:column;gap:var(--sp-5);align-items:flex-start">
+        <div class="pillbox m-chill">
+          <div class="pbody"><div class="plabel">Importing your library</div><div class="pdetail">212 ready to play &nbsp;·&nbsp; 63%</div></div>
+          <span class="paction">details</span>
+          <span class="pclose">&times;</span>
+          <span class="pbar" style="width:63%"></span>
+        </div>
+
+        <div class="pillbox m-chill">
+          <div class="pbody"><div class="plabel">Library imported</div><div class="pdetail">1,545 playable &nbsp;·&nbsp; 48 analysing</div></div>
+          <span class="paction">open</span>
+          <span class="pclose">&times;</span>
+          <span class="pbar" style="width:100%"></span>
+        </div>
+
+        <div class="pillbox fail">
+          <div class="pbody"><div class="plabel">Import failed</div><div class="pdetail">Spotify rate limit &mdash; retry in 30s</div></div>
+          <span class="paction">retry</span>
+          <span class="pclose">&times;</span>
+        </div>
+      </div>
+      <div class="caption"><span>SyncPill.module.css .pill / .fill / .body / .actions</span><span>running &mdash; complete &mdash; failed</span></div>
+    </div>
+    <div class="notes">
+      <div class="note">
+        <b>the fill moved to the edge</b>
+        Today the progress fill is the pill&rsquo;s background, which puts the
+        detail line on two different beds at once and breaks the accent
+        contract. A 2px rule on the bottom edge carries the same information
+        and leaves both lines on <code>--surface</code>.
+      </div>
+      <div class="note">
+        <b>rim light, one shadow</b>
+        A brighter top border plus a single deep shadow. This is the only
+        component in the system allowed a shadow, because it genuinely floats
+        over arbitrary content.
+      </div>
+      <div class="note">
+        <b>failure is bordered, not filled</b>
+        <code>--danger</code> tints the border and the label only. 6.64:1 on
+        <code>--bg</code>; a filled red bar would be the brightest object on a
+        screen that is otherwise playing music fine.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================= 06 -->
+<style>
+.land { width: 1240px; height: 718px; background: var(--bg); display: flex; flex-direction: column; }
+.lnav { display: flex; align-items: center; gap: var(--sp-6); height: 64px; padding: 0 var(--sp-8); border-bottom: 1px solid var(--border); }
+.lnav .spacer { flex: 1; }
+.lnav a { font-size: var(--fs-sm); color: var(--text-3); text-decoration: none; }
+.lbtn {
+  display: inline-flex; align-items: center; gap: var(--sp-2);
+  height: 34px; padding: 0 var(--sp-4);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  color: var(--text); font-size: var(--fs-sm); font-weight: 500;
+}
+.lbtn .sdot { width: 7px; height: 7px; border-radius: 50%; background: var(--spotify); }
+
+.lmain { flex: 1; display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr); column-gap: var(--sp-10); padding: var(--sp-10) var(--sp-8); align-items: center; }
+
+.lhead {
+  margin: 0 0 var(--sp-5);
+  font-family: var(--serif); font-weight: 400;
+  font-size: 62px; line-height: 1.04; letter-spacing: -0.02em;
+  color: var(--text); max-width: 13ch;
+}
+.lhead em { font-style: italic; color: var(--vibe-accent-text); }
+.lsub { margin: 0 0 var(--sp-7); max-width: 46ch; font-size: var(--fs-body); line-height: 1.65; color: var(--text-3); }
+.lactions { display: flex; align-items: center; gap: var(--sp-4); }
+.lstatus { margin-top: var(--sp-8); padding-top: var(--sp-3); border-top: 1px solid var(--border); display: flex; gap: var(--sp-7); }
+
+/* The mood ladder. The product has one idea; the landing page shows it
+   rather than describing it in three columns. */
+.ladder { display: flex; flex-direction: column; }
+.lrow { display: grid; grid-template-columns: 54px 46px 1fr auto; align-items: center; gap: var(--sp-4); padding: 13px 0; border-bottom: 1px solid var(--border); }
+.lrow:first-child { border-top: 1px solid var(--border); }
+.lrow .lname { font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-3); }
+.lrow .sleeve { width: 46px; height: 46px; border-radius: 3px; }
+.lrow .ltitle { font-size: var(--fs-sm); color: var(--text-2); line-height: 1.35; }
+.lrow .lartist { font-size: var(--fs-meta); color: var(--text-4); }
+.lrow .lrange { font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-mute); }
+.lrow.on .lname { color: var(--vibe-accent-text); }
+.lrow.on .ltitle { color: var(--text); }
+
+.lfoot { display: flex; gap: var(--sp-7); align-items: center; height: 50px; padding: 0 var(--sp-8); border-top: 1px solid var(--border); }
+</style>
+
+<section>
+  <div class="sechead">
+    <div><span class="secnum">06</span><h2>Landing</h2></div>
+    <p>Signed out. Authored at 1240&thinsp;px, shown at 84%.</p>
+  </div>
+  <div class="band">
+    <div>
+      <div class="frame sh84 s-landing">
+        <div class="scale84 land m-chill">
+          <div class="lnav">
+            <div class="wordmark"><span class="mark"></span><span class="a">Vibe</span><span class="b">Scape</span></div>
+            <div class="spacer"></div>
+            <a href="#">How it works</a>
+            <a href="#">What it reads</a>
+            <a href="#">FAQ</a>
+            <span class="lbtn"><span class="sdot"></span>Connect Spotify</span>
+          </div>
+
+          <div class="lmain">
+            <div>
+              <h1 class="lhead">One dial between you and <em>everything you own.</em></h1>
+              <p class="lsub">
+                VibeScape analyses the tempo, key and energy of every track in your
+                Spotify library, then puts a single slider in front of all of it.
+                Move it and the room changes &mdash; no playlists to maintain, no
+                mood boards, no algorithm you have to argue with.
+              </p>
+              <div class="lactions">
+                <span class="btn primary" style="height:40px;padding:0 var(--sp-6);display:inline-flex;align-items:center">Connect Spotify</span>
+                <span style="font-size:var(--fs-sm);color:var(--text-3)">or <a href="#" style="color:var(--text-2)">listen to the demo library</a></span>
+              </div>
+              <div class="lstatus">
+                <span class="mlabel">2,418 tracks analysed</span>
+                <span class="mlabel">1.4s median per track</span>
+                <span class="mlabel">no audio leaves your account</span>
+              </div>
+            </div>
+
+            <div class="ladder">
+              <div class="lrow m-sleep"><span class="lname">sleep</span><span class="sleeve"><span class="ring"></span></span><span><span class="ltitle">Peace Piece</span><br><span class="lartist">Bill Evans Trio</span></span><span class="lrange">00&ndash;20</span></div>
+              <div class="lrow m-chill on"><span class="lname">chill</span><span class="sleeve"><span class="ring"></span></span><span><span class="ltitle">So We Won&rsquo;t Forget</span><br><span class="lartist">Khruangbin</span></span><span class="lrange">20&ndash;40</span></div>
+              <div class="lrow m-steady"><span class="lname">steady</span><span class="sleeve"><span class="ring"></span></span><span><span class="ltitle">Birth4000</span><br><span class="lartist">Floating Points</span></span><span class="lrange">40&ndash;60</span></div>
+              <div class="lrow m-hype"><span class="lname">hype</span><span class="sleeve"><span class="ring"></span></span><span><span class="ltitle">Point and Kill</span><br><span class="lartist">Little Simz</span></span><span class="lrange">60&ndash;80</span></div>
+              <div class="lrow m-beast"><span class="lname">beast</span><span class="sleeve"><span class="ring"></span></span><span><span class="ltitle">Afrique Victime</span><br><span class="lartist">Mdou Moctar</span></span><span class="lrange">80&ndash;100</span></div>
+            </div>
+          </div>
+
+          <div class="lfoot">
+            <span class="mlabel">VibeScape</span>
+            <span class="mlabel" style="color:var(--text-mute)">built by Chandan Keelara</span>
+            <div style="flex:1"></div>
+            <span class="mlabel">privacy</span><span class="mlabel">source</span><span class="mlabel">status</span>
+          </div>
+        </div>
+      </div>
+      <div class="caption"><span>landing/Hero + WorksWith + SiteNav + SiteFoot</span><span>no centred hero, no feature triptych</span></div>
+    </div>
+    <div class="notes">
+      <div class="note">
+        <b>asymmetric, not centred</b>
+        A centred headline over three feature cards is the shape the brief
+        rules out. The page is instead a left-aligned editorial column against
+        a right-hand specimen, which is how a catalogue page is set.
+      </div>
+      <div class="note">
+        <b>the ladder is the product</b>
+        Five mood bands, their real vibe ranges from <code>lib/vibe.js</code>,
+        each lit by its own <code>accentFor()</code> output against a real
+        track. It demonstrates the one idea instead of claiming three.
+      </div>
+      <div class="note">
+        <b>the accent appears twice</b>
+        Once in the italic clause of the headline, once on the active ladder
+        row. <code>useVibeDemo</code> already cycles the accent; as it moves,
+        the lit row moves with it and the headline re-lights. That is the
+        entire motion budget for this page.
+      </div>
+      <div class="note">
+        <b>claims are measurements</b>
+        The status line carries three numbers the backend actually knows.
+        No testimonial, no logo wall, no badge.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================= 07 -->
+<style>
+.ref { display: grid; grid-template-columns: minmax(0,1fr) 180px; column-gap: var(--sp-7); align-items: start; margin-bottom: var(--sp-10); }
+.subsec { font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: var(--pill-track); text-transform: uppercase; color: var(--text-4); margin-bottom: var(--sp-4); display: block; }
+.subsec b { color: var(--text-2); font-weight: 500; }
+
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 9px var(--sp-4) 9px 0; border-bottom: 1px solid var(--border); vertical-align: baseline; }
+th { font-family: var(--mono); font-size: var(--fs-micro); font-weight: 500; letter-spacing: var(--pill-track); text-transform: uppercase; color: var(--text-4); border-bottom-color: var(--border-strong); }
+td { font-size: var(--fs-sm); color: var(--text-3); }
+td.tok { font-family: var(--mono); font-size: var(--fs-meta); color: var(--text-2); white-space: nowrap; }
+td.num { font-family: var(--mono); font-size: var(--fs-meta); color: var(--text-3); text-align: right; white-space: nowrap; }
+td.pass { color: var(--vibe-accent-text); }
+td.failv { color: var(--danger); }
+
+.swatch { display: inline-block; width: 42px; height: 14px; border-radius: 2px; vertical-align: -2px; border: 1px solid rgba(255,255,255,0.1); }
+
+pre {
+  margin: 0;
+  padding: var(--sp-5);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: var(--fs-meta);
+  line-height: 1.7;
+  color: var(--text-3);
+  overflow-x: auto;
+}
+pre b { color: var(--text); font-weight: 500; }
+pre i { color: var(--text-mute); font-style: normal; }
+
+.spec { display: flex; align-items: baseline; gap: var(--sp-5); padding: var(--sp-3) 0; border-bottom: 1px solid var(--border); }
+.spec .sl { width: 118px; flex: none; font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.08em; color: var(--text-4); }
+.spec .sr { width: 190px; flex: none; font-size: var(--fs-meta); color: var(--text-4); margin-left: auto; text-align: right; }
+
+.bars { display: flex; align-items: flex-end; gap: var(--sp-3); }
+.bars div { text-align: center; }
+.bars i { display: block; background: var(--surface-2); border-top: 1px solid var(--border-strong); }
+.bars span { display: block; margin-top: 6px; font-family: var(--mono); font-size: 9px; color: var(--text-4); }
+
+.radii { display: flex; gap: var(--sp-5); }
+.radii div { text-align: center; }
+.radii i { display: block; width: 76px; height: 56px; background: var(--surface); border: 1px solid var(--border-strong); }
+.radii span { display: block; margin-top: 8px; font-family: var(--mono); font-size: 9px; color: var(--text-4); }
+
+.inv { columns: 2; column-gap: var(--sp-7); font-size: var(--fs-sm); color: var(--text-3); }
+.inv p { break-inside: avoid; margin: 0 0 var(--sp-4); }
+.inv p b { display: block; font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: var(--pill-track); text-transform: uppercase; color: var(--text-2); font-weight: 500; margin-bottom: 3px; }
+</style>
+
+<section>
+  <div class="sechead">
+    <div><span class="secnum">07</span><h2>Reference</h2></div>
+    <p>The system itself. Everything above is assembled only from what follows.</p>
+  </div>
+
+  <!-- 07.1 type -->
+  <div class="ref">
+    <div>
+      <span class="subsec"><b>07.1</b> &nbsp; type scale &mdash; seven steps</span>
+      <div class="spec"><span class="sl">--fs-micro &nbsp;10px</span><span style="font-family:var(--mono);font-size:10px;letter-spacing:var(--pill-track);text-transform:uppercase;color:var(--text-3)">up next &nbsp; dj picks &nbsp; 104 bpm</span><span class="sr">mono labels, counts, timecodes, table heads. Always uppercase, always 0.14em.</span></div>
+      <div class="spec"><span class="sl">--fs-meta &nbsp;11.5px</span><span style="font-family:var(--mono);font-size:11.5px;color:var(--text-3)">212 tracks &middot; Chandan Keelara</span><span class="sr">row metadata, pill detail lines, margin notes. Mono or sans.</span></div>
+      <div class="spec"><span class="sl">--fs-sm &nbsp;13px</span><span style="font-size:13px;color:var(--text-2)">Time Moves Slow &mdash; BADBADNOTGOOD</span><span class="sr">list row titles, secondary body, buttons, hints.</span></div>
+      <div class="spec"><span class="sl">--fs-body &nbsp;15px</span><span style="font-size:15px;color:var(--text-2)">Khruangbin / Mordechai</span><span class="sr">the default. Artist line, paragraphs, anything read in sentences.</span></div>
+      <div class="spec"><span class="sl">--fs-title &nbsp;19px</span><span style="font-family:var(--serif);font-size:19px;color:var(--text)">Add music</span><span class="sr">modal and panel titles, the wordmark.</span></div>
+      <div class="spec"><span class="sl">--fs-display &nbsp;28px</span><span style="font-family:var(--serif);font-size:28px;color:var(--text)">So We Won&rsquo;t Forget</span><span class="sr">the track title, and the two stat numerals in sync.</span></div>
+      <div class="spec" style="border-bottom:0"><span class="sl">--fs-hero &nbsp;44&ndash;64px</span><span style="font-family:var(--serif);font-size:44px;line-height:1.1;color:var(--text)">One dial</span><span class="sr">landing headline only. <code>clamp(44px, 5vw, 64px)</code>.</span></div>
+    </div>
+    <div class="notes">
+      <div class="note">
+        <b>what was wrong</b>
+        229 hardcoded <code>font-size</code> declarations across the next app,
+        25 distinct values, 16 of them inside the 9&ndash;17px band. Four sizes
+        between 9.5 and 11.5px cannot be told apart on screen but can all
+        be got wrong.
+      </div>
+      <div class="note">
+        <b>why it accelerates</b>
+        10 &rarr; 11.5 &rarr; 13 &rarr; 15 is roughly &times;1.15; 15 &rarr; 19 &rarr; 28 &rarr; 44
+        is &times;1.27 to &times;1.57. Tight at the bottom where the job is legibility,
+        open at the top where the job is expression. A single uniform ratio
+        gives either unreadable captions or a timid headline.
+      </div>
+      <div class="note">
+        <b>line height</b>
+        1.3 for the two display steps, 1.35 for row titles, 1.6&ndash;1.7 for
+        anything at <code>--fs-sm</code> and below. Set with the step; never
+        overridden per component.
+      </div>
+      <div class="note">
+        <b>migration</b>
+        9/9.5/10/10.5 &rarr; <code>--fs-micro</code>. 11/11.5/12/12.5 &rarr;
+        <code>--fs-meta</code>. 13/13.5/14 &rarr; <code>--fs-sm</code>.
+        14.5/15/16/17 &rarr; <code>--fs-body</code>. 18/20/22 &rarr;
+        <code>--fs-title</code>. 24/26/28/32 &rarr; <code>--fs-display</code>.
+        38/44 &rarr; <code>--fs-hero</code>.
+      </div>
+    </div>
+  </div>
+
+  <!-- 07.2 accent contract -->
+  <div class="ref">
+    <div>
+      <span class="subsec"><b>07.2</b> &nbsp; the accent contract</span>
+      <p class="lede" style="margin-top:0">
+        <code>--vibe-accent</code> is written by <code>applyAccent()</code> on every
+        track change and is <strong>unknowable at authoring time</strong>. Measured
+        across the ten band endpoints in <code>lib/vibe.js</code>, its contrast on
+        <code>--bg</code> swings from <strong>3.02:1</strong> (sleep, low end) to
+        <strong>9.34:1</strong> (chill, high end). No fixed foreground is safe against
+        that, and switching black/white ink per track still bottoms out at
+        4.32:1 &mdash; below AA. So the raw accent is not permitted to carry or
+        back text at all. Two derived tones are, and both are computed once per
+        track change.
+      </p>
+
+      <table style="margin-top:var(--sp-5)">
+        <tr><th style="width:190px">token</th><th>may be used for</th><th style="width:150px">must never</th><th class="num">worst / best</th></tr>
+        <tr>
+          <td class="tok">--vibe-accent</td>
+          <td>Non-text marks only: the 2px transport fill, the slider fill, the sync-pill edge bar, the art light pool, the queue-row hover inset rule, the wordmark square, <code>color-mix</code> washes at &le;14%.</td>
+          <td>Any text. Any background behind text. Any 1px line that must be found rather than merely noticed.</td>
+          <td class="num">3.02 / 9.34</td>
+        </tr>
+        <tr>
+          <td class="tok">--vibe-accent-text<br><span style="color:var(--text-4)">NEW &mdash; okL &ge; 0.74</span></td>
+          <td>Accent-coloured <em>text</em> and icons on <code>--bg</code>, <code>--bg-2</code>, <code>--surface</code>, <code>--surface-2</code>: the live eyebrow, the lit vibe value, the mood name, the headline clause, the done mark.</td>
+          <td>Being used as a fill. It is tuned to be read on dark, not to be read upon.</td>
+          <td class="num pass">6.93 / 9.34</td>
+        </tr>
+        <tr>
+          <td class="tok">--vibe-accent-fill<br><span style="color:var(--text-4)">NEW &mdash; okL &ge; 0.82</span></td>
+          <td>Solid accent surfaces that carry ink: the play button, the primary button, the checked checkbox, the slider thumb ring, the active tab underline.</td>
+          <td>Being used as text on a dark bed &mdash; it is washed out and reads as a highlighter.</td>
+          <td class="num pass">8.23 / 11.88</td>
+        </tr>
+        <tr>
+          <td class="tok">--vibe-accent-ink<br><span style="color:var(--text-4)">NEW</span></td>
+          <td>The only foreground permitted on <code>--vibe-accent-fill</code>. Fixed to <code>--bg</code>, never switched.</td>
+          <td>Varying. A foreground that changes per track is a foreground nobody can test.</td>
+          <td class="num">&ge; 8.23</td>
+        </tr>
+      </table>
+
+      <pre style="margin-top:var(--sp-6)"><i>// lib/vibe.js — the contract, computed once per track change.</i>
+<i>// The artwork picks the hue. It does not get to pick legibility.</i>
+const <b>OKL_TEXT</b> = 0.74;  <i>// measured: >= 6.93:1 on --bg across all 10 band endpoints</i>
+const <b>OKL_FILL</b> = 0.82;  <i>// measured: >= 8.23:1 for --bg ink sitting on the fill</i>
+
+export function <b>applyAccent</b>(vibe) {
+  const { a, b } = accentFor(vibe);
+  const root = document.documentElement;
+  root.style.setProperty('--vibe-accent',   a);
+  root.style.setProperty('--vibe-accent-2', b);
+  <i>// Derived, not decorative. Every accent that touches text uses one of these.</i>
+  root.style.setProperty('--vibe-accent-text', liftL(a, OKL_TEXT));
+  root.style.setProperty('--vibe-accent-fill', liftL(a, OKL_FILL));
+}
+
+<i>// Raise OKLab L to a floor; keep hue and chroma; clip back into sRGB.</i>
+<i>// Clipping is deliberate — the clipped results are what the numbers above</i>
+<i>// were measured on, so a chroma-reducing gamut map would need re-measuring.</i>
+function <b>liftL</b>(css, floor) { <i>/* srgb -> oklab, L = max(L, floor), -> srgb */</i> }
+
+<i>// CSS-only equivalent, for a surface that cannot wait for the next paint:</i>
+<i>//   --vibe-accent-text: oklch(from var(--vibe-accent) max(l, 0.74) c h);</i>
+<i>// Treat it as progressive enhancement; the JS values above are normative.</i></pre>
+    </div>
+    <div class="notes">
+      <div class="note">
+        <b>why not switch the ink</b>
+        Picking black or white per track by luminance was the obvious fix and
+        it fails: <code>beast</code>&rsquo;s high endpoint <code>rgb(220,38,38)</code>
+        gives 4.14:1 against <code>--bg</code> and 4.32:1 against
+        <code>--text</code>. Its best possible ink still misses AA. Lifting the
+        fill is the only move that always works.
+      </div>
+      <div class="note">
+        <b>focus rings</b>
+        <code>outline: 2px solid var(--vibe-accent-text)</code> with
+        <code>outline-offset: 2px</code>. Never the raw accent &mdash; at
+        3.02:1 a focus ring on <code>--bg</code> would be invisible on the
+        sleep band.
+      </div>
+      <div class="note">
+        <b>washes</b>
+        <code>color-mix(in oklab, var(--vibe-accent) 12%, transparent)</code>
+        over <code>--surface</code> moves the bed by less than 0.3 of a
+        contrast point, so text on it keeps its ramp rating. 14% is the
+        ceiling; past that the bed must be re-measured.
+      </div>
+      <div class="note">
+        <b>reduced motion</b>
+        The re-light between tracks is a <code>--dur-art</code> transition on
+        the four custom properties. Under <code>prefers-reduced-motion</code>
+        it becomes an instant swap &mdash; the resting state is the new accent,
+        fully applied, never a half-faded one.
+      </div>
+    </div>
+  </div>
+
+  <!-- 07.3 colour -->
+  <div class="ref">
+    <div>
+      <span class="subsec"><b>07.3</b> &nbsp; colour &amp; the text ramp</span>
+      <table>
+        <tr><th style="width:170px">token</th><th style="width:90px"></th><th style="width:210px">value</th><th>role</th><th class="num">worst bed</th></tr>
+        <tr><td class="tok">--bg</td><td><span class="swatch" style="background:#08080c"></span></td><td class="tok">#08080c</td><td>the page. Unchanged.</td><td class="num">&mdash;</td></tr>
+        <tr><td class="tok">--bg-2</td><td><span class="swatch" style="background:#0d0d14"></span></td><td class="tok">#0d0d14</td><td>modal footers, code plates.</td><td class="num">&mdash;</td></tr>
+        <tr><td class="tok">--surface</td><td><span class="swatch" style="background:#12121a"></span></td><td class="tok">#12121a</td><td>modal card, row hover, sleeve base.</td><td class="num">&mdash;</td></tr>
+        <tr><td class="tok">--surface-2</td><td><span class="swatch" style="background:#191922"></span></td><td class="tok">#191922</td><td>tag pills, segmented-control active, avatar.</td><td class="num">&mdash;</td></tr>
+        <tr><td class="tok">--border</td><td><span class="swatch" style="background:rgba(255,255,255,0.08)"></span></td><td class="tok">rgba(255,255,255,.08)</td><td>every hairline in the product.</td><td class="num">&mdash;</td></tr>
+        <tr><td class="tok">--border-strong</td><td><span class="swatch" style="background:rgba(255,255,255,0.16)"></span></td><td class="tok">rgba(255,255,255,.16)</td><td>rim light on floating surfaces, unchecked checkbox.</td><td class="num">&mdash;</td></tr>
+
+        <tr><td class="tok">--text</td><td><span class="swatch" style="background:#f2f2f5"></span></td><td class="tok">#f2f2f5</td><td>titles, row titles, values. Unchanged.</td><td class="num pass">15.62</td></tr>
+        <tr><td class="tok">--text-2</td><td><span class="swatch" style="background:rgba(242,242,245,0.78)"></span></td><td class="tok">rgba(242,242,245,<b style="color:var(--vibe-accent-text);font-weight:500">.78</b>)</td><td>body copy, artist line. <span style="color:var(--text-4)">was .72</span></td><td class="num pass">9.86</td></tr>
+        <tr><td class="tok">--text-3</td><td><span class="swatch" style="background:rgba(242,242,245,0.62)"></span></td><td class="tok">rgba(242,242,245,<b style="color:var(--vibe-accent-text);font-weight:500">.62</b>)</td><td>section titles, secondary labels, margin notes. <span style="color:var(--text-4)">was .48</span></td><td class="num pass">6.67</td></tr>
+        <tr><td class="tok">--text-4</td><td><span class="swatch" style="background:rgba(242,242,245,0.50)"></span></td><td class="tok">rgba(242,242,245,<b style="color:var(--vibe-accent-text);font-weight:500">.50</b>)</td><td>row metadata, pill detail, mono micro-labels, timecodes, placeholders. <span style="color:var(--text-4)">was .30 &mdash; 2.42:1</span></td><td class="num pass">4.79</td></tr>
+        <tr><td class="tok">--text-mute <span style="color:var(--text-4)">NEW</span></td><td><span class="swatch" style="background:rgba(242,242,245,0.30)"></span></td><td class="tok">rgba(242,242,245,.30)</td><td><strong style="color:var(--danger)">Non-text marks only.</strong> SVG strokes in the Bit rig, trail dimming, the queue index column, decorative separators.</td><td class="num failv">2.56</td></tr>
+
+        <tr><td class="tok">--spotify</td><td><span class="swatch" style="background:#1ed760"></span></td><td class="tok">#1ed760</td><td>the Spotify mark and its dot. Never UI chrome.</td><td class="num pass">10.42</td></tr>
+        <tr><td class="tok">--danger</td><td><span class="swatch" style="background:#ff5d5d"></span></td><td class="tok">#ff5d5d</td><td>destructive labels and borders. Never a fill.</td><td class="num pass">6.64</td></tr>
+        <tr><td class="tok">--accent</td><td><span class="swatch" style="background:#22c1e3"></span></td><td class="tok">#22c1e3</td><td>pre-boot fallback only: <code>var(--vibe-accent, var(--accent))</code>.</td><td class="num pass">9.34</td></tr>
+      </table>
+      <p class="lede" style="margin-top:var(--sp-4)">
+        Ratios are measured against the worst of the four beds (<code>--bg</code>,
+        <code>--bg-2</code>, <code>--surface</code>, <code>--surface-2</code>),
+        alpha composited first. All four text steps clear <strong>4.5:1</strong> at
+        any size.
+      </p>
+    </div>
+    <div class="notes">
+      <div class="note">
+        <b>the --text-4 problem</b>
+        At 30% it measured <strong>2.42:1</strong> &mdash; a third of the way to
+        AA &mdash; and it is load-bearing: 57 references across 15 stylesheets,
+        carrying the sync-pill detail line, <code>QueueRow .meta</code>,
+        <code>.emptyHint</code>, <code>SyncModal .rowMeta</code> /
+        <code>.footerMeta</code> / <code>.urlHint</code>, every mono label and
+        every placeholder.
+      </div>
+      <div class="note">
+        <b>why the whole ramp moved</b>
+        Lifting only <code>--text-4</code> to .50 would have placed it within
+        0.3 of a contrast point of <code>--text-3</code> at .48 &mdash; two
+        tokens no one could tell apart. The ramp is re-spaced to
+        .78 / .62 / .50 so the four steps stay visibly distinct while all four
+        pass.
+      </div>
+      <div class="note">
+        <b>migration</b>
+        About 22 of the 57 references are SVG stroke and fill values in
+        <code>bit/animations.module.css</code>, which were chosen <em>for</em>
+        30% and documented as such. Those move to <code>--text-mute</code>
+        unchanged. The remainder keep <code>--text-4</code> and simply get
+        brighter.
+      </div>
+      <div class="note">
+        <b>one new rule</b>
+        <code>--text-mute</code> may not appear in a <code>color</code>
+        declaration. It exists so a non-text mark still has a legitimate home
+        at 30%, and so a lint can reject the one use that matters.
+      </div>
+    </div>
+  </div>
+
+  <!-- 07.4 spacing -->
+  <div class="ref">
+    <div>
+      <span class="subsec"><b>07.4</b> &nbsp; spacing &mdash; one 4px grid</span>
+      <div class="bars" style="margin-bottom:var(--sp-6)">
+        <div><i style="width:2px;height:2px"></i><span>0</span></div>
+        <div><i style="width:4px;height:4px"></i><span>1</span></div>
+        <div><i style="width:8px;height:8px"></i><span>2</span></div>
+        <div><i style="width:12px;height:12px"></i><span>3</span></div>
+        <div><i style="width:16px;height:16px"></i><span>4</span></div>
+        <div><i style="width:20px;height:20px"></i><span>5</span></div>
+        <div><i style="width:24px;height:24px"></i><span>6</span></div>
+        <div><i style="width:32px;height:32px"></i><span>7</span></div>
+        <div><i style="width:40px;height:40px"></i><span>8</span></div>
+        <div><i style="width:48px;height:48px"></i><span>9</span></div>
+        <div><i style="width:64px;height:64px"></i><span>10</span></div>
+        <div><i style="width:96px;height:96px"></i><span>11</span></div>
+      </div>
+      <table>
+        <tr><th style="width:110px">token</th><th style="width:70px">px</th><th style="width:150px">was</th><th>used for</th></tr>
+        <tr><td class="tok">--sp-0</td><td class="num">2</td><td class="tok" style="color:var(--text-4)">NEW</td><td>optical nudges, 2px rules, icon baseline corrections.</td></tr>
+        <tr><td class="tok">--sp-1</td><td class="num">4</td><td class="tok">--sp-1</td><td>icon-to-label, tight inline gaps.</td></tr>
+        <tr><td class="tok">--sp-2</td><td class="num">8</td><td class="tok">--sp-2</td><td>within a row; label to value.</td></tr>
+        <tr><td class="tok">--sp-3</td><td class="num">12</td><td class="tok">--sp-3</td><td>row internals; button gaps.</td></tr>
+        <tr><td class="tok">--sp-4</td><td class="num">16</td><td class="tok">--sp-4</td><td>rail padding; modal footer padding.</td></tr>
+        <tr><td class="tok">--sp-5</td><td class="num">20</td><td class="tok" style="color:var(--text-4)">NEW &mdash; the 16&rarr;24 gap</td><td>between stacked blocks inside one component.</td></tr>
+        <tr><td class="tok">--sp-6</td><td class="num">24</td><td class="tok">--sp-5</td><td>between components; top-bar and modal side padding.</td></tr>
+        <tr><td class="tok">--sp-7</td><td class="num">32</td><td class="tok">--sp-6</td><td>stage column gap; document column gap.</td></tr>
+        <tr><td class="tok">--sp-8</td><td class="num">40</td><td class="tok" style="color:var(--text-4)">NEW &mdash; the 32&rarr;48 gap</td><td>landing page side padding; large inner padding.</td></tr>
+        <tr><td class="tok">--sp-9</td><td class="num">48</td><td class="tok">--sp-7</td><td>between sub-sections.</td></tr>
+        <tr><td class="tok">--sp-10</td><td class="num">64</td><td class="tok" style="color:var(--text-4)">NEW</td><td>landing hero column gap.</td></tr>
+        <tr><td class="tok">--sp-11</td><td class="num">96</td><td class="tok" style="color:var(--text-4)">NEW</td><td>between top-level sections. The negative space the brief asks for lives here.</td></tr>
+      </table>
+    </div>
+    <div class="notes">
+      <div class="note">
+        <b>what was wrong</b>
+        4 / 8 / 12 / 16 / 24 / 32 / 48 is three different progressions stapled
+        together: +4, then &times;1.5, then +16. It has no 20 and no 40, which is
+        exactly why components reach for a raw <code>18px</code> or
+        <code>36px</code> and the grid quietly dissolves.
+      </div>
+      <div class="note">
+        <b>the rename is the cost</b>
+        Three existing indices shift meaning. Rename in <em>descending</em>
+        order in one commit &mdash; <code>sp-7&rarr;sp-9</code>, then
+        <code>sp-6&rarr;sp-7</code>, then <code>sp-5&rarr;sp-6</code> &mdash;
+        or the substitutions collide. Then add 0, 5, 8, 10, 11. 1&ndash;4 never
+        move.
+      </div>
+      <div class="note">
+        <b>the one exception</b>
+        <code>QueueSidebar</code>&rsquo;s row-budget arithmetic references
+        <code>--sp-2</code>, <code>--sp-4</code> and <code>--sp-5</code>.
+        The first two are stable; the third becomes <code>--sp-6</code> and
+        keeps its 24px value, so the computed budget is unchanged.
+      </div>
+    </div>
+  </div>
+
+  <!-- 07.5 pill -->
+  <div class="ref">
+    <div>
+      <span class="subsec"><b>07.5</b> &nbsp; the pill &mdash; one geometry, two skins</span>
+
+      <div style="display:flex;gap:var(--sp-4);align-items:center;flex-wrap:wrap;padding:var(--sp-5) 0;border-bottom:1px solid var(--border)" class="m-chill">
+        <span class="pill">clear</span>
+        <span class="pill"><span class="dot"></span>auto</span>
+        <span class="pill on"><span class="dot"></span>auto</span>
+        <span class="pill tag">12</span>
+        <span class="pill tag">0</span>
+        <span class="pill" style="opacity:.45">disabled</span>
+      </div>
+
+      <pre style="margin-top:var(--sp-5)"><b>--pill-h</b>: 22px;      <i>/* fixed height. The drift came from padding-derived heights. */</i>
+<b>--pill-pad</b>: 10px;
+<b>--pill-track</b>: 0.14em;
+
+.pill {
+  height: var(--pill-h);
+  padding: 0 var(--pill-pad);
+  <i>/* Tracking adds a sidebearing after the last glyph; without this the</i>
+  <i>   pill is optically ~1.5px wider on the right than on the left. */</i>
+  padding-right: calc(var(--pill-pad) - var(--pill-track));
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  font: 500 var(--fs-micro)/1 var(--mono);
+  letter-spacing: var(--pill-track);
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+<b>.pill.tag</b>  <i>{ border-color: transparent; background: var(--surface-2); }  /* a readout */</i>
+<b>.pill.on</b>   <i>{ border/bg from --vibe-accent at 55% / 12%; color: var(--text); } /* engaged */</i>
+<b>.pill .dot</b> <i>{ 5px; --text-mute, or --vibe-accent-fill when .on }</i></pre>
+
+      <table style="margin-top:var(--sp-6)">
+        <tr><th style="width:300px">today</th><th style="width:170px">geometry</th><th>becomes</th></tr>
+        <tr><td class="tok">QueueSidebar .count</td><td class="num">pad 1&times;7, 10px</td><td><code>.pill.tag</code></td></tr>
+        <tr><td class="tok">QueueSidebar .clear / .djToggle</td><td class="num">pad 3&times;9, 10px</td><td><code>.pill</code> / <code>.pill.on</code></td></tr>
+        <tr><td class="tok">TrackMeta .titleVibe / .titleLang / .sdkOnly</td><td class="num">h20, pad 0&times;9, 10.5px</td><td>retired &mdash; becomes a liner-note row</td></tr>
+        <tr><td class="tok">TrackMeta .chip</td><td class="num">h22, pad 0&times;10, &mdash;</td><td>retired &mdash; becomes a liner-note row</td></tr>
+        <tr><td class="tok">SyncModal .selectAll</td><td class="num">pad 2&times;8</td><td><code>.mlabel</code>, not a pill</td></tr>
+        <tr><td class="tok">SyncModal .btn</td><td class="num">pad 8&times;16, pill radius</td><td><code>.btn</code> at <code>--radius-sm</code></td></tr>
+        <tr><td class="tok">SyncPill .action</td><td class="num">pad 5&times;10, pill radius</td><td><code>.paction</code>, a bare mono label</td></tr>
+      </table>
+    </div>
+    <div class="notes">
+      <div class="note">
+        <b>seven geometries, one shape</b>
+        Measured in the running stylesheets: heights of 20, 22, 28 and
+        &ldquo;whatever padding makes&rdquo;, paddings of 7, 8, 9 and 10, and
+        two different font sizes. They all look like the same object and none
+        of them line up on a shared baseline.
+      </div>
+      <div class="note">
+        <b>why the height is fixed</b>
+        A padding-derived height drifts with font-size, line-height and
+        border. 22px is the one number; everything else is centred inside it.
+      </div>
+      <div class="note">
+        <b>a pill now means something</b>
+        A bordered pill is pressable. A filled tag is a count. Anything that
+        is neither &mdash; a language, a source, a mood &mdash; is a
+        <code>.mlabel</code> or a liner-note row. That retires roughly half
+        the pills in the product without losing a single fact.
+      </div>
+      <div class="note">
+        <b>buttons stop being pills</b>
+        <code>--radius-pill</code> on a 34px action button is the single
+        biggest contributor to the &ldquo;rounded everything&rdquo; read.
+        Buttons take <code>--radius-sm</code>.
+      </div>
+    </div>
+  </div>
+
+  <!-- 07.6 radii + motion -->
+  <div class="ref">
+    <div>
+      <span class="subsec"><b>07.6</b> &nbsp; radii</span>
+      <div class="radii" style="margin-bottom:var(--sp-6)">
+        <div><i style="border-radius:0"></i><span>0 &mdash; rules, bars</span></div>
+        <div><i style="border-radius:3px"></i><span>3 &mdash; sleeves*</span></div>
+        <div><i style="border-radius:6px"></i><span>--radius-sm 6</span></div>
+        <div><i style="border-radius:10px"></i><span>--radius 10</span></div>
+        <div><i style="border-radius:16px"></i><span>--radius-lg 16</span></div>
+        <div><i style="border-radius:999px;width:56px"></i><span>--radius-pill</span></div>
+      </div>
+      <table>
+        <tr><th style="width:170px">token</th><th style="width:110px">px</th><th>applies to</th></tr>
+        <tr><td class="tok">--radius-sm</td><td class="num">6 <span style="color:var(--text-4)">was 10</span></td><td>buttons, icon buttons, checkboxes, segmented controls, tabs.</td></tr>
+        <tr><td class="tok">--radius</td><td class="num">10 <span style="color:var(--text-4)">was 14</span></td><td>the sync pill, empty-state blocks, code plates, popovers.</td></tr>
+        <tr><td class="tok">--radius-lg</td><td class="num">16 <span style="color:var(--text-4)">was 20</span></td><td>modal cards, the mobile queue sheet.</td></tr>
+        <tr><td class="tok">--radius-card</td><td class="num">20</td><td><strong>Retire.</strong> It duplicated <code>--radius-lg</code>&rsquo;s old value and exists only because legacy had two scales. Replace every use with <code>--radius-lg</code>.</td></tr>
+        <tr><td class="tok">--radius-pill</td><td class="num">999</td><td>pills, dots, thumbs, scrollbar thumbs. Nothing taller than 24px.</td></tr>
+      </table>
+      <p class="lede" style="margin-top:var(--sp-3)">
+        * Album sleeves take a literal <code>3px</code>, below the scale on
+        purpose: a record sleeve is a square object and rounding it past a
+        printing tolerance makes it read as an app icon.
+      </p>
+
+      <span class="subsec" style="margin-top:var(--sp-9)"><b>07.7</b> &nbsp; motion</span>
+      <table>
+        <tr><th style="width:170px">token</th><th style="width:170px">value</th><th>use</th></tr>
+        <tr><td class="tok">--dur-fast</td><td class="num">120ms <span style="color:var(--text-4)">NEW</span></td><td>hover and press feedback: colour, border, background. Anything the pointer is already touching.</td></tr>
+        <tr><td class="tok">--dur</td><td class="num">220ms</td><td>the default. Popovers, tab changes, checkbox, pill state.</td></tr>
+        <tr><td class="tok">--dur-slow</td><td class="num">420ms</td><td>modal and sheet entry, the sync pill arriving.</td></tr>
+        <tr><td class="tok">--dur-art</td><td class="num">640ms <span style="color:var(--text-4)">NEW</span></td><td>the track change: sleeve crossfade and the accent re-light. Long enough to read as a dissolve rather than a cut.</td></tr>
+        <tr><td class="tok">--ease</td><td class="num">cubic-bezier(.2,.8,.2,1)</td><td>the default, both directions.</td></tr>
+        <tr><td class="tok">--ease-out</td><td class="num">cubic-bezier(.16,1,.3,1)</td><td>entrances. Fast start, long settle.</td></tr>
+        <tr><td class="tok">--ease-in</td><td class="num">cubic-bezier(.4,0,1,1) <span style="color:var(--text-4)">NEW</span></td><td>exits only. A dismissal that eases out looks reluctant.</td></tr>
+        <tr><td class="tok">--dur-press</td><td class="num">90ms <span style="color:var(--text-4)">NEW</span></td><td>the acknowledgement budget. A press not answered inside this reads as lag however fast the consequence is.</td></tr>
+        <tr><td class="tok">--dur-exit</td><td class="num">calc(--dur &times; 0.7) <span style="color:var(--text-4)">NEW</span></td><td>every dismissal. Exits beat entries.</td></tr>
+        <tr><td class="tok">--stagger</td><td class="num">60ms <span style="color:var(--text-4)">NEW</span></td><td>overlap offset. Sequences overlap at 40%; they never queue.</td></tr>
+      </table>
+      <p class="lede" style="margin-top:var(--sp-3)">
+        These are the values. The <em>behaviour</em> &mdash; what accelerates, what
+        settles, the per-component state table and the three signature
+        choreographies &mdash; is in <strong>01.3</strong> and <strong>01.5</strong>.
+        The material tokens (<code>--edge-lit</code>, <code>--edge-dark</code>,
+        <code>--contact</code>, <code>--cast-3/4</code>, <code>--sheen</code>,
+        <code>--vignette</code>, <code>--grain-alpha</code>) and the breath
+        (<code>--beat</code>, <code>--energy</code>, <code>--breath</code>) are in
+        <strong>01.1</strong> and <strong>01.4</strong>.
+      </p>
+      <p class="lede" style="margin-top:var(--sp-4)">
+        Nothing in this specification moves on load. There is no stagger, no
+        reveal and no scroll-triggered entrance; the only motion in the product
+        is a response to an action, plus the per-track re-light. Every animation
+        carries a <code>prefers-reduced-motion</code> branch, and that branch
+        must leave a readable resting state &mdash; for the re-light, the new
+        accent fully applied; for the sync pill, present and still.
+      </p>
+    </div>
+    <div class="notes">
+      <div class="note">
+        <b>why radii came down</b>
+        10 / 14 / 20 on a product whose largest radius sits on a 560px card is
+        a soft, consumer-app read. 6 / 10 / 16 keeps the softness where the
+        hand is &mdash; small controls &mdash; and lets the big surfaces look
+        machined.
+      </div>
+      <div class="note">
+        <b>the duplicate</b>
+        <code>--radius-card</code> and <code>--radius-lg</code> are both 20px
+        today and mean the same thing. Two names for one value is how a scale
+        starts drifting.
+      </div>
+      <div class="note">
+        <b>the accent transition</b>
+        Custom properties are only animatable if registered. Register the four
+        accent tokens with <code>@property</code> and
+        <code>syntax: &lsquo;&lt;color&gt;&rsquo;</code>, or the re-light is a hard cut
+        whatever duration is set.
+      </div>
+    </div>
+  </div>
+
+  <!-- 07.8 inventory -->
+  <div class="ref">
+    <div>
+      <span class="subsec"><b>07.8</b> &nbsp; component inventory</span>
+      <div class="inv">
+        <p><b>Wordmark</b> Square mark in <code>--vibe-accent-fill</code> + grotesk &ldquo;Vibe&rdquo; + serif italic &ldquo;Scape&rdquo;. The only serif in the chrome.</p>
+        <p><b>Readout</b> Mono label/value pairs on one line. Replaces status badges anywhere a number already exists.</p>
+        <p><b>Icon button</b> 30&times;30, <code>--radius-sm</code>, 1px <code>--border</code>, <code>--text-3</code>. Hover raises to <code>--border-strong</code> / <code>--text</code> over <code>--dur-fast</code>.</p>
+        <p><b>Button</b> 34px (40px on landing), <code>--radius-sm</code>, <code>--fs-sm</code> 500. Three skins: primary (<code>--vibe-accent-fill</code> + <code>--vibe-accent-ink</code>), ghost (bordered), quiet (borderless, <code>--text-4</code>).</p>
+        <p><b>Pill</b> See 07.5. Two skins, one geometry.</p>
+        <p><b>Micro-label</b> <code>.mlabel</code> &mdash; mono, <code>--fs-micro</code>, 0.14em, uppercase, <code>--text-4</code>. The workhorse; it replaces most decorative pills.</p>
+        <p><b>Sleeve</b> Square, 3px radius. Four edges (lit top and left, dark bottom and right), one 118&deg; sheen, a corner vignette. <code>.hero</code> adds <code>--cast-4</code>, a 2px top edge, its light pool and the two-sheet stack. See 01.2.</p>
+        <p><b>Liner notes</b> Two-column <code>dt</code>/<code>dd</code> grid, mono both sides, hairline per row. Carries all per-track facts.</p>
+        <p><b>List row</b> Fixed 54px stride, 1px bottom rule, no radius, no gap. Hover: <code>--surface</code> plus a 2px inset rule in <code>--vibe-accent</code>.</p>
+        <p><b>Section head</b> Mono title + optional tag + optional action pill, 22px min-height, sits directly above its list with <code>--sp-2</code>.</p>
+        <p><b>Progress</b> Two representations, one value: the ring around the play disc is for <em>knowing</em> (always on), the 2px linear bar is for <em>seeking</em> (40% at rest, full on hover or focus of the transport region). See 01.5-C.</p>
+        <p><b>Mood dial</b> Two forms, one behaviour (01.5-A): a 4px horizontal groove (A, C) or a 408px vertical fader with a printed scale and a machined cap (B). Both are recessed (elev-1), both hold the full spectrum at 18% ahead of the value, both re-light the room live on <code>input</code>.</p>
+        <p><b>Segmented control</b> 1px bordered, <code>--radius-sm</code>, active segment on <code>--surface-2</code> with <code>--text</code>. Audio/video only.</p>
+        <p><b>Checkbox</b> 15px, 3px radius, <code>--border-strong</code>. Checked: <code>--vibe-accent-fill</code> with a 2px <code>--vibe-accent-ink</code> tick.</p>
+        <p><b>Modal</b> 560px, <code>--radius-lg</code>, <code>--surface</code>, rim light on the top border, one deep shadow, footer on <code>--bg-2</code>. Tabs are a 1px underline.</p>
+        <p><b>Stat</b> <code>--fs-display</code> mono numeral over a <code>.mlabel</code>, separated by a hairline above. Used in both sync phases.</p>
+        <p><b>Empty state</b> 1px <strong>dashed</strong> block, title at <code>--fs-sm</code>, one hint line at <code>--fs-meta</code>. No illustration, no call to action.</p>
+        <p><b>Sync pill</b> 364px, <code>--radius</code>, rim light, one shadow, progress as a 2px bottom edge. The only floating component.</p>
+        <p><b>Focus ring</b> <code>2px solid var(--vibe-accent-text)</code>, offset 2px, on every interactive element. Never removed, never the raw accent.</p>
+      </div>
+    </div>
+    <div class="notes">
+      <div class="note">
+        <b>deliberately left alone</b>
+        The Bit mascot rig and its dock, the media layer and its imperative
+        singletons, the queue row-budget arithmetic, the two-tab sync IA,
+        <code>useAutoMinimise</code>, the mobile queue sheet, and the admin
+        and metrics panels. None of those are what makes the product read as
+        generic.
+      </div>
+      <div class="note">
+        <b>order of work</b>
+        Tokens first &mdash; the text ramp, the accent derivations, the type
+        scale &mdash; because they change every screen at once and are
+        testable on their own. Then the pill and the list row, which together
+        account for most of the visual noise. Screens last.
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer style="margin:var(--sp-11) 0 var(--sp-10);padding-top:var(--sp-5);border-top:1px solid var(--border);display:flex;gap:var(--sp-7);align-items:baseline">
+  <span class="mlabel">VibeScape &mdash; interface specification</span>
+  <span class="mlabel" style="color:var(--text-mute)">rev 01 &nbsp;·&nbsp; 2026-10-02</span>
+  <span style="flex:1"></span>
+  <span class="mlabel" style="color:var(--text-mute)">tokens: frontend-next/src/styles/tokens.css</span>
+</footer>
+
+</main>
+</body>
+</html>
