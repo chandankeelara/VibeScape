@@ -127,6 +127,20 @@ so this is reachable by configuration alone. The fix is the same
 `vector_extract()` workaround app.py already uses — or item 2.1 below, which
 removes the need for both.
 
+### 1.7 A fresh local SQLite bootstrap dies in `_seed_default_user`: `users` has no `pin_hash`
+`backend/db.py:195` vs `schema.sql:6-20`
+
+**verified by running it** (2026-10-02). On a DB with zero `users` rows,
+`_migrate` reaches `_seed_default_user`, which does
+`INSERT INTO users (display_name, pin_hash) VALUES (?, NULL)`. PINs were
+removed from `schema.sql` in the unified-identity refactor, so the column
+does not exist and the statement raises
+`OperationalError: table users has no column named pin_hash` straight out of
+`ensure_db()` — i.e. out of `get_conn()`, i.e. out of every authenticated
+request. A developer cloning the repo without `data/vibescape.db` gets a
+500 on everything. The existing dev DB still has the column, which is why
+nobody has hit it. Drop `pin_hash` from the INSERT.
+
 ---
 
 ## 2. Will break
@@ -399,6 +413,136 @@ has been reaped", but nothing reaps: `JOBS` only loses entries via the two
 of the process. Add a TTL sweep, or delete the claim.
 
 ---
+
+## 5. Listening events — what now exists, and what is left to do
+
+Added 2026-10-02. Before this, `user_tracks.play_count` and
+`user_tracks.last_played` had **no writer at all** — `SUM(play_count)` was 0
+across 5,475 rows — so `/similar` had no per-user signal to personalise with.
+
+### What landed
+
+**`POST /api/events`** (`backend/app.py`, "Listening events (telemetry)"
+section, just above the admin routes). Bearer-authenticated, inline, no
+background thread of any kind — Cloud Run's CPU throttling and scale-to-zero
+make an in-process worker the same trap as 1.5. Per request: 2 SELECTs to
+batch-resolve `spotify_id`/`track_id` against the catalogue, `ceil(n/25)`
+multi-row INSERTs into `track_events`, `ceil(distinct_tracks/20)` upserts
+into `user_track_stats`. Batch cap 50; the overflow is counted in `rejected`,
+the request is not failed.
+
+**It always answers 202** `{"accepted": int, "rejected": int}` — malformed
+body, malformed event, unknown track, missing table, any exception. The only
+non-202 outcome is a 401 from `require_user`. Telemetry must never be able to
+break playback. **[frontend contract]** — the frontend is built against
+exactly this shape.
+
+**`track_events`** (`schema.sql`) — append-only, one row per client event:
+`user_id, track_id, type, reason, position_ms, duration_ms, vibe,
+vibe_source, dj_mode, source, client_ts, server_ts`. Indexed
+`(user_id, id DESC)` and `(user_id, track_id, id DESC)`. **No UPDATE, no
+DELETE, ever.** The skip (`type='play_end', reason='skipped'`) is the only
+explicit negative the system gets, which is why this is a log and not a
+counter.
+
+`vibe_source` ('user' | 'system' | NULL) records **who** put the number on
+the slider: the person dragging it, or DJ mode echoing back its own choice
+(`frontend-next/src/state/PlayerContext.jsx:150` vs `:178`). Unlabelled is
+NULL and is never defaulted — a wrong label is worse than a null, because
+mislabelled system echoes train the recommender on its own output.
+
+**`user_track_stats`** (`schema.sql`) — materialised per-(user, track)
+aggregate of `track_events`, written inline by the same request. This is what
+`/similar` reads; it cannot scan an event log per candidate. Label-agnostic
+volume (`play_count`, `end_count`, `total_played_ms`, `dj_play_count`,
+`first_played_at`, `last_played`, `last_skipped_at`) plus two parallel
+families that must never be averaged together:
+
+- `u_*` — `vibe_source='user'`: **preference**. What this person reaches for
+  and at what slider position.
+- `s_*` — `vibe_source='system'`: **reward**. DJ mode picked the vibe and the
+  track; finishing vs killing it early is a verdict on the recommender.
+
+Each family carries `play_count, end_count, complete_count, skip_count,
+replace_count, skip_position_ms_sum, vibe_count, vibe_sum, vibe_sum_sq`.
+Counters are primitives — ratios (completion rate, skip rate, mean bail
+point, mean and variance of the vibe it is played at) are derived on read,
+per family. Events with no `vibe_source` land in the totals only, so
+`u_* + s_*` can legitimately be less than `play_count`.
+
+**Rules that keep the duplication safe.** Events are truth; the aggregate is
+a cache of the events and nothing else. `POST /api/events` is the only writer
+of either table. Because Turso has no transactions (2.2), the insert and the
+upsert are independent statements and the cache can drift —
+`scripts/rebuild_user_track_stats.py` (dry-run by default, `--apply`,
+`--turso`, `--user N`) recomputes every row from `track_events` alone, so
+drift is an annoyance rather than data loss. `backend/app.py`'s
+`_accumulate_stats` is the spec; the script's SQL is its restatement, and the
+two must be changed together.
+
+### Deliberately not done
+
+`user_tracks.play_count` / `last_played` are **not** maintained. They stay at
+0 and are now dead columns. A second writer with its own idea of what a
+"play" is, disagreeing with the event log, is 1.2's exact failure mode; and
+`user_tracks` is the library-membership table, so counting a DJ/autoplay play
+of a catalogue track there would mean fabricating a library membership. The
+one reader, `backend/app.py`'s `/api/admin/users/{id}/tracks`, now LEFT JOINs
+`user_track_stats` instead and additionally returns `last_played`.
+**[frontend contract]** — additive field on an admin-only response.
+
+Left in place, worth doing: delete the two `user_tracks` columns, and teach
+`scripts/_dedupe_local_by_isrc.py` / `_dedupe_turso_by_isrc.py` to fold
+`user_track_stats` and `track_events` onto the surviving track id. Today they
+merge `user_tracks.play_count`, which is the dead copy — so deduping after
+telemetry is live silently strands a track's listening history on the
+dropped row.
+
+### What the next person has to do
+
+1. **Create the tables on Turso.** `ensure_db()` returns immediately on
+   `DB_BACKEND=turso` (`backend/db.py:933`), so `schema.sql` never reaches
+   production. Run `python scripts/_turso_create_event_tables.py` — it lifts
+   the DDL straight out of `schema.sql` so the two cannot drift. Until it has
+   run, prod answers 202 with everything in `rejected` and logs
+   "no such table: track_events" per batch. **This must happen before the
+   next deploy of the frontend that posts events.**
+2. **Make `/similar` read it.** Nothing consumes `user_track_stats` yet. The
+   ranking change is the whole point of this work: it should read the `u_*`
+   family for preference (and may use `last_played` for recency), and must
+   not mix in the `s_*` family.
+3. **Use `s_*` to grade DJ mode**, which is currently unmeasured —
+   `s_complete_count / s_end_count` per user is a direct completion rate for
+   recommendations the DJ chose.
+4. **Retention.** `track_events` grows without bound and nothing prunes it.
+   Not urgent at current volume, but the aggregate is what queries read, so
+   old raw events can be rolled off once there is a reason to.
+5. **Backfill is impossible.** There is no historical play data anywhere —
+   the counters start from the first event posted after this ships.
+
+### Found while planning the DJ recency re-rank (2026-10-02)
+
+Plan: `docs/dj-recency-plan.md`. Nothing built. Two findings that outlive it:
+
+- **`total_played_ms` is identically 0 for completed plays.** **verified**,
+  20/20 local events: every `play_end` with `reason='completed'` arrives with
+  `position_ms = 0` and `duration_ms = NULL`; only skips carry a real position.
+  `frontend-next/src/lib/listenLog.js` `endPlay()` already anticipates the
+  Spotify playhead-reads-zero case but guards the fix on `duration != null`,
+  and the wall-clock fallback above it only fires when `position == null` — a
+  reported finite 0 slips through both. **[frontend contract]** — the fix is in
+  a frontend-owned file. Until then `total_played_ms` is not a listening-time
+  measure and nothing may be derived from it; skip depth must come from
+  `*_skip_position_ms_sum` against `tracks.duration_ms`.
+- **The `u_*` family is empty.** **verified**, 20/20 local events are
+  `vibe_source='system', dj_mode=1`. Item 2 above ("`/similar` should read the
+  `u_*` family for preference") would read all zeros today. The preference half
+  of the split is unvalidated end to end; confirm it with one manual slider
+  drag before building on it.
+- `last_played` is written on every accepted event including a skip, so it
+  means "last touched", not "last listened". Correct for recency, wrong for
+  anyone reading it as listening history.
+
 
 ## Checked and clean
 
