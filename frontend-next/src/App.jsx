@@ -13,7 +13,7 @@ import AdminPage from './features/admin/AdminPage';
  */
 function SpotifyCallback() {
   const [params, setParams] = useSearchParams();
-  const { exchangeCode, consumePkcePending } = useSpotifyAuth();
+  const { exchangeCode, consumePkcePending, configReady } = useSpotifyAuth();
   const navigate = useNavigate();
 
   /*
@@ -40,6 +40,17 @@ function SpotifyCallback() {
 
   useEffect(() => {
     if (!code && !error) return;
+    /*
+     * Wait for the Spotify config before touching anything.
+     *
+     * client_id and redirect_uri come from the backend a round trip after
+     * mount, but this effect fires on the first render — so running now
+     * posts both of them blank and Spotify replies invalid_client. The
+     * marker below is one-shot, so that failed attempt was also the only
+     * attempt: by the time the config arrived there was nothing left to
+     * retry with. Bail BEFORE consuming it and let the effect re-run.
+     */
+    if (!configReady) return;
     // The login feature's Spotify sign-in ALSO returns this way, but that
     // code is redeemed server-side by /api/auth/spotify-oauth. Authorization
     // codes are single-use, so redeeming it here as well would burn it and
@@ -59,7 +70,7 @@ function SpotifyCallback() {
     }
     exchangeCode(code).finally(scrub);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code, error]);
+  }, [code, error, configReady]);
 
   return null;
 }

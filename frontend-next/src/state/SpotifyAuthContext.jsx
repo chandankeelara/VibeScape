@@ -97,7 +97,19 @@ const sha256 = (input) => crypto.subtle.digest('SHA-256', new TextEncoder().enco
 
 export function SpotifyAuthProvider({ userId, children }) {
   const toast = useToast();
-  const [config, setConfig] = useState({ clientId: '', redirectUri: '' });
+  /*
+   * `loaded` is not cosmetic. clientId and redirectUri arrive from the
+   * backend one network round trip after mount, and the ?code= return leg
+   * fires its effect immediately — so anything that reads this config on
+   * mount will read two empty strings unless it waits. That produced a
+   * token exchange posted with client_id= and redirect_uri= blank, which
+   * Spotify answers with invalid_client.
+   *
+   * It flips on failure too: "we asked and got nothing" has to be
+   * distinguishable from "we have not asked yet", or a backend that cannot
+   * answer leaves callers waiting forever.
+   */
+  const [config, setConfig] = useState({ clientId: '', redirectUri: '', loaded: false });
   const [token, setTokenState] = useState('');
   const [profile, setProfile] = useState(null);
   const [expiresAt, setExpiresAt] = useState(null);
@@ -106,8 +118,12 @@ export function SpotifyAuthProvider({ userId, children }) {
 
   useEffect(() => {
     api.spotifyConfig()
-      .then((j) => setConfig({ clientId: j.client_id || '', redirectUri: j.redirect_uri || '' }))
-      .catch(() => {/* connection issues surface via health check */});
+      .then((j) => setConfig({
+        clientId: j.client_id || '',
+        redirectUri: j.redirect_uri || '',
+        loaded: true,
+      }))
+      .catch(() => setConfig((c) => ({ ...c, loaded: true })));
   }, []);
 
   const clear = useCallback(() => {
@@ -161,8 +177,11 @@ export function SpotifyAuthProvider({ userId, children }) {
 
   /** Kick off the PKCE redirect. */
   const signIn = useCallback(async () => {
-    if (!config.clientId) {
-      toast('Spotify not configured — set SPOTIFY_CLIENT_ID on the backend.', 'warning');
+    if (!config.clientId || !config.redirectUri) {
+      // redirect_uri matters as much as the id: Spotify requires the token
+      // request to repeat the authorize request's value exactly, so starting
+      // with a blank one guarantees a failure on the return leg instead.
+      toast('Spotify not configured — set SPOTIFY_CLIENT_ID and SPOTIFY_REDIRECT_URI on the backend.', 'warning');
       return;
     }
     const verifier = randomString(96);
@@ -195,6 +214,13 @@ export function SpotifyAuthProvider({ userId, children }) {
 
   /** Exchange ?code= on return from Spotify. */
   const exchangeCode = useCallback(async (code) => {
+    // Posting blank credentials gets invalid_client and burns nothing, but
+    // the caller consumes its one-shot marker either way — so fail loudly
+    // rather than spending the attempt on a request that cannot succeed.
+    if (!config.clientId || !config.redirectUri) {
+      toast('Spotify is not configured on this server.', 'error');
+      return false;
+    }
     let verifier = '';
     try { verifier = localStorage.getItem(keys.verifier) || ''; } catch {}
     const body = new URLSearchParams({
@@ -288,6 +314,8 @@ export function SpotifyAuthProvider({ userId, children }) {
       scope: SCOPE,
       scopeVersion: SCOPE_VERSION,
       expiresAt,
+      /** False until /api/spotify/config has answered. See the state above. */
+      configReady: config.loaded,
       isConnected: !!token,
       isPremium: profile?.product === 'premium',
       signIn,
