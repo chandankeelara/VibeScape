@@ -24,6 +24,7 @@ import { usePlayer } from '../../state/PlayerContext';
 import { useSpotifyAuth } from '../../state/SpotifyAuthContext';
 import { useFocusTrap } from './useFocusTrap';
 import { isPlaylistLink, parsePlaylistId } from './playlist';
+import { useSyncJob } from './SyncJobProvider';
 import styles from './SyncModal.module.css';
 
 
