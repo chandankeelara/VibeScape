@@ -26,7 +26,6 @@ import { useFocusTrap } from './useFocusTrap';
 import { isPlaylistLink, parsePlaylistId } from './playlist';
 import styles from './SyncModal.module.css';
 
-const TERMINAL = new Set(['complete', 'error', 'cancelled']);
 
 const ZERO_PROGRESS = {
   processed: 0,
@@ -45,25 +44,6 @@ function SpotifyMark({ size = 24 }) {
   );
 }
 
-/** Three-bucket completion summary, worded exactly as the legacy app. */
-function completionSummary(s) {
-  const nAdded = s.added_to_library || 0;
-  const nAlready = s.already_in_library || 0;
-  const nQueued = s.queued_for_analysis || 0;
-  const total = s.total || 0;
-  const playable = nAdded + nAlready;
-  let out =
-    `${playable} of ${total} playable in your library now — ` +
-    `${nAdded} added, ${nAlready} already yours`;
-  if (nQueued > 0) {
-    out +=
-      `. ${nQueued} queued for analysis — they'll appear once the ` +
-      'background worker finishes them.';
-  } else {
-    out += '.';
-  }
-  return out;
-}
 
 function SyncModalInner({ onClose, defaultTab }) {
   const toast = useToast();
@@ -75,11 +55,36 @@ function SyncModalInner({ onClose, defaultTab }) {
   // Smart default (legacy openSyncModal): Spotify-connected users land on the
   // library tab; everyone else on url, their only working option.
   const [tab, setTab] = useState(defaultTab || (signedIn ? 'library' : 'url'));
-  const [phase, setPhase] = useState('pick'); // pick | progress | complete | error
-  const [errorMsg, setErrorMsg] = useState('');
-  const [jobId, setJobId] = useState(null);
-  const [noteShown, setNoteShown] = useState(false);
-  const [summary, setSummary] = useState('');
+  /*
+   * The job itself lives in SyncJobProvider, above this modal, so closing the
+   * window does not unmount the poll. This component now owns only which
+   * SCREEN it is showing — picking sources versus watching a job — and reads
+   * everything about the job from the provider.
+   */
+  const job = useSyncJob();
+  const [picking, setPicking] = useState(true);
+
+  const jobPhase = job ? job.phase : 'idle';
+  // 'pick' while choosing or idle; otherwise mirror the job.
+  const phase =
+    picking && jobPhase === 'idle'
+      ? 'pick'
+      : jobPhase === 'running'
+        ? 'progress'
+        : jobPhase === 'complete'
+          ? 'complete'
+          : jobPhase === 'error'
+            ? 'error'
+            : 'pick';
+
+  const setPhase = useCallback((next) => {
+    // Only 'pick' is this component's to set now; the rest is the job's.
+    if (next === 'pick') setPicking(true);
+  }, []);
+
+  const jobId = job ? job.jobId : null;
+  const errorMsg = job ? job.errorMsg : '';
+  const summary = job ? job.summary : '';
 
   const [liked, setLiked] = useState(true);
   const [top, setTop] = useState(false);
@@ -107,9 +112,9 @@ function SyncModalInner({ onClose, defaultTab }) {
 
   /** The only path that actually stops the job. */
   const cancelJob = useCallback(() => {
-    if (jobId) api.cancelIngest(jobId).catch(() => {});
+    job?.cancel();
     onClose?.();
-  }, [jobId, onClose]);
+  }, [job, onClose]);
 
   const cardRef = useFocusTrap(true, close);
 
@@ -159,46 +164,10 @@ function SyncModalInner({ onClose, defaultTab }) {
         : 'Not a Spotify playlist URL';
 
   /* -------------------------------------------------------------- polling */
+  /* Owned by SyncJobProvider — see the note at the top of this component.
+     The modal only reads the result. */
 
-  const status = useQuery({
-    queryKey: ['ingest-status', jobId],
-    queryFn: () => api.ingestStatus(jobId),
-    enabled: !!jobId,
-    staleTime: 0,
-    gcTime: 0,
-    // Replaces the legacy setInterval(pollSyncStatus, 1000). Returning false
-    // on a terminal status is what stops the loop.
-    refetchInterval: (q) => (TERMINAL.has(q.state.data?.status) ? false : 1000),
-    refetchIntervalInBackground: true,
-    retry: false,
-  });
-
-  const s = status.data;
-
-  useEffect(() => {
-    if (!s) return;
-    // A job-level note can arrive on the 202 OR mid-flight here (the silent
-    // follow that unlocks playlist track access). Show it once per job.
-    if (s.note && !noteShown) {
-      toast(s.note, 'info');
-      setNoteShown(true);
-    }
-    if (s.status === 'complete') {
-      setSummary(completionSummary(s));
-      setPhase('complete');
-      // An ingest changes what's in the user's library, so anything that
-      // reports library membership is now stale: the search dropdown's
-      // in-library badges (port-search caches under ['search']) and any
-      // track list.
-      queryClient.invalidateQueries({ queryKey: ['search'] });
-      queryClient.invalidateQueries({ queryKey: ['tracks'] });
-    } else if (s.status === 'error') {
-      setErrorMsg(s.error_message || 'Sync failed.');
-      setPhase('error');
-    }
-  }, [s, noteShown, toast, queryClient]);
-
-  const progress = phase === 'progress' ? { ...ZERO_PROGRESS, ...(s || {}) } : ZERO_PROGRESS;
+  const progress = job ? job.progress : ZERO_PROGRESS;
   const pct =
     progress.total > 0
       ? Math.min(100, Math.round(((progress.processed || 0) / progress.total) * 100))
@@ -219,26 +188,16 @@ function SyncModalInner({ onClose, defaultTab }) {
         },
         token
       ),
-    onMutate: () => {
-      setNoteShown(false);
-      setPhase('progress');
-    },
+    onMutate: () => setPicking(false),
     onSuccess: (j) => {
       if (!j?.job_id) {
-        setErrorMsg('Could not start sync. Try again.');
-        setPhase('error');
+        job?.fail('Could not start sync. Try again.');
         return;
       }
-      if (j.note) {
-        toast(j.note, 'info');
-        setNoteShown(true);
-      }
-      setJobId(j.job_id);
+      if (j.note) toast(j.note, 'info');
+      job?.begin(j.job_id);
     },
-    onError: () => {
-      setErrorMsg('Could not start sync. Try again.');
-      setPhase('error');
-    },
+    onError: () => job?.fail('Could not start sync. Try again.'),
   });
 
   const startPublic = useMutation({
@@ -254,20 +213,16 @@ function SyncModalInner({ onClose, defaultTab }) {
     },
     onMutate: () => {
       setUrlError('');
-      setNoteShown(false);
-      setPhase('progress');
+      setPicking(false);
     },
     onSuccess: (j) => {
       if (!j?.job_id) {
         toast('Could not add playlist. Try again.', 'error');
-        setPhase('pick');
+        setPicking(true);
         return;
       }
-      if (j.note) {
-        toast(j.note, 'info');
-        setNoteShown(true);
-      }
-      setJobId(j.job_id);
+      if (j.note) toast(j.note, 'info');
+      job?.begin(j.job_id);
     },
     onError: (e) => {
       // Domain-specific codes per the backend contract. All of them drop back
@@ -442,9 +397,8 @@ function SyncModalInner({ onClose, defaultTab }) {
                 type="button"
                 onClick={() => {
                   // Back to the picker the failure came from, selection intact.
-                  setJobId(null);
-                  setErrorMsg('');
-                  setPhase('pick');
+                  job?.dismiss();
+                  setPicking(true);
                 }}
               >
                 Retry

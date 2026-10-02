@@ -1,0 +1,137 @@
+/* ------------------------------------------------------------- sync pill
+ *
+ * The minimized import. See SyncPill.jsx for why this exists rather than a
+ * toast.
+ *
+ * Sits bottom-left, clear of everything that already claims screen edges: the
+ * queue sidebar (right), the mobile queue sheet and FAB (bottom-right), and
+ * the mascot dock (full width but pointer-events:none and purely decorative,
+ * so overlapping it costs nothing).
+ */
+
+.pill {
+  position: fixed;
+  left: var(--sp-4);
+  bottom: var(--sp-4);
+  z-index: var(--z-overlay);
+
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  max-width: min(420px, calc(100vw - 2 * var(--sp-4)));
+  padding: 10px 10px 10px 14px;
+
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  background: color-mix(in oklab, var(--surface-2) 92%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.6);
+
+  /* The bar fills the pill itself, so it has to clip. */
+  overflow: hidden;
+  isolation: isolate;
+
+  animation: pillIn var(--dur) var(--ease-out);
+}
+
+@keyframes pillIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.failed { border-color: color-mix(in oklab, var(--danger) 55%, var(--border-strong)); }
+
+/*
+ * Progress as a tinted wash behind the content rather than a drawn bar.
+ * At this size a track-and-fill is three more edges competing with the text;
+ * a filling background says the same thing and stays quiet.
+ */
+.fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: -1;
+  background: color-mix(in oklab, var(--vibe-accent, var(--accent)) 22%, transparent);
+  transition: width 420ms var(--ease-out);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.detail {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  flex: none;
+}
+
+.action {
+  padding: 5px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text-2);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+}
+
+.action:hover { color: var(--text); border-color: var(--border-strong); }
+
+.close {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--text-4);
+  cursor: pointer;
+}
+
+.close:hover { color: var(--text-2); background: rgba(255, 255, 255, 0.06); }
+
+.action:focus-visible,
+.close:focus-visible {
+  outline: 2px solid var(--vibe-accent, var(--accent));
+  outline-offset: 2px;
+}
+
+/* Full width on phones, where a floating pill at 420px would cover the
+   transport it is meant to sit beside. */
+@media (max-width: 640px) {
+  .pill {
+    left: var(--sp-3);
+    right: var(--sp-3);
+    max-width: none;
+    /* Above the queue FAB, which owns the bottom-right corner. */
+    bottom: calc(var(--sp-4) + 64px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pill { animation: none; }
+  .fill { transition: none; }
+}

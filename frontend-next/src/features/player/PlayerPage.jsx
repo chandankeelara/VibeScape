@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { usePlayer } from '../../state/PlayerContext';
 import { SearchBar } from '../search';
 import { QueueSidebar } from '../queue';
+import { SyncJobProvider, SyncPill, useSyncJob } from '../sync';
 import TopBar from './TopBar';
 import ArtStage from './ArtStage';
 import TrackMeta from './TrackMeta';
@@ -13,6 +14,14 @@ import BitDock from './bit/BitDock';
 import styles from './PlayerPage.module.css';
 
 export default function PlayerPage() {
+  return (
+    <SyncJobProvider>
+      <PlayerStage />
+    </SyncJobProvider>
+  );
+}
+
+function PlayerStage() {
   const { current, fetchForVibe, vibe } = usePlayer();
   const [metricsOpen, setMetricsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -28,6 +37,8 @@ export default function PlayerPage() {
     if (!current) fetchForVibe(vibe);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useAutoMinimise(syncOpen, () => setSyncOpen(false));
 
   return (
     <div className={styles.shell}>
@@ -66,6 +77,8 @@ export default function PlayerPage() {
       {/* Fixed to the bottom of the stage column and pointer-events:none, so
           it sits outside the grid and cannot reflow or block anything. */}
       <BitDock />
+
+      <SyncPill onOpen={() => setSyncOpen(true)} />
 
       <LazyPanels
         metricsOpen={metricsOpen}
@@ -106,4 +119,25 @@ function LazyPanels({ metricsOpen, onCloseMetrics, helpOpen, onCloseHelp, syncOp
       {helpOpen && HelpPopover && <HelpPopover open onClose={onCloseHelp} />}
     </>
   );
+}
+
+/**
+ * Gets the sync window out of the way the moment music can play.
+ *
+ * The import keeps running in the background and the pill carries it from
+ * there, so there is nothing left for the modal to do — and every extra
+ * second it stays up is a second the user is watching a progress bar instead
+ * of listening. The provider raises the flag once per job and this consumes
+ * it, so re-opening the window mid-import does not slam it shut again.
+ */
+function useAutoMinimise(isOpen, close) {
+  const job = useSyncJob();
+  const flagged = job ? job.justBecamePlayable : false;
+  const clear = job ? job.clearPlayableFlag : null;
+
+  useEffect(() => {
+    if (!flagged) return;
+    if (isOpen) close();
+    clear?.();
+  }, [flagged, isOpen, close, clear]);
 }
