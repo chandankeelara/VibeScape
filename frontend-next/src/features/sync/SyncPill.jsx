@@ -19,6 +19,7 @@ export default function SyncPill({ onOpen }) {
   const [dismissedDone, setDismissedDone] = useState(false);
 
   const phase = job ? job.phase : 'idle';
+  const dismiss = job?.dismiss;
 
   /*
    * A finished job clears itself after a beat.
@@ -26,12 +27,21 @@ export default function SyncPill({ onOpen }) {
    * Long enough to register that it completed, short enough that it is gone
    * before it becomes furniture. Errors do NOT auto-clear — those need a
    * decision, so they wait to be dismissed.
+   *
+   * It clears the JOB, not just this pill. Hiding the pill on its own left
+   * the provider sitting at 'complete' forever, and the sync modal mirrors
+   * the provider — so the next time the window was opened it showed the
+   * finished job's summary instead of the picker, with no way to import
+   * anything else.
    */
   useEffect(() => {
     if (phase !== 'complete') return undefined;
-    const t = setTimeout(() => setDismissedDone(true), 6000);
+    const t = setTimeout(() => {
+      setDismissedDone(true);
+      dismiss?.();
+    }, 6000);
     return () => clearTimeout(t);
-  }, [phase]);
+  }, [phase, dismiss]);
 
   useEffect(() => {
     if (phase === 'running') setDismissedDone(false);

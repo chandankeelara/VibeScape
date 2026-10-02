@@ -157,7 +157,13 @@ def get_top_tracks_count(token: str) -> int:
     return min(int(data.get("total") or 0), 50)
 
 
-def get_playlists(token: str, max_items: int = 200) -> list[dict]:
+def get_playlists(token: str, max_items: int = 500) -> list[dict]:
+    """List the caller's playlists (owned and followed), 50 per request.
+
+    The cap used to be 200, which truncated silently: a larger account simply
+    never saw the rest in the sync picker and had no way to tell. 500 is ten
+    round trips at worst and runs once, when the window opens.
+    """
     out: list[dict] = []
     for item in _paginate(f"{BASE}/me/playlists", token, {"limit": 50}, max_items=max_items):
         out.append(item)

@@ -143,6 +143,40 @@
   color: var(--text-4);
 }
 
+/* The playlist heading carries the bulk-select control, so it becomes a row
+   rather than a bare label. */
+.sectionHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+/*
+ * Bulk select. Syncing is opt-in per playlist, which is right for a first
+ * run but turns "import everything I have" into fifty clicks — this is the
+ * one-click form of the same intent.
+ */
+.selectAll {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: none;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.selectAll:hover { color: var(--text); border-color: var(--border-strong); }
+
+.selectAll:focus-visible {
+  outline: 2px solid var(--vibe-accent, var(--accent));
+  outline-offset: 2px;
+}
+
 .list {
   display: flex;
   flex-direction: column;

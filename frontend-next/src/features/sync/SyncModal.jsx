@@ -117,6 +117,29 @@ function SyncModalInner({ onClose, defaultTab }) {
     onClose?.();
   }, [job, onClose]);
 
+  /*
+   * Back to the picker from a finished job.
+   *
+   * Syncing is deliberately selective — you choose which playlists come
+   * across — so one sync is almost never the last one. But a finished job
+   * stays 'complete' in the provider until something clears it, and the
+   * modal mirrors the job, so reopening it landed on "Library synced" with
+   * no way back to the list. Importing a second playlist meant reloading the
+   * page.
+   *
+   * Clearing the job is what makes the modal usable again, and the selection
+   * resets with it: the sources that just synced are done, and re-ticking
+   * them would only walk Spotify again for rows that are already linked.
+   */
+  const syncMore = useCallback(() => {
+    job?.dismiss();
+    setPicking(true);
+    setTab(signedIn ? 'library' : 'url');
+    setLiked(false);
+    setTop(false);
+    setPicked(new Set());
+  }, [job, signedIn]);
+
   const cardRef = useFocusTrap(true, close);
 
   /* --------------------------------------------------------------- library */
@@ -142,6 +165,11 @@ function SyncModalInner({ onClose, defaultTab }) {
     for (const p of playlists) if (picked.has(p.id)) total += p.track_count || 0;
     return { liked, top, playlist_ids: ids, total, any: liked || top || ids.length > 0 };
   }, [liked, top, picked, playlists, library.data]);
+
+  const allPicked = playlists.length > 0 && playlists.every((p) => picked.has(p.id));
+
+  const toggleAllPlaylists = () =>
+    setPicked(allPicked ? new Set() : new Set(playlists.map((p) => p.id)));
 
   const togglePlaylist = (id) =>
     setPicked((prev) => {
@@ -457,6 +485,15 @@ function SyncModalInner({ onClose, defaultTab }) {
               </div>
               <p className={styles.titleMini}>Library synced</p>
               <p className={styles.hint}>{summary || 'All done.'}</p>
+              {/* Only the sources you ticked came across, so "sync more" is
+                  an ordinary next step rather than a recovery path. */}
+              <button
+                className={`${styles.btn} ${styles.btnSecondary}`}
+                type="button"
+                onClick={syncMore}
+              >
+                Sync more music
+              </button>
             </div>
           )}
 
@@ -581,7 +618,21 @@ function SyncModalInner({ onClose, defaultTab }) {
                     </label>
                   </div>
 
-                  <div className={styles.sectionTitle}>Your playlists</div>
+                  <div className={`${styles.sectionTitle} ${styles.sectionHead}`}>
+                    <span>
+                      Your playlists
+                      {playlists.length ? ` (${picked.size}/${playlists.length})` : ''}
+                    </span>
+                    {playlists.length > 0 && (
+                      <button
+                        className={styles.selectAll}
+                        type="button"
+                        onClick={toggleAllPlaylists}
+                      >
+                        {allPicked ? 'Clear' : 'Select all'}
+                      </button>
+                    )}
+                  </div>
                   <div className={styles.list}>
                     {playlists.length === 0 ? (
                       <div className={styles.hint}>No playlists found.</div>
