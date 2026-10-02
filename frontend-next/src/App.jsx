@@ -15,24 +15,51 @@ function SpotifyCallback() {
   const [params, setParams] = useSearchParams();
   const { exchangeCode, consumePkcePending } = useSpotifyAuth();
   const navigate = useNavigate();
-  const code = params.get('code');
+
+  /*
+   * The code arrives as `spotify_code`, NOT `code`.
+   *
+   * Every authorize request in this app — login and in-app connect alike —
+   * uses SPOTIFY_REDIRECT_URI, which points at the backend's /callback
+   * bridge page (backend/app.py:1700). That page does not hand the query
+   * through untouched: it RENAMES the parameters on the way back, so
+   * `?code=` becomes `?spotify_code=` (app.py:1672).
+   *
+   * This handler only ever looked for `code`, so it never fired. The
+   * TopBar's "Sign in with Spotify" redirected, came back through the
+   * bridge, and silently dropped the code — the button simply stayed
+   * unconnected. The login path survived because useSpotifyLogin reads both
+   * names (useSpotifyLogin.js:53), but that hook is mounted only while
+   * signed OUT, so it could not rescue an in-app connect.
+   *
+   * Both names are accepted here for the same reason it reads both there:
+   * a direct redirect_uri that skips the bridge still yields plain `code`.
+   */
+  const code = params.get('spotify_code') || params.get('code');
+  const error = params.get('spotify_error') || params.get('error');
 
   useEffect(() => {
-    if (!code) return;
-    // The login feature's Spotify sign-in ALSO returns with ?code=, but that
+    if (!code && !error) return;
+    // The login feature's Spotify sign-in ALSO returns this way, but that
     // code is redeemed server-side by /api/auth/spotify-oauth. Authorization
     // codes are single-use, so redeeming it here as well would burn it and
     // fail with invalid_grant. Only act on a redirect this provider started.
     if (!consumePkcePending()) return;
 
-    exchangeCode(code).finally(() => {
-      params.delete('code');
-      params.delete('state');
+    const scrub = () => {
+      ['spotify_code', 'spotify_error', 'spotify_state', 'code', 'error', 'state']
+        .forEach((k) => params.delete(k));
       setParams(params, { replace: true });
       navigate('/', { replace: true });
-    });
+    };
+
+    if (error) {
+      scrub();
+      return;
+    }
+    exchangeCode(code).finally(scrub);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code]);
+  }, [code, error]);
 
   return null;
 }

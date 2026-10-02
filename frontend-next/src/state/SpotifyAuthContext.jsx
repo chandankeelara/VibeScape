@@ -182,7 +182,13 @@ export function SpotifyAuthProvider({ userId, children }) {
       code_challenge_method: 'S256',
       code_challenge: challenge,
       scope: SCOPE,
-      state: randomString(16),
+      // The /callback bridge routes the return leg by `state`, mapping known
+      // markers to fixed paths (backend/app.py:1686). An unrecognised value
+      // falls through to the same default today, so a random one happened to
+      // work — but it worked by accident, and the bridge's table is where a
+      // second client would be routed. Declare the marker the app actually
+      // is. CSRF protection here is PKCE, not state.
+      state: 'vs_next',
     });
     window.location.href = `https://accounts.spotify.com/authorize?${params}`;
   }, [config, keys, toast]);
