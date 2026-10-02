@@ -765,6 +765,43 @@ def auth_spotify_link(body: SpotifyLinkBody, sess: dict = Depends(require_user))
         raise HTTPException(status_code=422, detail={"error": "spotify_user_id required"})
     conn = get_conn()
     try:
+        """
+        This used to be a bare UPDATE, which had two problems.
+
+        The visible one: users.spotify_user_id is UNIQUE, so linking an
+        identity that already belonged to another row raised IntegrityError
+        out of the handler as a 500. That happens on an ordinary path — sign
+        in with email, then connect the same Spotify account you already made
+        a Spotify-login account with.
+
+        The one the constraint was accidentally hiding: guests all share a
+        single row keyed on display_name='Guest' (see auth_guest). Linking a
+        real person's Spotify identity to it would have stamped their name
+        and account onto the demo profile EVERY other guest is using. That is
+        refused outright, not reported as a conflict, because it is not
+        something the caller should be able to retry their way out of.
+        """
+        if (sess.get("display_name") or "") == "Guest":
+            return {
+                "ok": False,
+                "error": "guest_cannot_link",
+                "spotify_user_id": body.spotify_user_id,
+            }
+
+        owner = conn.execute(
+            "SELECT id FROM users WHERE spotify_user_id = ?",
+            (body.spotify_user_id,),
+        ).fetchone()
+        if owner and int(owner["id"]) != int(sess["user_id"]):
+            # Someone else holds it. Not an error the user caused, and the
+            # caller treats this as fire-and-forget, so say so plainly rather
+            # than raising.
+            return {
+                "ok": False,
+                "error": "spotify_account_already_linked",
+                "spotify_user_id": body.spotify_user_id,
+            }
+
         conn.execute(
             "UPDATE users SET spotify_user_id = ?, spotify_display_name = ? WHERE id = ?",
             (body.spotify_user_id, body.spotify_display_name, sess["user_id"]),
@@ -3518,6 +3555,431 @@ def ingest_cancel(job_id: str, sess: dict = Depends(require_user)):
     return Response(status_code=204)
 
 
+
+# ---------------- Listening events (telemetry) ----------------
+#
+# POST /api/events is the only writer of track_events and the only writer of
+# user_track_stats. Design constraints, all of them deliberate:
+#
+#   * INLINE ONLY. No background thread, no queue, no worker. Cloud Run runs
+#     --min-instances 0 --max-instances 3 with CPU throttling, so an
+#     in-process worker only advances while a request happens to be in flight
+#     and dies when the instance is reclaimed (backlog 1.5). The handler
+#     resolves, inserts, upserts and returns.
+#   * NEVER 4xx/5xx FOR DATA. Telemetry must not be able to break playback or
+#     surface an error in the client. A malformed body, a malformed event, an
+#     unknown track, an over-long batch, even a DB failure all come back 202
+#     with the event counted in `rejected`. The only non-202 outcome is 401
+#     from require_user, which is an auth failure, not a data failure.
+#   * EVENTS ARE TRUTH, STATS ARE A CACHE. track_events is append-only: one
+#     INSERT per event, no UPDATE, no DELETE. user_track_stats is a
+#     materialised aggregate of those same events, written in the same
+#     request so /similar can read per-user behaviour without scanning the
+#     log per candidate. Every column in it is a pure function of
+#     track_events, so when the two disagree the events win and
+#     scripts/rebuild_user_track_stats.py recomputes the aggregate from
+#     scratch. That is what makes this safe despite Turso having no
+#     transactions (backlog 2.2) — the insert and the upsert are two
+#     independent statements and the cache can drift between them.
+#   * NOTHING ELSE MAY WRITE user_track_stats. The moment a second writer
+#     with its own idea of what a "play" is touches these columns they stop
+#     being rebuildable, and this becomes backlog 1.2 again.
+#
+# A batch is written as multi-row INSERT ... VALUES chunks: still one row per
+# event, but on Turso each execute() is a separate HTTPS round trip
+# (backend/db_client.py), so a 50-event batch would otherwise be 50 of them.
+
+_EVENT_BATCH_CAP = 50          # events per request; the overflow is rejected, not the request
+_EVENT_INSERT_CHUNK = 25       # track_events rows per statement (25 x 12 = 300 bound params)
+_STATS_UPSERT_CHUNK = 20       # user_track_stats rows per statement (20 x 28 = 560 params)
+_EVENT_TYPES = ("play_start", "play_end")
+_VIBE_SOURCES = ("user", "system")
+
+
+def _ev_int(value, lo=None, hi=None):
+    """Coerce a JSON value to int, or None if it is not a number or falls
+    outside [lo, hi]. Out of range is nulled rather than clamped, so a client
+    bug stays visible as missing data instead of masquerading as a real
+    value."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    if lo is not None and n < lo:
+        return None
+    if hi is not None and n > hi:
+        return None
+    return n
+
+
+def _ev_text(value, limit=32):
+    if not isinstance(value, str):
+        return None
+    s = value.strip()
+    return s[:limit] if s else None
+
+
+def _ev_bool(value):
+    """Strict tri-state: True/False (or the strings/ints that unambiguously
+    mean them) → 1/0; anything else → None. No default — see _normalize_event
+    on why a guessed label is worse than a null."""
+    if value is True or value is False:
+        return 1 if value else 0
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return int(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("true", "1", "yes"):
+            return 1
+        if v in ("false", "0", "no"):
+            return 0
+    return None
+
+
+def _normalize_event(raw):
+    """Validate one client event. Returns a dict ready for insertion (with the
+    track still unresolved — an internal id under `_tid` or a spotify_id under
+    `_key`) or None if the event is unusable.
+
+    Only two things are structurally required: a known `type` and some track
+    identity. Everything else is best-effort — `reason` and `source` are
+    stored verbatim after trimming rather than validated against a vocabulary,
+    so an unexpected client value shows up in the data instead of being
+    silently nulled. The aggregate counters do validate `reason`, because a
+    counter has to pick a bucket.
+
+    `vibe_source` and `dj_mode` are expected on every event but are NEVER
+    defaulted when missing or unrecognised — they are recorded as NULL
+    ("unknown") and the event is still accepted. A guessed label is worse
+    than a null here: mislabelling the system's own slider echo as the user's
+    stated preference is how the recommender ends up training on its own
+    output.
+    """
+    if not isinstance(raw, dict):
+        return None
+    etype = _ev_text(raw.get("type"), 16)
+    if etype not in _EVENT_TYPES:
+        return None
+
+    tid = _ev_int(raw.get("track_id"), lo=1)
+    key = None
+    if tid is None:
+        key = _ev_text(raw.get("spotify_id"), 64)
+        if not key:
+            return None
+
+    vsrc = (_ev_text(raw.get("vibe_source"), 16) or "").lower()
+    if vsrc not in _VIBE_SOURCES:
+        vsrc = None
+
+    return {
+        "_tid": tid,
+        "_key": key,
+        "type": etype,
+        "reason": _ev_text(raw.get("reason"), 32) if etype == "play_end" else None,
+        "position_ms": _ev_int(raw.get("position_ms"), lo=0),
+        "duration_ms": _ev_int(raw.get("duration_ms"), lo=0),
+        "vibe": _ev_int(raw.get("vibe"), lo=0, hi=100),
+        "vibe_source": vsrc,
+        "dj_mode": _ev_bool(raw.get("dj_mode")),
+        "source": _ev_text(raw.get("source"), 32),
+        "client_ts": _ev_int(raw.get("client_ts"), lo=0),
+    }
+
+
+# Every additive counter in user_track_stats, in one place. The insert, the
+# ON CONFLICT arithmetic and scripts/rebuild_user_track_stats.py all derive
+# from this tuple, so adding a counter means touching exactly one list here
+# and one CASE expression in the rebuild script.
+#
+# The u_ (vibe_source='user') and s_ (vibe_source='system') families are
+# deliberately NOT merged — see the comment on user_track_stats in schema.sql.
+# u_ is stated preference; s_ is the DJ's own output coming back as a reward
+# signal. Averaging them trains the recommender on itself.
+_STATS_TOTALS = ("play_count", "end_count", "total_played_ms", "dj_play_count")
+_STATS_PER_LABEL = (
+    "play_count", "end_count", "complete_count", "skip_count", "replace_count",
+    "skip_position_ms_sum", "vibe_count", "vibe_sum", "vibe_sum_sq",
+)
+_STATS_PREFIX = {"user": "u_", "system": "s_"}
+_STATS_COUNTERS = (
+    _STATS_TOTALS
+    + tuple(f"u_{c}" for c in _STATS_PER_LABEL)
+    + tuple(f"s_{c}" for c in _STATS_PER_LABEL)
+)
+
+
+def _accumulate_stats(acc: dict, ev: dict) -> None:
+    """Fold one accepted event into the per-track aggregate delta.
+
+    This is the single definition of what each counter means. The rebuild
+    script implements the same arithmetic in SQL; if the two ever disagree,
+    this one is the spec.
+
+    An event with no vibe_source label lands in the label-agnostic totals
+    only, so u_* + s_* can be less than play_count / end_count. That is
+    correct and intended: an unlabelled event is evidence that a play
+    happened, but not evidence of whose intent set the vibe.
+    """
+    # `p` is the column prefix of the population this event belongs to, or
+    # None when the client did not tell us who moved the slider.
+    p = _STATS_PREFIX.get(ev["vibe_source"])
+
+    if ev["type"] == "play_start":
+        acc["play_count"] += 1
+        if ev["dj_mode"] == 1:
+            acc["dj_play_count"] += 1
+        if p:
+            acc[p + "play_count"] += 1
+            # vibe is sampled on play_start only: one sample per play, so a
+            # play_start + play_end pair for the same listen cannot count the
+            # same slider position twice.
+            if ev["vibe"] is not None:
+                acc[p + "vibe_count"] += 1
+                acc[p + "vibe_sum"] += ev["vibe"]
+                acc[p + "vibe_sum_sq"] += ev["vibe"] * ev["vibe"]
+        return
+
+    # play_end
+    pos = ev["position_ms"] or 0
+    acc["end_count"] += 1
+    acc["total_played_ms"] += pos
+    reason = (ev["reason"] or "").lower()
+    if reason == "skipped":
+        acc["_skipped"] = True
+    if not p:
+        return
+    acc[p + "end_count"] += 1
+    if reason == "completed":
+        acc[p + "complete_count"] += 1
+    elif reason == "skipped":
+        acc[p + "skip_count"] += 1
+        acc[p + "skip_position_ms_sum"] += pos
+    elif reason == "replaced":
+        acc[p + "replace_count"] += 1
+    # An unrecognised reason still counts in end_count and total_played_ms and
+    # is preserved verbatim in track_events, so a client vocabulary change is
+    # recoverable by rebuilding.
+
+
+_STATS_COLS = (
+    ("user_id", "track_id") + _STATS_COUNTERS
+    + ("first_played_at", "last_played", "last_skipped_at", "updated_at")
+)
+
+
+def _upsert_track_stats(conn, user_id: int, groups: dict, now: str) -> None:
+    """Fold a batch of per-track deltas into user_track_stats.
+
+    One multi-row INSERT ... ON CONFLICT DO UPDATE per chunk. Keys are unique
+    within a statement (the caller groups by track_id), which is required —
+    SQLite cannot apply two conflicting updates from a single statement.
+    """
+    rows = []
+    for tid, acc in groups.items():
+        rows.append(
+            (user_id, tid)
+            + tuple(acc[c] for c in _STATS_COUNTERS)
+            + (
+                now,                                   # first_played_at (COALESCEd on conflict)
+                now,                                   # last_played
+                now if acc.get("_skipped") else None,   # last_skipped_at
+                now,                                   # updated_at
+            )
+        )
+
+    sums = ",\n              ".join(
+        f"{c} = user_track_stats.{c} + excluded.{c}" for c in _STATS_COUNTERS
+    )
+    sql_tail = f"""
+        ON CONFLICT(user_id, track_id) DO UPDATE SET
+              {sums},
+              first_played_at = COALESCE(user_track_stats.first_played_at, excluded.first_played_at),
+              last_played     = MAX(COALESCE(user_track_stats.last_played, ''), excluded.last_played),
+              last_skipped_at = NULLIF(MAX(COALESCE(user_track_stats.last_skipped_at, ''),
+                                           COALESCE(excluded.last_skipped_at, '')), ''),
+              updated_at      = excluded.updated_at
+    """
+    cols = ", ".join(_STATS_COLS)
+    width = len(_STATS_COLS)
+    for i in range(0, len(rows), _STATS_UPSERT_CHUNK):
+        chunk = rows[i:i + _STATS_UPSERT_CHUNK]
+        values = ",".join(["(" + ",".join("?" * width) + ")"] * len(chunk))
+        conn.execute(
+            f"INSERT INTO user_track_stats ({cols}) VALUES {values}" + sql_tail,
+            tuple(v for row in chunk for v in row),
+        )
+
+
+def _record_track_events(user_id: int, items: list) -> tuple:
+    """Resolve, log and aggregate a batch of already-capped client events.
+
+    Returns (accepted, rejected). Runs inline on a worker thread; cost is
+    2 SELECTs (batch-resolve by spotify_id and by id) + ceil(n/25) INSERTs
+    into track_events + ceil(distinct_tracks/20) upserts into
+    user_track_stats.
+
+    `accepted` means "durably written to track_events". The aggregate upsert
+    is attempted only for accepted events, and its failure is logged but does
+    not change the counts — the aggregate is rebuildable, the log is not.
+
+    An event whose track is not in the catalogue is rejected, never inserted
+    with a NULL track_id.
+    """
+    parsed = []
+    rejected = 0
+    for raw in items:
+        ev = _normalize_event(raw)
+        if ev is None:
+            rejected += 1
+        else:
+            parsed.append(ev)
+    if not parsed:
+        return 0, rejected
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_conn()
+    try:
+        want_sids = sorted({e["_key"] for e in parsed if e["_key"]})
+        want_ids = sorted({e["_tid"] for e in parsed if e["_tid"] is not None})
+
+        sid_to_id = {}
+        if want_sids:
+            qs = ",".join("?" * len(want_sids))
+            for r in conn.execute(
+                f"SELECT id, spotify_id FROM tracks WHERE spotify_id IN ({qs})",
+                tuple(want_sids),
+            ).fetchall():
+                sid_to_id[r["spotify_id"]] = int(r["id"])
+
+        known_ids = set()
+        if want_ids:
+            qs = ",".join("?" * len(want_ids))
+            for r in conn.execute(
+                f"SELECT id FROM tracks WHERE id IN ({qs})",
+                tuple(want_ids),
+            ).fetchall():
+                known_ids.add(int(r["id"]))
+
+        resolved = []   # [(track_id, event), ...]
+        for e in parsed:
+            tid = e["_tid"] if e["_tid"] in known_ids else sid_to_id.get(e["_key"])
+            if tid is None:
+                rejected += 1
+                continue
+            resolved.append((tid, e))
+        if not resolved:
+            return 0, rejected
+
+        accepted = 0
+        logged = []
+        for i in range(0, len(resolved), _EVENT_INSERT_CHUNK):
+            chunk = resolved[i:i + _EVENT_INSERT_CHUNK]
+            values = ",".join(["(?,?,?,?,?,?,?,?,?,?,?,?)"] * len(chunk))
+            params = []
+            for tid, e in chunk:
+                params.extend((
+                    user_id, tid, e["type"], e["reason"], e["position_ms"],
+                    e["duration_ms"], e["vibe"], e["vibe_source"], e["dj_mode"],
+                    e["source"], e["client_ts"], now,
+                ))
+            try:
+                conn.execute(
+                    "INSERT INTO track_events "
+                    "(user_id, track_id, type, reason, position_ms, duration_ms, "
+                    " vibe, vibe_source, dj_mode, source, client_ts, server_ts) "
+                    "VALUES " + values,
+                    tuple(params),
+                )
+                accepted += len(chunk)
+                logged.extend(chunk)
+            except Exception:
+                # Includes "no such table: track_events" on a Turso instance
+                # that has not had scripts/_turso_create_event_tables.py run
+                # against it. Loud in the log, invisible to the client.
+                log.exception("[events] track_events insert failed for %d event(s), user=%s",
+                              len(chunk), user_id)
+                rejected += len(chunk)
+
+        if logged:
+            groups = {}
+            for tid, e in logged:
+                acc = groups.get(tid)
+                if acc is None:
+                    acc = groups[tid] = {c: 0 for c in _STATS_COUNTERS}
+                _accumulate_stats(acc, e)
+            try:
+                _upsert_track_stats(conn, user_id, groups, now)
+            except Exception:
+                # The events are already logged, so this is recoverable:
+                # scripts/rebuild_user_track_stats.py rebuilds from them.
+                log.exception(
+                    "[events] user_track_stats upsert failed for user=%s, %d track(s); "
+                    "aggregate has drifted — run scripts/rebuild_user_track_stats.py",
+                    user_id, len(groups),
+                )
+            conn.commit()
+        return accepted, rejected
+    finally:
+        conn.close()
+
+
+@app.post("/api/events", status_code=202)
+async def post_track_events(request: Request, sess: dict = Depends(require_user)):
+    """Append listening events to track_events and fold them into
+    user_track_stats. Always 202.
+
+    Body: {"events": [ {...}, ... ]} — at most _EVENT_BATCH_CAP (50) events;
+    anything past the cap is counted in `rejected` rather than failing the
+    request. Per-event shape:
+
+        type         "play_start" | "play_end"             (required)
+        spotify_id   22-char Spotify id                    (required unless track_id)
+        track_id     internal tracks.id                    (alternative key)
+        position_ms  play_end: where playback stopped
+        duration_ms  play_end: track length, when known
+        reason       play_end: "completed" | "skipped" | "replaced"
+        vibe         slider value 0-100 at the time
+        vibe_source  "user" | "system" — who last set that slider value.
+                     Expected on every event; an absent or unrecognised value
+                     is stored as NULL and the event is still accepted.
+        dj_mode      true | false — was DJ mode active. Same NULL-not-guessed
+                     treatment as vibe_source.
+        source       "queue" | "dj" | "search" | "autoplay"
+        client_ts    epoch ms, client clock (untrusted; server_ts is authoritative)
+
+    Response: {"accepted": int, "rejected": int}, always HTTP 202. The two
+    counts sum to the number of events in the submitted array.
+
+    The skip is the point: `type=play_end, reason=skipped` is the only
+    explicit negative signal the system gets, which is why this is an event
+    log and not a play counter.
+    """
+    n_seen = 0
+    try:
+        payload = await request.json()
+        items = payload.get("events") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            log.warning("[events] user=%s posted a body with no events array",
+                        sess.get("user_id"))
+            return {"accepted": 0, "rejected": 0}
+        n_seen = len(items)
+        over = 0
+        if n_seen > _EVENT_BATCH_CAP:
+            over = n_seen - _EVENT_BATCH_CAP
+            items = items[:_EVENT_BATCH_CAP]
+        accepted, rejected = await run_in_threadpool(
+            _record_track_events, int(sess["user_id"]), items
+        )
+        return {"accepted": accepted, "rejected": rejected + over}
+    except Exception:
+        # Telemetry is never allowed to produce a client-visible error.
+        log.exception("[events] POST /api/events failed for user=%s", sess.get("user_id"))
+        return {"accepted": 0, "rejected": n_seen}
+
+
 # ---------------- Admin (chandan-only) ----------------
 # The user_id of the single admin is stored in an env var so it's
 # configurable per environment. Default = 1 (chandan on prod as of
@@ -3666,9 +4128,13 @@ def admin_user_tracks(
         rows = conn.execute(
             """
             SELECT t.id, t.title, t.artist, t.album, t.mood, t.vibe_score_ml,
-                   t.classification_source, ut.added_at, ut.play_count
+                   t.classification_source, ut.added_at,
+                   COALESCE(uts.play_count, 0) AS play_count,
+                   uts.last_played
             FROM user_tracks ut
             JOIN tracks t ON t.id = ut.track_id
+            LEFT JOIN user_track_stats uts
+                   ON uts.user_id = ut.user_id AND uts.track_id = ut.track_id
             WHERE ut.user_id = ?
             ORDER BY ut.added_at DESC
             LIMIT ? OFFSET ?
@@ -3688,7 +4154,13 @@ def admin_user_tracks(
                 "vibe_score_ml": r["vibe_score_ml"],
                 "classification_source": r["classification_source"],
                 "added_at": r["added_at"],
+                # play_count / last_played now come from user_track_stats, the
+                # materialised aggregate of track_events. The identically named
+                # user_tracks columns are the dead pre-telemetry originals —
+                # SUM(play_count) over them is 0 and always has been, because
+                # nothing ever wrote them. See docs/backend-todo.md.
                 "play_count": int(r["play_count"] or 0),
+                "last_played": r["last_played"],
             }
             for r in rows
         ]

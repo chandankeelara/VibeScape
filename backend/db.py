@@ -940,6 +940,47 @@ def ensure_db():
         conn.close()
 
 
+def _migrate_telemetry(conn: sqlite3.Connection) -> None:
+    """Bring the listening-event tables up to the current shape.
+
+    Both were created by an earlier revision of schema.sql, and every CREATE
+    in that file is `IF NOT EXISTS` — so once a table exists, schema.sql will
+    never widen it again. A database built against the first revision keeps
+    the old columns forever and every insert fails with "table track_events
+    has no column named vibe_source", which `/api/events` logs and then
+    swallows behind its unconditional 202. Silent, total data loss.
+
+    MUST run BEFORE schema.sql so the recreate below lands in the same pass.
+
+    track_events is append-only and may hold real rows, so it is widened in
+    place. user_track_stats is a different case: the label split changed its
+    shape rather than extending it, and it is explicitly a materialised cache
+    of track_events, so it is dropped and rebuilt rather than patched into a
+    hybrid carrying five columns nothing writes. Anything lost is recoverable
+    with scripts/rebuild_user_track_stats.py, which is why the cache is
+    allowed to be disposable.
+    """
+    if _table_exists(conn, "track_events"):
+        for col, decl in (("vibe_source", "TEXT"), ("dj_mode", "INTEGER")):
+            if not _has_column(conn, "track_events", col):
+                conn.execute(f"ALTER TABLE track_events ADD COLUMN {col} {decl}")
+
+    # u_play_count is the marker for the preference/reward split. Its absence
+    # means the pre-split shape.
+    if _table_exists(conn, "user_track_stats") and not _has_column(
+        conn, "user_track_stats", "u_play_count"
+    ):
+        stale = conn.execute("SELECT COUNT(*) FROM user_track_stats").fetchone()[0]
+        conn.execute("DROP TABLE user_track_stats")
+        if stale:
+            print(
+                f"[db] rebuilt user_track_stats for the vibe_source split; "
+                f"discarded {stale} cached row(s). "
+                f"Run scripts/rebuild_user_track_stats.py to repopulate."
+            )
+    conn.commit()
+
+
 def _bootstrap_and_migrate(conn: sqlite3.Connection) -> None:
     """
     Fresh install: run schema.sql, which creates the target shape and is
@@ -947,6 +988,7 @@ def _bootstrap_and_migrate(conn: sqlite3.Connection) -> None:
     Existing legacy install: run migrations first so schema.sql's
     partial-unique indexes see a deduped tracks table.
     """
+    _migrate_telemetry(conn)
     has_legacy = _table_exists(conn, "tracks") and _has_column(conn, "tracks", "user_id")
     if has_legacy:
         _migrate(conn)
