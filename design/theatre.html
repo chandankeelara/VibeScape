@@ -1,0 +1,1834 @@
+<!doctype html>
+<html lang="en" data-mode="everyday" data-dir="1">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VibeScape — theatrical view</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ===================================================================
+   VibeScape — THEATRICAL VIEW. Three interpretations, switchable live.
+
+   This is a MODE of design/player-mockup.html, not a second app: same
+   catalogue, same accent contract, same material model, same transport.
+   The everyday view here is a condensed but working copy of the approved
+   mockup — enough to leave from and return to. The search panel, DJ picks
+   and sync chrome are deliberately not rebuilt; they play no part in the
+   theatrical story and the file is long enough.
+
+   What "theatrical" means, three ways:
+     1  HOUSELIGHTS   — the moment is the OBJECT. One lamp finds the record.
+     2  RUNNING ORDER — the moment is the DURATION. Time is the interface.
+     3  THE ROOM      — the moment is the SPACE. The record lights the hall.
+
+   Geometry is computed in JS (layout()) and written back as px custom
+   properties. Nothing here derives a length from viewport arithmetic that
+   could go negative, and no scale() is ever handed a calc of two lengths —
+   both shapes have silently computed to nothing in this project before.
+   =================================================================== */
+
+/* Registered so they can be TRANSITIONED or divided inside calc().
+   Unregistered custom properties are substituted as raw tokens; for the
+   accent crossfade they are simply not animatable at all. */
+@property --vibe-accent      { syntax: '<color>';  inherits: true; initial-value: rgb(24,189,224); }
+@property --vibe-accent-2    { syntax: '<color>';  inherits: true; initial-value: rgb(34,193,227); }
+@property --vibe-accent-text { syntax: '<color>';  inherits: true; initial-value: rgb(26,190,225); }
+@property --vibe-accent-fill { syntax: '<color>';  inherits: true; initial-value: rgb(71,216,251); }
+@property --played           { syntax: '<number>'; inherits: true; initial-value: 0; }
+/* Per-word fill window for the Running Order title. --wk is 1/(w1-w0),
+   precomputed in JS, so the stylesheet never divides.
+   inherits: true is load-bearing — the window is set on the <w> and read
+   by the <u> overlay inside it. Registered non-inheriting, the overlay
+   would silently fall back to the initial values and every word would
+   fill on the same schedule. */
+@property --w0               { syntax: '<number>'; inherits: true; initial-value: 0; }
+@property --wk               { syntax: '<number>'; inherits: true; initial-value: 1; }
+
+:root {
+  /* surfaces */
+  --bg: #08080c;
+  --bg-2: #0d0d14;
+  --surface: #12121a;
+  --surface-2: #191922;
+  --border: rgba(255,255,255,0.08);
+  --border-strong: rgba(255,255,255,0.16);
+
+  /* NEW. The house black. Two steps below --bg, because the theatrical
+     mode is the one place the page has no chrome to hold a floor level —
+     the room genuinely goes darker when the lights go down. Still not
+     #000: a true black kills the vignette and the grain both. */
+  --bg-theatre: #040407;
+
+  /* text ramp — all four steps clear 4.5:1 on --bg */
+  --text:   #f2f2f5;
+  --text-2: rgba(242,242,245,0.78);
+  --text-3: rgba(242,242,245,0.62);
+  --text-4: rgba(242,242,245,0.50);
+  --text-mute: rgba(242,242,245,0.30);   /* NON-TEXT MARKS ONLY */
+
+  --accent: #22c1e3;
+  --vibe-accent-ink: var(--bg);
+
+  /* type */
+  --fs-micro: 10px; --fs-meta: 11.5px; --fs-sm: 13px;
+  --fs-body: 15px;  --fs-title: 19px;  --fs-display: 28px;
+  --sans: 'Space Grotesk', system-ui, sans-serif;
+  --serif: 'Instrument Serif', Georgia, serif;
+  --mono: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
+
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px;
+  --sp-6: 24px; --sp-7: 32px; --sp-8: 40px; --sp-9: 48px;
+  --radius-sm: 6px; --radius: 10px; --radius-lg: 16px; --radius-pill: 999px;
+
+  /* material — one light, 118deg, above and in front. */
+  --edge-lit: rgba(255,255,255,0.14);
+  --edge-lit-2: rgba(255,255,255,0.26);
+  --edge-dark: rgba(0,0,0,0.55);
+  --contact: 0 1px 2px rgba(0,0,0,0.65);
+  --cast-3: 0 14px 30px -10px rgba(0,0,0,0.70);
+  --cast-4: 0 30px 64px -14px rgba(0,0,0,0.78);
+  --cast-5: 0 54px 120px -24px rgba(0,0,0,0.85);   /* NEW — theatre only */
+  --sheen: linear-gradient(118deg, rgba(255,255,255,0.075) 0%, rgba(255,255,255,0.02) 26%, transparent 48%);
+  --vignette: radial-gradient(112% 112% at 50% 44%, transparent 54%, rgba(0,0,0,0.34) 100%);
+
+  /* motion */
+  --ease: cubic-bezier(0.2,0.8,0.2,1);
+  --ease-out: cubic-bezier(0.16,1,0.3,1);
+  --ease-in: cubic-bezier(0.4,0,1,1);
+  --dur-press: 90ms; --dur-fast: 120ms; --dur: 220ms; --dur-slow: 420ms; --dur-art: 640ms;
+  /* NEW — the mode change. Longer than any component transition on
+     purpose: this is a change of posture, not a state change, and the
+     "a whole sequence never exceeds --dur-slow" rule governs components. */
+  --dur-mask: 400ms; --dur-flight: 560ms; --dur-reveal: 420ms;
+
+  /* the breath — written per track */
+  --beat: 0.577s;
+  --breath: 0.09;
+  --glow: 0.65;
+
+  --v: 34;
+  --pill-h: 22px; --pill-pad: 10px; --pill-track: 0.14em;
+
+  /* the everyday hero. min() of three positive terms: cannot go negative. */
+  --art: min(42vh, 27vw, 400px);
+
+  /* z scale — named, not invented per component */
+  --z-stage: 50; --z-sticky: 100; --z-overlay: 200; --z-mask: 250; --z-modal: 300;
+
+  /* geometry written by layout(). Declared here so every consumer has a
+     sane value before the first measurement. */
+  --art-x: 0px; --art-y: 0px; --art-s: 320px;
+  --floor-y: 500px; --floor-w: 500px;
+  --line-y: 500px; --seg-x0: 0px; --seg-w: 600px;
+  --cove-top: 150px;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+
+html {
+  background: var(--bg);
+  --vibe-accent: rgb(24,189,224);
+  --vibe-accent-2: rgb(34,193,227);
+  --vibe-accent-text: rgb(26,190,225);
+  --vibe-accent-fill: rgb(71,216,251);
+  transition: background var(--dur-art) var(--ease);
+}
+/* Only enabled during a track change, so dragging the dial re-lights
+   instantly and only a track change dissolves. */
+html.relight {
+  transition: background var(--dur-art) var(--ease),
+              --vibe-accent var(--dur-art) var(--ease),
+              --vibe-accent-2 var(--dur-art) var(--ease),
+              --vibe-accent-text var(--dur-art) var(--ease),
+              --vibe-accent-fill var(--dur-art) var(--ease);
+}
+html[data-mode="theatre"] { background: var(--bg-theatre); }
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: var(--fs-body);
+  color: var(--text-2);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;              /* full-bleed mode: nothing scrolls, ever */
+  user-select: none;
+}
+
+/* Grain. Load-bearing, not texture: the light pools are low-alpha radial
+   gradients and they band into visible rings on 8-bit panels. The
+   theatrical view has far MORE pool area than the everyday one, so this
+   matters more here, not less. */
+body::after {
+  content: '';
+  position: fixed; inset: 0; z-index: 400;
+  pointer-events: none;
+  opacity: 0.022;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+:focus-visible { outline: 2px solid var(--vibe-accent-text); outline-offset: 3px; }
+
+.mlabel { font-family: var(--mono); font-size: var(--fs-micro); font-weight: 500; letter-spacing: var(--pill-track); text-transform: uppercase; color: var(--text-4); }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ===================================================================
+   THE EVERYDAY VIEW — condensed from design/player-mockup.html.
+   =================================================================== */
+.app {
+  position: fixed; inset: 0;
+  min-width: 1240px;
+  display: grid;
+  grid-template-rows: 64px minmax(0,1fr);
+  grid-template-columns: minmax(0,1fr) 300px;
+  background: linear-gradient(180deg, #0a0a11 0%, var(--bg) 46%);
+  isolation: isolate;
+  transition: opacity var(--dur) var(--ease);
+}
+/* The chrome leaves BEFORE the mask arrives, so the mask closes on an
+   empty room rather than wiping a populated one away. */
+html[data-mode="theatre"] .app { opacity: 0; pointer-events: none; }
+
+.topbar {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1fr minmax(320px, 520px) 1fr;
+  align-items: center; gap: var(--sp-6);
+  padding: 0 var(--sp-6);
+  border-bottom: 1px solid var(--border);
+}
+.tbLeft  { display: flex; align-items: center; gap: var(--sp-5); min-width: 0; }
+.tbRight { display: flex; align-items: center; gap: var(--sp-3); justify-content: flex-end; }
+
+.wordmark { display: flex; align-items: center; gap: 10px; font-size: var(--fs-title); line-height: 1; color: var(--text); flex: none; }
+/* The tally light. One of exactly two things in the everyday view that
+   move with the music, and it tells you the tempo. */
+.mark { width: 9px; height: 9px; background: var(--vibe-accent-fill); animation: tally var(--beat) var(--ease-out) infinite; }
+@keyframes tally { 0% { transform: scale(1.14); opacity: 1; } 55%,100% { transform: scale(1); opacity: 0.78; } }
+.wordmark .a { font-weight: 500; letter-spacing: -0.015em; }
+.wordmark .b { font-family: var(--serif); font-style: italic; font-size: 21px; }
+
+.seg { display: flex; border: 1px solid var(--border); border-top-color: var(--edge-lit); border-radius: var(--radius-sm); overflow: hidden; flex: none; }
+.seg button { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 0; background: none; cursor: pointer; font-family: var(--mono); font-size: var(--fs-micro); font-weight: 500; letter-spacing: var(--pill-track); text-transform: uppercase; color: var(--text-4); transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease); }
+.seg button:hover { color: var(--text-2); }
+.seg button.on { background: var(--surface-2); color: var(--text); box-shadow: inset 0 1px 0 var(--edge-lit); }
+.seg .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--text-mute); }
+.seg button.on .dot { background: var(--vibe-accent-fill); }
+.djread { color: var(--text-4); white-space: nowrap; }
+.djread b { color: var(--text-3); font-weight: 500; }
+
+/* Inert. Drawn so the composition is honest about what the top strip
+   carries; the panel from player-mockup.html is not rebuilt here. */
+.searchfield {
+  display: flex; align-items: center; gap: var(--sp-3);
+  height: 38px; padding: 0 var(--sp-4);
+  border-radius: var(--radius);
+  background: #05050a;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.6), inset 0 -1px 0 rgba(255,255,255,0.05);
+  color: var(--text-4); font-size: var(--fs-sm);
+}
+.gl { width: 13px; height: 13px; border: 1.5px solid var(--text-4); border-radius: 50%; position: relative; flex: none; }
+.gl::after { content: ''; position: absolute; right: -4px; bottom: -3px; width: 6px; height: 1.5px; background: var(--text-4); transform: rotate(45deg); }
+
+.userpill { display: flex; align-items: center; gap: var(--sp-2); height: 30px; padding: 0 10px 0 4px; border: 1px solid var(--border); border-top-color: var(--edge-lit); border-radius: var(--radius-pill); background: var(--surface); color: var(--text-2); font-size: var(--fs-meta); cursor: pointer; }
+.av { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-2); font-family: var(--mono); font-size: 9px; font-weight: 600; }
+
+/* The entry point. It is a MODE switch, so it is a bordered control that
+   names the state it takes you to — not an icon you have to remember. */
+.theatrebtn {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 30px; padding: 0 12px;
+  border: 1px solid var(--border); border-top-color: var(--edge-lit);
+  border-radius: var(--radius-sm); background: var(--surface);
+  font-family: var(--mono); font-size: var(--fs-micro); font-weight: 500;
+  letter-spacing: var(--pill-track); text-transform: uppercase;
+  color: var(--text-3); cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-press) var(--ease);
+}
+.theatrebtn:hover { color: var(--text); border-color: var(--edge-lit-2); }
+.theatrebtn:active { transform: translateY(1px); }
+/* The glyph is the gesture: a frame masking down to a centre band. */
+.theatrebtn i { display: block; width: 13px; height: 10px; border: 1px solid currentColor; border-left: 0; border-right: 0; opacity: 0.8; }
+
+.stage {
+  grid-column: 1; grid-row: 2;
+  display: grid;
+  grid-template-columns: var(--art) minmax(280px,1fr) 92px;
+  column-gap: clamp(24px, 2.4vw, 40px);
+  align-items: center;
+  padding: 0 var(--sp-6) var(--sp-5);
+  min-width: 0;
+}
+.artcol { display: flex; flex-direction: column; gap: var(--sp-4); }
+.stack { position: relative; width: var(--art); height: var(--art); }
+/* Two sheets behind the hero, offset up and inset, showing only their lit
+   top edges. "Up next" is not a list here — it is what is underneath. */
+.u1, .u2 { position: absolute; height: 22px; border-radius: 4px 4px 0 0; border-top: 1px solid var(--edge-lit-2); box-shadow: var(--contact); transition: background var(--dur-art) var(--ease); }
+.u1 { top: -7px;  left: 10px; right: 10px; }
+.u2 { top: -13px; left: 22px; right: 22px; opacity: 0.72; }
+/* The slot the hero occupies. The hero itself lives in #artbox, a fixed
+   layer shared by both modes — that is what makes the mode change a real
+   shared-element transition rather than two sleeves crossfading. */
+#artslot { position: absolute; inset: 0; }
+.artfoot { display: flex; justify-content: space-between; padding-top: var(--sp-2); border-top: 1px solid var(--border); }
+
+.metacol { display: flex; flex-direction: column; gap: var(--sp-4); min-width: 0; }
+.eyebrow { display: flex; align-items: baseline; gap: var(--sp-3); }
+.live { color: var(--vibe-accent-text); }
+.titleblock { transition: opacity 160ms var(--ease), transform 160ms var(--ease); }
+.titleblock.fade { opacity: 0; transform: translateY(1px); }
+/* The art is already the headline, so the title steps DOWN. */
+.ttitle { margin: 0; font-family: var(--serif); font-weight: 400; font-size: clamp(22px, 2vw, 30px); line-height: 1.12; color: var(--text); }
+.tsub { margin-top: 6px; font-size: var(--fs-sm); color: var(--text-2); }
+.tsub .sep { color: var(--text-mute); margin: 0 7px; }
+.tsub .album { color: var(--text-3); }
+
+.liner { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2) var(--sp-7); margin: 0; }
+.liner div { display: flex; justify-content: space-between; gap: var(--sp-3); border-bottom: 1px solid var(--border); padding-bottom: 5px; }
+.liner dt { font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: var(--pill-track); text-transform: uppercase; color: var(--text-4); }
+.liner dd { margin: 0; font-family: var(--mono); font-size: var(--fs-meta); color: var(--text-2); text-align: right; font-variant-numeric: tabular-nums; }
+.liner dd.hl { color: var(--vibe-accent-text); }
+.rule { height: 1px; background: var(--border); }
+
+.controls { display: flex; align-items: center; gap: var(--sp-5); }
+.tbtn { width: 34px; height: 34px; display: grid; place-items: center; border: 0; background: none; color: var(--text-3); cursor: pointer; transition: color var(--dur-fast) var(--ease), transform var(--dur-press) var(--ease); }
+.tbtn:hover { color: var(--text); }
+.tbtn:active { transform: translateY(1px) scale(0.96); }
+
+/* A machined disc: lit top inset, dark bottom inset, a real cast. On press
+   it goes INTO the page rather than lighting up. */
+.play {
+  position: relative; flex: none;
+  width: 56px; height: 56px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--vibe-accent-fill); color: var(--vibe-accent-ink);
+  border: 0; cursor: pointer;
+  box-shadow: var(--cast-3), inset 0 1px 0 rgba(255,255,255,0.4), inset 0 -1px 0 rgba(0,0,0,0.28);
+  transition: transform var(--dur-press) var(--ease), box-shadow var(--dur-press) var(--ease), filter var(--dur-fast) var(--ease);
+}
+.play:hover { filter: brightness(1.06); }
+.play:active { transform: translateY(1px); box-shadow: var(--contact), inset 0 1px 0 rgba(255,255,255,0.3); }
+/* The ring IS the playhead. Linear, because progress is constant-rate. */
+.play::before {
+  content: ''; position: absolute; inset: -7px; border-radius: 50%;
+  background: conic-gradient(var(--vibe-accent-text) calc(var(--played) * 360deg), rgba(255,255,255,0.09) 0);
+  -webkit-mask: radial-gradient(closest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+          mask: radial-gradient(closest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+}
+.play.sm { width: 46px; height: 46px; }
+.play.sm::before { inset: -6px; }
+
+/* The ring is for knowing, the bar is for seeking — so the bar sits back
+   until you reach for the transport. */
+.seek { opacity: 0.45; transition: opacity var(--dur) var(--ease); cursor: pointer; }
+.transport:hover .seek, .seek:focus-visible, .seek.act { opacity: 1; }
+.prog { position: relative; height: 2px; background: rgba(255,255,255,0.1); }
+.prog .fill { position: absolute; inset: 0 auto 0 0; background: var(--vibe-accent); width: 0; }
+.prog .pthumb { position: absolute; left: 0; top: 50%; width: 9px; height: 9px; border-radius: 50%; transform: translate(-50%,-50%); background: var(--vibe-accent-fill); box-shadow: var(--contact); opacity: 0; transition: opacity var(--dur) var(--ease); }
+.transport:hover .pthumb, .seek.act .pthumb { opacity: 1; }
+.seek .hit { position: absolute; left: 0; right: 0; top: -9px; height: 20px; }
+.times { display: flex; justify-content: space-between; margin-top: 7px; font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.06em; color: var(--text-4); font-variant-numeric: tabular-nums; }
+
+/* ------- the dial ------- */
+.faderCol { display: flex; flex-direction: column; align-items: center; gap: var(--sp-3); }
+.vibenum { font-family: var(--mono); font-size: 28px; font-weight: 500; color: var(--text); line-height: 1; text-align: center; font-variant-numeric: tabular-nums; }
+.vibemood { font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.22em; text-transform: uppercase; color: var(--vibe-accent-text); text-align: center; margin-top: 5px; }
+.fader { position: relative; width: 92px; height: min(380px, 48vh); cursor: ns-resize; touch-action: none; border-radius: var(--radius-sm); }
+.groove { position: absolute; left: 48px; top: 0; bottom: 0; width: 10px; transform: translateX(-50%); border-radius: var(--radius-pill); background: #05050a; box-shadow: inset 1px 0 2px rgba(0,0,0,0.75), inset -1px 0 0 rgba(255,255,255,0.05); overflow: hidden; }
+/* The road ahead stays visible: the full spectrum at 18% above the cap.
+   Grey ahead of the value would hide the one thing this control is for. */
+.groove .spec { position: absolute; inset: 0; background: linear-gradient(0deg,
+  rgb(76,91,138) 0%, rgb(91,127,189) 20%, rgb(0,180,216) 30%, rgb(34,193,227) 40%,
+  rgb(124,58,237) 50%, rgb(167,139,250) 60%, rgb(236,72,153) 70%, rgb(244,63,94) 80%,
+  rgb(249,115,22) 90%, rgb(220,38,38) 100%); opacity: 0.18; }
+.groove .lit { position: absolute; left: 0; right: 0; bottom: 0; overflow: hidden; height: calc(var(--v) * 1%); }
+.groove .lit .spec { opacity: 1; height: min(380px, 48vh); bottom: 0; top: auto; }
+.names { position: absolute; left: 0; top: 0; bottom: 0; width: 32px; }
+.names span { position: absolute; right: 0; transform: translateY(50%); font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-mute); transition: color var(--dur-fast) var(--ease); }
+.names span.on { color: var(--vibe-accent-text); }
+.ticks { position: absolute; left: 64px; top: 0; bottom: 0; width: 18px; }
+.ticks span { position: absolute; right: 0; height: 1px; background: var(--text-mute); }
+.ticks span.lg { background: var(--text-4); width: 18px; }
+.cap { position: absolute; left: 48px; width: 28px; height: 20px; bottom: calc(var(--v) * 1%); transform: translate(-50%, 50%); border-radius: 3px; background: linear-gradient(180deg, #24242f, #14141c); border: 1px solid var(--edge-dark); border-top-color: var(--edge-lit-2); box-shadow: var(--cast-3); }
+.cap::before { content: ''; position: absolute; left: 3px; right: 3px; top: 50%; height: 2px; transform: translateY(-50%); background: var(--vibe-accent-fill); border-radius: 1px; }
+.cap::after { content: ''; position: absolute; left: 3px; right: 3px; top: 4px; height: 1px; background: rgba(255,255,255,0.07); box-shadow: 0 9px 0 rgba(255,255,255,0.07); }
+.fader:hover .cap { border-top-color: #fff6; }
+.fader.settling .cap { transition: bottom 260ms var(--ease-out); }
+
+/* ------- the rail ------- */
+.sidebar { grid-column: 2; grid-row: 2; display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-4) var(--sp-5); border-left: 1px solid var(--border); min-height: 0; }
+.sectionHead { display: flex; align-items: center; gap: var(--sp-2); min-height: 22px; }
+.sectionTitle { flex: 1; margin: 0; font-family: var(--mono); font-size: var(--fs-micro); font-weight: 500; letter-spacing: var(--pill-track); text-transform: uppercase; color: var(--text-3); }
+.pill { display: inline-flex; align-items: center; height: var(--pill-h); padding: 0 var(--pill-pad); padding-right: calc(var(--pill-pad) - var(--pill-track)); border-radius: var(--radius-pill); border: 1px solid transparent; background: var(--surface-2); font-family: var(--mono); font-size: var(--fs-micro); font-weight: 500; letter-spacing: var(--pill-track); text-transform: uppercase; color: var(--text-3); }
+.qlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+.qrow { display: flex; align-items: center; gap: var(--sp-3); height: 52px; flex: none; padding: 0 var(--sp-1); border-bottom: 1px solid var(--border); cursor: pointer; transition: background var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease); }
+/* Hover gains a surface and a 2px mood rule — not a glow. A 2px mark is
+   cheaper to read and survives any accent the artwork produces. */
+.qrow:hover { background: var(--surface); box-shadow: inset 2px 0 0 var(--vibe-accent), inset 0 1px 0 var(--edge-lit); }
+.qrow .sleeve { width: 34px; height: 34px; border-radius: 3px; flex: none; }
+.qbody { min-width: 0; flex: 1; }
+.qtitle { font-size: var(--fs-sm); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.35; }
+.qsub { font-size: var(--fs-meta); color: var(--text-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qdur { font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-4); font-variant-numeric: tabular-nums; }
+.qnum { font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-mute); width: 14px; text-align: right; }
+
+/* ===================================================================
+   THE SLEEVE — one definition, used at every size in both modes.
+   =================================================================== */
+.sleeve {
+  position: relative; overflow: hidden;
+  background: var(--surface);
+  /* Four edges, not one border. Light from the upper left: top and left
+     catch it, bottom and right fall away. This is what gives a flat
+     square thickness. */
+  border: 1px solid var(--edge-dark);
+  border-top-color: var(--edge-lit-2);
+  border-left-color: var(--edge-lit);
+}
+.sleeve .field { position: absolute; inset: 0; background:
+  radial-gradient(120% 90% at 78% 14%, color-mix(in oklab, var(--c1) 36%, transparent), transparent 62%),
+  radial-gradient(90% 70% at 10% 94%, color-mix(in oklab, var(--c2) 24%, transparent), transparent 60%); }
+/* Sheen and vignette: the two marks that turn a tone field into a surface. */
+.sleeve::after { content: ''; position: absolute; inset: 0; background: var(--sheen), var(--vignette); pointer-events: none; }
+.sleeve .ring { position: absolute; border: 1px solid rgba(255,255,255,0.22); border-radius: 50%; }
+.sleeve .bar  { position: absolute; background: rgba(255,255,255,0.18); }
+.sleeve .cat  { position: absolute; left: 10px; bottom: 7px; font-family: var(--mono); font-size: 9px; letter-spacing: 0.18em; color: rgba(255,255,255,0.66); z-index: 2; }
+.sleeve[data-art="0"] .ring { left: 50%; top: 52%; width: 58%; aspect-ratio: 1; transform: translate(-50%,-50%); }
+.sleeve[data-art="0"] .ring::after { content: ''; position: absolute; left: 50%; top: 50%; width: 9%; aspect-ratio: 1; transform: translate(-50%,-50%); border-radius: 50%; background: rgba(255,255,255,0.24); }
+.sleeve[data-art="1"] .ring { left: 62%; top: 38%; width: 46%; aspect-ratio: 1; transform: translate(-50%,-50%); }
+.sleeve[data-art="1"] .bar  { left: 12%; right: 12%; top: 72%; height: 1px; }
+.sleeve[data-art="2"] .ring { left: 50%; top: 50%; width: 70%; aspect-ratio: 1; transform: translate(-50%,-50%); }
+.sleeve[data-art="2"] .bar  { left: 50%; top: 50%; width: 34%; aspect-ratio: 1; transform: translate(-50%,-50%); border: 1px solid rgba(255,255,255,0.22); border-radius: 50%; background: none; }
+.sleeve[data-art="3"] .ring { left: 30%; top: 68%; width: 50%; aspect-ratio: 1; transform: translate(-50%,-50%); }
+.sleeve[data-art="3"] .bar  { left: 68%; top: 0; bottom: 0; width: 1px; }
+
+/* ===================================================================
+   THE STAGE LAYER — one fixed box holding the record, shared by both
+   modes. Its geometry is written in px by layout(); the mode change is a
+   FLIP on this element, which is why the record never crossfades with
+   itself and why the two views read as one product.
+   =================================================================== */
+#artbox {
+  position: fixed;
+  left: var(--art-x); top: var(--art-y);
+  width: var(--art-s); height: var(--art-s);
+  z-index: var(--z-stage);
+  will-change: transform;
+}
+#art { position: absolute; inset: 0; border-radius: 4px; border-top-width: 2px; box-shadow: var(--cast-4), var(--contact); }
+html[data-mode="theatre"][data-dir="1"] #art { box-shadow: var(--cast-5), var(--contact); }
+/* The track change: the record falls DOWN, out of its own pool. That is
+   what reads as "finished" rather than "slid away". */
+#art.out { animation: artOut 320ms var(--ease-in) forwards; }
+#art.in  { animation: artIn var(--dur-slow) var(--ease-out); }
+@keyframes artOut { to { transform: translateY(10px); opacity: 0; } }
+@keyframes artIn  { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* The one deliberate violation of the single-lamp model: the record is the
+   other light in the room, and it lights itself from below. Sized in
+   percentages so it scales with the box through the flight. */
+#pool {
+  position: absolute; left: 50%; bottom: -11%;
+  width: 120%; height: 26%;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in oklab, var(--vibe-accent) 46%, transparent), transparent);
+  filter: blur(16px);
+  opacity: var(--glow);
+  z-index: -1;
+  animation: breathe var(--beat) var(--ease-out) infinite;
+}
+/* Percussive envelope — instant attack on the beat, decay across the bar.
+   A sine wave reads as a lava lamp. */
+@keyframes breathe {
+  0%      { opacity: calc(var(--glow) * (1 + var(--breath))); }
+  55%,100%{ opacity: calc(var(--glow) * (1 - var(--breath))); }
+}
+#pool.dip { animation: none; opacity: calc(var(--glow) * 0.3); transition: opacity var(--dur-art) var(--ease-out); }
+/* In Running Order the record is a 6px band, so a round pool under it
+   would be a 1px smear. It becomes a horizontal bloom along the segment. */
+html[data-dir="2"][data-mode="theatre"] #pool { bottom: -14px; width: 100%; height: 34px; filter: blur(13px); }
+html[data-dir="2"][data-mode="theatre"] #art .ring,
+html[data-dir="2"][data-mode="theatre"] #art .bar,
+html[data-dir="2"][data-mode="theatre"] #art .cat { display: none; }
+html[data-dir="2"][data-mode="theatre"] #art { border-radius: 2px; border-top-width: 1px; box-shadow: var(--contact); }
+
+/* ===================================================================
+   THE MASK — the transition into the mode, and most of the drama.
+
+   Two bars grow from the top and bottom edges and stop EXACTLY at the
+   record's own top and bottom. The room is masked away; the record is
+   never hidden. It is a cinema masking down to its subject, not a curtain
+   and not a blackout — a blackout would throw away the one thing that
+   proves this is a mode and not a second app.
+   =================================================================== */
+#mask { position: fixed; inset: 0; z-index: var(--z-mask); pointer-events: none; }
+#mask i {
+  position: absolute; left: 0; right: 0; height: 50%;
+  background: var(--bg-theatre);
+  transform: scaleY(0);
+  /* Unitless scale, written by JS as a plain number. Never a calc of two
+     lengths — that parses clean and computes to nothing. */
+}
+#mask .barT { top: 0;    transform-origin: top; }
+#mask .barB { bottom: 0; transform-origin: bottom; }
+html.masking #mask i { transition: transform var(--dur-mask) var(--ease-in); }
+html.unmasking #mask i { transition: transform var(--dur-reveal) var(--ease-out); }
+
+/* ===================================================================
+   THEATRE — shared shell
+   =================================================================== */
+#theatre {
+  position: fixed; inset: 0;
+  z-index: 10;                       /* under #artbox: the record is the hero */
+  overflow: clip;                    /* full-bleed insurance, not a crutch */
+  opacity: 0; pointer-events: none;
+  transition: opacity var(--dur) var(--ease);
+}
+html[data-mode="theatre"] #theatre { opacity: 1; pointer-events: auto; }
+#theatre > .dir { position: absolute; inset: 0; opacity: 0; pointer-events: none; transition: opacity var(--dur) var(--ease); }
+html[data-dir="1"] #theatre > .d1,
+html[data-dir="2"] #theatre > .d2,
+html[data-dir="3"] #theatre > .d3 { opacity: 1; pointer-events: auto; }
+
+/* The apparatus arrives AFTER the record has settled. Reversed, it reads
+   as a bug — the same ordering rule the track change obeys.
+
+   Selected through .dir rather than #theatre deliberately: an id here
+   would out-specify the idle-fade rule below, which is five classes and
+   attributes but no id, and direction 1's controls would never hide. */
+.dir .apparatus { opacity: 0; transition: opacity var(--dur-slow) var(--ease-out); }
+html.staged .dir .apparatus { opacity: 1; }
+
+/* Chrome common to the theatrical directions: the smallest set that still
+   lets you listen without leaving. prev / play / next, a time pair, and a
+   way out. Everything else is gone on purpose. */
+.tcontrols { display: flex; align-items: center; justify-content: center; gap: var(--sp-6); }
+.tleave {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 28px; padding: 0 11px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: transparent; color: var(--text-4);
+  font-family: var(--mono); font-size: var(--fs-micro); font-weight: 500;
+  letter-spacing: var(--pill-track); text-transform: uppercase; cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.tleave:hover { color: var(--text-2); border-color: var(--border-strong); }
+.ttime { font-family: var(--mono); font-size: var(--fs-meta); color: var(--text-4); font-variant-numeric: tabular-nums; letter-spacing: 0.06em; }
+
+/* A seek line, in three guises. One role=slider class so pointer, click
+   and keyboard all reach the same value — WCAG 2.2 requires a non-drag
+   path for every author-controlled drag. */
+.seekline { position: relative; cursor: pointer; }
+.seekline::before { content: ''; position: absolute; left: 0; right: 0; top: -10px; height: 22px; }
+
+/* ===================================================================
+   DIRECTION 1 — HOUSELIGHTS
+   The theatrical moment is the OBJECT: one lamp finds the record and the
+   room goes away. Everything is a specimen label under it.
+   =================================================================== */
+/* The house lamp. White, not accent — the lamp belongs to the room, the
+   colour belongs to the record. ONE wash: a second would be a gradient
+   panel, which is the exact reflex this view has to avoid. */
+.d1 .lamp {
+  position: absolute; inset: 0;
+  background: radial-gradient(74% 56% at 50% 26%, rgba(255,255,255,0.055), rgba(255,255,255,0.016) 46%, transparent 72%);
+  pointer-events: none;
+}
+/* The floor. A 1px rule the record stands on — and it IS the seek bar, so
+   the record burns its way along the floor as it plays. Every mark carries
+   information or it is removed. */
+.d1 .floor {
+  position: absolute;
+  left: 50%; top: var(--floor-y);
+  width: var(--floor-w);
+  transform: translateX(-50%);
+  height: 1px; background: var(--border);
+}
+.d1 .floor .ffill { position: absolute; inset: 0 auto 0 0; width: calc(var(--played) * 100%); background: var(--vibe-accent); }
+.d1 .floor .fcap {
+  position: absolute; top: 50%; left: calc(var(--played) * 100%);
+  width: 2px; height: 11px; margin-left: -1px;
+  transform: translateY(-50%);
+  background: var(--vibe-accent-fill);
+  opacity: 0; transition: opacity var(--dur) var(--ease);
+}
+.d1 .floor:hover .fcap, .d1 .floor:focus-visible .fcap, .d1 .floor.act .fcap { opacity: 1; }
+
+/* The plinth card. A museum label: centred because a specimen label is
+   centred, and measured so it reads as printed rather than laid out. */
+.d1 .plinth {
+  position: absolute; left: 50%; top: calc(var(--floor-y) + 36px);
+  transform: translateX(-50%);
+  width: min(620px, 72vw);
+  text-align: center;
+}
+.d1 .ptitle { margin: 0; font-family: var(--serif); font-weight: 400; font-size: clamp(26px, 2.6vw, 38px); line-height: 1.1; color: var(--text); }
+.d1 .partist { margin: 7px 0 0; font-size: var(--fs-body); color: var(--text-2); }
+.d1 .pliner { margin: var(--sp-4) 0 0; font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-4); }
+.d1 .pliner s { text-decoration: none; color: var(--text-mute); margin: 0 8px; }
+.d1 .ptimes { display: flex; justify-content: space-between; width: var(--floor-w); margin: var(--sp-3) auto 0; }
+.d1 .ptransport { margin-top: var(--sp-6); }
+.d1 .tmood { margin-top: var(--sp-5); font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.22em; text-transform: uppercase; color: var(--vibe-accent-text); }
+.d1 .exitwrap { position: absolute; right: var(--sp-7); top: var(--sp-6); }
+
+/* ---- the reveal: IDLE-FADE ----
+   The metaphor is lights going down; the chrome going with them is the
+   same gesture, so this is the direction where hiding is inevitable.
+   Fades to 0, not to 0.15 — a control lingering at low opacity is neither
+   gone nor usable.
+
+   What does NOT fade is the floor line, because it is not chrome: it is
+   the picture, and it is also the playhead. At rest you are left with the
+   record, its name, and a lit rule telling you how far in you are. That
+   is the test an idle-fade has to pass — the resting state still answers
+   "what is this and where am I", or it is a screensaver. */
+.d1 .chrome { transition: opacity var(--dur-slow) var(--ease-in); }
+html.idle[data-dir="1"][data-mode="theatre"] .d1 .chrome { opacity: 0; pointer-events: none; }
+/* Coming back is faster than leaving: input is acknowledged immediately,
+   the consequence resolves later. */
+html:not(.idle) .d1 .chrome { transition: opacity 160ms var(--ease-out); }
+
+/* ===================================================================
+   DIRECTION 2 — RUNNING ORDER
+   The theatrical moment is the DURATION. There is no artwork at hero
+   scale: the record is squashed into the segment of the line it occupies,
+   and the title is the progress bar.
+   =================================================================== */
+.d2 .line { position: absolute; left: 0; right: 0; top: var(--line-y); height: 1px; background: var(--border); }
+/* The ends taper, so the running order reads as continuing past the frame
+   rather than starting and stopping at the window edge. */
+.d2 .line::before, .d2 .line::after { content: ''; position: absolute; top: 0; width: 120px; height: 1px; }
+.d2 .line::before { left: 0;  background: linear-gradient(90deg, transparent, var(--border)); }
+.d2 .line::after  { right: 0; background: linear-gradient(270deg, transparent, var(--border)); }
+
+.d2 .ticks2 { position: absolute; left: 0; right: 0; top: var(--line-y); height: 0; }
+/* A tick is a 2px mark inside a 26px hit box — the mark is the drawing,
+   the box is the target, so the pointer rule is met without thickening
+   the line. */
+.d2 .tk {
+  position: absolute; bottom: 0; width: 26px; height: 26px;
+  margin-left: -13px; padding: 0; border: 0; background: none; cursor: pointer;
+  display: flex; align-items: flex-end; justify-content: center;
+}
+.d2 .tk b { display: block; width: 2px; background: var(--tc, var(--text-mute)); opacity: 0.55; transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease); transform-origin: bottom; }
+.d2 .tk.past b { opacity: 0.26; }
+.d2 .tk:hover b, .d2 .tk:focus-visible b { opacity: 1; transform: scaleY(1.18); }
+.d2 .tk .lab {
+  position: absolute; bottom: 32px; left: 50%; transform: translateX(-50%);
+  font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--text-mute); white-space: nowrap;
+  opacity: 0; transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.d2 .tk.named .lab { opacity: 1; }
+.d2 .tk:hover .lab, .d2 .tk:focus-visible .lab { opacity: 1; color: var(--text-2); }
+
+/* The playhead. In this view the tempo belongs here and nowhere else:
+   Running Order deliberately spends only ONE of the two breath slots. */
+.d2 .phead {
+  position: absolute; top: var(--line-y);
+  left: calc(var(--seg-x0) + var(--played) * var(--seg-w));
+  width: 2px; height: 26px; margin: -13px 0 0 -1px;
+  background: var(--vibe-accent-fill);
+  animation: breathe var(--beat) var(--ease-out) infinite;
+  opacity: var(--glow);
+}
+.d2 .segseek { position: absolute; top: var(--line-y); left: var(--seg-x0); width: var(--seg-w); height: 1px; }
+/* The played run of the current record, drawn ON the squashed sleeve. */
+.d2 .segfill { position: absolute; top: calc(var(--line-y) - 4px); left: var(--seg-x0); width: calc(var(--played) * var(--seg-w)); height: 2px; background: var(--vibe-accent); }
+
+.d2 .block { position: absolute; left: var(--sp-9); right: var(--sp-9); top: 13vh; }
+/* The title IS the progress bar. Each word is a base run at --text-3 with
+   an accent overlay clipped to the fraction of the track that has played,
+   so the record lights its own name up word by word, in reading order.
+
+   Built as two text layers rather than background-clip:text on purpose.
+   If the clip-path calc is ever dropped by an engine the overlay shows in
+   full and the title is simply all-accent — still perfectly legible.
+   A dropped background-clip would have left an invisible headline. */
+.d2 .big { margin: 0; font-family: var(--serif); font-weight: 400; font-size: clamp(54px, 6.4vw, 112px); line-height: 0.98; letter-spacing: -0.015em; color: var(--text-3); max-width: min(16ch, 68vw); }
+.d2 .big w { position: relative; display: inline-block; white-space: pre; }
+.d2 .big w u {
+  position: absolute; inset: 0;
+  text-decoration: none; color: var(--vibe-accent-text);
+  /* number × number × percentage — no division anywhere in the stylesheet. */
+  --f: clamp(0%, calc((var(--played) - var(--w0)) * var(--wk) * 100%), 100%);
+  clip-path: inset(0 calc(100% - var(--f)) 0 0);
+}
+.d2 .bigsub { margin: var(--sp-5) 0 0; font-family: var(--mono); font-size: var(--fs-meta); letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-4); }
+.d2 .bigsub s { text-decoration: none; color: var(--text-mute); margin: 0 9px; }
+
+.d2 .ends { position: absolute; left: var(--sp-9); right: var(--sp-9); top: calc(var(--line-y) + 42px); display: flex; justify-content: space-between; }
+.d2 .nowtime { position: absolute; top: calc(var(--line-y) + 20px); left: calc(var(--seg-x0) + var(--played) * var(--seg-w)); transform: translateX(-50%); font-family: var(--mono); font-size: var(--fs-meta); color: var(--text-3); font-variant-numeric: tabular-nums; }
+.d2 .endtime { position: absolute; top: calc(var(--line-y) + 20px); left: calc(var(--seg-x0) + var(--seg-w)); transform: translateX(-50%); font-family: var(--mono); font-size: var(--fs-meta); color: var(--text-mute); font-variant-numeric: tabular-nums; }
+
+/* ---- the reveal: KEYBOARD-ONLY, with a permanent legend ----
+   Nothing hides because nothing here is chrome. The line and the title ARE
+   the interface, and a one-line legend at the foot says so. Pointer users
+   get the honest timeline behaviour — click the line to seek, click a tick
+   to jump — which is also the single-pointer alternative the drag rule
+   requires. There is no play button anywhere in this direction. */
+.d2 .legend { position: absolute; left: var(--sp-9); bottom: var(--sp-7); display: flex; gap: var(--sp-6); }
+.d2 .legend span { font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-mute); }
+.d2 .legend b { color: var(--text-4); font-weight: 500; }
+/* The one control in Running Order, and it is a word rather than a
+   button: a pointer-only user has to be able to stop the music, and the
+   legend already names the state in the right place. Padded out to a
+   24px target and negatively margined so the printed line does not move. */
+.d2 .legend .st {
+  font: inherit; letter-spacing: inherit; text-transform: inherit;
+  padding: 6px 5px; margin: -6px -5px;
+  border: 0; background: none; cursor: pointer;
+  color: var(--vibe-accent-text);
+  transition: color var(--dur-fast) var(--ease);
+}
+.d2 .legend .st:hover { color: var(--text); }
+/* Top right, the same post it holds in the other two directions. The
+   way out of a mode should not move when the mode's interior does. */
+.d2 .exitwrap { position: absolute; right: var(--sp-9); top: var(--sp-6); }
+
+/* ===================================================================
+   DIRECTION 3 — THE ROOM
+   The theatrical moment is the SPACE. You are at the back of the hall:
+   the record is small and far away, and the room takes its colour.
+   =================================================================== */
+/* A cove, not a glow. Four bands of spill along the window edges, each
+   with a 1px lip on its inner boundary — a ceiling cove has a shadow gap,
+   and that hard inner edge is the whole difference between architecture
+   and bloom. Deliberately ASYMMETRIC: top deepest, sides half, bottom a
+   wash. Evenly lit edges read as a neon frame; real rooms are not evenly
+   lit. */
+.d3 .cove { position: absolute; inset: 0; pointer-events: none; opacity: var(--glow); animation: breathe var(--beat) var(--ease-out) infinite; }
+.d3 .cove i { position: absolute; display: block; }
+.d3 .cove .ct { left: 0; right: 0; top: 0; height: var(--cove-top); background: linear-gradient(180deg, color-mix(in oklab, var(--vibe-accent) 26%, transparent), transparent); }
+.d3 .cove .ct::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background: color-mix(in oklab, var(--vibe-accent) 22%, transparent); }
+.d3 .cove .cl, .d3 .cove .cr { top: 0; bottom: 0; width: 180px; }
+.d3 .cove .cl { left: 0;  background: linear-gradient(90deg, color-mix(in oklab, var(--vibe-accent) 13%, transparent), transparent); }
+.d3 .cove .cr { right: 0; background: linear-gradient(270deg, color-mix(in oklab, var(--vibe-accent) 13%, transparent), transparent); }
+.d3 .cove .cb { left: 0; right: 0; bottom: 0; height: 84px; background: linear-gradient(0deg, color-mix(in oklab, var(--vibe-accent) 9%, transparent), transparent); }
+
+/* The stage lip. One rule edge-to-edge at the record's base: it separates
+   floor from air, which is what turns the emptiness into a space rather
+   than a void. */
+.d3 .horizon { position: absolute; left: 0; right: 0; top: var(--floor-y); height: 1px; background: linear-gradient(90deg, transparent, var(--border) 18%, var(--border) 82%, transparent); }
+
+.d3 .card { position: absolute; left: 50%; top: calc(var(--floor-y) + 40px); transform: translateX(-50%); width: min(560px, 68vw); text-align: center; }
+.d3 .ctitle { margin: 0; font-family: var(--serif); font-weight: 400; font-size: clamp(22px, 1.9vw, 30px); line-height: 1.12; color: var(--text); }
+.d3 .csub { margin: 8px 0 0; font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-4); }
+.d3 .csub s { text-decoration: none; color: var(--text-mute); margin: 0 8px; }
+.d3 .cseek { margin: var(--sp-6) auto 0; width: 100%; height: 2px; background: rgba(255,255,255,0.09); }
+.d3 .cseek .ffill { position: absolute; inset: 0 auto 0 0; width: calc(var(--played) * 100%); background: var(--vibe-accent); }
+.d3 .cseek .fcap { position: absolute; top: 50%; left: calc(var(--played) * 100%); width: 9px; height: 9px; margin-left: -4.5px; border-radius: 50%; transform: translateY(-50%); background: var(--vibe-accent-fill); box-shadow: var(--contact); opacity: 0; transition: opacity var(--dur) var(--ease); }
+.d3 .cseek:hover .fcap, .d3 .cseek:focus-visible .fcap, .d3 .cseek.act .fcap { opacity: 1; }
+.d3 .ctimes { display: flex; justify-content: space-between; margin-top: 8px; }
+
+/* The queue, as light. A 2px band of the NEXT record's accent just inside
+   the bottom cove: the colour the room is about to become. It names itself
+   on hover or focus. That is a queue of one, and it costs two marks. */
+.d3 .nextband {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  height: 54px; border: 0; background: none; padding: 0; cursor: pointer;
+  display: flex; align-items: flex-end; justify-content: center;
+}
+.d3 .nextband b { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--nc, var(--text-mute)); opacity: 0.5; transition: opacity var(--dur-fast) var(--ease); }
+.d3 .nextband span { position: relative; margin-bottom: 12px; font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-mute); opacity: 0; transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
+.d3 .nextband:hover b, .d3 .nextband:focus-visible b { opacity: 1; }
+.d3 .nextband:hover span, .d3 .nextband:focus-visible span { opacity: 1; color: var(--text-3); }
+
+/* ---- the reveal: HOVER A REGION ----
+   The hall has a front of house. Bring the pointer into the bottom sixth
+   of the window and the transport rises out of the cove; take it away and
+   it settles back. Keyboard focus and any transport key pin it open, so
+   it is never hover-only — and focus can never be obscured by it. */
+.d3 .front {
+  position: absolute; left: 0; right: 0; bottom: var(--sp-8);
+  display: flex; flex-direction: column; align-items: center; gap: var(--sp-4);
+  opacity: 0; transform: translateY(8px);
+  transition: opacity var(--dur) var(--ease-in), transform var(--dur) var(--ease-in);
+  pointer-events: none;
+}
+html.front[data-dir="3"][data-mode="theatre"] .d3 .front,
+.d3 .front:focus-within {
+  opacity: 1; transform: none; pointer-events: auto;
+  transition: opacity var(--dur) var(--ease-out), transform var(--dur) var(--ease-out);
+}
+.d3 .exitwrap { position: absolute; right: var(--sp-7); top: var(--sp-6); opacity: 0; transition: opacity var(--dur) var(--ease); }
+html.front[data-dir="3"][data-mode="theatre"] .d3 .exitwrap, .d3 .exitwrap:focus-within { opacity: 1; }
+/* Grey, not accent — and that is the direction's whole argument. The room
+   IS the mood here, so a second accent mark in the same region would be
+   redundant, and it would also be the one piece of text in the product
+   sitting on an accent-tinted backdrop rather than on --bg, where the
+   contract's contrast figures were measured. */
+.d3 .roommood { position: absolute; left: 50%; top: var(--sp-7); transform: translateX(-50%); font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.26em; text-transform: uppercase; color: var(--text-4); }
+
+/* ===================================================================
+   THE SWITCHER — the only chrome allowed to look like a tool, because it
+   is one. This is the demo harness, not shipped product chrome.
+   =================================================================== */
+#tools {
+  /* Clear of direction 3's light band, which is a 54px full-bleed hit
+     strip along the very bottom edge. */
+  position: fixed; right: var(--sp-5); bottom: 66px;
+  z-index: var(--z-sticky);
+  display: none; flex-direction: column; align-items: flex-end; gap: 7px;
+}
+html[data-mode="theatre"] #tools { display: flex; }
+#tools .cap2 { font-family: var(--mono); font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-mute); }
+#tools .seg { background: var(--surface); box-shadow: var(--cast-3); }
+#tools .seg button { height: 28px; }
+
+/* ===================================================================
+   REDUCED MOTION
+   Every branch leaves a readable RESTING state. Note the two that are
+   states, not motion, and therefore survive: Houselights stops hiding its
+   controls altogether (an auto-hide you cannot see arrive is worse than
+   visible chrome), and The Room keeps its hover reveal but without travel.
+   =================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  * { transition-duration: 1ms !important; }
+  #pool, .mark, .d2 .phead, .d3 .cove { animation: none !important; }
+  #pool, .d3 .cove { opacity: var(--glow); }       /* rest at full, never the trough */
+  .d2 .phead { opacity: 1; }
+  #art.out, #art.in { animation: none !important; }
+  html.idle[data-dir="1"][data-mode="theatre"] .d1 .chrome { opacity: 1; pointer-events: auto; }
+  .d3 .front { transform: none; }
+}
+</style>
+</head>
+<body>
+
+<!-- ============================================ the everyday view ==== -->
+<div class="app" id="app">
+  <header class="topbar">
+    <div class="tbLeft">
+      <div class="wordmark"><span class="mark" aria-hidden="true"></span><span class="a">Vibe</span><span class="b">Scape</span></div>
+      <div class="seg" role="group" aria-label="What picks the next track">
+        <button id="mDj" class="on" aria-pressed="true"><span class="dot" aria-hidden="true"></span>dj</button>
+        <button id="mQueue" aria-pressed="false"><span class="dot" aria-hidden="true"></span>queue</button>
+      </div>
+      <span class="djread mlabel" id="djread" aria-live="polite">picking from <b>chill</b></span>
+    </div>
+
+    <div class="searchfield" aria-hidden="true">
+      <span class="gl"></span><span>Search your library and Spotify</span>
+    </div>
+
+    <div class="tbRight">
+      <button class="theatrebtn" id="enter"><i aria-hidden="true"></i>theatre</button>
+      <button class="userpill"><span class="av" aria-hidden="true">CK</span>Chandan</button>
+    </div>
+  </header>
+
+  <main class="stage">
+    <div class="artcol">
+      <div class="stack">
+        <span class="u1" id="u1" aria-hidden="true"></span>
+        <span class="u2" id="u2" aria-hidden="true"></span>
+        <div id="artslot" aria-hidden="true"></div>
+      </div>
+      <div class="artfoot">
+        <span class="mlabel e-side">side a · track 2</span>
+        <span class="mlabel e-label" style="color:var(--text-3)">dead oceans · 2020</span>
+      </div>
+    </div>
+
+    <div class="metacol">
+      <div class="eyebrow">
+        <span class="mlabel live">now playing</span>
+        <span class="mlabel e-pos">1 of 10 this session</span>
+      </div>
+      <div class="titleblock" id="titleblock">
+        <h1 class="ttitle e-title">So We Won&rsquo;t Forget</h1>
+        <div class="tsub"><span class="e-artist">Khruangbin</span><span class="sep">/</span><span class="album e-album">Mordechai</span></div>
+      </div>
+      <dl class="liner">
+        <div><dt>tempo</dt><dd class="e-bpm">104 BPM</dd></div>
+        <div><dt>key</dt><dd class="e-key">D minor</dd></div>
+        <div><dt>vibe</dt><dd class="hl e-vibe">34 · chill</dd></div>
+        <div><dt>energy</dt><dd class="e-energy">0.31</dd></div>
+        <div><dt>source</dt><dd>Spotify</dd></div>
+        <div><dt>length</dt><dd class="e-len">4:12</dd></div>
+      </dl>
+      <div class="rule"></div>
+      <div class="transport">
+        <div class="controls">
+          <button class="tbtn" data-act="prev" aria-label="Previous track">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2h1.7v12H4z"/><path d="M14 2 6.4 8 14 14z"/></svg>
+          </button>
+          <button class="play" data-act="play" aria-label="Pause">
+            <svg class="ico-pause" width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.6 2.6h2.6v10.8H4.6zM8.8 2.6h2.6v10.8H8.8z"/></svg>
+            <svg class="ico-play" width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="display:none"><path d="M5 3.2 13 8l-8 4.8z"/></svg>
+          </button>
+          <button class="tbtn" data-act="next" aria-label="Next track">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M10.3 2H12v12h-1.7z"/><path d="M2 2l7.6 6L2 14z"/></svg>
+          </button>
+        </div>
+        <div class="seek seekline" data-seek role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" style="margin-top:var(--sp-4)">
+          <div class="prog"><span class="fill"></span><span class="pthumb"></span><span class="hit"></span></div>
+          <div class="times"><span class="t-now">0:00</span><span class="t-end">4:12</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="faderCol">
+      <div>
+        <div class="vibenum" id="vnum">34</div>
+        <div class="vibemood" id="vmood">chill</div>
+      </div>
+      <div class="fader" id="fader" role="slider" tabindex="0"
+           aria-label="Vibe — drag, or use the arrow keys"
+           aria-valuemin="0" aria-valuemax="100" aria-valuenow="34" aria-valuetext="34, chill" aria-orientation="vertical">
+        <div class="groove"><span class="spec"></span><span class="lit"><span class="spec"></span></span></div>
+        <div class="names" id="names">
+          <span style="bottom:90%">beast</span><span style="bottom:70%">hype</span>
+          <span style="bottom:50%">steady</span><span style="bottom:30%">chill</span>
+          <span style="bottom:10%">sleep</span>
+        </div>
+        <div class="ticks" id="ticks"></div>
+        <div class="cap" id="cap"></div>
+      </div>
+      <span class="mlabel" style="color:var(--text-mute)">vibe</span>
+    </div>
+  </main>
+
+  <aside class="sidebar">
+    <div class="sectionHead">
+      <h2 class="sectionTitle">Up next</h2>
+      <span class="pill" id="upcount">9</span>
+    </div>
+    <ul class="qlist" id="upnext"></ul>
+  </aside>
+</div>
+
+<!-- =============================================== the theatre ======= -->
+<div id="theatre">
+
+  <!-- 1 — HOUSELIGHTS ------------------------------------------------ -->
+  <section class="dir d1" aria-label="Theatrical view — houselights">
+    <span class="lamp apparatus" aria-hidden="true"></span>
+
+    <div class="floor apparatus seekline" data-seek role="slider" tabindex="0"
+         aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <span class="ffill"></span><span class="fcap"></span>
+    </div>
+
+    <div class="plinth apparatus">
+      <h2 class="ptitle t-title">So We Won&rsquo;t Forget</h2>
+      <p class="partist t-artist">Khruangbin</p>
+      <p class="pliner t-liner">Mordechai<s>·</s>Dead Oceans<s>·</s>2020<s>·</s>DOC095</p>
+      <div class="ptimes chrome"><span class="ttime t-now">0:00</span><span class="ttime t-end">4:12</span></div>
+      <div class="tcontrols ptransport chrome">
+        <button class="tbtn" data-act="prev" aria-label="Previous track">
+          <svg width="17" height="17" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2h1.7v12H4z"/><path d="M14 2 6.4 8 14 14z"/></svg>
+        </button>
+        <button class="play" data-act="play" aria-label="Pause">
+          <svg class="ico-pause" width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.6 2.6h2.6v10.8H4.6zM8.8 2.6h2.6v10.8H8.8z"/></svg>
+          <svg class="ico-play" width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="display:none"><path d="M5 3.2 13 8l-8 4.8z"/></svg>
+        </button>
+        <button class="tbtn" data-act="next" aria-label="Next track">
+          <svg width="17" height="17" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M10.3 2H12v12h-1.7z"/><path d="M2 2l7.6 6L2 14z"/></svg>
+        </button>
+      </div>
+      <div class="tmood t-mood">34 · chill</div>
+    </div>
+
+    <div class="exitwrap apparatus chrome">
+      <button class="tleave" data-act="leave">esc &nbsp;· &nbsp;lights up</button>
+    </div>
+  </section>
+
+  <!-- 2 — RUNNING ORDER ---------------------------------------------- -->
+  <section class="dir d2" aria-label="Theatrical view — running order">
+    <div class="block apparatus">
+      <h2 class="big t-big" id="bigTitle"></h2>
+      <p class="bigsub t-bigsub"></p>
+    </div>
+
+    <span class="line apparatus" aria-hidden="true"></span>
+    <div class="ticks2 apparatus" id="ticks2"></div>
+    <span class="segfill apparatus" aria-hidden="true"></span>
+    <span class="phead apparatus" aria-hidden="true"></span>
+    <div class="segseek apparatus seekline" data-seek role="slider" tabindex="0"
+         aria-label="Seek within the current track" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+
+    <span class="ttime nowtime apparatus t-now">0:00</span>
+    <span class="ttime endtime apparatus t-end">4:12</span>
+    <div class="ends apparatus">
+      <span class="ttime" id="sessStart">session 0:00</span>
+      <span class="ttime" id="sessEnd">10 records · 55:14</span>
+    </div>
+
+    <div class="legend apparatus">
+      <span><b>space</b> <button class="st" id="d2state" data-act="play">playing</button></span>
+      <span><b>&larr; &rarr;</b> seek</span>
+      <span><b>n</b> / <b>p</b> track</span>
+      <span><b>tab</b> running order</span>
+      <span><b>esc</b> lights up</span>
+    </div>
+    <div class="exitwrap apparatus"><button class="tleave" data-act="leave">esc &nbsp;· &nbsp;lights up</button></div>
+  </section>
+
+  <!-- 3 — THE ROOM ---------------------------------------------------- -->
+  <section class="dir d3" aria-label="Theatrical view — the room">
+    <div class="cove apparatus" aria-hidden="true"><i class="ct"></i><i class="cl"></i><i class="cr"></i><i class="cb"></i></div>
+    <span class="horizon apparatus" aria-hidden="true"></span>
+    <div class="roommood apparatus t-mood">34 · chill</div>
+
+    <div class="card apparatus">
+      <h2 class="ctitle t-title">So We Won&rsquo;t Forget</h2>
+      <p class="csub"><span class="t-artist">Khruangbin</span><s>·</s><span class="t-album">Mordechai</span></p>
+      <div class="cseek seekline" data-seek role="slider" tabindex="0"
+           aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <span class="ffill"></span><span class="fcap"></span>
+      </div>
+      <div class="ctimes"><span class="ttime t-now">0:00</span><span class="ttime t-end">4:12</span></div>
+    </div>
+
+    <div class="front">
+      <div class="tcontrols">
+        <button class="tbtn" data-act="prev" aria-label="Previous track">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2h1.7v12H4z"/><path d="M14 2 6.4 8 14 14z"/></svg>
+        </button>
+        <button class="play sm" data-act="play" aria-label="Pause">
+          <svg class="ico-pause" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.6 2.6h2.6v10.8H4.6zM8.8 2.6h2.6v10.8H8.8z"/></svg>
+          <svg class="ico-play" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="display:none"><path d="M5 3.2 13 8l-8 4.8z"/></svg>
+        </button>
+        <button class="tbtn" data-act="next" aria-label="Next track">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M10.3 2H12v12h-1.7z"/><path d="M2 2l7.6 6L2 14z"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <button class="nextband" id="nextband">
+      <b aria-hidden="true"></b><span id="nextlab">up next</span>
+    </button>
+
+    <div class="exitwrap"><button class="tleave" data-act="leave">esc &nbsp;· &nbsp;lights up</button></div>
+  </section>
+</div>
+
+<!-- the shared record ------------------------------------------------- -->
+<div id="artbox">
+  <div id="art" class="sleeve" data-art="0">
+    <span class="field"></span><span class="ring"></span><span class="bar"></span>
+    <span class="cat" id="cat">DOC095 / A2</span>
+  </div>
+  <span id="pool" aria-hidden="true"></span>
+</div>
+
+<div id="mask" aria-hidden="true"><i class="barT"></i><i class="barB"></i></div>
+
+<div id="tools">
+  <div class="seg" role="group" aria-label="Theatrical direction">
+    <button data-dir="1" class="on">houselights</button>
+    <button data-dir="2">running order</button>
+    <button data-dir="3">the room</button>
+  </div>
+  <span class="cap2">demo switch &mdash; not shipped chrome</span>
+</div>
+
+<script>
+/* ===================================================================
+   THE ACCENT CONTRACT. Identical to design/player-mockup.html.
+
+   --vibe-accent is decided by the music and is unknowable at authoring
+   time: measured across the ten band endpoints its contrast on --bg swings
+   3.02:1 to 9.34:1, and switching black/white ink per track still bottoms
+   out at 4.32:1. So the raw accent never carries or backs text. Two derived
+   tones do, computed here by lifting OKLab L to a floor and clipping to sRGB.
+     --vibe-accent-text  okL >= 0.74  ->  6.93:1 worst case on --bg
+     --vibe-accent-fill  okL >= 0.82  ->  8.23:1 worst case with --bg ink
+
+   The theatrical view spends MORE accent area than the everyday one (the
+   cove in direction 3 is the largest accent surface in the product), which
+   is exactly why none of it is allowed near text.
+   =================================================================== */
+const OKL_TEXT = 0.74, OKL_FILL = 0.82;
+const s2l = c => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+const l2s = c => { const v = c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+                   return Math.max(0, Math.min(255, Math.round(v * 255))); };
+function toOklab([R, G, B]) {
+  const r = s2l(R), g = s2l(G), b = s2l(B);
+  const l = Math.cbrt(0.4122214708*r + 0.5363325363*g + 0.0514459929*b);
+  const m = Math.cbrt(0.2119034982*r + 0.6806995451*g + 0.1073969566*b);
+  const s = Math.cbrt(0.0883024619*r + 0.2817188376*g + 0.6299787005*b);
+  return [0.2104542553*l + 0.7936177850*m - 0.0040720468*s,
+          1.9779984951*l - 2.4285922050*m + 0.4505937099*s,
+          0.0259040371*l + 0.7827717662*m - 0.8086757660*s];
+}
+function toRgb([L, a, bb]) {
+  const l = Math.pow(L + 0.3963377774*a + 0.2158037573*bb, 3);
+  const m = Math.pow(L - 0.1055613458*a - 0.0638541728*bb, 3);
+  const s = Math.pow(L - 0.0894841775*a - 1.2914855480*bb, 3);
+  return [l2s( 4.0767416621*l - 3.3077115913*m + 0.2309699292*s),
+          l2s(-1.2684380046*l + 2.6097574011*m - 0.3413193965*s),
+          l2s(-0.0041960863*l - 0.7034186147*m + 1.7076147010*s)];
+}
+function liftL(rgb, floor) { const ok = toOklab(rgb); if (ok[0] < floor) ok[0] = floor; return toRgb(ok); }
+const css = c => 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+
+/* The five mood bands, exactly as lib/vibe.js has them. */
+const MOODS = [
+  { name: 'sleep',  min: 0,   max: 20,  a: [76, 91, 138],  b: [91, 127, 189] },
+  { name: 'chill',  min: 20,  max: 40,  a: [0, 180, 216],  b: [34, 193, 227] },
+  { name: 'steady', min: 40,  max: 60,  a: [124, 58, 237], b: [167, 139, 250] },
+  { name: 'hype',   min: 60,  max: 80,  a: [236, 72, 153], b: [244, 63, 94] },
+  { name: 'beast',  min: 80,  max: 100, a: [249, 115, 22], b: [220, 38, 38] },
+];
+function accentFor(v) {
+  const m = MOODS.find(m => v >= m.min && v < m.max) || MOODS[4];
+  const t = Math.min(1, Math.max(0, (v - m.min) / (m.max - m.min)));
+  return { mood: m.name, a: m.a.map((c, i) => Math.round(c + (m.b[i] - c) * t)), b: m.b };
+}
+const root = document.documentElement;
+function applyAccent(v) {
+  const { a, b, mood } = accentFor(v);
+  root.style.setProperty('--vibe-accent', css(a));
+  root.style.setProperty('--vibe-accent-2', css(b));
+  root.style.setProperty('--vibe-accent-text', css(liftL(a, OKL_TEXT)));
+  root.style.setProperty('--vibe-accent-fill', css(liftL(a, OKL_FILL)));
+  return mood;
+}
+
+/* ------------------------------------------------------- the library */
+const T = [
+  { t: 'Peace Piece',        ar: 'Bill Evans Trio', al: 'Everybody Digs Bill Evans', lb: 'Riverside',      yr: 1959, cat: 'RLP1129',  sec: 402, bpm: 60,  key: 'C major',  en: 0.12, v: 8,  side: 'side b · track 4', art: 2 },
+  { t: 'Mohabbat',           ar: 'Arooj Aftab',     al: 'Vulture Prince',            lb: 'New Amsterdam',  yr: 2021, cat: 'NWAM127',  sec: 454, bpm: 68,  key: 'B♭ minor', en: 0.18, v: 17, side: 'side a · track 3', art: 1 },
+  { t: 'Space 1.8',          ar: 'Nala Sinephro',   al: 'Space 1.8',                 lb: 'Warp',           yr: 2021, cat: 'WARP321',  sec: 399, bpm: 72,  key: 'E minor',  en: 0.24, v: 26, side: 'side b · track 1', art: 0 },
+  { t: 'So We Won’t Forget', ar: 'Khruangbin',      al: 'Mordechai',                 lb: 'Dead Oceans',    yr: 2020, cat: 'DOC095',   sec: 252, bpm: 104, key: 'D minor',  en: 0.31, v: 34, side: 'side a · track 2', art: 0 },
+  { t: 'Rust',               ar: 'Yussef Dayes',    al: 'Black Classical Music',     lb: 'Brownswood',     yr: 2023, cat: 'BWOOD291', sec: 327, bpm: 88,  key: 'F minor',  en: 0.44, v: 45, side: 'side c · track 2', art: 3 },
+  { t: 'Birth4000',          ar: 'Floating Points', al: 'Cascade',                   lb: 'Ninja Tune',     yr: 2024, cat: 'ZEN287',   sec: 358, bpm: 128, key: 'A minor',  en: 0.62, v: 56, side: 'side a · track 1', art: 2 },
+  { t: 'Red Room',           ar: 'Hiatus Kaiyote',  al: 'Mood Valiant',              lb: 'Brainfeeder',    yr: 2021, cat: 'BF112',    sec: 289, bpm: 101, key: 'G minor',  en: 0.70, v: 66, side: 'side b · track 2', art: 1 },
+  { t: 'Mumbay',             ar: 'Sarathy Korwar',  al: 'More Arriving',             lb: 'The Leaf Label', yr: 2019, cat: 'BAY104',   sec: 321, bpm: 118, key: 'D minor',  en: 0.76, v: 71, side: 'side a · track 4', art: 3 },
+  { t: 'Point and Kill',     ar: 'Little Simz',     al: 'Sometimes I Might Be Introvert', lb: 'AGE 101',   yr: 2021, cat: 'AGE1019',  sec: 228, bpm: 112, key: 'E♭ minor',en: 0.82, v: 77, side: 'side b · track 5', art: 0 },
+  { t: 'Afrique Victime',    ar: 'Mdou Moctar',     al: 'Afrique Victime',           lb: 'Matador',        yr: 2021, cat: 'OLE1710',  sec: 432, bpm: 134, key: 'F# minor', en: 0.91, v: 88, side: 'side b · track 3', art: 1 },
+];
+const TOTAL = T.reduce((n, t) => n + t.sec, 0);
+
+const fmt = s => { s = Math.max(0, Math.floor(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+const $  = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const setAll = (sel, txt) => $$(sel).forEach(e => { e.textContent = txt; });
+
+let cur = 3, vibe = 34, pos = 0, playing = true;
+let played = [], seq = 0, changing = false, timers = [];
+let mode = 'everyday', dir = 1;
+const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* Paints a sleeve from a track: the two tone-field colours and the
+   composition index. Both derive from the track's OWN accent, so every
+   sleeve re-lights with its own mood, not the current one. */
+function paintSleeve(el, i) {
+  const { a, b } = accentFor(T[i].v);
+  el.style.setProperty('--c1', css(a));
+  el.style.setProperty('--c2', css(b));
+  el.dataset.art = String(T[i].art);
+}
+function newSleeve(i) {
+  const d = document.createElement('div');
+  d.className = 'sleeve';
+  d.innerHTML = '<span class="field"></span><span class="ring"></span><span class="bar"></span>';
+  paintSleeve(d, i);
+  return d;
+}
+
+/* ===================================================================
+   LAYOUT. Every piece of geometry in the theatrical view is computed
+   HERE, in JS, with explicit clamps, and written back as px custom
+   properties. No stylesheet rule derives a length from viewport
+   arithmetic, so there is no `calc(100vw - fixed)` to go negative on a
+   narrow window and no `scale(calc(length / number))` to compute to
+   nothing. The only viewport maths in the CSS is min() of positive terms.
+   =================================================================== */
+function artRect() {
+  const W = window.innerWidth, H = window.innerHeight;
+  if (mode === 'everyday') {
+    const r = $('#artslot').getBoundingClientRect();
+    return { x: r.left, y: r.top, w: r.width, h: r.height };
+  }
+  if (dir === 1) {
+    /* Big, centred, standing on the floor line. Three positive terms for
+       the size; the floor is then clamped between "the record still fits
+       above it" and "the plinth card still fits below it". The card is
+       about 265px of type and transport, so H - 350 is the real limit —
+       at 1280x800 an unclamped 0.615H floor pushed the mood line off the
+       bottom of the window. */
+    const s = Math.min(H * 0.42, W * 0.36, 480);
+    const floorY = Math.max(s + 56, Math.min(H * 0.56, H - 350));
+    return { x: Math.round((W - s) / 2), y: Math.round(floorY - s), w: Math.round(s), h: Math.round(s) };
+  }
+  if (dir === 2) {
+    /* The record collapses into the segment of the line it occupies. The
+       running order is centred on the current track rather than drawn to
+       scale across the whole session: the current record always owns the
+       middle 46% so the seek is always a usable size, and the past and
+       future are compressed into the margins. */
+    const lineY = Math.round(H * 0.60);
+    const x0 = Math.round(W * 0.27), w = Math.round(W * 0.46);
+    return { x: x0, y: lineY - 3, w: w, h: 6 };
+  }
+  /* dir 3 — small and far away: you are at the back of the hall. */
+  const s = Math.min(H * 0.26, W * 0.18, 230);
+  const floorY = Math.max(s + 80, Math.min(H * 0.50, H - 300));
+  return { x: Math.round((W - s) / 2), y: Math.round(floorY - s), w: Math.round(s), h: Math.round(s) };
+}
+
+function layout() {
+  const W = window.innerWidth, H = window.innerHeight;
+  const r = artRect();
+  root.style.setProperty('--art-x', r.x + 'px');
+  root.style.setProperty('--art-y', r.y + 'px');
+  $('#artbox').style.width  = r.w + 'px';
+  $('#artbox').style.height = r.h + 'px';
+
+  /* dir 1 — floor and plinth hang off the record's own footprint. */
+  const floorY = r.y + r.h;
+  root.style.setProperty('--floor-y', floorY + 'px');
+  root.style.setProperty('--floor-w', Math.round(Math.min(r.w * 1.5, W - 96)) + 'px');
+
+  /* dir 2 — the line, and the current track's segment on it. */
+  root.style.setProperty('--line-y', Math.round(H * 0.60) + 'px');
+  root.style.setProperty('--seg-x0', Math.round(W * 0.27) + 'px');
+  root.style.setProperty('--seg-w',  Math.round(W * 0.46) + 'px');
+
+  /* dir 3 — the ceiling cove scales with the room but never swallows it. */
+  root.style.setProperty('--cove-top', Math.round(Math.min(H * 0.26, 210)) + 'px');
+
+  if (mode === 'theatre' && dir === 2) layoutTicks();
+}
+
+/* ===================================================================
+   THE MODE CHANGE.
+
+   t=0    everyday chrome fades (220ms) while the mask bars close (400ms,
+          --ease-in). The chrome is gone before the mask arrives, so the
+          mask closes on an empty room.
+   t=400  the bars stop EXACTLY at the record's top and bottom edges. The
+          record is never hidden — this is a masking-down, not a blackout.
+   t=540  the bars retreat (420ms --ease-out) while the record FLIPs to its
+          theatrical position (560ms). Same element, measured rects.
+   t=640  the direction's apparatus fades up (420ms). Order matters: the
+          record settles, THEN the room is built around it. Reversed, it
+          reads as a bug — the same rule the track change obeys.
+
+   Leaving reverses it at roughly 0.7x, because a dismissal that lingers
+   feels reluctant.
+   =================================================================== */
+function barScales() {
+  const r = $('#artbox').getBoundingClientRect();
+  const half = window.innerHeight / 2;
+  return [
+    Math.max(0, Math.min(1, r.top / half)),
+    Math.max(0, Math.min(1, (window.innerHeight - r.bottom) / half)),
+  ];
+}
+const barT = $('#mask .barT'), barB = $('#mask .barB'), box = $('#artbox');
+
+/* FLIP. sx/sy are plain JS numbers, so scale() always receives a unitless
+   value. Denominators are guarded: a zero-width `last` would otherwise
+   produce Infinity and drop the whole declaration. */
+function flip(mutate, ms) {
+  const first = box.getBoundingClientRect();
+  mutate();
+  const last = box.getBoundingClientRect();
+  if (reduced) { box.style.transition = ''; box.style.transform = ''; return; }
+  const dx = first.left - last.left, dy = first.top - last.top;
+  const sx = first.width  / Math.max(1, last.width);
+  const sy = first.height / Math.max(1, last.height);
+  box.style.transition = 'none';
+  box.style.transformOrigin = 'top left';
+  box.style.transform = 'translate(' + dx + 'px,' + dy + 'px) scale(' + sx + ',' + sy + ')';
+  void box.offsetWidth;
+  box.style.transition = 'transform ' + ms + 'ms var(--ease-out)';
+  box.style.transform = 'none';
+}
+
+let switching = false;
+function enterTheatre() {
+  if (mode === 'theatre' || switching) return;
+  switching = true;
+  const [kt, kb] = barScales();
+
+  root.classList.add('masking');
+  /* The transition shorthand and the transformed value change in the same
+     task. Forcing a style flush between them is the difference between a
+     masking-down and a hard cut. */
+  void barT.offsetWidth;
+  barT.style.transform = 'scaleY(' + kt + ')';
+  barB.style.transform = 'scaleY(' + kb + ')';
+
+  const closeMs = reduced ? 0 : 400, hold = reduced ? 0 : 140;
+  setTimeout(() => {
+    mode = 'theatre';
+    root.dataset.mode = 'theatre';
+    root.classList.remove('masking');
+    root.classList.add('unmasking');
+    /* The screen is masked to a slit around the record, so the geometry
+       swap below is invisible; the FLIP then carries it outward as the
+       bars retreat. */
+    flip(() => { layout(); paintTheatre(); }, reduced ? 0 : 560);
+    void barT.offsetWidth;
+    barT.style.transform = 'scaleY(0)';
+    barB.style.transform = 'scaleY(0)';
+    setTimeout(() => root.classList.add('staged'), reduced ? 0 : 100);
+    setTimeout(() => { root.classList.remove('unmasking'); switching = false; armIdle(); }, reduced ? 0 : 620);
+  }, closeMs + hold);
+}
+
+function leaveTheatre() {
+  if (mode !== 'theatre' || switching) return;
+  switching = true;
+  root.classList.remove('staged', 'idle', 'front');
+  clearTimeout(idleT);
+
+  const exitMs = reduced ? 0 : 280;
+  setTimeout(() => {
+    const [kt, kb] = barScales();
+    root.classList.add('masking');
+    void barT.offsetWidth;
+    barT.style.transform = 'scaleY(' + kt + ')';
+    barB.style.transform = 'scaleY(' + kb + ')';
+    setTimeout(() => {
+      mode = 'everyday';
+      root.dataset.mode = 'everyday';
+      root.classList.remove('masking');
+      root.classList.add('unmasking');
+      flip(() => { layout(); }, reduced ? 0 : 400);
+      void barT.offsetWidth;
+      barT.style.transform = 'scaleY(0)';
+      barB.style.transform = 'scaleY(0)';
+      setTimeout(() => { root.classList.remove('unmasking'); switching = false; $('#enter').focus(); }, reduced ? 0 : 420);
+    }, reduced ? 0 : 280);
+  }, exitMs);
+}
+
+function setDir(d) {
+  if (d === dir) return;
+  dir = d;
+  $$('#tools .seg button').forEach(b => b.classList.toggle('on', +b.dataset.dir === d));
+  root.classList.remove('idle', 'front');
+  clearTimeout(idleT);
+  /* Switching direction inside the mode is NOT a mode change, so it gets
+     no mask — the record simply flies to its new post and the apparatus
+     crossfades. The switcher is a demo control; it should not borrow the
+     drama of the real transition. */
+  root.classList.remove('staged');
+  flip(() => { root.dataset.dir = String(d); layout(); paintTheatre(); }, reduced ? 0 : 520);
+  setTimeout(() => root.classList.add('staged'), reduced ? 0 : 160);
+  armIdle();
+}
+
+/* ===================================================================
+   REVEALING THE CONTROLS — one answer per direction, and each is the one
+   the direction's own metaphor implies.
+
+   1  idle-fade        the lights going down takes the chrome with them
+   2  always-present   nothing hides, because nothing is chrome
+   3  hover a region   the hall has a front of house; walk to it
+
+   Common to all three: any keydown, and any focus, forces the controls
+   visible. Hover must never be the only path (it is not available to a
+   keyboard or a touch user) and a sticky overlay must never hide the
+   focused control.
+   =================================================================== */
+let idleT = null;
+const IDLE_MS = 2800;
+function armIdle() {
+  clearTimeout(idleT);
+  root.classList.remove('idle');
+  if (mode !== 'theatre' || dir !== 1 || reduced) return;
+  idleT = setTimeout(() => {
+    /* Never fade the chrome out from under a keyboard user. */
+    if (document.activeElement && $('#theatre').contains(document.activeElement)) return armIdle();
+    root.classList.add('idle');
+  }, IDLE_MS);
+}
+window.addEventListener('pointermove', e => {
+  if (mode !== 'theatre') return;
+  if (dir === 1) armIdle();
+  if (dir === 3) root.classList.toggle('front', e.clientY > window.innerHeight * 0.82);
+});
+window.addEventListener('pointerdown', armIdle);
+document.addEventListener('focusin', () => {
+  if (mode !== 'theatre') return;
+  armIdle();
+  if (dir === 3) root.classList.add('front');
+});
+
+/* ===================================================================
+   RENDERING
+   =================================================================== */
+function paintNow() {
+  const t = T[cur];
+  paintSleeve($('#art'), cur);
+  const m = t.side.match(/side (\w).*?(\d+)/);
+  $('#cat').textContent = t.cat + (m ? ' / ' + m[1].toUpperCase() + m[2] : '');
+
+  /* everyday */
+  setAll('.e-side', t.side);
+  setAll('.e-label', t.lb.toLowerCase() + ' · ' + t.yr);
+  setAll('.e-title', t.t);
+  setAll('.e-artist', t.ar);
+  setAll('.e-album', t.al);
+  setAll('.e-bpm', t.bpm + ' BPM');
+  setAll('.e-key', t.key);
+  setAll('.e-vibe', t.v + ' · ' + accentFor(t.v).mood);
+  setAll('.e-energy', t.en.toFixed(2));
+  setAll('.e-len', fmt(t.sec));
+  setAll('.e-pos', (played.length + 1) + ' of ' + T.length + ' this session');
+  setAll('.t-end', fmt(t.sec));
+
+  /* The breath: tempo sets the speed, energy sets the size. A ballad
+     barely moves; a beast track visibly throbs. Unknown BPM would mean no
+     breath at all — never a guess at 120. */
+  root.style.setProperty('--beat', (60 / t.bpm).toFixed(3) + 's');
+  root.style.setProperty('--breath', (0.04 + 0.16 * t.en).toFixed(3));
+
+  paintTheatre();
+  pos = 0; tick(true);
+}
+
+function paintTheatre() {
+  const t = T[cur];
+  setAll('.t-title', t.t);
+  setAll('.t-artist', t.ar);
+  setAll('.t-album', t.al);
+  setAll('.t-mood', t.v + ' · ' + accentFor(t.v).mood);
+  $$('.t-liner').forEach(e => {
+    e.innerHTML = '';
+    [t.al, t.lb, String(t.yr), t.cat].forEach((s, n) => {
+      if (n) { const sep = document.createElement('s'); sep.textContent = '·'; e.append(sep); }
+      e.append(document.createTextNode(s));
+    });
+  });
+  $$('.t-bigsub').forEach(e => {
+    e.innerHTML = '';
+    [t.ar, t.al, t.lb + ' ' + t.yr, t.key, t.bpm + ' bpm'].forEach((s, n) => {
+      if (n) { const sep = document.createElement('s'); sep.textContent = '·'; e.append(sep); }
+      e.append(document.createTextNode(s));
+    });
+  });
+  buildBigTitle(t.t);
+  layoutTicks();
+  paintNextBand();
+}
+
+/* ---- direction 2: the title IS the progress bar ----
+   Each word gets a base run at --text-3 and an accent overlay clipped to
+   how much of the track has played, so the record lights its own name up
+   word by word in reading order.
+
+   The per-word window is measured in CHARACTERS, not pixels: it needs no
+   layout read, cannot be invalidated by a reflow, and for one serif at one
+   size it is visually indistinguishable from a pixel measure. --wk is
+   1/(w1 - w0), precomputed here so the stylesheet never divides — a length
+   divided by a number is a length, and that shape has silently computed to
+   nothing in this project before.
+
+   Contrast: the UNPLAYED run is --text-3 (6.67:1), not --text-mute (2.42:1).
+   The title has to be fully legible before a single second has played; the
+   fill is a change of colour, never a change of legibility. */
+function buildBigTitle(title) {
+  const h = $('#bigTitle');
+  if (!h) return;
+  h.innerHTML = '';
+  const words = title.split(' ');
+  const total = Math.max(1, title.length);
+  let n = 0;
+  words.forEach((word, k) => {
+    const piece = word + (k < words.length - 1 ? ' ' : '');
+    const w0 = n / total, w1 = (n + piece.length) / total;
+    n += piece.length;
+    const span = Math.max(0.0001, w1 - w0);
+    const el = document.createElement('w');
+    el.textContent = piece;
+    el.style.setProperty('--w0', w0.toFixed(4));
+    el.style.setProperty('--wk', (1 / span).toFixed(4));
+    const ov = document.createElement('u');
+    ov.textContent = piece;
+    ov.setAttribute('aria-hidden', 'true');   /* the base run is the readable one */
+    el.append(ov);
+    h.append(el);
+  });
+}
+
+/* ---- direction 2: the running order ----
+   Ticks are 2px marks inside 26px hit boxes. The mark is the drawing; the
+   box is the target, so a 2px line still clears the pointer-target rule
+   without being drawn thicker than it should be. */
+function layoutTicks() {
+  const host = $('#ticks2');
+  if (!host) return;
+  const W = window.innerWidth;
+  host.innerHTML = '';
+  const pastL = W * 0.045, pastR = W * 0.255;
+  const futL  = W * 0.745, futR = W * 0.955;
+
+  const mk = (i, x, isPast, named) => {
+    const t = T[i];
+    const b = document.createElement('button');
+    b.className = 'tk' + (isPast ? ' past' : '') + (named ? ' named' : '');
+    b.style.left = Math.round(x) + 'px';
+    b.style.setProperty('--tc', css(accentFor(t.v).a));
+    b.setAttribute('aria-label', (isPast ? 'Replay ' : 'Jump to ') + t.t + ' by ' + t.ar + ', ' + fmt(t.sec));
+    const bar = document.createElement('b');
+    /* Height carries duration, so a long record is visibly a long record
+       standing in the running order. */
+    bar.style.height = Math.round(9 + 17 * Math.min(1, t.sec / 460)) + 'px';
+    const lab = document.createElement('span');
+    lab.className = 'lab';
+    lab.textContent = t.t.length > 22 ? t.t.slice(0, 21) + '…' : t.t;
+    /* A centred label on the last tick in the running order runs off the
+       right edge. #theatre clips rather than scrolls, so the failure is
+       silent — anchor the label inward instead of letting it be cut. */
+    if (x > W - 150) lab.style.transform = 'translateX(-88%)';
+    else if (x < 150) lab.style.transform = 'translateX(-12%)';
+    b.append(bar, lab);
+    b.addEventListener('click', () => go(i));
+    host.append(b);
+  };
+
+  const past = [], fut = [];
+  for (let i = 0; i < T.length; i++) { if (i < cur) past.push(i); else if (i > cur) fut.push(i); }
+  const spread = (arr, l, r, isPast) => {
+    if (!arr.length) return;
+    const total = arr.reduce((n, i) => n + T[i].sec, 0) || 1;
+    let acc = 0;
+    arr.forEach((i, k) => {
+      acc += T[i].sec;
+      const x = l + (r - l) * (acc / total);
+      /* Only the next two futures are labelled. The rest are bare marks —
+         a running order you can read at a glance, not a list. */
+      mk(i, x, isPast, !isPast && k < 2);
+    });
+  };
+  spread(past, pastL, pastR, true);
+  spread(fut, futL, futR, false);
+
+  const $ss = $('#sessEnd'); if ($ss) $ss.textContent = T.length + ' records · ' + fmt(TOTAL);
+  const done = T.slice(0, cur).reduce((n, t) => n + t.sec, 0);
+  const $s0 = $('#sessStart'); if ($s0) $s0.textContent = 'session ' + fmt(done + pos);
+}
+
+/* ---- direction 3: the queue, rendered as light ---- */
+function paintNextBand() {
+  const i = nextIndex();
+  const el = $('#nextband');
+  if (!el) return;
+  el.style.setProperty('--nc', css(accentFor(T[i].v).a));
+  $('#nextlab').textContent = 'up next — ' + T[i].t + ' · ' + T[i].ar;
+  el.setAttribute('aria-label', 'Play next: ' + T[i].t + ' by ' + T[i].ar);
+}
+
+/* ---- the everyday rail ---- */
+function renderQueue() {
+  const ul = $('#upnext'); if (!ul) return;
+  ul.innerHTML = '';
+  const q = [];
+  for (let k = 1; k <= 9; k++) q.push((cur + k) % T.length);
+  q.forEach((i, n) => {
+    const li = document.createElement('li');
+    li.className = 'qrow'; li.tabIndex = 0; li.setAttribute('role', 'button');
+    li.setAttribute('aria-label', 'Play ' + T[i].t + ' by ' + T[i].ar);
+    const num = document.createElement('span'); num.className = 'qnum'; num.textContent = n + 1;
+    const body = document.createElement('div'); body.className = 'qbody';
+    body.innerHTML = '<div class="qtitle"></div><div class="qsub"></div>';
+    body.querySelector('.qtitle').textContent = T[i].t;
+    body.querySelector('.qsub').textContent = T[i].ar;
+    const dur = document.createElement('span'); dur.className = 'qdur'; dur.textContent = fmt(T[i].sec);
+    li.append(num, newSleeve(i), body, dur);
+    li.addEventListener('click', () => go(i));
+    li.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(i); } });
+    ul.append(li);
+  });
+  $('#upcount').textContent = String(q.length);
+  /* The two sheets behind the hero are the next two records, tinted with
+     their own accents. The stack IS the queue. */
+  [['#u1', 0, 26], ['#u2', 1, 18]].forEach(([sel, n, pct]) => {
+    const { a } = accentFor(T[q[n]].v);
+    $(sel).style.background = 'color-mix(in oklab, ' + css(a) + ' ' + pct + '%, var(--surface))';
+  });
+}
+
+/* ===================================================================
+   THE TRACK CHANGE — 640ms, overlapping. The image changes, then the room
+   catches up; reversed it reads as a bug.
+
+   Direction 2 gets a different choreography on purpose. There the record
+   is the still point and TIME moves, so the sleeve does not fall: the
+   running order slides past it and the title rebuilds. That is the
+   direction's whole thesis, acted out.
+   =================================================================== */
+function go(i) {
+  if (i === cur || changing || i == null) return;
+  changing = true;
+  const my = ++seq;
+  timers.forEach(clearTimeout); timers = [];
+  played.unshift(cur); played = played.slice(0, 5);
+
+  const art = $('#art'), pool = $('#pool');
+
+  if (reduced) {
+    cur = i;
+    applyAccent(T[i].v); setVibeSilently(T[i].v);
+    paintNow(); renderQueue(); layout(); restartBreath();
+    changing = false; return;
+  }
+
+  const flat = (mode === 'theatre' && dir === 2);
+  if (!flat) { art.classList.remove('in'); art.classList.add('out'); }
+  pool.classList.add('dip');
+  $('#titleblock').classList.add('fade');
+  $$('.apparatus .t-title, .block').forEach(e => { e.style.transition = 'opacity 160ms var(--ease)'; e.style.opacity = '0'; });
+
+  timers.push(setTimeout(() => {
+    if (my !== seq) return;
+    cur = i;
+    paintNow(); renderQueue(); layout();
+    if (!flat) { art.classList.remove('out'); art.classList.add('in'); }
+    $('#titleblock').classList.remove('fade');
+    $$('.apparatus .t-title, .block').forEach(e => { e.style.opacity = ''; });
+    /* The accent is the SLOWEST element, so the room finishes re-lighting
+       after the art has settled. */
+    root.classList.add('relight');
+    applyAccent(T[i].v); setVibeSilently(T[i].v);
+  }, 300));
+
+  timers.push(setTimeout(() => {
+    if (my !== seq) return;
+    pool.classList.remove('dip');
+    root.classList.remove('relight');
+    restartBreath();
+    changing = false;
+  }, 660));
+}
+
+function restartBreath() {
+  $$('#pool, .mark, .d2 .phead, .d3 .cove').forEach(el => {
+    el.style.animation = 'none';
+    void el.offsetWidth;                 /* forces a reflow, restarting it in phase */
+    el.style.animation = '';
+    /* The shorthand reset above also clears animation-play-state, which
+       would otherwise start a paused player breathing again. */
+    el.style.animationPlayState = playing ? 'running' : 'paused';
+  });
+}
+
+/* Which record plays next — nearest vibe that is not current or recent. */
+function nextIndex() {
+  let best = -1, bd = 1e9;
+  T.forEach((t, i) => {
+    if (i === cur || played.slice(0, 3).includes(i)) return;
+    const d = Math.abs(t.v - vibe);
+    if (d < bd) { bd = d; best = i; }
+  });
+  return best >= 0 ? best : (cur + 1) % T.length;
+}
+
+/* ===================================================================
+   TRANSPORT
+   =================================================================== */
+function tick(force) {
+  const t = T[cur];
+  const p = Math.min(1, pos / t.sec);
+  root.style.setProperty('--played', p.toFixed(4));
+  setAll('.t-now', fmt(pos));
+  $$('.prog .fill').forEach(e => { e.style.width = (p * 100).toFixed(2) + '%'; });
+  $$('.prog .pthumb').forEach(e => { e.style.left = (p * 100).toFixed(2) + '%'; });
+  $$('[data-seek]').forEach(e => {
+    e.setAttribute('aria-valuenow', String(Math.round(p * 100)));
+    e.setAttribute('aria-valuetext', fmt(pos) + ' of ' + fmt(t.sec));
+  });
+  if (mode === 'theatre' && dir === 2) {
+    const done = T.slice(0, cur).reduce((n, x) => n + x.sec, 0);
+    const $s0 = $('#sessStart'); if ($s0) $s0.textContent = 'session ' + fmt(done + pos);
+  }
+  if (!force && p >= 1) go(nextIndex());
+}
+
+let last = performance.now();
+function loop(now) {
+  const dt = (now - last) / 1000; last = now;
+  if (playing) { pos += dt; tick(); }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+function setPlaying(v) {
+  playing = v;
+  $$('.ico-play').forEach(e => { e.style.display = v ? 'none' : 'block'; });
+  $$('.ico-pause').forEach(e => { e.style.display = v ? 'block' : 'none'; });
+  /* Scoped to the discs: the Running Order toggle is a word whose visible
+     text IS its name, and an aria-label of "Pause" over the word "playing"
+     would be a name/label mismatch. */
+  $$('button.play').forEach(e => e.setAttribute('aria-label', v ? 'Pause' : 'Play'));
+  const st = $('#d2state');
+  if (st) { st.textContent = v ? 'playing' : 'paused'; st.setAttribute('aria-pressed', String(!v)); }
+  /* The breath is the tempo. If nothing is playing there is no tempo. */
+  $$('#pool, .mark, .d2 .phead, .d3 .cove').forEach(el => { el.style.animationPlayState = v ? 'running' : 'paused'; });
+}
+
+/* One delegated handler for every transport button in both modes. */
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-act]');
+  if (!b) return;
+  const a = b.dataset.act;
+  if (a === 'play') setPlaying(!playing);
+  else if (a === 'next') go(nextIndex());
+  else if (a === 'prev') { if (pos > 4) { pos = 0; tick(true); } else go(played.length ? played[0] : (cur - 1 + T.length) % T.length); }
+  else if (a === 'leave') leaveTheatre();
+  armIdle();
+});
+$('#enter').addEventListener('click', enterTheatre);
+$('#nextband').addEventListener('click', () => go(nextIndex()));
+$$('#tools .seg button').forEach(b => b.addEventListener('click', () => setDir(+b.dataset.dir)));
+
+/* ---- seek. Pointer, click-anywhere and keyboard all reach the same
+   value: WCAG 2.2 requires a non-drag path for every author-controlled
+   drag, and in a view with this little chrome the keyboard path is not a
+   fallback, it is the primary one. ---- */
+let seeking = null;
+function seekTo(el, clientX) {
+  const r = el.getBoundingClientRect();
+  if (r.width < 1) return;
+  pos = Math.max(0, Math.min(1, (clientX - r.left) / r.width)) * T[cur].sec;
+  tick(true);
+}
+document.addEventListener('pointerdown', e => {
+  const el = e.target.closest('[data-seek]');
+  if (!el) return;
+  seeking = el; el.setPointerCapture(e.pointerId); el.classList.add('act');
+  seekTo(el, e.clientX);
+});
+document.addEventListener('pointermove', e => { if (seeking) seekTo(seeking, e.clientX); });
+document.addEventListener('pointerup', () => { if (seeking) { seeking.classList.remove('act'); seeking = null; } });
+document.addEventListener('keydown', e => {
+  const el = e.target.closest && e.target.closest('[data-seek]');
+  if (!el) return;
+  const d = { ArrowRight: 5, ArrowLeft: -5, PageUp: 30, PageDown: -30 }[e.key];
+  if (d === undefined) return;
+  e.preventDefault();
+  pos = Math.max(0, Math.min(T[cur].sec, pos + d));
+  tick(true);
+});
+
+/* ===================================================================
+   THE DIAL — everyday only. This is the one control the theatrical view
+   deliberately drops: the fader AUTHORS what the DJ will play next, and
+   the theatrical posture is "stop administering". The mood survives as a
+   READOUT in all three directions, because the music still decides it.
+   =================================================================== */
+const fader = $('#fader'), cap = $('#cap');
+(function ticks() {
+  let h = '';
+  for (let i = 0; i <= 10; i++) h += '<span class="' + (i % 2 === 0 ? 'lg' : '') + '" style="bottom:' + (i * 10) + '%;width:' + (i % 2 === 0 ? 18 : 9) + 'px"></span>';
+  $('#ticks').innerHTML = h;
+})();
+
+function setVibe(v) {
+  vibe = Math.max(0, Math.min(100, Math.round(v)));
+  root.style.setProperty('--v', vibe);
+  const mood = applyAccent(vibe);
+  $('#vnum').textContent = vibe;
+  $('#vmood').textContent = mood;
+  fader.setAttribute('aria-valuenow', String(vibe));
+  fader.setAttribute('aria-valuetext', vibe + ', ' + mood);
+  /* The labels LEAD the thumb by two units. Anticipation is what makes a
+     control feel like it has a mind rather than a readout. */
+  const lead = accentFor(Math.min(100, vibe + 2)).mood;
+  [...$('#names').children].forEach(s => s.classList.toggle('on', s.textContent === lead));
+  $('#djread').innerHTML = 'picking from <b>' + mood + '</b>';
+  paintNextBand();
+}
+function setVibeSilently(v) { setVibe(v); fader.classList.add('settling'); }
+
+function faderValueFromY(y) { const r = fader.getBoundingClientRect(); return (1 - (y - r.top) / r.height) * 100; }
+let dragging = false;
+fader.addEventListener('pointerdown', e => {
+  dragging = true; fader.setPointerCapture(e.pointerId);
+  fader.classList.remove('settling'); cap.style.transition = 'none';
+  clearTimeout(fader._kt); clearTimeout(fader._st);
+  fader.focus(); setVibe(faderValueFromY(e.clientY));
+});
+fader.addEventListener('pointermove', e => { if (dragging) setVibe(faderValueFromY(e.clientY)); });
+fader.addEventListener('pointerup', () => { if (!dragging) return; dragging = false; settle(); pickForVibe(); });
+fader.addEventListener('pointercancel', () => { dragging = false; });
+fader.addEventListener('keydown', e => {
+  const step = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1, PageUp: 10, PageDown: -10 }[e.key];
+  let v = null;
+  if (step !== undefined) v = vibe + step;
+  else if (e.key === 'Home') v = 0;
+  else if (e.key === 'End') v = 100;
+  if (v === null) return;
+  e.preventDefault();
+  fader.classList.add('settling'); setVibe(v);
+  clearTimeout(fader._kt); fader._kt = setTimeout(pickForVibe, 420);
+});
+/* On release the RENDERED cap overshoots 1.5% of travel and decays back.
+   The committed value never overshoots — only the paint has inertia. */
+function settle() {
+  if (reduced) return;
+  const over = Math.max(0, Math.min(100, vibe + (vibe > 50 ? -1.5 : 1.5)));
+  cap.style.transition = 'bottom 90ms var(--ease-out)';
+  cap.style.bottom = over + '%';
+  fader._st = setTimeout(() => {
+    cap.style.transition = 'bottom 260ms var(--ease-out)';
+    cap.style.bottom = '';
+    fader._st = setTimeout(() => { cap.style.transition = ''; }, 280);
+  }, 95);
+}
+function pickForVibe() {
+  let best = -1, bd = 1e9;
+  T.forEach((t, i) => { if (i === cur) return; const d = Math.abs(t.v - vibe); if (d < bd) { bd = d; best = i; } });
+  if (best >= 0 && bd <= 26) go(best);
+}
+$('#mDj').addEventListener('click', () => { $('#mDj').classList.add('on'); $('#mQueue').classList.remove('on'); });
+$('#mQueue').addEventListener('click', () => { $('#mQueue').classList.add('on'); $('#mDj').classList.remove('on'); });
+
+/* ===================================================================
+   GLOBAL KEYS. In the theatrical view these are not shortcuts — in
+   direction 2 they are the entire interface.
+   =================================================================== */
+document.addEventListener('keydown', e => {
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  const inSlider = t && t.closest && t.closest('[role="slider"]');
+  if (mode === 'theatre') armIdle();
+
+  if (e.key === 'Escape' && mode === 'theatre') { e.preventDefault(); leaveTheatre(); return; }
+  if ((e.key === 't' || e.key === 'T') && !inSlider) { e.preventDefault(); mode === 'theatre' ? leaveTheatre() : enterTheatre(); return; }
+  if (mode === 'theatre' && ['1', '2', '3'].includes(e.key)) { e.preventDefault(); setDir(+e.key); return; }
+  if (inSlider) return;
+  if (e.code === 'Space') { e.preventDefault(); setPlaying(!playing); }
+  else if (e.key === 'n' || e.key === 'N') go(nextIndex());
+  else if (e.key === 'p' || e.key === 'P') go(played.length ? played[0] : (cur - 1 + T.length) % T.length);
+  else if (e.key === 'ArrowRight') { pos = Math.min(T[cur].sec, pos + 5); tick(true); }
+  else if (e.key === 'ArrowLeft') { pos = Math.max(0, pos - 5); tick(true); }
+});
+
+/* Resize re-measures rather than re-deriving: layout() is the only place
+   geometry is computed, so there is one thing to get right. */
+let rT = null;
+window.addEventListener('resize', () => {
+  clearTimeout(rT);
+  box.style.transition = 'none';
+  rT = setTimeout(() => { layout(); box.style.transition = ''; }, 60);
+  layout();
+});
+
+/* ------------------------------------------------------------- boot */
+applyAccent(vibe);
+root.style.setProperty('--v', vibe);
+paintNow();
+renderQueue();
+layout();
+setPlaying(true);
+/* A second pass once webfonts have settled: the everyday slot is sized
+   from a grid track, not from text, but the stack can shift by a pixel
+   while Instrument Serif swaps in. */
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(layout);
+</script>
+</body>
+</html>
