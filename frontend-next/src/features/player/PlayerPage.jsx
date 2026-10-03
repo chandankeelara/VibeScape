@@ -53,14 +53,11 @@ function PlayerStage() {
 
   useAutoMinimise(syncOpen, () => setSyncOpen(false));
 
+  // The shell itself does NOT change in theater: it keeps both columns, so the
+  // queue rail stays flanking on the right. Only the stage re-flows.
+  // .shellMorphing is transient and drives the settle animation.
   return (
-    <div
-      className={[
-        styles.shell,
-        theater ? styles.shellTheater : '',
-        morphing ? styles.shellMorphing : '',
-      ].filter(Boolean).join(' ')}
-    >
+    <div className={`${styles.shell} ${morphing ? styles.shellMorphing : ''}`}>
       {/* Grid slots mirror the legacy body grid (frontend/style.css:56-82):
           topbar and search span both columns, the stage takes column 1, and
           the queue sidebar is a fixed 320px column 2. */}
@@ -78,11 +75,7 @@ function PlayerStage() {
             Placement lives here rather than in RecentTrail's CSS Module — its
             class names are hashed, so a :global() selector matches nothing. */}
         <div className={styles.trailSlot}>
-          {/* In theater the trail sits in a full-width row under the video,
-              where a vertical strip would be a tall left-hand ladder. Its
-              class names are hashed in its own module, so the direction is a
-              prop rather than something this stylesheet reaches in. */}
-          <RecentTrail horizontal={theater} />
+          <RecentTrail />
         </div>
         <ArtStage
           theater={theater}

@@ -125,6 +125,21 @@ layout but keeps the preference.
 - Hidden (not disabled) in audio mode — the control's whole context is the
   video chrome, which isn't on screen. `display: none` below 1024px too, where
   the stage is already one column.
+- **Both rails stay put.** The shell keeps its two columns, so the queue
+  flanks on the right and the recent trail stays a vertical strip on the left.
+  The video widens by absorbing the **meta column**: the stage goes from
+  `[64px | 1.05fr | 1fr]` to `[64px | 1fr]`, and track meta + transport + mood
+  slider drop to row 2 under the video.
+- **The stage column scrolls, deliberately.** A 16:9 card worth the toggle is
+  350-540px tall and the meta row is another ~430-520px, which exceeds the
+  stage's 560-920px. Sizing the video to the leftover space would make theater
+  *narrower* than the square art card it replaces. The scroller is the stage,
+  not the shell — scrolling the shell would drag the queue rail off screen,
+  and `.sidebar`'s `max-height: min(<budget>, 100%)` only resolves because
+  `.shell` keeps a definite 100dvh height.
+- `--theater-h` (tokens.css) is the single tuning knob: video width is
+  `min(100%, --theater-h * 16/9)`. At 50dvh the card is ~1.6-1.9x the width of
+  the square it replaces (2.4-3.4x the picture area).
 - **Theater and detach are mutually exclusive**, enforced in both directions:
   entering theater calls `dock()`, and `useVideoFrame`'s new `onDetach` hook
   exits theater. An `ArtStage` effect re-asserts the invariant for storage

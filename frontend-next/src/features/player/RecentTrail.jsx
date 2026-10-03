@@ -6,7 +6,7 @@ import styles from './RecentTrail.module.css';
  * Recently-played thumbnails. Ported from frontend/app.js:1070
  * (renderRecentTrail). The currently-playing track is excluded.
  */
-export default function RecentTrail({ horizontal = false }) {
+export default function RecentTrail() {
   const { recent, current, loadTrack } = usePlayer();
 
   const items = recent
@@ -17,10 +17,7 @@ export default function RecentTrail({ horizontal = false }) {
   if (!items.length) return null;
 
   return (
-    <div
-      className={`${styles.trail} ${horizontal ? styles.trailRow : ''}`}
-      aria-label="Recent tracks"
-    >
+    <div className={styles.trail} aria-label="Recent tracks">
       {items.map((t) => (
         <button
           key={trackKey(t)}

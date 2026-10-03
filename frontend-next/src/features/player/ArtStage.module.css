@@ -42,7 +42,10 @@
  */
 @media (min-width: 1024px) {
   .wrapTheater {
-    grid-column: 1;
+    /* Column 2 of the theater stage's [64px | 1fr]: the recent-trail rail
+       keeps column 1 and the queue rail keeps its own shell column. The video
+       widens by absorbing the META column, which drops to row 2 beneath it. */
+    grid-column: 2;
     grid-row: 1;
     width: min(100%, calc(var(--theater-h) * 16 / 9));
     max-width: 100%;

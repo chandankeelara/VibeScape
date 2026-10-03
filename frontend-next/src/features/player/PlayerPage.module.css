@@ -102,14 +102,32 @@
 
 /* ------------------------------------------------------------ theater mode */
 /*
- * YouTube's theater mode. The video claims the full content width, and
- * everything that was beside it stacks underneath: queue sidebar below the
- * shell, transport/meta and the recent trail below the video. The page then
- * scrolls normally, exactly as the <=1023px layout already does.
+ * YouTube's theater mode, as the user wants it: both RAILS STAY PUT. Recently
+ * played flanks on the left, the queue flanks on the right, and the video
+ * widens between them by absorbing the META COLUMN — track meta, transport
+ * and mood slider drop to a row underneath the video, spanning its width.
+ *
+ * So the shell keeps its two columns and .sidebarSlot never moves; the stage
+ * goes from [64px | 1.05fr | 1fr] to [64px | 1fr] over two rows.
  *
  * Gated at >=1024px because below that the shell is already one column and
- * the card already spans it — there is nothing left to widen. The control
- * itself is display:none there too (ArtStage.module.css).
+ * the card already spans it. The control is display:none there too
+ * (ArtStage.module.css).
+ *
+ * THE STAGE COLUMN SCROLLS, and that is deliberate.
+ *
+ * A 16:9 card wide enough to be worth the toggle is ~350-540px tall, and the
+ * meta row under it is another ~430-520px — more than the ~560-920px the
+ * stage has. Sizing the video to whatever was left over would make theater
+ * NARROWER than the square art card it replaces, which is the one outcome
+ * that makes the toggle pointless. So the video takes its height budget
+ * (--theater-h) and the column scrolls, exactly as a YouTube page does.
+ *
+ * The scroller is the STAGE, not the shell. Scrolling the shell would take
+ * the queue rail with it, which is precisely what the user asked us to stop
+ * doing — and .sidebar's `max-height: min(<row budget>, 100%)` only resolves
+ * because .shell gives row 3 a definite height, so leaving the shell at
+ * 100dvh keeps the rail's sizing contract untouched as well.
  *
  * HOW THIS IS ANIMATED, and why it is not animated the obvious way:
  *
@@ -129,52 +147,56 @@
  * will-change hint below never outlives the transition.
  */
 @media (min-width: 1024px) {
-  .shellTheater {
-    /* Same escape the narrow layout already takes: the content is taller than
-       the viewport by design now, so let the page scroll instead of clipping
-       the sidebar that just moved below the fold. */
-    height: auto;
-    min-height: 100dvh;
-    overflow: visible;
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .shellTheater .sidebarSlot {
-    grid-column: 1;
-    grid-row: 4;
-  }
-
   .stageTheater {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto auto;
+    grid-template-columns: 64px minmax(0, 1fr);
+    grid-template-rows: auto auto;
     max-width: var(--stage-max-theater);
     justify-items: stretch;
     align-items: start;
     align-content: start;
     padding-top: clamp(6px, 1.5dvh, 16px);
+
+    overflow-y: auto;
+    /*
+     * Explicit, and not cosmetic. Setting one axis to a non-visible value
+     * makes the other compute to `auto`, and .videoGlow is a real box at
+     * inset:-14% — visually transparent at its horizontal extremes, but a box
+     * all the same, so `auto` would raise a horizontal scrollbar for a halo
+     * nobody can see.
+     */
+    overflow-x: hidden;
+    /* Reserve the gutter so toggling theater cannot jolt the column width. */
+    scrollbar-gutter: stable;
+
     /*
      * Above BitDock. The dock is position:fixed at the bottom of the viewport,
      * and a fixed element paints over non-positioned in-flow content whatever
-     * its z-index — so a full-width 16:9 card would have the mascot's floor
-     * drawn across its bottom edge. A grid item takes z-index without needing
-     * position (same trick .sidebarSlot already uses), and the dock sits at 1.
-     * The dock is pointer-events:none, so this is purely a paint-order fix;
-     * nothing was ever blocked.
+     * its z-index — so the video and the transport scrolling past would have
+     * the mascot's floor drawn across them. A grid item takes z-index without
+     * needing position (the same trick .sidebarSlot already uses), and the
+     * dock sits at 1. The dock is pointer-events:none, so this is purely a
+     * paint-order fix; nothing was ever blocked.
      */
     z-index: 2;
   }
 
-  .stageTheater .metaCol {
-    grid-column: 1;
-    grid-row: 2;
-    max-height: none;
-  }
-
+  /* Spans both rows and sticks, so the trail stays beside the video instead
+     of scrolling away with it. Its 8 items cap at ~400px, well inside the
+     column. */
   .stageTheater .trailSlot {
     grid-column: 1;
-    grid-row: 3;
-    justify-self: stretch;
-    width: 100%;
+    grid-row: 1 / -1;
+    align-self: start;
+    justify-self: end;
+    position: sticky;
+    top: 0;
+  }
+
+  /* The absorbed column: now a full-width row under the video. */
+  .stageTheater .metaCol {
+    grid-column: 2;
+    grid-row: 2;
+    max-height: none;
   }
 
   .shellMorphing .stage > *,

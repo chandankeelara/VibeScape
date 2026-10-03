@@ -81,10 +81,15 @@
   /* layout — the stage's two width budgets, plus theater's height budget.
      Theater derives its WIDTH from this height (16:9) rather than capping the
      height of a 100%-wide box, so the card stays a true 16:9 at every viewport
-     and the YouTube player never pillarboxes inside a too-wide black card. */
+     and the YouTube player never pillarboxes inside a too-wide black card.
+
+     --theater-h is THE tuning knob for how big theater gets. At 50dvh the
+     video is ~1.6-1.9x the width of the square art card it replaces, and the
+     transport still clears the fold at >=900px tall. Raising it trades that
+     clearance for width; the stage column scrolls either way. */
   --stage-max: 1200px;
   --stage-max-theater: 1680px;
-  --theater-h: 66dvh;
+  --theater-h: 50dvh;
 
   /*
    * z-index scale — new. Legacy style.css has 43 unscaled z-index values,
