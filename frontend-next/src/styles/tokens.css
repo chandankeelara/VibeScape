@@ -43,6 +43,9 @@
 
   /* overlays */
   --scrim: rgba(0, 0, 0, 0.75);
+  /* Half-strength scrim for chrome that sits ON a black video surface, where
+     the full --scrim is indistinguishable from the background. */
+  --scrim-soft: rgba(0, 0, 0, 0.5);
   --shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.55);
 
   /* radii */
@@ -74,6 +77,14 @@
   --sp-5: 24px;
   --sp-6: 32px;
   --sp-7: 48px;
+
+  /* layout — the stage's two width budgets, plus theater's height budget.
+     Theater derives its WIDTH from this height (16:9) rather than capping the
+     height of a 100%-wide box, so the card stays a true 16:9 at every viewport
+     and the YouTube player never pillarboxes inside a too-wide black card. */
+  --stage-max: 1200px;
+  --stage-max-theater: 1680px;
+  --theater-h: 66dvh;
 
   /*
    * z-index scale — new. Legacy style.css has 43 unscaled z-index values,

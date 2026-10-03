@@ -24,6 +24,35 @@
   }
 }
 
+/* ---------------------------------------------------------- theater mode */
+/*
+ * Only >=1024px. Below that the shell is already one column and the hero card
+ * already spans it, so there is nothing for theater to widen.
+ *
+ * Width is DERIVED from the height budget (--theater-h * 16/9), not the other
+ * way round. Capping the height of a width:100% box would leave a card wider
+ * than 16:9 and the YouTube player would pillarbox inside it; deriving the
+ * width keeps a true 16:9 card at every viewport, centred in the stage.
+ * Every term is positive, so this cannot collapse the way a
+ * calc(100vw - fixed) can.
+ *
+ * NOTE: this is a sizing + placement change only. The #ytPlayer mount is not
+ * touched, moved or re-keyed, so the iframe is never reloaded and playback
+ * position is untouched.
+ */
+@media (min-width: 1024px) {
+  .wrapTheater {
+    grid-column: 1;
+    grid-row: 1;
+    width: min(100%, calc(var(--theater-h) * 16 / 9));
+    max-width: 100%;
+    max-height: none;
+    aspect-ratio: 16 / 9;
+    align-self: start;
+    justify-self: center;
+  }
+}
+
 .glow {
   position: absolute;
   inset: -6%;
@@ -175,7 +204,9 @@
   text-overflow: ellipsis;
 }
 
-.dockBtn {
+/* Shared chrome button. Matches the surrounding bar: --border hairline, the
+   --sp-2 radius, --text-2 at rest. */
+.topbarBtn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -183,11 +214,34 @@
   height: 24px;
   border-radius: var(--sp-2);
   border: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--scrim-soft);
   color: var(--text-2);
   cursor: pointer;
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease),
+              border-color var(--dur) var(--ease);
 }
-.dockBtn:hover { color: var(--text); background: rgba(0, 0, 0, 0.75); }
+.topbarBtn:hover { color: var(--text); background: var(--scrim); }
+
+.dockBtn { composes: topbarBtn; }
+
+/* Theater is a desktop-only affordance: below 1024px the stage is one column
+   and the card is already full width, so the control would promise nothing. */
+.theaterBtn {
+  composes: topbarBtn;
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .theaterBtn { display: inline-flex; }
+}
+
+/* On while theater is active, so the way OUT of the mode is legible the
+   moment the bar is revealed rather than looking like one more grip. */
+.theaterBtn[aria-pressed='true'] {
+  color: var(--vibe-accent, var(--accent));
+  border-color: color-mix(in oklab, var(--vibe-accent, var(--accent)) 42%, var(--border-strong));
+  background: color-mix(in oklab, var(--vibe-accent, var(--accent)) 18%, var(--scrim-soft));
+}
 
 
 /* ------------------------------------------------------------- resize hit */

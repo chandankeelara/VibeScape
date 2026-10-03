@@ -54,10 +54,24 @@ function clamp(rect) {
   };
 }
 
-export default function useVideoFrame(frameRef) {
+/**
+ * @param frameRef   ref to the .videoFrame node
+ * @param onDetach   called once, on the gesture that first pops the frame out
+ *                   of the layout. Theater mode uses this to stand down:
+ *                   detaching and theater are two different answers to "make
+ *                   the video bigger" and cannot both be true — a detached
+ *                   frame is position:fixed and out of the grid entirely, so
+ *                   theater would be widening an empty hole. See ArtStage.
+ */
+export default function useVideoFrame(frameRef, { onDetach } = {}) {
   const [detached, setDetached] = useState(() => !!loadRect());
   const dragRef = useRef(null);
   const resizeRef = useRef(null);
+
+  // Held in a ref so a caller passing an inline arrow doesn't re-create every
+  // pointer handler below on each render.
+  const onDetachRef = useRef(onDetach);
+  onDetachRef.current = onDetach;
 
   const apply = useCallback((rect) => {
     const node = frameRef.current;
@@ -76,7 +90,10 @@ export default function useVideoFrame(frameRef) {
     if (!node) return null;
     const r = node.getBoundingClientRect();
     const rect = { left: r.left, top: r.top, width: r.width, height: r.height };
-    if (!detached) setDetached(true);
+    if (!detached) {
+      setDetached(true);
+      onDetachRef.current?.();
+    }
     return apply(rect) || rect;
   }, [frameRef, detached, apply]);
 

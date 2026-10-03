@@ -39,11 +39,46 @@ function VerifyOverlay({ track }) {
   );
 }
 
-export default function ArtStage() {
+export default function ArtStage({ theater = false, onToggleTheater, onExitTheater }) {
   const { current, mode, videoState, loadingTrack } = usePlayer();
   const [artLoaded, setArtLoaded] = useState(false);
   const frameRef = useRef(null);
-  const { detached, dock, dragProps, resizeProps } = useVideoFrame(frameRef);
+  // Starting a drag or a resize stands theater down — see below.
+  const { detached, dock, dragProps, resizeProps } = useVideoFrame(frameRef, {
+    onDetach: onExitTheater,
+  });
+
+  /*
+   * Theater vs detached: mutually exclusive, enforced in both directions.
+   *
+   * They are two answers to the same wish ("make the video bigger") and they
+   * contradict each other mechanically: a detached frame is position:fixed,
+   * so it leaves the grid, and theater would then be widening an empty slot
+   * under a floating panel. Rules:
+   *
+   *   entering theater -> dock() a detached frame (and dock() clears the
+   *                       parked rect, so the two storage keys can never both
+   *                       read "on" after this)
+   *   detaching        -> onExitTheater() (wired above)
+   *
+   * Because both writes land in the same gesture, an inconsistent pair can
+   * only arrive from storage written before this feature existed (or edited
+   * by hand). The effect below is the invariant that catches it: detach wins,
+   * because the parked rect is positional data we would destroy, while
+   * theater is a boolean the user re-sets with one click.
+   *
+   * It is deliberately NOT mount-only. A stale pair cannot be seen at mount:
+   * `theater` also requires video mode, and the player boots in audio, so the
+   * conflict only becomes visible on the first switch to video.
+   */
+  const onTheaterClick = () => {
+    if (!theater && detached) dock();
+    onToggleTheater?.();
+  };
+
+  useEffect(() => {
+    if (theater && detached) onExitTheater?.();
+  }, [theater, detached, onExitTheater]);
 
   const artUrl = current?.artwork_url || '';
 
@@ -71,7 +106,7 @@ export default function ArtStage() {
   useEffect(() => { createPlayer(); }, []);
 
   return (
-    <section className={styles.wrap}>
+    <section className={`${styles.wrap} ${theater ? styles.wrapTheater : ''}`}>
       <div className={styles.glow} aria-hidden="true" />
 
       <VerifyOverlay track={current} />
@@ -114,6 +149,47 @@ export default function ArtStage() {
               <span className={styles.topbarHint}>
                 Drag to move · grab any edge or corner to resize
               </span>
+              {/*
+                * The theater control lives HERE, in the one strip of the
+                * video card we own. YouTube puts it in the player's control
+                * bar; we cannot, because that bar belongs to a cross-origin
+                * iframe and any surface we float over it swallows the
+                * pointerdown we can never hand back (see the comment above).
+                *
+                * It is HIDDEN in audio mode, not disabled. A disabled control
+                * is the right answer when the action exists but is momentarily
+                * unavailable — that is the video radio in Transport with no
+                * youtube_id. Here the control's entire context, the video card
+                * chrome, is absent: there is no audio-mode surface to grey it
+                * out on, and leaving a dead button in the tab order of a
+                * visibility:hidden subtree is worse than not rendering it.
+                * It is also display:none below 1024px, where the stage is
+                * already one column and theater means nothing.
+                */}
+              {mode === 'video' && (
+                <button
+                  className={styles.theaterBtn}
+                  type="button"
+                  onClick={onTheaterClick}
+                  aria-pressed={theater}
+                  aria-label={theater ? 'Exit theater mode' : 'Theater mode'}
+                  title={theater ? 'Default view' : 'Theater mode'}
+                >
+                  {/* Both icons show the DESTINATION, the same grammar the
+                      dock button uses: a wide short card to go wide, a
+                      compact one to come back. */}
+                  {theater ? (
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+                      <rect x="5" y="5" width="14" height="14" rx="2" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+                      <rect x="2" y="7" width="20" height="10" rx="2" />
+                    </svg>
+                  )}
+                </button>
+              )}
+
               {detached && (
                 <button
                   className={styles.dockBtn}

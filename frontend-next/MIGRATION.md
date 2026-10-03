@@ -112,6 +112,29 @@ updaters: `setVibe`/`shiftVibe` → `'user'`, `setVibeFromTrack` → `'system'`.
 It starts `null` and unknown provenance sends nothing. `dj_mode` is read off
 `nextFallbackRef` — that ref *is* DJ mode, so no new state was needed.
 
+## Theater mode (video)
+
+A YouTube-style layout toggle, not a port — the legacy app has no equivalent.
+`useTheaterMode.js` owns one persisted boolean (`vs.player.theater`); the
+effective state also requires video mode, so switching to audio drops the
+layout but keeps the preference.
+
+- The control is in `.videoTopbar`, the one strip of the video card we own.
+  It cannot go over the player's own controls: that is a cross-origin iframe
+  and any surface floating on it eats a `pointerdown` we can never give back.
+- Hidden (not disabled) in audio mode — the control's whole context is the
+  video chrome, which isn't on screen. `display: none` below 1024px too, where
+  the stage is already one column.
+- **Theater and detach are mutually exclusive**, enforced in both directions:
+  entering theater calls `dock()`, and `useVideoFrame`'s new `onDetach` hook
+  exits theater. An `ArtStage` effect re-asserts the invariant for storage
+  written before the feature existed.
+- The grid flips in one discrete step; only `transform`/`opacity` are
+  animated (`@keyframes settle`). Nothing is re-keyed or reparented, so the
+  YouTube iframe never reloads. The settle is skipped on a detach-driven exit
+  because a transformed ancestor would become the containing block for the
+  `position: fixed` frame the user is dragging.
+
 ## Gotchas discovered during the port
 
 **`trackKey()` must stay spotify_id-first.** `_resolve_anchor`

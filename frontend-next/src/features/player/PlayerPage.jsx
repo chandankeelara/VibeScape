@@ -10,6 +10,7 @@ import Transport from './Transport';
 import MoodSlider from './MoodSlider';
 import RecentTrail from './RecentTrail';
 import useKeyboardShortcuts from './useKeyboardShortcuts';
+import useTheaterMode from './useTheaterMode';
 import BitDock from './bit/BitDock';
 import styles from './PlayerPage.module.css';
 
@@ -22,10 +23,22 @@ export default function PlayerPage() {
 }
 
 function PlayerStage() {
-  const { current, fetchForVibe, vibe } = usePlayer();
+  const { current, fetchForVibe, vibe, mode } = usePlayer();
   const [metricsOpen, setMetricsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
+
+  /*
+   * Theater state lives HERE, not in ArtStage, because the layout it changes
+   * belongs to this module: CSS Module class names are hashed, so ArtStage
+   * physically cannot reach .shell or .stage, and a :global() selector aimed
+   * at them would match nothing. The control is rendered down in ArtStage's
+   * video chrome and reaches back up through these props.
+   *
+   * Passing `mode === 'video'` rather than gating on it here keeps the
+   * preference alive across a trip through audio mode — see useTheaterMode.
+   */
+  const { theater, morphing, toggleTheater, exitTheater } = useTheaterMode(mode === 'video');
 
   useKeyboardShortcuts({
     onToggleMetrics: () => setMetricsOpen((v) => !v),
@@ -41,7 +54,13 @@ function PlayerStage() {
   useAutoMinimise(syncOpen, () => setSyncOpen(false));
 
   return (
-    <div className={styles.shell}>
+    <div
+      className={[
+        styles.shell,
+        theater ? styles.shellTheater : '',
+        morphing ? styles.shellMorphing : '',
+      ].filter(Boolean).join(' ')}
+    >
       {/* Grid slots mirror the legacy body grid (frontend/style.css:56-82):
           topbar and search span both columns, the stage takes column 1, and
           the queue sidebar is a fixed 320px column 2. */}
@@ -52,16 +71,24 @@ function PlayerStage() {
         <SearchBar />
       </div>
 
-      <main className={styles.stage}>
+      <main className={`${styles.stage} ${theater ? styles.stageTheater : ''}`}>
         {/* Three flow columns, matching legacy at >=1024px (style.css:1891):
             [trail 64px] [art 1.05fr] [meta 1fr]. The trail is right-aligned
             inside its own column so it sits immediately left of the hero card.
             Placement lives here rather than in RecentTrail's CSS Module — its
             class names are hashed, so a :global() selector matches nothing. */}
         <div className={styles.trailSlot}>
-          <RecentTrail />
+          {/* In theater the trail sits in a full-width row under the video,
+              where a vertical strip would be a tall left-hand ladder. Its
+              class names are hashed in its own module, so the direction is a
+              prop rather than something this stylesheet reaches in. */}
+          <RecentTrail horizontal={theater} />
         </div>
-        <ArtStage />
+        <ArtStage
+          theater={theater}
+          onToggleTheater={toggleTheater}
+          onExitTheater={exitTheater}
+        />
         <div className={styles.metaCol}>
           <TrackMeta onShowMetrics={() => setMetricsOpen(true)} />
           <hr className={styles.divider} aria-hidden="true" />

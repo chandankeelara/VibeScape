@@ -7,6 +7,14 @@
   gap: var(--sp-2);
 }
 
+/* Theater mode puts the trail in a full-width row below the video. Defined
+   after .trail and at the same specificity, so it wins on source order. */
+.trailRow {
+  flex-direction: row;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
 .item {
   cursor: pointer;
   width: 38px;

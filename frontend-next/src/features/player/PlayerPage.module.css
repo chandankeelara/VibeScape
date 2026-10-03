@@ -32,7 +32,7 @@
   align-items: center;
   gap: clamp(18px, 3vh, 32px);
   width: 100%;
-  max-width: 1200px;
+  max-width: var(--stage-max);
   margin: 0 auto;
   /* legacy: padding: 0 var(--pad-x) var(--pad-y) — no top padding */
   padding: 0 clamp(14px, 3vw, 28px) clamp(10px, 2dvh, 20px);
@@ -98,6 +98,97 @@
     grid-row: 1;
     max-height: 92dvh;
   }
+}
+
+/* ------------------------------------------------------------ theater mode */
+/*
+ * YouTube's theater mode. The video claims the full content width, and
+ * everything that was beside it stacks underneath: queue sidebar below the
+ * shell, transport/meta and the recent trail below the video. The page then
+ * scrolls normally, exactly as the <=1023px layout already does.
+ *
+ * Gated at >=1024px because below that the shell is already one column and
+ * the card already spans it — there is nothing left to widen. The control
+ * itself is display:none there too (ArtStage.module.css).
+ *
+ * HOW THIS IS ANIMATED, and why it is not animated the obvious way:
+ *
+ * The grid flips in ONE discrete step. grid-template-columns is interpolable
+ * in modern engines, but animating it relayouts the entire stage on every
+ * frame — including the subtree holding the YouTube iframe — which is exactly
+ * the layout thrash to avoid. Instead the settled result is animated with
+ * `transform` and `opacity` only, both of which the compositor handles with
+ * no layout work at all.
+ *
+ * Nothing is remounted, re-keyed or reparented by any of this: the toggle
+ * changes class names and nothing else, so the iframe is never torn out of
+ * the document and playback position survives untouched. (Moving an iframe
+ * in the DOM reloads it; restyling one does not.)
+ *
+ * `.shellMorphing` is transient — raised by useTheaterMode for 460ms — so the
+ * will-change hint below never outlives the transition.
+ */
+@media (min-width: 1024px) {
+  .shellTheater {
+    /* Same escape the narrow layout already takes: the content is taller than
+       the viewport by design now, so let the page scroll instead of clipping
+       the sidebar that just moved below the fold. */
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .shellTheater .sidebarSlot {
+    grid-column: 1;
+    grid-row: 4;
+  }
+
+  .stageTheater {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto;
+    max-width: var(--stage-max-theater);
+    justify-items: stretch;
+    align-items: start;
+    align-content: start;
+    padding-top: clamp(6px, 1.5dvh, 16px);
+    /*
+     * Above BitDock. The dock is position:fixed at the bottom of the viewport,
+     * and a fixed element paints over non-positioned in-flow content whatever
+     * its z-index — so a full-width 16:9 card would have the mascot's floor
+     * drawn across its bottom edge. A grid item takes z-index without needing
+     * position (same trick .sidebarSlot already uses), and the dock sits at 1.
+     * The dock is pointer-events:none, so this is purely a paint-order fix;
+     * nothing was ever blocked.
+     */
+    z-index: 2;
+  }
+
+  .stageTheater .metaCol {
+    grid-column: 1;
+    grid-row: 2;
+    max-height: none;
+  }
+
+  .stageTheater .trailSlot {
+    grid-column: 1;
+    grid-row: 3;
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .shellMorphing .stage > *,
+  .shellMorphing .sidebarSlot {
+    animation: settle var(--dur-slow) var(--ease-out) both;
+    will-change: transform, opacity;
+  }
+}
+
+/* Starts at 0.35 rather than 0: the video is PLAYING through this, and a hard
+   fade from nothing reads as a reload. */
+@keyframes settle {
+  from { opacity: 0.35; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
 }
 
 @media (max-width: 1023px) {
