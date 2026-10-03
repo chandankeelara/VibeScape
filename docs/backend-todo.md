@@ -507,10 +507,14 @@ dropped row.
    run, prod answers 202 with everything in `rejected` and logs
    "no such table: track_events" per batch. **This must happen before the
    next deploy of the frontend that posts events.**
-2. **Make `/similar` read it.** Nothing consumes `user_track_stats` yet. The
-   ranking change is the whole point of this work: it should read the `u_*`
-   family for preference (and may use `last_played` for recency), and must
-   not mix in the `s_*` family.
+2. ~~**Make `/similar` read it.**~~ — DONE 2026-10-03, for recency only.
+   `_similar_dj` and `_similar_vibe` now re-rank by a subtractive recency
+   penalty (`docs/dj-recency-plan.md`, implemented). It reads `last_played`,
+   `last_skipped_at` and the summed `u_+s_` skip counters, and nothing else.
+   Summing the two skip families is safe **because every term is negative** —
+   the rule is positive terms read `u_` only, negative terms may read both.
+   The preference half (a term that *raises* a score from the `u_*` family)
+   is still not built, and per finding B below it would read all zeros today.
 3. **Use `s_*` to grade DJ mode**, which is currently unmeasured —
    `s_complete_count / s_end_count` per user is a direct completion rate for
    recommendations the DJ chose.
@@ -522,7 +526,8 @@ dropped row.
 
 ### Found while planning the DJ recency re-rank (2026-10-02)
 
-Plan: `docs/dj-recency-plan.md`. Nothing built. Two findings that outlive it:
+Plan: `docs/dj-recency-plan.md`, **implemented 2026-10-03**. Findings that
+outlive it:
 
 - **`total_played_ms` is identically 0 for completed plays.** **verified**,
   20/20 local events: every `play_end` with `reason='completed'` arrives with
@@ -542,6 +547,63 @@ Plan: `docs/dj-recency-plan.md`. Nothing built. Two findings that outlive it:
 - `last_played` is written on every accepted event including a skip, so it
   means "last touched", not "last listened". Correct for recency, wrong for
   anyone reading it as listening history.
+
+
+## 6. DJ recency re-ranking — shipped 2026-10-03, what is left
+
+Implemented per `docs/dj-recency-plan.md`. `final = score - W*(score[#1] -
+score[#limit]) * P`, `P >= 0`, so a user with no `user_track_stats` rows gets
+the pre-feature ordering exactly (verified by running it). Tunables:
+`DJ_RECENCY_HALFLIFE_H` (72), `DJ_SKIP_HALFLIFE_H` (168),
+`DJ_RECENCY_WEIGHT` (2.0, **0 is the kill switch**), `DJ_RECENCY_POOL` (150),
+`DJ_RECENCY_POOL_MAX` (300), `DJ_RECENCY_SKIP_GUEST` (off).
+
+### 6.1 The candidate pool is now 150-300 full track rows per request
+`backend/app.py` (`_similar_dj` Turso branch, `_similar_vibe`)
+
+**verified by reading, not measured against Turso.** Both queries now
+`LIMIT` the pool rather than `limit`, and both select all ~64
+`TRACK_COLUMNS` including `mfcc_json` and `chroma_mean_json`. That is
+plausibly 150-400 KB per recommendation over the wire instead of ~10 KB, on
+one round trip. The DB-side cost is unchanged (there was never an ANN index;
+it was already a full scan). If this shows up in Cloud Run latency the fix is
+the two-stage fetch the plan costs out in §4: id + distance + stats for the
+pool, re-rank, then a second query for the winning `limit` ids. Instrument
+before switching — two round trips may well be worse than one fat one.
+**Nobody has timed this.**
+
+### 6.2 The constants are untuned and must stay that way for now
+Shipping defaults is deliberate. The local DB holds 20 events spanning 35
+minutes from one user; 72 h cannot be estimated from that. Do not touch the
+half-lives until there are ~2,000 events over at least two weeks and at least
+two distinct listening days per user. The one tuning that is possible today
+is the offline rank-displacement check with `explain` on, which needs no
+event data.
+
+### 6.3 `_similar_vibe` is re-ranked on every call, not only as a DJ fallback
+`backend/app.py` (`_similar_vibe`)
+
+**verified by running it.** `GET /api/tracks/{key}/similar` and the POST
+`mode=vibe` path go through the same penalty. That is the plan's intent (the
+DJ falls back here exactly when repeats are most likely), but it means a
+plain "more like this" list also reorders for a user with history.
+**[frontend contract]** — ordering on an endpoint that was previously a pure
+function of the two tracks' features.
+
+### 6.4 Guest history is still shared
+`backend/app.py:700` (`auth_guest`), gate in `_dj_recency_enabled`
+
+**verified.** All guests key on one `users` row, so one guest's plays and
+skips suppress tracks for every other guest. Accepted at demo volume; set
+`DJ_RECENCY_SKIP_GUEST=1` to opt the row out. Watch if guest traffic reaches
+a few hundred plays a week — the symptom is "the demo recommends weird
+tracks" with no obvious cause.
+
+### 6.5 Still no automated tests
+The three verification scripts for this change lived in the scratchpad and
+were not committed. `_recency_penalty` and `_rerank_by_recency` are pure, take
+no connection, and are the first things in this repo that could trivially
+carry a unit test. Worth being the first `tests/` directory.
 
 
 ## Checked and clean

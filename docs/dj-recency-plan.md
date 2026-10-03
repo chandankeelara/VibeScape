@@ -1,8 +1,39 @@
 # Recency-aware re-ranking for DJ mode — plan
 
-Status: **proposal, nothing built.** No application code was changed to write
-this. Measurements below were taken against the local SQLite DB on 2026-10-02
-and are marked **verified**; everything else is marked **assumed**.
+Status: **IMPLEMENTED 2026-10-03** in `backend/app.py` (`_recency_penalty`,
+`_rerank_by_recency`, `_fetch_recency_stats`, and the three call sites in
+`_similar_dj` / `_similar_vibe`). Measurements in sections 1-9 were taken
+against the local SQLite DB on 2026-10-02, before any code existed, and are
+marked **verified**; everything else was marked **assumed**.
+
+Three things changed between this plan and the shipped code. They are
+recorded here rather than edited into the text above, so the plan still reads
+as what was proposed:
+
+1. **The pool constant.** Section 8 declares a flat `_DJ_RECENCY_POOL = 150`;
+   section 4 declares `POOL = min(300, max(150, 12*limit))`. The code
+   implements section 4's formula, with 150 and 300 as the env-overridable
+   endpoints (`DJ_RECENCY_POOL`, `DJ_RECENCY_POOL_MAX`).
+2. **The numpy fallback pools too.** Section 4 says that path should re-rank
+   the whole library, since it already has every vector in memory. The code
+   applies the same POOL there. Reason: otherwise local SQLite and production
+   Turso displace ranks by different amounts, and local measurement stops
+   predicting production. The cost is that a track below the pool cut can
+   never be promoted on either path -- which is now the stated ceiling on the
+   whole feature.
+3. **`_similar_vibe` gets no `score` field.** Section 4 says to "define
+   `score = -distance`". That is true of the shared re-ranker's internal
+   generic score, but the vibe response has never carried a `score` key and
+   the code does not add one; it adds `final_score` only. Adding a `score`
+   that meant negated weighted-L1 next to a DJ `score` that means cosine
+   would be the ambiguity the plan spends section 8 avoiding.
+
+Measured after implementation, 2026-10-03, user 20, `limit=8`, pool 150,
+W=2.0: the top-8 window was 0.003511, so lambda = 0.007023. The #1 track,
+penalised, moved pool rank 1 -> 22 at dt=1 h (1.98 output-windows), 1 -> 16 at
+24 h (1.59), 1 -> 7 at 72 h (1.00 exactly -- the predicted tie with #8), 1 -> 5
+at 168 h (0.40) and 1 -> 1 at 30 d. The pool is 8.7 output-windows deep, close
+to section 4's "~10 windows" estimate.
 
 ---
 

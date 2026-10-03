@@ -1107,6 +1107,362 @@ _DJ_MAX_WEIGHTED_IDS = 50
 _DJ_MAX_EXCLUDE_IDS = 200
 
 
+# ---------------------------------------------------------------------------
+# DJ recency re-ranking.  Design + measurements: docs/dj-recency-plan.md.
+#
+#   final(c) = score(c) - lambda * P(c)
+#   lambda   = W * (score[#1] - score[#limit])   in the UN-penalised order
+#   P(c)     = P_play(c) + P_skip(c)             >= 0, always
+#   P_play   = 2 ^ (-dt_played  / H_play)        0 if never played
+#   P_skip   = B * 2 ^ (-dt_skipped / H_skip)    0 if never skipped
+#   B        = 2.0 - 1.5 * bail_fraction         in [0.5, 2.0]; 1.0 if unknown
+#
+# Three properties this code must keep, in order of importance:
+#
+#   1. NO TERM MAY RAISE A SCORE.  P is a sum of non-negative terms and it is
+#      subtracted.  A user with no user_track_stats rows gets P = 0 for every
+#      candidate, so every score shifts by zero and the ordering is exactly
+#      what it was before this feature existed.  The feature is inert until
+#      there is listening history.  Do not add a term that can go negative.
+#   2. lambda is RELATIVE to the width of the output window, never absolute.
+#      The usable cosine signal across the top-8 is ~0.016 wide sitting at
+#      ~0.95 (measured, 2026-10-02, 3,783 fused vectors).  An absolute lambda
+#      is either inside the noise or annihilates the vector match, and it
+#      silently becomes wrong on the 'mert' variant or on _similar_vibe, whose
+#      "score" is a negated weighted-L1 distance on a completely different
+#      scale.  CONSEQUENCE: lambda values are NOT comparable between the DJ
+#      path and the vibe path.  A much larger lambda on the vibe path is
+#      correct and is the whole point.
+#   3. POSITIVE TERMS READ u_* ONLY; NEGATIVE TERMS MAY READ BOTH.  The
+#      schema's u_/s_ prohibition is on averaging the recommender's own output
+#      back in as stated preference -- that is a prohibition on a POSITIVE
+#      feedback path.  Every term here is non-positive and every skip is a
+#      human act regardless of who moved the slider, so summing u_ and s_ skip
+#      counters is safe.  The rule is about the DIRECTION of the effect, not
+#      about the column prefix.  If anyone ever adds a term that RAISES a
+#      score, it must read u_* only.
+#
+# Columns read: last_played, last_skipped_at, (u_+s_)skip_count,
+# (u_+s_)skip_position_ms_sum, tracks.duration_ms.  Nothing else.
+# ---------------------------------------------------------------------------
+
+def _env_float(name: str, default: float) -> float:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        log.warning("[dj] %s=%r is not a number; using %s", name, raw, default)
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    return int(_env_float(name, float(default)))
+
+
+# Defaults live in code so the behaviour is readable from source; the env
+# override lets two Cloud Run revisions of the SAME image be compared without
+# a rebuild.  Deliberately NOT request-body parameters: a client-settable
+# ranking knob becomes a contract you can never change.
+_DJ_RECENCY_HALFLIFE_H = _env_float("DJ_RECENCY_HALFLIFE_H", 72.0)
+_DJ_SKIP_HALFLIFE_H = _env_float("DJ_SKIP_HALFLIFE_H", 168.0)
+# DJ_RECENCY_WEIGHT=0 is the complete kill switch. It short-circuits before
+# the LEFT JOIN is added and before the pool is widened, so with it set the
+# emitted SQL and the response are byte-for-byte what they were pre-feature.
+_DJ_RECENCY_WEIGHT = _env_float("DJ_RECENCY_WEIGHT", 2.0)
+# Candidate pool: POOL = min(POOL_MAX, max(POOL_BASE, 12 * limit)).
+#
+# THE POOL SIZE IS THE CEILING ON WHAT THIS FEATURE CAN EVER DO. The penalty
+# only reorders WITHIN the retrieved pool -- a track that falls below the pool
+# cut can never be promoted into the output, no matter how fresh it is and no
+# matter how heavily everything above it is penalised. Widening the pool is
+# the only way to raise that ceiling; raising W is not.
+_DJ_RECENCY_POOL = _env_int("DJ_RECENCY_POOL", 150)
+_DJ_RECENCY_POOL_MAX = _env_int("DJ_RECENCY_POOL_MAX", 300)
+# The guest row is shared: auth_guest keys every guest on one users row with
+# display_name='Guest', so all guests pool one listening history and one
+# guest's skips suppress tracks for every other guest. Accepted by default --
+# at demo volume the harm is bounded to "tracks any guest touched in the last
+# ~2 weeks", and a less repetitive shared demo is arguably mildly good. Set
+# DJ_RECENCY_SKIP_GUEST=1 to opt the guest row out. Watch for this if guest
+# traffic ever reaches a few hundred plays a week: the symptom presents as
+# "the demo recommends weird tracks" with no obvious cause.
+_DJ_RECENCY_SKIP_GUEST = (
+    (os.environ.get("DJ_RECENCY_SKIP_GUEST") or "").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+
+# Below this the output window is degenerate (every candidate identical, or
+# fewer than two candidates) and dividing the penalty into it would
+# manufacture an ordering out of nothing. Skip re-ranking instead.
+_DJ_RECENCY_MIN_WINDOW = 1e-6
+
+# The four stats columns, as they appear aliased on the candidate queries.
+# Summing u_ and s_ is deliberate -- see property 3 above.
+_UTS_SELECT = (
+    "       s.last_played                             AS uts_last_played,\n"
+    "       s.last_skipped_at                         AS uts_last_skipped_at,\n"
+    "       COALESCE(s.u_skip_count, 0)\n"
+    "     + COALESCE(s.s_skip_count, 0)               AS uts_skip_count,\n"
+    "       COALESCE(s.u_skip_position_ms_sum, 0)\n"
+    "     + COALESCE(s.s_skip_position_ms_sum, 0)     AS uts_skip_pos_sum"
+)
+# Joins on user_track_stats' primary key (user_id, track_id), so this is an
+# index seek per candidate row inside the DB and adds ZERO round trips. A
+# per-candidate stats query would be one Hrana POST each (backlog 2.2) --
+# 150 HTTPS round trips per recommendation. That option is not on the table.
+_UTS_JOIN = "LEFT JOIN user_track_stats s ON s.user_id = ut.user_id AND s.track_id = t.id"
+
+
+def _dj_recency_enabled(display_name=None) -> bool:
+    """The single gate. False => not one byte of this feature runs."""
+    if _DJ_RECENCY_WEIGHT <= 0:
+        return False
+    if _DJ_RECENCY_SKIP_GUEST and (display_name or "") == "Guest":
+        return False
+    return True
+
+
+def _dj_recency_pool(limit: int) -> int:
+    return max(limit, min(_DJ_RECENCY_POOL_MAX, max(_DJ_RECENCY_POOL, 12 * limit)))
+
+
+def _parse_sql_ts(value):
+    """Parse a SQLite/libSQL timestamp into an aware UTC datetime, or None.
+
+    Verified 2026-10-02: the only writer is _upsert_track_stats, which stores
+    datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S') -- directly
+    comparable with datetime('now'), also UTC. The ISO/'Z' branches are
+    defensive, for a future writer or a hand-edited row.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    s = str(value).strip()
+    if not s:
+        return None
+    s = s.replace("T", " ")
+    if s.endswith("Z"):
+        s = s[:-1].strip()
+    if "." in s:
+        s = s.split(".", 1)[0]
+    if "+" in s:
+        s = s.split("+", 1)[0].strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def _recency_penalty(now, last_played, last_skipped_at,
+                     skip_count=0, skip_pos_sum=0, duration_ms=None):
+    """Pure. Returns (P, explain) with P >= 0 ALWAYS. Takes no connection.
+
+    `now` is an aware UTC datetime. The timestamps are whatever the DB handed
+    back; they are parsed here.
+
+    Never played means P_play = 0 -- maximally fresh. It is NOT imputed to a
+    mid-range value and NOT imputed to "very old" (which happens to give the
+    same answer today, for the wrong reason, and would stop being true the
+    moment anyone adds a first_played_at term). That is what makes a user with
+    no stats a no-op.
+
+    dt is clamped at >= 0: a client clock running ahead of the server would
+    otherwise give 2^(+k) and an unbounded SCORE-RAISING penalty. A future
+    timestamp yields P = 1 (maximally recent), not P = 40.
+
+    A skip also writes last_played (verified: _upsert_track_stats sets
+    last_played on every accepted event regardless of type or reason), so the
+    two terms are ADDITIVE rather than max(): a track skipped an hour ago
+    carries both and should be the most suppressed thing in the pool.
+    """
+    ex = {
+        "p_play": 0.0,
+        "p_skip": 0.0,
+        "bail_fraction": None,
+        "skip_amplitude": None,
+        "last_played": last_played if isinstance(last_played, str) else (
+            str(last_played) if last_played is not None else None),
+        "last_skipped_at": last_skipped_at if isinstance(last_skipped_at, str) else (
+            str(last_skipped_at) if last_skipped_at is not None else None),
+    }
+
+    def _hours_since(ts):
+        parsed = _parse_sql_ts(ts)
+        if parsed is None:
+            return None
+        return max(0.0, (now - parsed).total_seconds() / 3600.0)
+
+    h_play = _hours_since(last_played)
+    if h_play is not None and _DJ_RECENCY_HALFLIFE_H > 0:
+        ex["p_play"] = float(2.0 ** (-h_play / _DJ_RECENCY_HALFLIFE_H))
+
+    h_skip = _hours_since(last_skipped_at)
+    if h_skip is not None and _DJ_SKIP_HALFLIFE_H > 0:
+        # Depth of the bail. Mean skip position, not the most recent one:
+        # the aggregate stores a sum and a count, and going to track_events
+        # for the last position would be a second query per candidate.
+        # The mean is monotone in the right direction and that is enough.
+        amp = 1.0
+        try:
+            sc = int(skip_count or 0)
+            dur = int(duration_ms or 0)
+        except (TypeError, ValueError):
+            sc, dur = 0, 0
+        if sc > 0 and dur > 0:
+            frac = (float(skip_pos_sum or 0) / sc) / float(dur)
+            frac = max(0.0, min(1.0, frac))
+            amp = 2.0 - 1.5 * frac
+            ex["bail_fraction"] = frac
+        ex["skip_amplitude"] = amp
+        ex["p_skip"] = float(amp * (2.0 ** (-h_skip / _DJ_SKIP_HALFLIFE_H)))
+
+    # Belt and braces. P is non-negative by construction above; this makes it
+    # non-negative by assertion too, so a future retune of the constants
+    # cannot accidentally turn the penalty into a boost.
+    p = max(0.0, ex["p_play"] + ex["p_skip"])
+    ex["p"] = p
+    return p, ex
+
+
+class _RecencyCandidate:
+    """One candidate on the way through the re-ranker.
+
+    `score` is generic: HIGHER IS BETTER, whatever the path's scale. DJ passes
+    cosine similarity; _similar_vibe passes -distance. Nothing below knows
+    which.
+    """
+    __slots__ = ("score", "payload", "last_played", "last_skipped_at",
+                 "skip_count", "skip_pos_sum", "duration_ms")
+
+    def __init__(self, score, payload, last_played=None, last_skipped_at=None,
+                 skip_count=0, skip_pos_sum=0, duration_ms=None):
+        self.score = float(score)
+        self.payload = payload
+        self.last_played = last_played
+        self.last_skipped_at = last_skipped_at
+        self.skip_count = skip_count
+        self.skip_pos_sum = skip_pos_sum
+        self.duration_ms = duration_ms
+
+
+def _rerank_by_recency(cands, limit, now=None, explain=False):
+    """Re-rank `cands` (already sorted best-first) and return the first
+    `limit`. Each returned item is (candidate, final_score, explain|None).
+
+    Pure apart from the clock. Returns the input order untouched whenever the
+    re-rank cannot be meaningful:
+      * the gate is off (handled by the caller, which also skips the JOIN),
+      * fewer than two candidates,
+      * the output window is below _DJ_RECENCY_MIN_WINDOW.
+
+    If every candidate carries the SAME P, every score shifts by the same
+    constant and the order is unchanged -- which is why "small library where
+    everything is recent" degrades to today's behaviour for free, and why P
+    must NOT be normalised within the pool.
+    """
+    n = len(cands)
+    if n == 0:
+        return []
+    now = now or datetime.now(timezone.utc)
+
+    window_hi = cands[0].score
+    window_lo = cands[min(limit, n) - 1].score
+    window = window_hi - window_lo
+    if n < 2 or window < _DJ_RECENCY_MIN_WINDOW:
+        out = []
+        for i, c in enumerate(cands[:limit]):
+            ex = None
+            if explain:
+                ex = {"sim": c.score, "lambda": 0.0, "p_play": 0.0, "p_skip": 0.0,
+                      "penalty": 0.0, "final": c.score,
+                      "rank_before": i + 1, "rank_after": i + 1,
+                      "degenerate_window": True,
+                      "last_played": None, "last_skipped_at": None}
+            out.append((c, c.score, ex))
+        return out
+
+    lam = _DJ_RECENCY_WEIGHT * window
+
+    scored = []
+    for i, c in enumerate(cands):
+        p, ex = _recency_penalty(
+            now, c.last_played, c.last_skipped_at,
+            c.skip_count, c.skip_pos_sum, c.duration_ms,
+        )
+        penalty = lam * p
+        final = c.score - penalty
+        scored.append([c, final, i, ex, penalty, p])
+
+    # Stable: equal finals keep their un-penalised relative order.
+    scored.sort(key=lambda e: -e[1])
+
+    out = []
+    for rank_after, entry in enumerate(scored[:limit]):
+        c, final, rank_before, ex, penalty, _p = entry
+        block = None
+        if explain:
+            block = {
+                "sim": c.score,
+                "lambda": lam,
+                "p_play": ex["p_play"],
+                "p_skip": ex["p_skip"],
+                "bail_fraction": ex["bail_fraction"],
+                "penalty": penalty,
+                "final": final,
+                "rank_before": rank_before + 1,
+                "rank_after": rank_after + 1,
+                "last_played": ex["last_played"],
+                "last_skipped_at": ex["last_skipped_at"],
+            }
+        out.append((c, final, block))
+    return out
+
+
+def _fetch_recency_stats(conn, user_id, now=None):
+    """{track_id: (last_played, last_skipped_at, skip_count, skip_pos_sum)}
+    for everything this user touched in the last 30 days.
+
+    ONE query per request, used only on the numpy / cold-start paths where
+    there is no candidate query to hang a LEFT JOIN off. The Turso ranking
+    path never calls this -- it gets the same columns on the JOIN it was
+    already issuing.
+
+    The 30-day cutoff is safe: P_play(30 d) = 0.0009, below the float noise on
+    the similarity scores. Served by idx_user_track_stats_recent
+    (user_id, last_played DESC) for the first predicate.
+    """
+    out = {}
+    try:
+        rows = conn.execute(
+            "SELECT track_id, last_played, last_skipped_at, "
+            "       COALESCE(u_skip_count, 0) + COALESCE(s_skip_count, 0) AS skip_count, "
+            "       COALESCE(u_skip_position_ms_sum, 0) "
+            "     + COALESCE(s_skip_position_ms_sum, 0) AS skip_pos_sum "
+            "FROM user_track_stats "
+            "WHERE user_id = ? "
+            "  AND (last_played     > datetime('now', '-30 day') "
+            "    OR last_skipped_at > datetime('now', '-30 day'))",
+            (user_id,),
+        ).fetchall()
+    except Exception as e:
+        # No stats table (prod before _turso_create_event_tables.py has run),
+        # or any other read failure. Degrade to "no history", which is the
+        # pre-feature behaviour, rather than failing the recommendation.
+        log.warning("[dj] recency stats unavailable: %s", e)
+        return out
+    for r in rows:
+        out[int(r["track_id"])] = (
+            r["last_played"], r["last_skipped_at"],
+            r["skip_count"], r["skip_pos_sum"],
+        )
+    return out
+
+
 class SimilarBody(BaseModel):
     mode: Optional[str] = None
     positive_ids: Optional[list] = None
@@ -1115,10 +1471,30 @@ class SimilarBody(BaseModel):
     limit: Optional[int] = None
     # "fused" (default) | "mert". Selects which embedding variant DJ mode uses.
     variant: Optional[str] = None
+    # Opt-in per-candidate recency breakdown on each track. Additive and off
+    # by default, so no existing client sees a change.
+    # [frontend contract] — new optional request field, new optional response
+    # field `explain` on each track, plus `final_score` alongside `score`.
+    explain: Optional[bool] = False
 
 
-def _similar_vibe(track_key: str, limit: int, user_id):
-    """Existing weighted L1 scalar-feature similarity. Returns response dict."""
+def _similar_vibe(track_key: str, limit: int, user_id,
+                  display_name=None, explain: bool = False):
+    """Existing weighted L1 scalar-feature similarity. Returns response dict.
+
+    Recency re-ranked on the same terms as DJ mode, and that is deliberate:
+    _similar_dj falls back here whenever the seed has no vector in either
+    variant, which is exactly the moment the library is thinnest and repeats
+    are most likely. If the penalty existed only on the DJ path it would
+    silently disappear at the worst possible time, with `mode_used` as the
+    only evidence.
+
+    This path has no embedding at all. It ranks by a weighted-L1 `distance`
+    computed in SQL, roughly 0-3.3 and ASCENDING, so it feeds the shared
+    re-ranker `score = -distance`. Because lambda is window-relative it needs
+    no special-casing -- but lambda here is far larger in absolute terms than
+    on the cosine path. That is correct. Do not compare the two.
+    """
     conn = get_conn()
     try:
         anchor = _resolve_anchor(conn, track_key)
@@ -1149,6 +1525,11 @@ def _similar_vibe(track_key: str, limit: int, user_id):
         # discount of 0.15 (roughly one dimension's worth of distance) to
         # nudge same-mood tracks up the list.
         select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
+        rerank = _dj_recency_enabled(display_name)
+        # Kill switch / guest opt-out: emit exactly the pre-feature SQL.
+        stats_select = (",\n" + _UTS_SELECT) if rerank else ""
+        stats_join = ("              " + _UTS_JOIN + "\n") if rerank else ""
+        fetch = _dj_recency_pool(limit) if rerank else limit
         sql = f"""
             SELECT {select},
               (
@@ -1157,16 +1538,16 @@ def _similar_vibe(track_key: str, limit: int, user_id):
               + 1.0 * ABS(COALESCE(t.danceability_pred,   0.5)          - {a_dance})
               + 0.8 * ABS(COALESCE(t.valence_pred,        0.5)          - {a_valence})
               - CASE WHEN t.mood = ? THEN 0.15 ELSE 0.0 END
-              ) AS distance
+              ) AS distance{stats_select}
             FROM tracks t
             JOIN user_tracks ut ON ut.track_id = t.id
-            WHERE ut.user_id = ?
+{stats_join}            WHERE ut.user_id = ?
               AND t.ingestion_status = 'done'
               AND t.id != ?
             ORDER BY distance ASC, t.title COLLATE NOCASE
             LIMIT ?
         """
-        rows = conn.execute(sql, (a_mood, user_id, anchor["id"], limit)).fetchall()
+        rows = conn.execute(sql, (a_mood, user_id, anchor["id"], fetch)).fetchall()
         anchor_out = {
             "spotify_id": anchor["spotify_id"],
             "apple_id": anchor["apple_id"],
@@ -1175,9 +1556,37 @@ def _similar_vibe(track_key: str, limit: int, user_id):
     finally:
         conn.close()
 
+    if not rerank:
+        return {
+            "anchor": anchor_out,
+            "tracks": [_row_to_dict(r) for r in rows[:limit]],
+            "mode_used": "vibe",
+        }
+
+    cands = []
+    for r in rows:
+        dist = r["distance"]
+        cands.append(_RecencyCandidate(
+            score=-(float(dist) if dist is not None else 999.0),
+            payload=r,
+            last_played=r["uts_last_played"],
+            last_skipped_at=r["uts_last_skipped_at"],
+            skip_count=r["uts_skip_count"],
+            skip_pos_sum=r["uts_skip_pos_sum"],
+            duration_ms=r["duration_ms"],
+        ))
+
+    out_tracks = []
+    for c, final, block in _rerank_by_recency(cands, limit, explain=explain):
+        d = _row_to_dict(c.payload)
+        d["final_score"] = final
+        if block is not None:
+            d["explain"] = block
+        out_tracks.append(d)
+
     return {
         "anchor": anchor_out,
-        "tracks": [_row_to_dict(r) for r in rows],
+        "tracks": out_tracks,
         "mode_used": "vibe",
     }
 
@@ -1257,12 +1666,22 @@ def _resolve_ids_to_track_ids(conn, keys) -> list:
     return ids
 
 
-def _similar_dj(track_key: str, body: SimilarBody, user_id):
+def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
     """Cosine similarity over per-track embedding vectors. Variant selects
     which embedding table row to use ('fused' = MERT + scalars + language,
-    'mert' = raw MERT). Falls back cross-variant, then to vibe."""
+    'mert' = raw MERT). Falls back cross-variant, then to vibe.
+
+    Results are recency re-ranked -- see the _recency_penalty block above for
+    the design and the three properties it must keep. `score` still means
+    cosine similarity and nothing else; the post-penalty value is reported
+    separately as `final_score`. Redefining an existing numeric field in place
+    is backlog item 1.2's exact failure mode.
+    """
     limit = body.limit if body.limit else 8
     limit = max(1, min(int(limit), 25))
+    rerank = _dj_recency_enabled(display_name)
+    explain = bool(getattr(body, "explain", False))
+    pool = _dj_recency_pool(limit) if rerank else limit
 
     requested_variant = (body.variant or _DJ_VARIANT_DEFAULT).strip().lower()
     if requested_variant not in ("fused", "mert"):
@@ -1296,7 +1715,8 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id):
 
     if seed_vec is None:
         conn.close()
-        resp = _similar_vibe(track_key, limit, user_id)
+        resp = _similar_vibe(track_key, limit, user_id,
+                             display_name=display_name, explain=explain)
         resp["mode_used"] = "vibe_fallback_no_seed_embedding"
         resp["variant_used"] = None
         return resp
@@ -1425,12 +1845,19 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id):
                 excl_sql += ",".join(str(int(x)) for x in exclude_ids)
                 excl_sql += ") "
             select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
+            # Zero extra round trips: the stats arrive on a LEFT JOIN added to
+            # the query we were already issuing. With the kill switch set,
+            # neither the join nor the wider LIMIT is emitted at all.
+            stats_select = (", " + _UTS_SELECT.replace("\n", " ")) if rerank else ""
+            stats_join = (_UTS_JOIN + " ") if rerank else ""
             sql = (
                 f"SELECT {select}, "
-                f"       vector_distance_cos(te.{emb_col}, vector32(?)) AS distance "
+                f"       vector_distance_cos(te.{emb_col}, vector32(?)) AS distance"
+                f"{stats_select} "
                 f"FROM tracks t "
                 f"JOIN user_tracks ut ON ut.track_id = t.id "
                 f"JOIN track_embeddings te ON te.track_id = t.id "
+                f"{stats_join}"
                 f"WHERE ut.user_id = ? "
                 f"  AND t.ingestion_status = 'done' "
                 f"  AND te.{emb_col} IS NOT NULL "
@@ -1439,19 +1866,44 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id):
                 f"LIMIT ?"
             )
             try:
-                rows = conn.execute(sql, (qv_str, user_id, limit)).fetchall()
+                rows = conn.execute(sql, (qv_str, user_id, pool)).fetchall()
             except Exception as e:
                 log.warning("[dj] turso vector_distance_cos path failed: %s; "
                             "falling back to numpy", e)
                 rows = None
             if rows is not None:
-                for r in rows:
-                    d = _row_to_dict(r)
-                    # vector_distance_cos returns (1 - cos_sim), so cosine
-                    # similarity = 1 - distance. Frontend expects similarity.
+                # vector_distance_cos returns (1 - cos_sim), so cosine
+                # similarity = 1 - distance. Frontend expects similarity.
+                def _sim(r):
                     dist = float(r["distance"]) if r["distance"] is not None else 1.0
-                    d["score"] = 1.0 - dist
-                    out_tracks.append(d)
+                    return 1.0 - dist
+
+                if not rerank:
+                    for r in rows[:limit]:
+                        d = _row_to_dict(r)
+                        d["score"] = _sim(r)
+                        out_tracks.append(d)
+                else:
+                    cands = [
+                        _RecencyCandidate(
+                            score=_sim(r),
+                            payload=r,
+                            last_played=r["uts_last_played"],
+                            last_skipped_at=r["uts_last_skipped_at"],
+                            skip_count=r["uts_skip_count"],
+                            skip_pos_sum=r["uts_skip_pos_sum"],
+                            duration_ms=r["duration_ms"],
+                        )
+                        for r in rows
+                    ]
+                    for c, final, block in _rerank_by_recency(
+                            cands, limit, explain=explain):
+                        d = _row_to_dict(c.payload)
+                        d["score"] = c.score
+                        d["final_score"] = final
+                        if block is not None:
+                            d["explain"] = block
+                        out_tracks.append(d)
                 anchor_out = {
                     "spotify_id": anchor["spotify_id"],
                     "apple_id": anchor["apple_id"],
@@ -1467,7 +1919,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id):
 
         # -------- numpy fallback (local dev / cold-start / turso error) --------
         cand_rows = conn.execute(
-            "SELECT t.id FROM tracks t "
+            "SELECT t.id, t.duration_ms FROM tracks t "
             "JOIN user_tracks ut ON ut.track_id = t.id "
             "JOIN track_embeddings te ON te.track_id = t.id "
             "WHERE ut.user_id = ? "
@@ -1475,6 +1927,10 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id):
             f" AND te.{emb_col} IS NOT NULL",
             (user_id,),
         ).fetchall()
+        # duration_ms rides along on the query we were already issuing; it is
+        # the denominator of the skip-depth term and the full track rows are
+        # not fetched until after re-ranking on this path.
+        cand_duration = {int(r["id"]): r["duration_ms"] for r in cand_rows}
         cand_ids = [int(r["id"]) for r in cand_rows if int(r["id"]) not in exclude_ids]
         if not cand_ids:
             anchor_out = {
@@ -1496,11 +1952,49 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id):
                     "mode_used": mode_used, "variant_used": variant_used}
 
         ids_arr = np.array(list(cand_vecs.keys()), dtype=np.int64)
+
+        # One extra query on this path, and only on this path -- there is no
+        # candidate query here to hang the LEFT JOIN off. Bounded by "tracks
+        # this user touched in 30 days", not by library size.
+        stats = _fetch_recency_stats(conn, user_id) if rerank else {}
+
+        def _mk_cand(tid, score):
+            st = stats.get(tid)
+            return _RecencyCandidate(
+                score=score, payload=tid,
+                last_played=st[0] if st else None,
+                last_skipped_at=st[1] if st else None,
+                skip_count=st[2] if st else 0,
+                skip_pos_sum=st[3] if st else 0,
+                duration_ms=cand_duration.get(tid),
+            )
+
+        explains: dict = {}
+        finals: dict = {}
         if query_vec is None:
-            # Cold start: shuffle the candidate pool and take the first N.
+            # Cold start: no similarity signal to trade against, so there is
+            # no lambda to calibrate and no window to measure. Keep it random
+            # -- cold start must not be deterministic -- but weight the draw
+            # by 1/(1+P), which makes a track played an hour ago about half as
+            # likely as one never heard. Still one-sided: P only ever lowers
+            # a track's weight.
             rng = np.random.default_rng()
-            perm = rng.permutation(len(ids_arr))[:limit]
-            top_ids = [int(ids_arr[i]) for i in perm]
+            take = min(limit, len(ids_arr))
+            if rerank and stats:
+                now = datetime.now(timezone.utc)
+                w = np.empty(len(ids_arr), dtype=np.float64)
+                for i, tid in enumerate(ids_arr):
+                    c = _mk_cand(int(tid), 0.0)
+                    p, _ex = _recency_penalty(
+                        now, c.last_played, c.last_skipped_at,
+                        c.skip_count, c.skip_pos_sum, c.duration_ms)
+                    w[i] = 1.0 / (1.0 + p)
+                total = float(w.sum())
+                probs = (w / total) if total > 0 else None
+                pick = rng.choice(len(ids_arr), size=take, replace=False, p=probs)
+            else:
+                pick = rng.permutation(len(ids_arr))[:take]
+            top_ids = [int(ids_arr[i]) for i in pick]
             top_scores = {tid: 0.0 for tid in top_ids}
         else:
             mat = np.stack([cand_vecs[int(i)] for i in ids_arr]).astype(np.float32)
@@ -1509,9 +2003,26 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id):
             norms[norms < 1e-12] = 1.0
             mat_n = mat / norms
             sims = mat_n @ query_vec.astype(np.float32)
-            order = np.argsort(-sims)[:limit]
-            top_ids = [int(ids_arr[i]) for i in order]
-            top_scores = {int(ids_arr[i]): float(sims[i]) for i in order}
+            if not rerank:
+                order = np.argsort(-sims)[:limit]
+                top_ids = [int(ids_arr[i]) for i in order]
+                top_scores = {int(ids_arr[i]): float(sims[i]) for i in order}
+            else:
+                # Pool, not the whole library, so this path displaces ranks by
+                # the same amount the Turso path does -- otherwise local
+                # behaviour would not predict production's.
+                order = np.argsort(-sims)[:pool]
+                cands = [_mk_cand(int(ids_arr[i]), float(sims[i])) for i in order]
+                top_ids = []
+                top_scores = {}
+                for c, final, block in _rerank_by_recency(
+                        cands, limit, explain=explain):
+                    tid = int(c.payload)
+                    top_ids.append(tid)
+                    top_scores[tid] = c.score
+                    finals[tid] = final
+                    if block is not None:
+                        explains[tid] = block
 
         # Fetch full track rows for the top ids, preserve order.
         select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
@@ -1528,6 +2039,10 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id):
                 continue
             d = _row_to_dict(r)
             d["score"] = top_scores.get(tid, 0.0)
+            if tid in finals:
+                d["final_score"] = finals[tid]
+            if tid in explains:
+                d["explain"] = explains[tid]
             out_tracks.append(d)
 
         anchor_out = {
@@ -1556,7 +2071,8 @@ def similar_tracks(
 
     track_key can be a spotify_id (string) or a numeric internal tracks.id.
     """
-    return _similar_vibe(track_key, limit, sess["user_id"])
+    return _similar_vibe(track_key, limit, sess["user_id"],
+                         display_name=sess.get("display_name"))
 
 
 @app.post("/api/tracks/{track_key}/similar")
@@ -1575,6 +2091,13 @@ def similar_tracks_post(
       exclude_ids: [id, ...] — mixed list of internal tracks.id ints and/or
         spotify_id strings. Ints skip resolution.
       limit: int (1..25, default 8)
+      explain: bool (default false) — attach a per-track `explain` block with
+        the recency penalty breakdown and rank_before / rank_after. Opt-in;
+        off by default so no existing client sees a change.
+
+    Each track carries `score` (cosine similarity on the DJ path, absent on
+    the vibe path — unchanged meaning) and, when recency re-ranking is
+    active, `final_score` = score - lambda * P.
     """
     if body is None:
         body = SimilarBody()
@@ -1582,8 +2105,11 @@ def similar_tracks_post(
     limit = max(1, min(int(limit), 25))
     mode = (body.mode or "vibe").lower()
     if mode == "dj":
-        return _similar_dj(track_key, body, sess["user_id"])
-    return _similar_vibe(track_key, limit, sess["user_id"])
+        return _similar_dj(track_key, body, sess["user_id"],
+                           display_name=sess.get("display_name"))
+    return _similar_vibe(track_key, limit, sess["user_id"],
+                         display_name=sess.get("display_name"),
+                         explain=bool(body.explain))
 
 
 @app.get("/api/tracks/random")
