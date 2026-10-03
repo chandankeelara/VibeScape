@@ -18,6 +18,7 @@ import * as youtube from './youtube';
 import * as spotify from './spotify';
 import * as verify from './verify';
 import { getToken } from '../lib/session';
+import * as listenLog from '../lib/listenLog';
 
 const listeners = new Set();
 const timeListeners = new Set();
@@ -71,6 +72,18 @@ export function init() {
   if (state.initialized) return;
   state.initialized = true;
 
+  // Telemetry's playhead. Registered here because this module owns the clock
+  // and lib/listenLog.js must not import back into the media layer.
+  //
+  // duration is the duration of WHAT IS PLAYING, not the catalogue track
+  // length: a 30s preview reports 30000. position_ms and duration_ms have to
+  // come off the same clock or their ratio is nonsense, and "the user let the
+  // audio we had run to its end" is the signal we actually want.
+  listenLog.setClock(() => ({
+    position_ms: Math.round(currentPosition() * 1000),
+    duration_ms: Math.round(currentDuration() * 1000),
+  }));
+
   const el = document.createElement('audio');
   el.id = 'player';
   el.preload = 'metadata';
@@ -84,14 +97,22 @@ export function init() {
 
   el.addEventListener('play', () => { state.playing = true; glow.start(el); emit(); setSessionState(true); });
   el.addEventListener('pause', () => { state.playing = false; glow.stop(); emit(); setSessionState(false); });
-  el.addEventListener('ended', () => { state.playing = false; glow.stop(); emit(); hooks.onEnded(); });
+  el.addEventListener('ended', () => {
+    state.playing = false; glow.stop(); emit();
+    // BEFORE hooks.onEnded(). That hook runs next(), which loads a
+    // replacement through loadTrack() — and loadTrack's default attribution
+    // is 'skipped'. Closing the play here is what keeps a track that
+    // finished by itself from being logged as a skip.
+    listenLog.endPlay('completed');
+    hooks.onEnded();
+  });
   el.addEventListener('timeupdate', () => emitTime(el.currentTime || 0, el.duration || 0));
   el.addEventListener('loadedmetadata', () => emitTime(el.currentTime || 0, el.duration || 0));
 
   youtube.setHandlers({
     onPlaying: () => { state.playing = true; emit(); setSessionState(true); reassertSession(); },
     onPaused: () => { state.playing = false; emit(); setSessionState(false); },
-    onEnded: () => { state.playing = false; emit(); hooks.onEnded(); },
+    onEnded: () => { state.playing = false; emit(); listenLog.endPlay('completed'); hooks.onEnded(); },
     onError: (info) => hooks.onVideoError(info),
     onTime: ({ position, duration }) => emitTime(position, duration),
   });
@@ -124,6 +145,7 @@ export function init() {
   spotify.setOnEnded(() => {
     state.playing = false;
     emit();
+    listenLog.endPlay('completed');
     hooks.onEnded();
   });
 
@@ -163,8 +185,25 @@ function setPreviewSource(track) {
 
 /* --------------------------------------------------------------- commands */
 
-export function loadTrack(track, { mode = state.mode } = {}) {
+/**
+ * `endReason` / `source` are telemetry only and never affect playback.
+ *
+ * endReason defaults to 'skipped' because that is what an open play being
+ * displaced actually means: if the track had ended on its own, the 'ended'
+ * handler above would already have closed it as 'completed', and endPlay()
+ * below would find nothing to close. Only the genuinely programmatic callers
+ * (player.stop(), the post-sync re-roll) pass 'replaced'.
+ */
+export function loadTrack(track, { mode = state.mode, endReason = 'skipped', source } = {}) {
   if (!track) return;
+
+  // Re-loading the SAME track is a source switch, not an end: it happens when
+  // a Spotify device appears mid-preview (setOnReady above) and when leaving
+  // video mode. Billing that as a skip plus a fresh play would double the
+  // play count and invent a skip the user never made.
+  const continuing = listenLog.isOpen(track);
+  if (!continuing) listenLog.endPlay(endReason);
+
   state.track = track;
   state.mode = mode;
   updateSessionMetadata(track);
@@ -178,6 +217,7 @@ export function loadTrack(track, { mode = state.mode } = {}) {
     startSessionAnchor();
     state.source = null;
     emit();
+    if (!continuing) listenLog.startPlay(track, { source });
     return; // the video feature resolves the id and calls cueVideo()
   }
 
@@ -196,6 +236,8 @@ export function loadTrack(track, { mode = state.mode } = {}) {
     state.source = null;
     state.playing = false;
     emit();
+    // No play_start: nothing is going to play, and a play the user never heard
+    // would still be counted as one by user_track_stats.
     hooks.onNeedsPremium(track);
     return;
   }
@@ -211,6 +253,7 @@ export function loadTrack(track, { mode = state.mode } = {}) {
     glow.stop();
     glow.setAlpha(0.65);
     emit();
+    if (!continuing) listenLog.startPlay(track, { source });
     spotify.playTrack(track.spotify_id).then((ok) => {
       // Couldn't take over the device — better a 30s preview than silence.
       if (!ok && state.track === track) {
@@ -231,6 +274,7 @@ export function loadTrack(track, { mode = state.mode } = {}) {
   stopSessionAnchor();
   state.source = 'preview';
   emit();
+  if (!continuing) listenLog.startPlay(track, { source });
   setPreviewSource(track);
   state.audioEl.play().catch(() => { state.playing = false; emit(); });
 }
@@ -279,6 +323,8 @@ export function setMode(mode, track) {
 }
 
 export function stop() {
+  // Teardown is programmatic — sign-out, an empty library. Not a skip.
+  listenLog.endPlay('replaced');
   quietAudio();
   spotify.pause();
   youtube.stop();

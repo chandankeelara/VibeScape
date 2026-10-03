@@ -300,7 +300,7 @@ function SyncModalInner({ onClose, defaultTab }) {
     // listen.
     if (phase === 'complete' || phase === 'progress') {
       onClose?.();
-      fetchForVibe();
+      fetchForVibe(undefined, { endReason: 'replaced' });
       return;
     }
     if (tab === 'url') {

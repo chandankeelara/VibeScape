@@ -81,7 +81,7 @@ export default function QueueSidebar() {
     (track, index) => {
       if (index < 0 || index >= queue.length) return;
       for (let i = 0; i <= index; i++) dequeueAt(0);
-      loadTrack(track);
+      loadTrack(track, { source: 'queue' });
     },
     [queue.length, dequeueAt, loadTrack]
   );
@@ -99,7 +99,7 @@ export default function QueueSidebar() {
   const playRec = useCallback(
     (track) => {
       if (djEnabled) flashConsume(trackKey(track));
-      loadTrack(track);
+      loadTrack(track, { source: djEnabled ? 'dj' : 'search' });
     },
     [djEnabled, flashConsume, loadTrack]
   );

@@ -32,6 +32,7 @@ on the other.
 | Player shell + mood grid | `app.js:1127-1360`, `index.html` | ✅ `src/features/player/` |
 | Verify (classification clip) | `app.js:1338-1541` | ✅ `src/media/verify.js` + chip/overlay |
 | Media layer | `app.js:1541-2450`, `2762-3576` | ✅ `src/media/` |
+| Listening telemetry | new — no legacy equivalent | ✅ `src/lib/{events,listenLog}.js` |
 
 ~9,850 lines across 77 files, replacing ~16,600 lines of legacy.
 
@@ -83,6 +84,34 @@ and orphan them once the user resolves.
   `--z-*` scale — legacy `style.css` has 43 unscaled `z-index` values.
 - Keyboard reachable, visible focus. Legacy is good here; don't regress.
 
+## Listening telemetry (`POST /api/events`)
+
+Three plain modules, no React lifecycle, nothing that can re-render the player:
+
+- `lib/listenLog.js` — one open play at a time; `endPlay()` emits and nulls it,
+  so a duplicate `ended`, a pagehide followed by a real transition, and the
+  teardown in `PlayerProvider`'s cleanup are all idempotent by construction.
+- `lib/events.js` — 200-event buffer (drops oldest), 5s timer, flush on
+  `visibilitychange → hidden` and `pagehide`, 50 per request. A failed batch is
+  dropped, never retried; three consecutive failures kill the module for the
+  page's life with one `console.warn`.
+- `lib/api.js postEvents()` — the only `fetch` in the app that deliberately
+  does **not** go through `request()`: a telemetry 401 must not `clearToken()`.
+
+**End-of-track attribution** is hooked in `media/player.js`, not in React:
+`'completed'` is emitted by the three real end-of-media events *before*
+`hooks.onEnded()` hands control to `next()`, so the replacement reaching
+`loadTrack()` finds no open play. Everything else that displaces an open play
+through `loadTrack()` defaults to `'skipped'`; `player.stop()` and the
+post-sync re-roll pass `'replaced'`; `pagehide` sends **no** `reason` (the
+contract has no word for "closed the tab", and the backend buckets a null
+reason nowhere while still counting `total_played_ms`).
+
+**`vibe_source`** is a ref in `PlayerContext`, stamped outside the state
+updaters: `setVibe`/`shiftVibe` → `'user'`, `setVibeFromTrack` → `'system'`.
+It starts `null` and unknown provenance sends nothing. `dj_mode` is read off
+`nextFallbackRef` — that ref *is* DJ mode, so no new state was needed.
+
 ## Gotchas discovered during the port
 
 **`trackKey()` must stay spotify_id-first.** `_resolve_anchor`
@@ -113,6 +142,17 @@ so nothing breaks at import time — it 404s.
   targets.
 - **PWA files** (`manifest.json`, `sw.js`) still point at the legacy app, and
   `frontend/icons/` has no actual PNGs, so the app is not installable.
+- **The backend drops `dj_mode` and `vibe_source`.** `_normalize_event`
+  (backend/app.py) builds its insert row from `type / reason / position_ms /
+  duration_ms / vibe / source / client_ts` only; `track_events` has no column
+  for either. The client sends them per the contract, but nothing stores them
+  today — which means a `vibe` sample still cannot be told apart from the
+  recommender's own echo on the server side.
+- `source` has no vocabulary for a recent-trail rewind or a mood-grid pick;
+  both are logged as `'search'`.
+- `duration_ms` is the duration of *what played*, so a 30s preview reports
+  30000, not the catalogue track length. Mixing the two clocks would make
+  `position_ms / duration_ms` meaningless.
 - DJ mode's `natural` end flag is inferred from played ratio rather than the
   media `ended` event. `player.js` exposes a real seam (`setHooks.onEnded`) if
   that's ever worth tightening.

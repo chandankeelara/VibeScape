@@ -146,7 +146,7 @@ body::after {
   height: 100dvh;
   min-width: 1240px;
   display: grid;
-  grid-template-rows: 56px 50px minmax(0,1fr);
+  grid-template-rows: 64px minmax(0,1fr);
   grid-template-columns: minmax(0,1fr) 320px;
   /* The room is lit from above, so the page is not flat. Two luminance
      steps — more than that and it becomes a gradient panel. */
@@ -154,14 +154,27 @@ body::after {
   isolation: isolate;
 }
 
-/* ---------------------------------------------------------- topbar --- */
+/* ------------------------------------------------- the one top strip ---
+   Two rows became one. A real music player has a single strip: identity
+   left, search at the optical centre, account right. Merging them also
+   gives the stage back 42px and makes it unambiguous that search is the
+   primary way through the product, not a filter above the page.
+
+   Three columns with equal outer tracks, so the field is centred on the
+   WINDOW regardless of how wide the left and right clusters get. */
 .topbar {
   grid-column: 1 / -1;
-  display: flex; align-items: center; gap: var(--sp-6);
+  display: grid;
+  grid-template-columns: 1fr minmax(360px, 580px) 1fr;
+  align-items: center;
+  gap: var(--sp-6);
   padding: 0 var(--sp-6);
   border-bottom: 1px solid var(--border);
 }
-.wordmark { display: flex; align-items: center; gap: 10px; font-size: var(--fs-title); line-height: 1; color: var(--text); }
+.tbLeft  { display: flex; align-items: center; gap: var(--sp-5); min-width: 0; }
+.tbRight { display: flex; align-items: center; gap: var(--sp-3); justify-content: flex-end; min-width: 0; }
+
+.wordmark { display: flex; align-items: center; gap: 10px; font-size: var(--fs-title); line-height: 1; color: var(--text); flex: none; }
 /* The tally light. One of exactly two things in this interface that move
    with the music, and it tells you the tempo. */
 .mark {
@@ -177,11 +190,29 @@ body::after {
 .wordmark .a { font-weight: 500; letter-spacing: -0.015em; }
 .wordmark .b { font-family: var(--serif); font-style: italic; font-size: 21px; }
 
-.spacer { flex: 1; }
 .mlabel { font-family: var(--mono); font-size: var(--fs-micro); font-weight: 500; letter-spacing: var(--pill-track); text-transform: uppercase; color: var(--text-4); }
-.readout { display: flex; gap: 18px; }
-.readout i { font-style: normal; color: var(--text-4); }
-.readout b { font-weight: 500; color: var(--text-2); }
+
+/* ---- the listening state ----
+   What picks the next record is the single most consequential thing about
+   how this app is behaving, so it gets the one promoted slot. It is a
+   statement of behaviour with a live readout, not an icon you have to
+   remember the meaning of. */
+.djstate { display: flex; align-items: center; gap: var(--sp-3); min-width: 0; }
+.seg { display: flex; border: 1px solid var(--border); border-top-color: var(--edge-lit); border-radius: var(--radius-sm); overflow: hidden; flex: none; }
+.seg button {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 26px; padding: 0 10px;
+  border: 0; background: none; cursor: pointer;
+  font-family: var(--mono); font-size: var(--fs-micro); font-weight: 500;
+  letter-spacing: var(--pill-track); text-transform: uppercase; color: var(--text-4);
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.seg button:hover { color: var(--text-2); }
+.seg button.on { background: var(--surface-2); color: var(--text); box-shadow: inset 0 1px 0 var(--edge-lit); }
+.seg .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--text-mute); }
+.seg button.on .dot { background: var(--vibe-accent-fill); }
+.djread { color: var(--text-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.djread b { color: var(--text-3); font-weight: 500; }
 
 .iconbtn {
   display: grid; place-items: center;
@@ -199,38 +230,176 @@ body::after {
 
 .userpill {
   display: flex; align-items: center; gap: var(--sp-2);
-  height: 30px; padding: 0 10px 0 4px;
+  height: 30px; padding: 0 10px 0 4px; flex: none;
   border: 1px solid var(--border); border-top-color: var(--edge-lit);
   border-radius: var(--radius-pill);
   background: var(--surface);
   color: var(--text-2); font-size: var(--fs-meta);
+  cursor: pointer;
 }
 .av { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-2); font-family: var(--mono); font-size: 9px; font-weight: 600; }
 
 /* ---------------------------------------------------------- search --- */
-.searchbar {
-  grid-column: 1 / -1;
-  display: flex; align-items: center; gap: var(--sp-3);
-  padding: 0 var(--sp-6);
-  border-bottom: 1px solid var(--border);
-}
+.search { position: relative; min-width: 0; }
+
 /* Recessed — elev-1. Dark relative to its bed, lit on the bottom inner
-   lip, because a groove catches light on its far wall. */
+   lip, because a groove catches light on its far wall. 10px radius, not a
+   pill: pills in this system mean a count or an action. */
 .searchfield {
-  flex: 1; display: flex; align-items: center; gap: var(--sp-3);
-  height: 30px; padding: 0 var(--sp-3);
-  border-radius: var(--radius-sm);
+  display: flex; align-items: center; gap: var(--sp-3);
+  height: 38px; padding: 0 var(--sp-3) 0 var(--sp-4);
+  border-radius: var(--radius);
   background: #05050a;
   box-shadow: inset 0 1px 2px rgba(0,0,0,0.6), inset 0 -1px 0 rgba(255,255,255,0.05);
+  transition: box-shadow var(--dur-press) var(--ease);
 }
-.gl { width: 12px; height: 12px; border: 1.5px solid var(--text-4); border-radius: 50%; position: relative; flex: none; }
-.gl::after { content: ''; position: absolute; right: -4px; bottom: -3px; width: 6px; height: 1.5px; background: var(--text-4); transform: rotate(45deg); }
-.ph { flex: 1; font-size: var(--fs-sm); color: var(--text-4); }
-kbd { font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em; color: var(--text-4); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 2px 6px; }
+.search.open .searchfield,
+.searchfield:focus-within {
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.6), inset 0 0 0 1px var(--border-strong);
+}
+.gl { width: 13px; height: 13px; border: 1.5px solid var(--text-4); border-radius: 50%; position: relative; flex: none; transition: border-color var(--dur-fast) var(--ease); }
+.gl::after { content: ''; position: absolute; right: -4px; bottom: -3px; width: 6px; height: 1.5px; background: var(--text-4); transform: rotate(45deg); transition: background var(--dur-fast) var(--ease); }
+.searchfield:focus-within .gl { border-color: var(--text-2); }
+.searchfield:focus-within .gl::after { background: var(--text-2); }
+
+#q {
+  flex: 1; min-width: 0;
+  background: none; border: 0; outline: none; padding: 0;
+  font-family: var(--sans); font-size: var(--fs-sm); color: var(--text);
+  /* The caret is the search region's one accent. It costs nothing, it
+     follows the music, and it is never behind text. */
+  caret-color: var(--vibe-accent-text);
+}
+#q::placeholder { color: var(--text-4); }
+#q::-webkit-search-cancel-button { display: none; }
+
+kbd { font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em; color: var(--text-4); border: 1px solid var(--border); border-radius: 4px; padding: 2px 5px; line-height: 1; }
+.kbdhint { display: flex; gap: 3px; flex: none; transition: opacity var(--dur-fast) var(--ease); }
+.search.open .kbdhint, .searchfield:focus-within .kbdhint { opacity: 0; }
+.clearq {
+  width: 20px; height: 20px; flex: none; display: none; place-items: center;
+  border: 0; border-radius: 50%; background: var(--surface-2); color: var(--text-3);
+  cursor: pointer; font-size: 11px; line-height: 1;
+}
+.search.hasq .clearq { display: grid; }
+.search.hasq .kbdhint { display: none; }
+
+/* ---- the panel ----
+   FIXED HEIGHT. Empty, loading, results and no-results all occupy the same
+   box, so nothing below the field ever moves and the footer never travels.
+   This is the single biggest difference between a filter box and a
+   destination.
+
+   It is granted a shadow because it genuinely floats over arbitrary
+   content — the same exception the sync pill gets, under the same rule:
+   a rim light does the lifting, the shadow only kills what is beneath. */
+.panel {
+  position: absolute; left: 0; right: 0; top: calc(100% + 8px);
+  height: 420px;
+  z-index: 200;
+  display: none;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-top-color: var(--edge-lit);
+  border-radius: var(--radius);
+  box-shadow: var(--cast-4);
+  overflow: hidden;
+}
+.search.open .panel { display: flex; animation: panelIn var(--dur) var(--ease-out); }
+@keyframes panelIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+/* Indeterminate while a query is in flight. Deliberately NOT the accent:
+   the region already spends its accent on the caret and the active row. */
+.busyline { position: absolute; left: 0; right: 0; top: 0; height: 1px; overflow: hidden; opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
+.search.busy .busyline { opacity: 1; }
+.busyline i { position: absolute; top: 0; left: -40%; width: 40%; height: 1px; background: var(--text-3); animation: sweep 900ms var(--ease) infinite; }
+@keyframes sweep { to { left: 100%; } }
+
+.scroller { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+.scroller::-webkit-scrollbar { width: 8px; }
+.scroller::-webkit-scrollbar-track { background: transparent; }
+.scroller::-webkit-scrollbar-thumb { border-radius: var(--radius-pill); background: var(--border-strong); border: 2px solid transparent; background-clip: padding-box; }
+
+/* Sticky, so you always know which group you are reading inside a long
+   result set. */
+.grouphead {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: center; gap: var(--sp-2);
+  height: 26px; padding: 0 var(--sp-4);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.grouphead span:first-child { flex: 1; }
+
+.reslist { list-style: none; margin: 0; padding: 0; }
+.res {
+  display: flex; align-items: center; gap: var(--sp-3);
+  height: 48px; padding: 0 var(--sp-4);
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  transition: background var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.res.top { height: 62px; }
+/* One highlight for both hover and keyboard, so the two never disagree
+   about which row is "current". */
+.res:hover, .res.act { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--vibe-accent); }
+
+.thumb { position: relative; flex: none; width: 34px; height: 34px; }
+.res.top .thumb { width: 46px; height: 46px; }
+.thumb .sleeve { width: 100%; height: 100%; border-radius: 3px; }
+.thumb.round .sleeve { border-radius: 50%; }
+/* Hover reveals the play affordance on the artwork itself. */
+.thumb .pl {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  background: rgba(0,0,0,0.55); color: #fff; opacity: 0; border-radius: 3px;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.thumb.round .pl { border-radius: 50%; }
+.res:hover .pl, .res.act .pl { opacity: 1; }
+
+.rbody { flex: 1; min-width: 0; }
+.rtitle { display: block; font-size: var(--fs-sm); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.35; }
+.res.top .rtitle { font-size: var(--fs-body); }
+.rsub { display: block; font-size: var(--fs-meta); color: var(--text-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rsub mark, .rtitle mark { background: none; color: var(--text); font-weight: 600; }
+.rsub mark { color: var(--text-2); }
+.rdur { font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-4); font-variant-numeric: tabular-nums; flex: none; }
+.rstate { flex: none; }
+.rstate.playing { color: var(--vibe-accent-text); }
+
+/* A dashed rule is this interface's one sign for "a thing is absent". */
+.pstage { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--sp-2); padding: var(--sp-7); text-align: center; }
+.pstage p { margin: 0; }
+.pstage .big { font-size: var(--fs-body); color: var(--text-2); }
+.pstage .small { font-size: var(--fs-meta); color: var(--text-4); line-height: 1.6; }
+
+/* Skeletons only on the very first query. After that the previous results
+   stay put and the busy line carries the state — flashing placeholders
+   between keystrokes is worse than a stale list. */
+.sk { display: flex; align-items: center; gap: var(--sp-3); height: 48px; padding: 0 var(--sp-4); }
+.sk i { display: block; background: var(--surface-2); border-radius: 3px; }
+.sk .a { width: 34px; height: 34px; flex: none; }
+.sk .b { height: 9px; border-radius: 2px; }
+
+.recent { display: flex; align-items: center; gap: var(--sp-3); height: 38px; padding: 0 var(--sp-4); cursor: pointer; transition: background var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease); }
+.recent:hover, .recent.act { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--vibe-accent); }
+.recent .txt { flex: 1; min-width: 0; font-size: var(--fs-sm); color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.recent .x { width: 18px; height: 18px; display: grid; place-items: center; border: 0; background: none; color: var(--text-mute); font-size: 11px; cursor: pointer; border-radius: 50%; }
+.recent .x:hover { color: var(--text-2); background: var(--surface); }
+
+.pfoot {
+  flex: none; display: flex; align-items: center; gap: var(--sp-4);
+  height: 32px; padding: 0 var(--sp-4);
+  border-top: 1px solid var(--border);
+  background: var(--bg-2);
+}
+.pfoot .k { display: inline-flex; align-items: center; gap: 5px; color: var(--text-mute); }
+.pfoot .k b { color: var(--text-4); font-weight: 500; }
 
 /* ----------------------------------------------------------- stage --- */
 .stage {
-  grid-column: 1; grid-row: 3;
+  grid-column: 1; grid-row: 2;
   display: grid;
   grid-template-columns: var(--art) minmax(300px,1fr) 92px;
   column-gap: clamp(24px, 2.6vw, 44px);
@@ -457,7 +626,7 @@ kbd { font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em; color: va
 
 /* --------------------------------------------------------- sidebar --- */
 .sidebar {
-  grid-column: 2; grid-row: 3;
+  grid-column: 2; grid-row: 2;
   display: flex; flex-direction: column; gap: var(--sp-6);
   padding: var(--sp-4) var(--sp-5);
   border-left: 1px solid var(--border);
@@ -529,30 +698,53 @@ kbd { font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em; color: va
 <div class="app">
 
   <header class="topbar">
-    <div class="wordmark"><span class="mark" aria-hidden="true"></span><span class="a">Vibe</span><span class="b">Scape</span></div>
-    <div class="spacer"></div>
-    <div class="readout mlabel">
-      <span><i>library</i> <b>2,418</b></span>
-      <span><i>analysed</i> <b>2,391</b></span>
-      <span><i>queue</i> <b id="qcount">9</b></span>
+    <div class="tbLeft">
+      <div class="wordmark"><span class="mark" aria-hidden="true"></span><span class="a">Vibe</span><span class="b">Scape</span></div>
+      <div class="djstate">
+        <div class="seg" role="group" aria-label="What picks the next track">
+          <button id="mDj" class="on" aria-pressed="true"><span class="dot" aria-hidden="true"></span>dj</button>
+          <button id="mQueue" aria-pressed="false"><span class="dot" aria-hidden="true"></span>queue</button>
+        </div>
+        <span class="djread mlabel" id="djread" aria-live="polite">picking from <b>chill</b></span>
+      </div>
     </div>
-    <button class="iconbtn" aria-label="Sync library" title="Sync library">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
-        <path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10"/><path d="M20.5 15a9 9 0 0 1-14.9 3.4L1 14"/>
-      </svg>
-    </button>
-    <button class="iconbtn" aria-label="Keyboard shortcuts" title="Space play/pause · N next · P previous · arrows on the dial">?</button>
-    <div class="userpill"><span class="av" aria-hidden="true">CK</span>Chandan</div>
-  </header>
 
-  <div class="searchbar">
-    <div class="searchfield">
-      <span class="gl" aria-hidden="true"></span>
-      <span class="ph">Search 2,418 tracks by title, artist or album</span>
+    <div class="search" id="search">
+      <div class="searchfield">
+        <span class="gl" aria-hidden="true"></span>
+        <input id="q" type="search" autocomplete="off" spellcheck="false"
+               placeholder="Search your library and Spotify"
+               aria-label="Search" role="combobox" aria-autocomplete="list"
+               aria-controls="reslist" aria-expanded="false" />
+        <span class="kbdhint" aria-hidden="true"><kbd>Ctrl</kbd><kbd>K</kbd></span>
+        <button class="clearq" id="clearq" aria-label="Clear search">&times;</button>
+      </div>
+
+      <div class="panel" id="panel">
+        <span class="busyline" aria-hidden="true"><i></i></span>
+        <div class="scroller" id="reslist" role="listbox" aria-label="Search results"></div>
+        <div class="pfoot mlabel">
+          <span class="k"><b>&uarr;&darr;</b> navigate</span>
+          <span class="k"><b>&crarr;</b> play</span>
+          <span class="k"><b>&uparrow;&crarr;</b> queue</span>
+          <span class="k"><b>esc</b> close</span>
+          <span style="flex:1"></span>
+          <span id="pcount"></span>
+        </div>
+      </div>
     </div>
-    <kbd>/</kbd>
-  </div>
+
+    <div class="tbRight">
+      <span class="mlabel" id="qcount" style="display:none">0</span>
+      <button class="iconbtn" id="syncBtn" aria-label="Sync library" title="Sync library">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
+          <path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10"/><path d="M20.5 15a9 9 0 0 1-14.9 3.4L1 14"/>
+        </svg>
+      </button>
+      <button class="userpill"><span class="av" aria-hidden="true">CK</span>Chandan</button>
+    </div>
+  </header>
 
   <main class="stage">
 
@@ -650,6 +842,7 @@ kbd { font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em; color: va
     </div>
 
     <div class="hint mlabel">
+      <span><b>/</b> search</span>
       <span><b>drag</b> the dial</span>
       <span><b>space</b> play</span>
       <span><b>n</b> / <b>p</b> skip</span>
@@ -777,7 +970,13 @@ let pos = 0;              /* seconds into the track */
 let playing = true;
 let played = [];          /* indices, most recent first */
 let seq = 0;              /* cancels in-flight track changes */
-let changing = false;     /* tick() would otherwise re-fire go() on every frame at p >= 1 */
+let changing = false;
+/* Shift+Enter in search puts real indices here. It is what makes the
+   DJ / QUEUE control in the top bar mean something. */
+let userQueue = [];
+/* T now holds catalogue results too, so everything that rotates through
+   "your music" walks this instead of T. */
+const libIdx = () => T.map((t, i) => (t.inLib === false ? -1 : i)).filter(i => i >= 0);     /* tick() would otherwise re-fire go() on every frame at p >= 1 */
 let timers = [];
 
 /* Paints a sleeve element from a track: the two tone-field colours and
@@ -829,6 +1028,7 @@ function setVibe(v, live) {
   const lead = accentFor(Math.min(100, vibe + 2)).mood;
   [...$('names').children].forEach(s => s.classList.toggle('on', s.textContent === lead));
 
+  updateDjRead();
   /* Dragging the dial visibly rewrites what the DJ would play next.
      That is the true thing this gesture tells you. */
   if (live) renderPicks();
@@ -897,7 +1097,7 @@ function settle() {
 function pickForVibe() {
   let best = -1, bd = 1e9;
   T.forEach((t, i) => {
-    if (i === cur) return;
+    if (i === cur || t.inLib === false) return;
     const d = Math.abs(t.v - vibe);
     if (d < bd) { bd = d; best = i; }
   });
@@ -914,6 +1114,8 @@ function go(i) {
   const my = ++seq;
   timers.forEach(clearTimeout); timers = [];
 
+  const qi = userQueue.indexOf(i);
+  if (qi >= 0) userQueue.splice(qi, 1);
   played.unshift(cur);
   played = played.slice(0, 5);
 
@@ -974,6 +1176,7 @@ function setVibeSilently(v) {
   fader.setAttribute('aria-valuetext', v + ', ' + mood);
   fader.classList.add('settling');
   [...$('names').children].forEach(s => s.classList.toggle('on', s.textContent === mood));
+  updateDjRead();
 }
 
 function restartBreath() {
@@ -1004,7 +1207,7 @@ function paintNow() {
   $('d-energy').textContent = t.en.toFixed(2);
   $('d-len').textContent = fmt(t.sec);
   $('tEnd').textContent = fmt(t.sec);
-  $('pos').textContent = (played.length + 1) + ' of ' + T.length + ' this session';
+  $('pos').textContent = (played.length + 1) + ' of ' + libIdx().length + ' this session';
 
   /* The breath: tempo sets the speed, energy sets the size. A ballad
      barely moves; a beast track visibly throbs. Unknown BPM would mean
@@ -1030,9 +1233,15 @@ function paintStack() {
 
 function upcoming() {
   if (cleared) return [];
-  const out = [];
-  for (let k = 1; k <= 9; k++) out.push((cur + k) % T.length);
-  return out;
+  const lib = libIdx();
+  const n = lib.indexOf(cur);
+  const out = userQueue.filter(i => i !== cur);
+  for (let k = 1; out.length < 9; k++) {
+    const i = lib[(n + k) % lib.length];
+    if (i === cur || out.includes(i)) { if (k > lib.length) break; continue; }
+    out.push(i);
+  }
+  return out.slice(0, 9);
 }
 
 function row(i, n) {
@@ -1084,7 +1293,7 @@ function renderQueue() {
 let picksKey = '';
 function renderPicks() {
   const ranked = T.map((t, i) => ({ i, d: Math.abs(t.v - vibe) }))
-                  .filter(x => x.i !== cur)
+                  .filter(x => x.i !== cur && T[x.i].inLib !== false)
                   .sort((a, b) => a.d - b.d)
                   .slice(0, 3);
   /* Dragging fires pointermove ~60 times a second. Rebuilding three rows
@@ -1135,7 +1344,7 @@ function tick(force) {
   EL.tNow.textContent = fmt(pos);
   EL.seek.setAttribute('aria-valuenow', Math.round(p * 100));
   EL.seek.setAttribute('aria-valuetext', fmt(pos) + ' of ' + fmt(t.sec));
-  if (!force && p >= 1) go((cur + 1) % T.length);
+  if (!force && p >= 1) go(nextIndex());
 }
 
 let last = performance.now();
@@ -1157,10 +1366,11 @@ function setPlaying(v) {
 }
 
 $('play').addEventListener('click', () => setPlaying(!playing));
-$('next').addEventListener('click', () => go((cur + 1) % T.length));
+$('next').addEventListener('click', () => go(nextIndex()));
 $('prev').addEventListener('click', () => {
   if (pos > 4) { pos = 0; tick(true); return; }   /* the real behaviour: restart first */
-  go(played.length ? played[0] : (cur - 1 + T.length) % T.length);
+  const lib = libIdx();
+  go(played.length ? played[0] : lib[(lib.indexOf(cur) - 1 + lib.length) % lib.length]);
 });
 
 /* Seek. Same WCAG reasoning as the dial: pointer, click-anywhere and
@@ -1191,12 +1401,482 @@ let cleared = false;
 $('clear').addEventListener('click', () => { cleared = !cleared; renderQueue(); paintStack(); });
 
 document.addEventListener('keydown', e => {
-  if (e.target.closest('[role="slider"]')) return;
+  const tg = e.target;
+  /* Space in the search field is a space, not play/pause. */
+  if (tg && (tg.tagName === 'INPUT' || tg.tagName === 'TEXTAREA' || tg.isContentEditable)) return;
+  if (tg && tg.closest && tg.closest('[role="slider"]')) return;
   if (e.code === 'Space') { e.preventDefault(); setPlaying(!playing); }
   else if (e.key === 'n' || e.key === 'N') go((cur + 1) % T.length);
   else if (e.key === 'p' || e.key === 'P') go((cur - 1 + T.length) % T.length);
   else if (e.key === 'ArrowRight') { pos = Math.min(T[cur].sec, pos + 5); tick(true); }
   else if (e.key === 'ArrowLeft') { pos = Math.max(0, pos - 5); tick(true); }
+});
+
+/* ===================================================================
+   SEARCH — built as a destination, not a filter box.
+
+   The panel is a FIXED 420px. Recent, loading, results and no-results all
+   live inside it, so nothing below the field ever moves and the footer
+   never travels. Rows are grouped and ranked with one promoted best match,
+   and the whole list is drivable from the keyboard across group
+   boundaries as a single sequence.
+
+   Shape matches features/search/SearchBar.jsx: combobox input +
+   role=listbox panel + aria-activedescendant, focus never leaving the
+   field. See the report for the three things the real component would
+   need that do not exist in the API yet.
+   =================================================================== */
+
+/* Spotify-catalogue results: in the index, not in the library. These are
+   what make "add" and the two-source split real rather than decorative. */
+T.push(
+  { t: 'Gosh',          ar: 'Jamie xx',           al: 'In Colour',            lb: 'Young Turks', yr: 2015, cat: 'YT125',    sec: 314, bpm: 125, key: 'F minor', en: 0.68, v: 63, side: 'side a · track 1', art: 2, inLib: false },
+  { t: 'Wildfires',     ar: 'Sault',              al: 'Untitled (Black Is)',  lb: 'Forever Living Originals', yr: 2020, cat: 'FLO03', sec: 201, bpm: 96, key: 'A minor', en: 0.40, v: 41, side: 'side b · track 6', art: 1, inLib: false },
+  { t: 'Visit Croatia', ar: 'Alabaster DePlume',  al: 'To Cy & Lee',          lb: 'International Anthem', yr: 2020, cat: 'IARC0029', sec: 243, bpm: 80, key: 'G major', en: 0.22, v: 23, side: 'side a · track 5', art: 3, inLib: false },
+  { t: 'Devotion',      ar: 'Tirzah',             al: 'Devotion',             lb: 'Domino',    yr: 2018, cat: 'WIG397',   sec: 215, bpm: 90,  key: 'C minor', en: 0.35, v: 37, side: 'side a · track 3', art: 0, inLib: false },
+);
+T.forEach(t => { if (t.inLib === undefined) t.inLib = true; });
+
+const PLAYLISTS = [
+  { n: 'Late Shift',              c: 212, rep: 5 },
+  { n: 'Sunday Kitchen',          c: 64,  rep: 0 },
+  { n: 'Monsoon Drive',           c: 139, rep: 9 },
+  { n: 'Rehearsal Room, Sat',     c: 38,  rep: 4 },
+  { n: 'Things I Heard in Lisbon', c: 91, rep: 1 },
+];
+
+/* Artists and albums are DERIVED from the track rows. The search API
+   returns tracks only, so this is what a real implementation would do
+   client-side rather than waiting on a new endpoint. */
+function groupBy(key) {
+  const m = new Map();
+  T.forEach((t, i) => {
+    const k = t[key];
+    if (!m.has(k)) m.set(k, { name: k, rep: i, idx: [] });
+    m.get(k).idx.push(i);
+  });
+  return [...m.values()];
+}
+const ARTISTS = groupBy('ar');
+const ALBUMS = groupBy('al').map(a => ({ ...a, artist: T[a.rep].ar, yr: T[a.rep].yr }));
+
+/* ------------------------------------------------------------ ranking */
+const norm = s => s.toLowerCase();
+function scoreText(hay, q) {
+  const h = norm(hay);
+  if (h === q) return 100;
+  if (h.startsWith(q)) return 80;
+  const w = h.split(/[\s(]+/);
+  if (w.some(x => x.startsWith(q))) return 64;
+  if (h.includes(q)) return 48;
+  return 0;
+}
+function scoreTrack(t, q) {
+  const s = Math.max(
+    scoreText(t.t, q),
+    scoreText(t.ar, q) - 8,
+    scoreText(t.al, q) - 14,
+    scoreText(t.lb, q) - 30
+  );
+  /* Your own library outranks the catalogue at equal relevance. */
+  return s > 0 ? s + (t.inLib ? 5 : 0) : 0;
+}
+
+function searchAll(raw) {
+  const q = norm(raw.trim());
+  if (!q) return null;
+  const rank = (arr, fn) => arr.map(x => ({ x, s: fn(x) })).filter(o => o.s > 0).sort((a, b) => b.s - a.s);
+
+  const tracks   = rank(T.map((t, i) => i), i => scoreTrack(T[i], q));
+  const artists  = rank(ARTISTS,  a => scoreText(a.name, q));
+  const albums   = rank(ALBUMS,   a => Math.max(scoreText(a.name, q), scoreText(a.artist, q) - 20));
+  const playlist = rank(PLAYLISTS, p => scoreText(p.n, q));
+
+  const lib = tracks.filter(o => T[o.x].inLib);
+  const cat = tracks.filter(o => !T[o.x].inLib);
+
+  /* One promoted best match across every kind. A flat list of track names
+     is the amateur version of this. */
+  const all = [
+    ...lib.map(o => ({ kind: 'track', v: o.x, s: o.s + 6 })),
+    ...artists.map(o => ({ kind: 'artist', v: o.x, s: o.s + 2 })),
+    ...albums.map(o => ({ kind: 'album', v: o.x, s: o.s })),
+    ...playlist.map(o => ({ kind: 'playlist', v: o.x, s: o.s })),
+    ...cat.map(o => ({ kind: 'cat', v: o.x, s: o.s })),
+  ].sort((a, b) => b.s - a.s);
+
+  const best = all[0] || null;
+  const drop = (kind, v) => !(best && best.kind === kind && best.v === v);
+
+  return {
+    q: raw.trim(), best,
+    tracks: lib.map(o => o.x).filter(v => drop('track', v)).slice(0, 8),
+    artists: artists.map(o => o.x).filter(v => drop('artist', v)).slice(0, 4),
+    albums: albums.map(o => o.x).filter(v => drop('album', v)).slice(0, 4),
+    playlists: playlist.map(o => o.x).filter(v => drop('playlist', v)).slice(0, 3),
+    catalogue: cat.map(o => o.x).filter(v => drop('cat', v)).slice(0, 5),
+  };
+}
+
+/* ------------------------------------------------------------ state */
+const sEl = $('search'), qEl = $('q'), panel = $('panel'), scroller = $('reslist');
+let sOpen = false, sRows = [], sCur = -1, sRes = null, sFirst = true, sDebounce = null, lastFocus = null;
+
+let recents = [];
+try { recents = JSON.parse(localStorage.getItem('vs.recent') || '[]'); } catch (e) { recents = []; }
+const saveRecents = () => { try { localStorage.setItem('vs.recent', JSON.stringify(recents)); } catch (e) {} };
+function pushRecent(q) {
+  q = q.trim(); if (!q) return;
+  recents = [q, ...recents.filter(x => norm(x) !== norm(q))].slice(0, 6);
+  saveRecents();
+}
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+/* Marks the matched run so you can see WHY a row is in the list. */
+function hl(text, q) {
+  if (!q) return esc(text);
+  const i = norm(text).indexOf(norm(q));
+  if (i < 0) return esc(text);
+  return esc(text.slice(0, i)) + '<mark>' + esc(text.slice(i, i + q.length)) + '</mark>' + esc(text.slice(i + q.length));
+}
+
+/* ------------------------------------------------------- row builders */
+function head(label, count) {
+  const d = document.createElement('div');
+  d.className = 'grouphead mlabel';
+  d.innerHTML = '<span>' + esc(label) + '</span>' + (count != null ? '<span style="color:var(--text-mute)">' + count + '</span>' : '');
+  return d;
+}
+const playGlyph = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5 3.2 13 8l-8 4.8z"/></svg>';
+
+function trackRow(i, q, isTop) {
+  const t = T[i];
+  const li = document.createElement('li');
+  li.className = 'res' + (isTop ? ' top' : '');
+  li.setAttribute('role', 'option');
+  li.setAttribute('aria-selected', 'false');
+
+  const th = document.createElement('span');
+  th.className = 'thumb';
+  th.append(newSleeve(i));
+  th.insertAdjacentHTML('beforeend', '<span class="pl">' + playGlyph + '</span>');
+
+  const body = document.createElement('span');
+  body.className = 'rbody';
+  const sub = t.ar + ' · ' + t.al + (isTop ? ' · ' + t.yr : '');
+  body.innerHTML = '<span class="rtitle">' + hl(t.t, q) + '</span><span class="rsub">' + hl(sub, q) + '</span>';
+
+  li.append(th, body);
+
+  /* The states that matter in THIS app, in priority order. */
+  const st = document.createElement('span');
+  st.className = 'rstate mlabel';
+  const qi = userQueue.indexOf(i);
+  if (i === cur) { st.classList.add('playing'); st.textContent = 'playing'; }
+  else if (qi >= 0) st.textContent = 'queued ' + (qi + 1);
+  else if (!t.inLib) st.textContent = 'not in library';
+  if (st.textContent) li.append(st);
+
+  const d = document.createElement('span');
+  d.className = 'rdur'; d.textContent = fmt(t.sec);
+  li.append(d);
+  return li;
+}
+
+function entityRow(kind, v, q) {
+  const li = document.createElement('li');
+  li.className = 'res';
+  li.setAttribute('role', 'option');
+  li.setAttribute('aria-selected', 'false');
+  let rep, title, sub, round = false;
+
+  if (kind === 'artist')      { const a = ARTISTS[v];  rep = a.rep; title = a.name; sub = a.idx.length + ' track' + (a.idx.length === 1 ? '' : 's'); round = true; }
+  else if (kind === 'album')  { const a = ALBUMS[v];   rep = a.rep; title = a.name; sub = a.artist + ' · ' + a.yr + ' · ' + a.idx.length + ' track' + (a.idx.length === 1 ? '' : 's'); }
+  else                        { const p = PLAYLISTS[v]; rep = p.rep; title = p.n;   sub = p.c + ' tracks · you'; }
+
+  const th = document.createElement('span');
+  th.className = 'thumb' + (round ? ' round' : '');
+  th.append(newSleeve(rep));
+  th.insertAdjacentHTML('beforeend', '<span class="pl">' + playGlyph + '</span>');
+
+  const body = document.createElement('span');
+  body.className = 'rbody';
+  body.innerHTML = '<span class="rtitle">' + hl(title, q) + '</span><span class="rsub">' + esc(sub) + '</span>';
+
+  const tag = document.createElement('span');
+  tag.className = 'rstate mlabel';
+  tag.textContent = kind;
+
+  li.append(th, body, tag);
+  return li;
+}
+
+/* ----------------------------------------------------------- render */
+function renderPanel() {
+  scroller.innerHTML = '';
+  sRows = [];
+  const add = (el, row) => { el.dataset.i = sRows.length; el.id = 'res-' + sRows.length; sRows.push(row); return el; };
+
+  /* Empty and focused: what you looked for before, then what you just
+     played. This is the part that makes it feel like it knows you. */
+  if (!sRes) {
+    if (recents.length) {
+      scroller.append(head('recent searches'));
+      recents.forEach((r, n) => {
+        const d = document.createElement('div');
+        d.className = 'recent';
+        d.setAttribute('role', 'option');
+        d.innerHTML = '<span class="mlabel" style="color:var(--text-mute)">&#8599;</span><span class="txt"></span>';
+        d.querySelector('.txt').textContent = r;
+        const x = document.createElement('button');
+        x.className = 'x'; x.type = 'button'; x.setAttribute('aria-label', 'Remove ' + r); x.textContent = '×';
+        x.addEventListener('click', ev => { ev.stopPropagation(); recents.splice(n, 1); saveRecents(); renderPanel(); });
+        d.append(x);
+        scroller.append(add(d, { kind: 'recent', v: r }));
+      });
+    }
+    const recent = played.slice(0, 4);
+    if (recent.length) {
+      scroller.append(head('jump back in'));
+      const ul = document.createElement('ul'); ul.className = 'reslist';
+      recent.forEach(i => ul.append(add(trackRow(i, ''), { kind: 'track', v: i })));
+      scroller.append(ul);
+    }
+    if (!sRows.length) {
+      scroller.innerHTML = '<div class="pstage"><p class="big">Search your library and Spotify</p>' +
+        '<p class="small">Titles, artists, albums and your playlists. Start typing — results appear as you go.</p></div>';
+    }
+    $('pcount').textContent = '';
+    setCursor(-1);
+    return;
+  }
+
+  const r = sRes, q = r.q;
+  const total = (r.best ? 1 : 0) + r.tracks.length + r.artists.length + r.albums.length + r.playlists.length + r.catalogue.length;
+
+  if (!total) {
+    scroller.innerHTML = '<div class="pstage"><p class="big">No match for “' + esc(q) + '”</p>' +
+      '<p class="small">Check the spelling, or try the artist instead of the title.</p></div>';
+    $('pcount').textContent = '0 results';
+    setCursor(-1);
+    return;
+  }
+
+  const section = (label, items, build, count) => {
+    if (!items.length) return;
+    scroller.append(head(label, count === undefined ? items.length : count));
+    const ul = document.createElement('ul'); ul.className = 'reslist';
+    items.forEach(v => ul.append(add(build(v), rowFor(label, v))));
+    scroller.append(ul);
+  };
+  const rowFor = (label, v) => ({
+    'tracks': { kind: 'track', v }, 'artists': { kind: 'artist', v },
+    'albums': { kind: 'album', v }, 'your playlists': { kind: 'playlist', v },
+    'from spotify': { kind: 'cat', v },
+  })[label];
+
+  if (r.best) {
+    scroller.append(head('top result'));
+    const ul = document.createElement('ul'); ul.className = 'reslist';
+    const k = r.best.kind;
+    const el = (k === 'track' || k === 'cat') ? trackRow(r.best.v, q, true) : entityRow(k, r.best.v, q);
+    if (k !== 'track' && k !== 'cat') el.classList.add('top');
+    ul.append(add(el, { kind: k, v: r.best.v }));
+    scroller.append(ul);
+  }
+  section('tracks', r.tracks, v => trackRow(v, q));
+  section('artists', r.artists, v => entityRow('artist', v, q));
+  section('albums', r.albums, v => entityRow('album', v, q));
+  section('your playlists', r.playlists, v => entityRow('playlist', v, q));
+  section('from spotify', r.catalogue, v => trackRow(v, q));
+
+  $('pcount').textContent = total + ' result' + (total === 1 ? '' : 's');
+  setCursor(total ? 0 : -1);
+}
+
+function setCursor(n) {
+  sCur = n;
+  [...scroller.querySelectorAll('[data-i]')].forEach(el => {
+    const on = +el.dataset.i === n;
+    el.classList.toggle('act', on);
+    el.setAttribute('aria-selected', on ? 'true' : 'false');
+    if (on) el.scrollIntoView({ block: 'nearest' });
+  });
+  qEl.setAttribute('aria-activedescendant', n >= 0 ? 'res-' + n : '');
+}
+
+/* ----------------------------------------------------------- actions */
+function activate(row, queueIt) {
+  if (!row) return;
+  if (row.kind === 'recent') { qEl.value = row.v; runQuery(true); return; }
+
+  if (row.kind === 'track' || row.kind === 'cat') {
+    const i = row.v;
+    if (queueIt) {
+      /* Shift+Enter queues without leaving the panel, so you can stack
+         four records in four keystrokes. */
+      if (!userQueue.includes(i) && i !== cur) userQueue.push(i);
+      T[i].inLib = true;
+      renderQueue(); paintStack(); renderPanel();
+      return;
+    }
+    /* /api/ingest/single is idempotent — adding and playing a catalogue
+       result are the same call, which is why there is no separate step. */
+    T[i].inLib = true;
+    pushRecent(qEl.value);
+    closeSearch(true);
+    go(i);
+    return;
+  }
+
+  /* An artist, album or playlist row narrows the query to that name,
+     which is the honest local equivalent of navigating into it. */
+  const name = row.kind === 'artist' ? ARTISTS[row.v].name
+             : row.kind === 'album'  ? ALBUMS[row.v].name
+             : PLAYLISTS[row.v].n;
+  qEl.value = name;
+  runQuery(true);
+}
+
+/* ------------------------------------------------------- open / close */
+function openSearch() {
+  if (sOpen) return;
+  lastFocus = document.activeElement;
+  sOpen = true;
+  sEl.classList.add('open');
+  qEl.setAttribute('aria-expanded', 'true');
+  renderPanel();
+}
+function closeSearch(clear) {
+  if (!sOpen) return;
+  sOpen = false;
+  sEl.classList.remove('open', 'busy');
+  qEl.setAttribute('aria-expanded', 'false');
+  qEl.setAttribute('aria-activedescendant', '');
+  if (clear) { qEl.value = ''; sEl.classList.remove('hasq'); sRes = null; }
+  /* Escape returns focus where it came from rather than dropping it on
+     the body, which is where a keyboard user would be stranded. */
+  if (lastFocus && lastFocus !== qEl && document.contains(lastFocus)) lastFocus.focus();
+  else qEl.blur();
+}
+
+function runQuery(immediate) {
+  const v = qEl.value;
+  sEl.classList.toggle('hasq', v.trim().length > 0);
+  if (!sOpen) openSearch();
+  clearTimeout(sDebounce);
+
+  if (!v.trim()) { sEl.classList.remove('busy'); sRes = null; renderPanel(); return; }
+
+  /* Debounced, because the real one is network-backed. The panel keeps the
+     PREVIOUS results on screen while a new query is in flight — flashing
+     placeholders between keystrokes is worse than a stale list — and only
+     the very first query gets skeletons. */
+  sEl.classList.add('busy');
+  if (sFirst) {
+    scroller.innerHTML = '<div class="sk"><i class="a"></i><i class="b" style="width:46%"></i></div>' +
+                         '<div class="sk"><i class="a"></i><i class="b" style="width:62%"></i></div>' +
+                         '<div class="sk"><i class="a"></i><i class="b" style="width:38%"></i></div>';
+  }
+  const run = () => {
+    sFirst = false;
+    sEl.classList.remove('busy');
+    sRes = searchAll(v);
+    renderPanel();
+  };
+  if (immediate) run(); else sDebounce = setTimeout(run, 170);
+}
+
+/* ---------------------------------------------------------- wiring */
+qEl.addEventListener('input', () => runQuery(false));
+qEl.addEventListener('focus', () => openSearch());
+$('clearq').addEventListener('click', () => { qEl.value = ''; sRes = null; sEl.classList.remove('hasq'); qEl.focus(); renderPanel(); });
+
+scroller.addEventListener('mousemove', e => {
+  const el = e.target.closest('[data-i]');
+  if (el && +el.dataset.i !== sCur) setCursor(+el.dataset.i);
+});
+scroller.addEventListener('click', e => {
+  if (e.target.closest('.x')) return;
+  const el = e.target.closest('[data-i]');
+  if (el) activate(sRows[+el.dataset.i], e.shiftKey);
+});
+
+qEl.addEventListener('keydown', e => {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    if (!sRows.length) return;
+    e.preventDefault();
+    const d = e.key === 'ArrowDown' ? 1 : -1;
+    setCursor(sCur < 0 ? (d > 0 ? 0 : sRows.length - 1) : (sCur + d + sRows.length) % sRows.length);
+  } else if (e.key === 'Home' && sRows.length) { e.preventDefault(); setCursor(0); }
+  else if (e.key === 'End' && sRows.length) { e.preventDefault(); setCursor(sRows.length - 1); }
+  else if (e.key === 'Enter') { e.preventDefault(); activate(sRows[sCur], e.shiftKey); }
+  else if (e.key === 'Escape') {
+    e.preventDefault();
+    /* First press clears, second closes. Two presses, two meanings. */
+    if (qEl.value) { qEl.value = ''; sRes = null; sEl.classList.remove('hasq'); renderPanel(); }
+    else closeSearch(false);
+  }
+});
+
+document.addEventListener('mousedown', e => { if (sOpen && !sEl.contains(e.target)) closeSearch(false); });
+
+/* ---------------------------------------------- what picks the next one */
+/* The segmented control is the single source of truth. The DJ pill in the
+   queue rail becomes a passive tag reflecting it, because two controls for
+   one state is how a UI starts lying to you. */
+let mode = 'dj';
+const djTag = document.createElement('span');
+djTag.className = 'pill tag'; djTag.id = 'djTag';
+$('djToggle').replaceWith(djTag);
+
+function setMode(m) {
+  mode = m;
+  $('mDj').classList.toggle('on', m === 'dj');
+  $('mQueue').classList.toggle('on', m === 'queue');
+  $('mDj').setAttribute('aria-pressed', String(m === 'dj'));
+  $('mQueue').setAttribute('aria-pressed', String(m === 'queue'));
+  updateDjRead();
+}
+function updateDjRead() {
+  const mood = accentFor(vibe).mood;
+  $('djread').innerHTML = mode === 'dj'
+    ? 'picking from <b>' + mood + '</b>'
+    : userQueue.length + ' queued, then <b>' + mood + '</b>';
+  djTag.textContent = mode === 'dj' ? 'auto' : 'paused';
+}
+$('mDj').addEventListener('click', () => setMode('dj'));
+$('mQueue').addEventListener('click', () => setMode('queue'));
+
+/* Which record plays next — the thing the control above actually governs. */
+function nextIndex() {
+  if (mode === 'queue' && userQueue.length) return userQueue[0];
+  const lib = libIdx();
+  if (mode === 'dj') {
+    let best = -1, bd = 1e9;
+    lib.forEach(i => {
+      if (i === cur || played.slice(0, 3).includes(i)) return;
+      const d = Math.abs(T[i].v - vibe);
+      if (d < bd) { bd = d; best = i; }
+    });
+    if (best >= 0) return best;
+  }
+  const n = lib.indexOf(cur);
+  return lib[(n + 1 + lib.length) % lib.length];
+}
+
+/* ------------------------------------------------------------ global */
+document.addEventListener('keydown', e => {
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); qEl.focus(); qEl.select(); openSearch(); return; }
+  if (e.key === '/') { e.preventDefault(); qEl.focus(); qEl.select(); openSearch(); return; }
+  if (e.key === 'Escape' && sOpen) { e.preventDefault(); closeSearch(false); }
+});
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && document.activeElement === qEl) {
+    e.preventDefault(); qEl.select();
+  }
 });
 
 /* ------------------------------------------------------------- boot */
@@ -1205,6 +1885,7 @@ applyAccent(vibe);
 root.style.setProperty('--v', vibe);
 paintNow();
 renderAll();
+setMode('dj');
 setPlaying(true);
 </script>
 </body>

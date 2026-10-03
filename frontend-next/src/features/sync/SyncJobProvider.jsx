@@ -112,7 +112,9 @@ export function SyncJobProvider({ children }) {
     if (ready > 0 && !autoplayedRef.current) {
       autoplayedRef.current = true;
       setJustBecamePlayable(true);
-      fetchForVibe();
+      // Programmatic: the library just became playable, the user did not skip
+      // anything. 'replaced' keeps this out of the skip signal.
+      fetchForVibe(undefined, { endReason: 'replaced' });
     }
 
     if (s.status === 'complete') {

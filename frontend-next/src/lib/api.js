@@ -154,6 +154,57 @@ export function streamUrl(trackKey, { spotify = false } = {}) {
   return `${BASE}${path}${t ? `?token=${encodeURIComponent(t)}` : ''}`;
 }
 
+/* ------------------------------------------------------------ telemetry */
+
+/**
+ * Does this browser honour `fetch(..., { keepalive: true })`?
+ *
+ * Firefox ignored the flag silently until 133 (the request is simply cancelled
+ * at unload), and the property getter is absent there, which is what this
+ * probes. Cheap, done once, never throws.
+ */
+const KEEPALIVE_OK = (() => {
+  try {
+    return typeof Request === 'function' && 'keepalive' in new Request('/');
+  } catch {
+    return false;
+  }
+})();
+
+/**
+ * POST /api/events — listening telemetry. Deliberately NOT routed through
+ * request(), for three reasons:
+ *
+ *   1. request() calls clearToken() on 401. A telemetry 401 must never sign
+ *      the user out; this one treats every non-OK status as "stop sending"
+ *      and leaves the session alone.
+ *   2. It must never reject into a caller — it resolves with the Response and
+ *      lets lib/events.js decide, and never throws for a non-2xx.
+ *   3. The unload path needs `keepalive`.
+ *
+ * Why keepalive and not navigator.sendBeacon: /api/events is guarded by
+ * require_user (backend/app.py), which is header-only Bearer — sendBeacon
+ * cannot set a header, and ?token= is the controlled compromise for
+ * /api/stream/* ONLY (see streamUrl above). keepalive is the one unload-safe
+ * transport that can still send Authorization, so it is the primary path and
+ * sendBeacon is not used at all. On a browser without keepalive the unload
+ * flush degrades to a plain fetch that may be cancelled — the right failure
+ * for telemetry.
+ *
+ * `token` is passed in rather than read here so a sign-out racing the final
+ * flush still sends under the session that produced the events.
+ */
+export function postEvents(events, { unload = false, token } = {}) {
+  const t = token || getToken();
+  if (!t || !events || !events.length) return null;
+  return fetch(`${BASE}/api/events`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` },
+    body: JSON.stringify({ events }),
+    keepalive: unload && KEEPALIVE_OK,
+  });
+}
+
 /* ---------------------------------------------------------------- ingest */
 
 export const ingestSpotify = (payload, spotifyToken) =>

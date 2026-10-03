@@ -23,6 +23,7 @@ import * as player from '../media/player';
 import * as verifyMedia from '../media/verify';
 import { applyAccent, canVerify, moodFor, trackKey, trackVibe } from '../lib/vibe';
 import { emitMascot } from '../lib/mascotBus';
+import * as listenLog from '../lib/listenLog';
 import { useToast } from './ToastContext';
 
 const PlayerCtx = createContext(null);
@@ -66,6 +67,26 @@ export function PlayerProvider({ children }) {
   // Guards against a slow request for an old vibe clobbering a newer one.
   const fetchToken = useRef(0);
 
+  /*
+   * Who last moved the vibe slider — 'user' | 'system' | null.
+   *
+   * There are exactly two writers of `vibe`: setVibe/shiftVibe (the user drags
+   * it, or search snaps it on an explicit pick) and setVibeFromTrack (the app
+   * sets it from whatever loaded). A user-set vibe is stated intent; a
+   * system-set one is the recommender's own output echoed back, and logging
+   * the two the same way would train /similar on itself.
+   *
+   * A ref, not state: this changes on every slider tick and must not
+   * re-render. It starts null — the initial 50 is a default nobody chose, and
+   * listenLog sends NOTHING for a provenance it does not know rather than
+   * guessing, because a wrong label is worse than a missing one.
+   */
+  const vibeSourceRef = useRef(null);
+
+  /* Live mirrors for the telemetry context provider. Refs so sampling them
+     costs no render; they are written from effects, never read during one. */
+  const vibeRef = useRef(50);
+
   // Insertion-ordered so the cap drops the OLDEST. A ref, not state: this
   // changes on every play and must not re-render the tree, and the recs
   // queryFn reads it through getSeenIds() at fetch time anyway.
@@ -106,7 +127,27 @@ export function PlayerProvider({ children }) {
     };
   }, []);
 
-  useEffect(() => { applyAccent(vibe); }, [vibe]);
+  useEffect(() => { applyAccent(vibe); vibeRef.current = vibe; }, [vibe]);
+
+  /*
+   * Hand the listening log a way to sample the things only React knows.
+   *
+   * Registering a getter rather than pushing values means telemetry reads the
+   * live value at emit time and never causes a render. Re-running this in
+   * StrictMode just reassigns the same closure — it is idempotent by
+   * construction, which is why it is safe to do from an effect at all.
+   *
+   * dj_mode is read off nextFallbackRef because that IS DJ mode: QueueSidebar
+   * registers the DJ picker when the toggle is on and clears it when off
+   * (QueueSidebar.jsx:191). No new state, no new plumbing.
+   */
+  useEffect(() => {
+    listenLog.setContextProvider(() => ({
+      vibe: vibeRef.current,
+      vibe_source: vibeSourceRef.current,
+      dj_mode: !!nextFallbackRef.current,
+    }));
+  }, []);
 
   // Register media-layer callbacks ONCE. Without this, onEnded stays a no-op
   // and nothing advances when a track finishes — autoplay is dead app-wide.
@@ -148,10 +189,15 @@ export function PlayerProvider({ children }) {
   const getSeenIds = useCallback(() => [...seenRef.current.keys()].reverse(), []);
 
   const setVibe = useCallback((v) => {
+    // Stamped OUTSIDE the updater. Updater functions must be pure and
+    // StrictMode invokes them twice; writing provenance inside one is the same
+    // impurity that made prev() load every track twice (see prev() below).
+    vibeSourceRef.current = 'user';
     setVibeState(Math.max(0, Math.min(100, Math.round(v))));
   }, []);
 
   const shiftVibe = useCallback((delta) => {
+    vibeSourceRef.current = 'user';
     setVibeState((v) => Math.max(0, Math.min(100, v + delta)));
   }, []);
 
@@ -177,12 +223,23 @@ export function PlayerProvider({ children }) {
    */
   const setVibeFromTrack = useCallback((t) => {
     const v = trackVibe(t);
+    // Bail before stamping: a track with no vibe leaves the slider — and so
+    // its provenance — exactly as the last real writer left it.
     if (v == null) return;
+    vibeSourceRef.current = 'system';
     setVibeState(v);
   }, []);
 
+  /**
+   * `source` and `endReason` are telemetry only — they change nothing about
+   * playback. `source` defaults to 'search' because every caller that reaches
+   * here directly is an explicit user pick off a list (search results, recs,
+   * the recent trail); the queue / DJ / autoplay paths below name themselves.
+   * `endReason` defaults to 'skipped' inside the media layer — see the note on
+   * player.loadTrack() for why that default is the correct one.
+   */
   const loadTrack = useCallback(
-    (t, { syncVibe = true } = {}) => {
+    (t, { syncVibe = true, source = 'search', endReason } = {}) => {
       if (!t) return;
       setCurrent(t);
       pushRecent(t);
@@ -191,14 +248,19 @@ export function PlayerProvider({ children }) {
       // but NOT on the random vibe fetch — that track is already inside the
       // requested band, so snapping would drift the slider on every skip.
       if (syncVibe) setVibeFromTrack(t);
-      player.loadTrack(t, { mode });
+      player.loadTrack(t, { mode, source, endReason });
     },
     [mode, pushRecent, setVibeFromTrack, markSeen]
   );
 
   /** Pull a random track in the current vibe band, excluding recents. */
+  /**
+   * `endReason` says why whatever is playing is about to be displaced.
+   * 'skipped' is right for the mood slider and the arrow keys (a human cut the
+   * track short); the post-library-sync re-roll passes 'replaced'.
+   */
   const fetchForVibe = useCallback(
-    async (v = vibe) => {
+    async (v = vibe, { endReason = 'skipped' } = {}) => {
       const token = ++fetchToken.current;
       setLoadingTrack(true);
       try {
@@ -209,7 +271,7 @@ export function PlayerProvider({ children }) {
           exclude_ids: exclude.length ? exclude.join(',') : undefined,
         });
         if (token !== fetchToken.current) return;
-        loadTrack(t, { syncVibe: false });
+        loadTrack(t, { syncVibe: false, source: 'autoplay', endReason });
       } catch (e) {
         if (token !== fetchToken.current) return;
         if (e.status === 404) {
@@ -224,6 +286,7 @@ export function PlayerProvider({ children }) {
     },
     [vibe, recent, loadTrack, toast]
   );
+
 
   /* --------------------------------------------------------------- verify */
 
@@ -352,7 +415,7 @@ export function PlayerProvider({ children }) {
     if (queue.length) {
       const [head, ...rest] = queue;
       setQueue(rest);
-      loadTrack(head);
+      loadTrack(head, { source: 'queue' });
       return;
     }
     const fallback = nextFallbackRef.current;
@@ -363,7 +426,7 @@ export function PlayerProvider({ children }) {
       // did, which left the hero card sitting on the previous track's art.
       setLoadingTrack(true);
       Promise.resolve(fallback())
-        .then((t) => (t ? loadTrack(t) : fetchForVibe()))
+        .then((t) => (t ? loadTrack(t, { source: 'dj' }) : fetchForVibe()))
         .catch(() => fetchForVibe())
         // fetchForVibe() owns the flag once it takes over, and clears it in
         // its own finally — but it may also have bailed early on a stale
