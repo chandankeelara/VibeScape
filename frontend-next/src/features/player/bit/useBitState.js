@@ -106,22 +106,27 @@ export default function useBitState({
     if (loadingTrack) return 'digging';
     if (verifying) return 'listening';
     /*
-     * Video mode changes what he WEARS, not what he does.
+     * If something is playing, he dances. Audio or video, no exceptions.
      *
-     * This used to return 'watching' outright, which parked him in
-     * a_watching_shades / a_watching_lean — standing poses — so putting a
-     * video on stopped him dancing. A video is still a track playing, and he
-     * should groove through it exactly as he does for audio, in the band the
-     * mood selects. The shades are the whole difference, applied as a prop
-     * override further down.
+     * This check used to sit LAST, behind two gates that both caught video.
+     * `mode === 'video'` returned 'watching' outright, which parked him in
+     * the standing poses — so putting a video on stopped him dancing. That
+     * was fixed, but the metadata-only gate below still caught it: `source`
+     * is the AUDIO source ('spotify' | 'preview' | null), and in video mode
+     * it is null, so a track with no preview playing happily on YouTube
+     * resolved to 'locked' and he held up a padlock through the whole thing.
      *
-     * Paused in video he goes back to watching, which is the one moment the
-     * standing poses are actually right.
+     * Asking "is it playing" first is both simpler and harder to get wrong:
+     * `playing` is driven by the media layer and YouTube feeds it through
+     * onPlaying/onPaused like every other source, so it is already the
+     * single honest answer to that question.
      */
-    if (mode === 'video' && !playing) return 'watching';
-    // No local audio and no Spotify stream — nothing can play at all.
+    if (playing) return 'groove';
+    // Not playing. Video mode watches — the one moment the standing poses
+    // are right — and a track with nothing that can play it is locked.
+    if (mode === 'video') return 'watching';
     if (isMetadataOnly(current) && !source) return 'locked';
-    return playing ? 'groove' : 'idle';
+    return 'idle';
   }, [current, loadingTrack, verifying, mode, source, playing]);
 
   const state = event ? event.name : base;
