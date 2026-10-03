@@ -114,20 +114,24 @@
  * the card already spans it. The control is display:none there too
  * (ArtStage.module.css).
  *
- * THE STAGE COLUMN SCROLLS, and that is deliberate.
+ * THE STAGE DOES NOT SCROLL ANY MORE — but it can.
  *
- * A 16:9 card wide enough to be worth the toggle is ~350-540px tall, and the
- * meta row under it is another ~430-520px — more than the ~560-920px the
- * stage has. Sizing the video to whatever was left over would make theater
- * NARROWER than the square art card it replaces, which is the one outcome
- * that makes the toggle pointless. So the video takes its height budget
- * (--theater-h) and the column scrolls, exactly as a YouTube page does.
+ * The first cut kept the full meta column (~430-520px) under the video and
+ * had to scroll by 180-230px. Replacing it with TheaterBar (~62-74px) buys
+ * all of that back: at --theater-h 72dvh the video is WIDTH-limited by the
+ * column at every size checked, and the stack clears the stage with 35/120/36
+ * px of slack at 1280x700 / 1440x900 / 1920x1080.
  *
- * The scroller is the STAGE, not the shell. Scrolling the shell would take
- * the queue rail with it, which is precisely what the user asked us to stop
- * doing — and .sidebar's `max-height: min(<row budget>, 100%)` only resolves
- * because .shell gives row 3 a definite height, so leaving the shell at
- * 100dvh keeps the rail's sizing contract untouched as well.
+ * `overflow-y: auto` stays as a safety valve, because those figures come from
+ * computed type metrics rather than a browser: if a font or a locale makes
+ * the bar taller than budgeted, the column scrolls a little instead of
+ * guillotining the transport under .shell's overflow:hidden.
+ *
+ * If it ever does engage, the scroller is the STAGE, not the shell. Scrolling
+ * the shell would take the queue rail with it, which is precisely what the
+ * user asked us to stop doing — and .sidebar's `max-height: min(<row budget>,
+ * 100%)` only resolves because .shell gives row 3 a definite height, so
+ * leaving the shell at 100dvh keeps the rail's sizing contract untouched.
  *
  * HOW THIS IS ANIMATED, and why it is not animated the obvious way:
  *
@@ -165,7 +169,14 @@
      * nobody can see.
      */
     overflow-x: hidden;
-    /* Reserve the gutter so toggling theater cannot jolt the column width. */
+    /*
+     * Reserved even though the column should never scroll. Without it, a
+     * column that overflowed by a few pixels would gain a scrollbar, lose
+     * 15px of width, make the 16:9 video SHORTER, stop overflowing, lose the
+     * scrollbar, and start again — a real oscillation, not a theoretical one,
+     * because the video's height is derived from the column's width. 15px is
+     * the price of that loop never happening.
+     */
     scrollbar-gutter: stable;
 
     /*
@@ -192,11 +203,13 @@
     top: 0;
   }
 
-  /* The absorbed column: now a full-width row under the video. */
-  .stageTheater .metaCol {
+  /* The absorbed column: TheaterBar takes row 2 in place of .metaCol, which
+     is not rendered at all in theater. Placement lives here because the stage
+     grid is this module's business; the bar styles itself. */
+  .barSlot {
     grid-column: 2;
     grid-row: 2;
-    max-height: none;
+    min-width: 0;
   }
 
   .shellMorphing .stage > *,

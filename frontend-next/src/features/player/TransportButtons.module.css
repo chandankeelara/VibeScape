@@ -1,0 +1,71 @@
+/**
+ * prev / play / next. Moved verbatim out of Transport.module.css (legacy
+ * .btn* at frontend/style.css:1578-1606) when theater mode needed the same
+ * three buttons in its bar.
+ *
+ * Renders as a FRAGMENT, so the caller's flex row stays the direct parent of
+ * all three buttons and keeps owning the gap between them.
+ */
+
+.btn {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  transition: transform 120ms var(--ease), color 200ms var(--ease),
+              background 200ms var(--ease);
+  flex-shrink: 0;
+}
+
+.ghost {
+  composes: btn;
+  width: 44px;
+  height: 44px;
+  color: var(--text-2);
+}
+.ghost:hover:not(:disabled) { color: var(--text); background: rgba(255, 255, 255, 0.06); }
+.ghost:active:not(:disabled) { transform: scale(0.94); }
+
+/* White, not accent-tinted — the accent lives in its shadow. */
+.play {
+  composes: btn;
+  width: 56px;
+  height: 56px;
+  background: #fff;
+  color: #0a0a0f;
+  box-shadow: 0 8px 30px -8px color-mix(in oklab, var(--vibe-accent, var(--accent)) 60%, black);
+  transition: transform 120ms var(--ease), box-shadow 400ms var(--ease);
+}
+.play:hover:not(:disabled) { transform: scale(1.05); }
+.play:active:not(:disabled) { transform: scale(0.96); }
+
+/* Disabled while the next track is being chosen. The :not(:disabled) guards
+   above matter as much as these rules — without them a dimmed button still
+   grew on hover and still depressed on click, which reads as working. */
+.ghost:disabled,
+.play:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.play:disabled { box-shadow: none; }
+
+/* Compact variant for the theater bar, which is a strip rather than a panel.
+   Defined AFTER .ghost / .play so the smaller box wins at equal specificity.
+   Nothing else changes — same colours, shadow, hover and disabled rules. */
+.ghostCompact {
+  composes: ghost;
+  width: 36px;
+  height: 36px;
+}
+
+.playCompact {
+  composes: play;
+  width: 44px;
+  height: 44px;
+}

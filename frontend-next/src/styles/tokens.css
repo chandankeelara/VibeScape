@@ -83,13 +83,18 @@
      height of a 100%-wide box, so the card stays a true 16:9 at every viewport
      and the YouTube player never pillarboxes inside a too-wide black card.
 
-     --theater-h is THE tuning knob for how big theater gets. At 50dvh the
-     video is ~1.6-1.9x the width of the square art card it replaces, and the
-     transport still clears the fold at >=900px tall. Raising it trades that
-     clearance for width; the stage column scrolls either way. */
+     --theater-h is THE tuning knob for how big theater gets, and since the
+     meta column was replaced by a ~70px strip it acts mostly as a SAFETY CAP:
+     at 72dvh the video is limited by the COLUMN's width, not by this, at
+     1280x700 and 1440x900, and only slightly by it at 1920x1080 (1382px of a
+     possible 1433). It is what stops a short, very wide viewport from asking
+     for a video taller than the stage fits. Raising it to ~76dvh would reclaim
+     that last 51px at 1080 but cuts the stage's vertical slack from ~49px to
+     ~20px, which is inside the error bar on the computed type metrics these
+     figures come from — not worth 3.7% of width. */
   --stage-max: 1200px;
   --stage-max-theater: 1680px;
-  --theater-h: 50dvh;
+  --theater-h: 72dvh;
 
   /*
    * z-index scale — new. Legacy style.css has 43 unscaled z-index values,

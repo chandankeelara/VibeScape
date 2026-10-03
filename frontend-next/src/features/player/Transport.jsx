@@ -1,6 +1,8 @@
 import { useCallback, useRef } from 'react';
 import { usePlayer, usePlaybackTime } from '../../state/PlayerContext';
 import { fmtTime } from '../../lib/vibe';
+import TransportButtons from './TransportButtons';
+import ModeToggle from './ModeToggle';
 import styles from './Transport.module.css';
 
 /**
@@ -68,74 +70,17 @@ function ProgressBar() {
 }
 
 export default function Transport() {
-  const { playing, togglePlay, next, prev, mode, setPlaybackMode, current, loadingTrack } =
-    usePlayer();
-
-  // While a track is being chosen there is nothing to play, pause, go back
-  // from, or switch to video — those controls act on a track that is on its
-  // way out. `next` stays live on purpose: pressing it again during a slow
-  // pick should skip onward, not be swallowed.
-  const hasVideo = !!current?.youtube_id && !loadingTrack;
-
   return (
     <section className={styles.transport}>
       <ProgressBar />
 
+      {/* The three buttons and the mode pill are shared with TheaterBar —
+          see TransportButtons.jsx / ModeToggle.jsx. TransportButtons renders
+          a fragment, so .controls is still their direct flex parent and still
+          owns the gap between them, exactly as when they were inline here. */}
       <div className={styles.controls}>
-        <button className={styles.ghost} type="button" onClick={prev} aria-label="Previous" disabled={loadingTrack}>
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polygon points="19 20 9 12 19 4 19 20" /><line x1="5" y1="19" x2="5" y2="5" />
-          </svg>
-        </button>
-
-        <button
-          className={styles.play}
-          type="button"
-          onClick={togglePlay}
-          aria-label={playing ? 'Pause' : 'Play'}
-          disabled={loadingTrack}
-        >
-          {playing ? (
-            <svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor">
-              <rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" />
-            </svg>
-          ) : (
-            <svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor">
-              <path d="M8 5.5v13a1 1 0 0 0 1.5.87l11-6.5a1 1 0 0 0 0-1.74l-11-6.5A1 1 0 0 0 8 5.5z" />
-            </svg>
-          )}
-        </button>
-
-        <button className={styles.ghost} type="button" onClick={next} aria-label="Next">
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polygon points="5 4 15 12 5 20 5 4" /><line x1="19" y1="5" x2="19" y2="19" />
-          </svg>
-        </button>
-
-        <div className={styles.modeToggle} role="group" aria-label="Playback mode">
-          <button
-            type="button" role="radio" aria-checked={mode === 'audio'} title="Audio playback"
-            disabled={loadingTrack}
-            className={mode === 'audio' ? styles.modeActive : styles.mode}
-            onClick={() => setPlaybackMode('audio')}
-          >
-            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
-            </svg>
-            <span>audio</span>
-          </button>
-          <button
-            type="button" role="radio" aria-checked={mode === 'video'} disabled={!hasVideo}
-            title={hasVideo ? 'Video playback' : 'No video for this track'}
-            className={mode === 'video' ? styles.modeActive : styles.mode}
-            onClick={() => setPlaybackMode('video')}
-          >
-            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="2" y="6" width="20" height="12" rx="2" /><polygon points="10 9 15 12 10 15 10 9" />
-            </svg>
-            <span>video</span>
-          </button>
-        </div>
+        <TransportButtons />
+        <ModeToggle className={styles.modeAnchor} />
       </div>
     </section>
   );

@@ -1,0 +1,101 @@
+/**
+ * A strip, not a panel.
+ *
+ * Height budget, and why it matters: this bar replaced a meta column measuring
+ * ~426/485/523px at 1280x700 / 1440x900 / 1920x1080. It comes in at roughly
+ * 62/67/74px — padding, a hairline, and the taller of the two-line text block
+ * (~39/44/47px) and the 44px compact play button. Every pixel it gives back
+ * goes to the video, which is the whole reason the mode exists, and it is what
+ * lets the theater stage fit WITHOUT scrolling at all three sizes.
+ *
+ * So: nothing in here may grow with content. The title and the detail line are
+ * both single-line with ellipsis, and the control cluster is fixed-size.
+ */
+
+.bar {
+  /*
+   * Exactly the video's width — the same expression as .wrapTheater in
+   * ArtStage.module.css — so the bar reads as attached to the card above it
+   * rather than as a separate full-column element.
+   */
+  width: min(100%, calc(var(--theater-h) * 16 / 9));
+  margin: 0 auto;
+  min-width: 0;
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-5);
+
+  padding: clamp(8px, 1.2dvh, 14px) var(--sp-2) 0;
+  border-top: 1px solid var(--border);
+}
+
+/* ------------------------------------------------------------------- left */
+
+.text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* Without this the flex item refuses to shrink below its content and the
+     ellipsis below never engages — it pushes the controls off the bar
+     instead. */
+  min-width: 0;
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(17px, 2.2dvh, 22px);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.detail {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  font-size: clamp(11.5px, 1.4dvh, 13px);
+  line-height: 1.35;
+  color: var(--text-3);
+}
+
+/* The artist is the detail that always earns its place, so it holds its
+   ground and the album is what gets ellipsed first. */
+.artist {
+  color: var(--text-2);
+  font-weight: 500;
+  flex-shrink: 0;
+  max-width: 60%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.album {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sep { color: var(--text-4); flex-shrink: 0; }
+
+/* ------------------------------------------------------------------ right */
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-shrink: 0;
+}
+
+/* The pill sits inline here — no absolute anchor, unlike Transport's
+   .modeAnchor, which exists only to keep that layout's play button optically
+   centred. Same component, different placement. */
+.modeSlot { margin-left: var(--sp-2); }

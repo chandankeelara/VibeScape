@@ -7,6 +7,7 @@ import TopBar from './TopBar';
 import ArtStage from './ArtStage';
 import TrackMeta from './TrackMeta';
 import Transport from './Transport';
+import TheaterBar from './TheaterBar';
 import MoodSlider from './MoodSlider';
 import RecentTrail from './RecentTrail';
 import useKeyboardShortcuts from './useKeyboardShortcuts';
@@ -82,12 +83,25 @@ function PlayerStage() {
           onToggleTheater={toggleTheater}
           onExitTheater={exitTheater}
         />
-        <div className={styles.metaCol}>
-          <TrackMeta onShowMetrics={() => setMetricsOpen(true)} />
-          <hr className={styles.divider} aria-hidden="true" />
-          <Transport />
-          <MoodSlider />
-        </div>
+        {/*
+          * Third child either way, so ArtStage stays at index 1 and React
+          * never touches the subtree holding #ytPlayer. Swapping a SIBLING
+          * cannot reparent the iframe; re-ordering or keying it would.
+          *
+          * In theater the whole meta column is replaced — mood slider, vibe
+          * meter and chips included — by one strip, and the video takes the
+          * height that frees. Normal mode is unchanged.
+          */}
+        {theater ? (
+          <TheaterBar className={styles.barSlot} />
+        ) : (
+          <div className={styles.metaCol}>
+            <TrackMeta onShowMetrics={() => setMetricsOpen(true)} />
+            <hr className={styles.divider} aria-hidden="true" />
+            <Transport />
+            <MoodSlider />
+          </div>
+        )}
       </main>
 
       <div className={styles.sidebarSlot}>

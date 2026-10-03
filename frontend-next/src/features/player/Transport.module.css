@@ -2,8 +2,11 @@
  * Ported from legacy frontend/style.css:
  *   .transport :1493 (+ desktop override :1930)
  *   .progress / -track / -fill / -thumb :1496-1553
- *   .times :1560, .controls :1570, .btn* :1578-1606
- *   .mode-toggle / .mode-btn :1608-1681
+ *   .times :1560, .controls :1570
+ *
+ * .btn* (:1578-1606) now lives in TransportButtons.module.css and
+ * .mode-toggle / .mode-btn (:1608-1681) in ModeToggle.module.css — both are
+ * shared with the theater bar.
  */
 
 .transport {
@@ -88,99 +91,22 @@
   position: relative;
 }
 
-.btn {
-  border: none;
-  background: transparent;
-  color: var(--text);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border-radius: 50%;
-  transition: transform 120ms var(--ease), color 200ms var(--ease),
-              background 200ms var(--ease);
-  flex-shrink: 0;
-}
+/* prev / play / next moved to TransportButtons.module.css and the audio/video
+   pill to ModeToggle.module.css — theater mode needs both, and two copies of a
+   control that writes the same state drift apart. What stays here is where
+   they SIT: .controls is still their flex parent, and .modeAnchor is the
+   positioning this layout wants on the pill.
 
-.ghost {
-  composes: btn;
-  width: 44px;
-  height: 44px;
-  color: var(--text-2);
-}
-.ghost:hover:not(:disabled) { color: var(--text); background: rgba(255, 255, 255, 0.06); }
-.ghost:active:not(:disabled) { transform: scale(0.94); }
-
-/* White, not accent-tinted — the accent lives in its shadow. */
-.play {
-  composes: btn;
-  width: 56px;
-  height: 56px;
-  background: #fff;
-  color: #0a0a0f;
-  box-shadow: 0 8px 30px -8px color-mix(in oklab, var(--vibe-accent, var(--accent)) 60%, black);
-  transition: transform 120ms var(--ease), box-shadow 400ms var(--ease);
-}
-.play:hover:not(:disabled) { transform: scale(1.05); }
-.play:active:not(:disabled) { transform: scale(0.96); }
-
-/* Disabled while the next track is being chosen. The :not(:disabled) guards
-   above matter as much as these rules — without them a dimmed button still
-   grew on hover and still depressed on click, which reads as working. */
-.ghost:disabled,
-.play:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-  transform: none;
-}
-
-.play:disabled { box-shadow: none; }
-
-/* Pinned to the right edge of .controls so the play button stays optically
+   Pinned to the right edge of .controls so the play button stays optically
    centred in the column. */
-.modeToggle {
+.modeAnchor {
   position: absolute;
   right: 0;
   top: 50%;
   transform: translateY(-50%);
-  display: inline-flex;
-  align-items: center;
-  padding: 2px;
-  border-radius: var(--radius-pill);
-  background: color-mix(in oklab, var(--surface) 82%, transparent);
-  border: 1px solid var(--border-strong);
-  backdrop-filter: blur(6px);
-  gap: 0;
-}
-
-.mode {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 24px;
-  padding: 0 10px;
-  border: 0;
-  background: transparent;
-  color: var(--text-3);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: lowercase;
-  border-radius: var(--radius-pill);
-  transition: color 180ms var(--ease), background 180ms var(--ease);
-}
-.mode:hover:not(:disabled) { color: var(--text-2); }
-.mode:disabled { color: var(--text-3); opacity: 0.45; cursor: not-allowed; }
-
-.modeActive {
-  composes: mode;
-  color: var(--vibe-accent, var(--accent));
-  background: color-mix(in oklab, var(--vibe-accent, var(--accent)) 14%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--vibe-accent, var(--accent)) 32%, transparent);
 }
 
 @media (max-width: 640px) {
-  .modeToggle { position: static; transform: none; margin-left: 6px; }
+  .modeAnchor { position: static; transform: none; margin-left: 6px; }
   .controls { flex-wrap: wrap; row-gap: var(--sp-3); }
 }

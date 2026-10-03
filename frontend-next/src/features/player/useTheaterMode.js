@@ -11,11 +11,15 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  *                 video mode. Switching to audio therefore drops the layout
  *                 but REMEMBERS the choice; switching back restores it.
  *
- * The viewport guard is NOT here. Below 1024px the stage is already one
- * column and theater means nothing, so that is handled entirely in CSS media
- * queries (and the control is display:none there). Doing it with matchMedia
- * would add a resize subscription that re-renders the player tree for a
- * decision CSS makes for free.
+ * The viewport guard IS here, and it did not used to be.
+ *
+ * While theater was only a restyle, CSS media queries covered it for free and
+ * a matchMedia subscription would have been dead weight. Now theater also
+ * SWAPS THE DOM — the meta column is replaced by TheaterBar — and CSS cannot
+ * undo that. Below 1024px the control is display:none, so a user who had
+ * theater on, narrowed the window and lost the mood slider would have had no
+ * way to get it back. The guard is a `change` listener on one media query, so
+ * it fires on crossing the breakpoint and not on every resize tick.
  *
  * `morphing` is a transient flag that drives the settle animation. The layout
  * itself flips in one discrete step — see PlayerPage.module.css for why
@@ -23,6 +27,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  */
 
 const STORAGE_KEY = 'vs.player.theater';
+
+/** Must match the @media gates in PlayerPage/ArtStage.module.css. */
+const WIDE = '(min-width: 1024px)';
 
 /** Must outlast the settle keyframe (--dur-slow, 420ms). */
 const MORPH_MS = 460;
@@ -35,12 +42,34 @@ function load() {
   }
 }
 
+/** True while the viewport is wide enough for theater to mean anything. */
+function useWideViewport() {
+  const [wide, setWide] = useState(
+    () => (typeof window !== 'undefined' && window.matchMedia
+      ? window.matchMedia(WIDE).matches
+      : true),
+  );
+
+  useEffect(() => {
+    const mq = window.matchMedia(WIDE);
+    const onChange = (e) => setWide(e.matches);
+    // Re-read once: the breakpoint can be crossed between first render and
+    // this effect (and StrictMode's double-mount makes that observable).
+    setWide(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  return wide;
+}
+
 export default function useTheaterMode(available) {
   const [preferred, setPreferred] = useState(load);
   const [morphing, setMorphing] = useState(false);
   const timerRef = useRef(0);
+  const wide = useWideViewport();
 
-  const theater = !!available && preferred;
+  const theater = !!available && wide && preferred;
 
   // Persisted in an effect rather than inside the state updater: StrictMode
   // double-invokes updaters, and an updater that writes to storage is a side

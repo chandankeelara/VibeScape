@@ -130,16 +130,27 @@ layout but keeps the preference.
   The video widens by absorbing the **meta column**: the stage goes from
   `[64px | 1.05fr | 1fr]` to `[64px | 1fr]`, and track meta + transport + mood
   slider drop to row 2 under the video.
-- **The stage column scrolls, deliberately.** A 16:9 card worth the toggle is
-  350-540px tall and the meta row is another ~430-520px, which exceeds the
-  stage's 560-920px. Sizing the video to the leftover space would make theater
-  *narrower* than the square art card it replaces. The scroller is the stage,
-  not the shell — scrolling the shell would drag the queue rail off screen,
-  and `.sidebar`'s `max-height: min(<budget>, 100%)` only resolves because
-  `.shell` keeps a definite 100dvh height.
-- `--theater-h` (tokens.css) is the single tuning knob: video width is
-  `min(100%, --theater-h * 16/9)`. At 50dvh the card is ~1.6-1.9x the width of
-  the square it replaces (2.4-3.4x the picture area).
+- **The meta column is replaced, not re-flowed.** `TheaterBar.jsx` is one
+  ~55px strip: title + `artist · album` on the left, `TransportButtons` +
+  `ModeToggle` on the right. No mood slider, no vibe meter, no chips, no
+  second progress bar (the YouTube iframe carries its own, a few pixels up).
+  `TrackMeta`, `Transport` and `MoodSlider` are untouched and still own
+  normal mode.
+- **Shared controls, never copied.** `TransportButtons.jsx` (a fragment, so
+  the caller's flex row keeps owning the gap) and `ModeToggle.jsx` were
+  lifted out of `Transport.jsx`. Transport now places the pill with its own
+  `.modeAnchor`; the theater bar just drops it in a row.
+- **The stage no longer scrolls**, at 1280x700, 1440x900 or 1920x1080 — the
+  strip gave back the 180-230px the full meta column cost. `overflow-y: auto`
+  stays as a safety valve, with `scrollbar-gutter: stable` so a few pixels of
+  overflow cannot start a scrollbar/width/height oscillation.
+- `--theater-h` (tokens.css) is now mostly a **safety cap**: at 72dvh the
+  video is limited by the column's width at every size checked. The card is
+  ~2.0-2.7x the width of the square it replaces, 4.0-7.1x the picture area.
+- **The viewport gate moved into JS.** Theater now swaps the DOM, and CSS
+  cannot undo that, so `useTheaterMode` carries a `matchMedia('(min-width:
+  1024px)')` listener. Without it, narrowing the window with theater on would
+  hide the mood slider with no visible control to bring it back.
 - **Theater and detach are mutually exclusive**, enforced in both directions:
   entering theater calls `dock()`, and `useVideoFrame`'s new `onDetach` hook
   exits theater. An `ArtStage` effect re-asserts the invariant for storage

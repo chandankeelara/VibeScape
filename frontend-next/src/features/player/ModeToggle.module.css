@@ -1,0 +1,47 @@
+/**
+ * The audio/video radio pill. Moved verbatim out of Transport.module.css
+ * (legacy .mode-toggle / .mode-btn, frontend/style.css:1608-1681) when theater
+ * mode needed the same control in a second place.
+ *
+ * Only the PILL lives here. Where it sits is the caller's business and comes
+ * in through `className` — Transport pins it to the right edge of .controls,
+ * the theater bar just drops it in a flex row.
+ */
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in oklab, var(--surface) 82%, transparent);
+  border: 1px solid var(--border-strong);
+  backdrop-filter: blur(6px);
+  gap: 0;
+}
+
+.mode {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
+  border-radius: var(--radius-pill);
+  transition: color 180ms var(--ease), background 180ms var(--ease);
+}
+.mode:hover:not(:disabled) { color: var(--text-2); }
+.mode:disabled { color: var(--text-3); opacity: 0.45; cursor: not-allowed; }
+
+.modeActive {
+  composes: mode;
+  color: var(--vibe-accent, var(--accent));
+  background: color-mix(in oklab, var(--vibe-accent, var(--accent)) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--vibe-accent, var(--accent)) 32%, transparent);
+}
