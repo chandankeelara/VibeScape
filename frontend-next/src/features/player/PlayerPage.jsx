@@ -12,6 +12,8 @@ import MoodSlider from './MoodSlider';
 import RecentTrail from './RecentTrail';
 import useKeyboardShortcuts from './useKeyboardShortcuts';
 import useTheaterMode from './useTheaterMode';
+import usePictureInPicture from './usePictureInPicture';
+import MiniPlayer from './MiniPlayer';
 import BitDock from './bit/BitDock';
 import styles from './PlayerPage.module.css';
 
@@ -41,6 +43,19 @@ function PlayerStage() {
    */
   const { theater, canTheater, morphing, toggleTheater, exitTheater } =
     useTheaterMode(mode === 'video');
+
+  /*
+   * The miniplayer window lives here for the same reason theater does: it is
+   * an app-level surface, the control that opens it sits two components down,
+   * and the thing it renders (MiniPlayer) has to be a child of the player
+   * tree so it shares PlayerContext. Owning it here keeps ONE window and ONE
+   * source of truth; a hook instance per button would mean two.
+   *
+   * `pipSupported` is false on Firefox, Safari and every mobile browser, and
+   * the control is then not rendered at all.
+   */
+  const { supported: pipSupported, pipWindow, toggle: togglePip } = usePictureInPicture();
+  const pipProps = { pipSupported, pipOpen: !!pipWindow, onTogglePip: togglePip };
 
   useKeyboardShortcuts({
     onToggleMetrics: () => setMetricsOpen((v) => !v),
@@ -99,12 +114,13 @@ function PlayerStage() {
             className={styles.barSlot}
             theater={theater}
             onToggleTheater={toggleTheater}
+            {...pipProps}
           />
         ) : (
           <div className={styles.metaCol}>
             <TrackMeta onShowMetrics={() => setMetricsOpen(true)} />
             <hr className={styles.divider} aria-hidden="true" />
-            <Transport />
+            <Transport {...pipProps} />
             <MoodSlider />
           </div>
         )}
@@ -119,6 +135,11 @@ function PlayerStage() {
       <BitDock theater={theater} />
 
       <SyncPill onOpen={() => setSyncOpen(true)} />
+
+      {/* Portals into the PiP window's document. Rendered only while that
+          window exists, so closing it (by the user, by the browser, or by the
+          toggle) unmounts the portal — there is nothing left to dangle. */}
+      {pipWindow && <MiniPlayer pipWindow={pipWindow} />}
 
       <LazyPanels
         metricsOpen={metricsOpen}

@@ -1,0 +1,55 @@
+/**
+ * The shared shape for a square player-chrome button.
+ *
+ * `.topbarBtn` in ArtStage.module.css already established the pattern for the
+ * video topbar's buttons; this is the same idea one level up, for the 44px
+ * controls that sit in the player's own bars (theater toggle, miniplayer
+ * toggle). Composers add only their icon rules.
+ *
+ * Sized for the hand, not for a chrome strip: --hit-min square, so it clears
+ * the 44px target in BOTH axes rather than only the convenient one.
+ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--hit-min);
+  height: var(--hit-min);
+  flex-shrink: 0;
+
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--scrim-soft);
+  color: var(--text-2);
+  cursor: pointer;
+
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease),
+              border-color var(--dur) var(--ease), transform 120ms var(--ease);
+}
+
+.btn:hover {
+  color: var(--text);
+  background: var(--scrim);
+  border-color: var(--border-strong);
+}
+
+.btn:active { transform: scale(0.94); }
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* On. Accent-tinted so the way OUT of the mode is legible at a glance rather
+   than looking like one more piece of chrome. */
+.btn[aria-pressed='true'] {
+  color: var(--vibe-accent, var(--accent));
+  border-color: color-mix(in oklab, var(--vibe-accent, var(--accent)) 42%, var(--border-strong));
+  background: color-mix(in oklab, var(--vibe-accent, var(--accent)) 18%, var(--scrim-soft));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn:active { transform: none; }
+}

@@ -106,7 +106,18 @@
   transform: translateY(-50%);
 }
 
+/* The mirror of .modeAnchor, pinned to the LEFT edge, so neither control
+   displaces the centred play button. Both are absolute, so the row's flex
+   centring sees only prev/play/next. */
+.pipAnchor {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
 @media (max-width: 640px) {
   .modeAnchor { position: static; transform: none; margin-left: 6px; }
+  .pipAnchor { position: static; transform: none; margin-right: 6px; }
   .controls { flex-wrap: wrap; row-gap: var(--sp-3); }
 }

@@ -1,0 +1,13 @@
+/**
+ * Miniplayer toggle. Shape comes from the shared chrome button; only the icon
+ * belongs here. See PipToggle.jsx for the placement rules.
+ */
+
+.btn { composes: btn from './chromeButton.module.css'; }
+
+/* Same grammar as TheaterToggle: the outer frame is the screen and never
+   moves, the inner filled block is the content. The block sits in the
+   BOTTOM-RIGHT corner here, which is the universal PiP glyph, so the two
+   controls are distinguishable at 24px despite sharing a frame. */
+.screen { opacity: 0.55; }
+.content { fill: currentColor; }

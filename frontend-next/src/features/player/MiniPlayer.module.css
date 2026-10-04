@@ -1,0 +1,174 @@
+/**
+ * The picture-in-picture miniplayer.
+ *
+ * This stylesheet is loaded into a SEPARATE DOCUMENT (see
+ * usePictureInPicture.js copyStyles). Two consequences shape every rule here:
+ *
+ *  - all the tokens still resolve, because tokens.css rides across with the
+ *    rest of the sheets, and the two runtime accent variables are re-mirrored
+ *    by MiniPlayer.jsx. Nothing may hardcode a colour.
+ *  - every media query in here evaluates against the PiP WINDOW's viewport,
+ *    not the tab's. That is exactly what we want: the window is user-
+ *    resizable to roughly anything, so the layout degrades by dropping parts
+ *    rather than by overflowing.
+ *
+ * The requested size is 400x184, but it is a hint — Chrome clamps it and then
+ * remembers whatever the user dragged it to.
+ */
+
+.mini {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  min-width: 0;
+
+  /* One accent event for the window, as a wash behind everything — never
+     under text, so the accent's variable contrast on --bg cannot matter. */
+  background:
+    radial-gradient(
+      120% 150% at 0% 0%,
+      color-mix(in oklab, var(--vibe-accent, var(--accent)) 16%, transparent),
+      transparent 62%
+    ),
+    var(--bg);
+}
+
+/* ------------------------------------------------------------------- art */
+
+.art {
+  /* Percentage of the flex container's content box, capped so a tall window
+     does not turn into a poster. */
+  height: min(100%, 124px);
+  aspect-ratio: 1 / 1;
+  flex: 0 0 auto;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.artImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.artEmpty { color: var(--text-4); }
+
+/* ------------------------------------------------------------------ body */
+
+.body {
+  flex: 1 1 auto;
+  /* Without this the flex item refuses to shrink past its content and the
+     ellipsis below never engages. */
+  min-width: 0;
+
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--sp-2);
+}
+
+.text { min-width: 0; }
+
+.title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.artist {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ------------------------------------------------------- readout + controls */
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+/* The accent lands on a 2px RULE, not on the digits — a non-text mark, which
+   is the only place the raw accent is safe given how far its contrast on --bg
+   swings across the vibe range. */
+.vibe {
+  margin: 0;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding-left: var(--sp-2);
+  border-left: 2px solid var(--vibe-accent, var(--accent));
+  font-family: var(--mono);
+  line-height: 1.2;
+}
+
+.vibeNum {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.vibeMood {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
+  color: var(--text-3);
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+}
+
+/* Says why there is no picture here in video mode, so an empty-looking
+   miniplayer does not read as a broken one. */
+.note {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--text-4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------------------------------------------------------- degrade, don't
+   overflow. Thresholds are on the PiP window's own viewport. */
+
+/* Too narrow for art and a transport side by side — the transport wins. */
+@media (max-width: 320px) {
+  .art { display: none; }
+}
+
+/* Too short for a third line. */
+@media (max-height: 150px) {
+  .note { display: none; }
+  .artist { display: none; }
+}

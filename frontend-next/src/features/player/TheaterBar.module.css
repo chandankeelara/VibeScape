@@ -99,6 +99,10 @@
    mode pill and the theater button do not read as one widget. */
 .theaterSlot { margin-left: var(--sp-1); }
 
+/* The two square chrome buttons sit together at the end, tighter to each
+   other than to the pill, so they read as one pair of view controls. */
+.pipSlot { margin-left: var(--sp-1); }
+
 /* The pill sits inline here — no absolute anchor, unlike Transport's
    .modeAnchor, which exists only to keep that layout's play button optically
    centred. Same component, different placement. */

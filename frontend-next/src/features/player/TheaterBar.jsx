@@ -2,6 +2,7 @@ import { usePlayer } from '../../state/PlayerContext';
 import TransportButtons from './TransportButtons';
 import ModeToggle from './ModeToggle';
 import TheaterToggle from './TheaterToggle';
+import PipToggle from './PipToggle';
 import Skeleton from './Skeleton';
 import styles from './TheaterBar.module.css';
 
@@ -34,7 +35,14 @@ import styles from './TheaterBar.module.css';
  * singles vs the album cut) and it costs nothing — it shares one line and is
  * the first thing to be ellipsed.
  */
-export default function TheaterBar({ className = '', theater, onToggleTheater }) {
+export default function TheaterBar({
+  className = '',
+  theater,
+  onToggleTheater,
+  pipSupported = false,
+  pipOpen = false,
+  onTogglePip,
+}) {
   const { current, loadingTrack } = usePlayer();
 
   return (
@@ -65,6 +73,13 @@ export default function TheaterBar({ className = '', theater, onToggleTheater })
       <div className={styles.controls}>
         <TransportButtons compact />
         <ModeToggle className={styles.modeSlot} />
+        {/* Theater replaces the whole meta column, so the miniplayer toggle
+            has to come with it or the control vanishes in the one mode where
+            the user is most likely to tab away. Same cluster, immediately
+            before theater's exit. */}
+        {pipSupported && (
+          <PipToggle open={pipOpen} onToggle={onTogglePip} className={styles.pipSlot} />
+        )}
         {/*
           * Theater's EXIT lives here, at the bottom-right of the video region,
           * roughly where its entrance was on the card above. It does not need

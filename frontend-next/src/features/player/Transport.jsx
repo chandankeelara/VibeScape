@@ -3,6 +3,7 @@ import { usePlayer, usePlaybackTime } from '../../state/PlayerContext';
 import { fmtTime } from '../../lib/vibe';
 import TransportButtons from './TransportButtons';
 import ModeToggle from './ModeToggle';
+import PipToggle from './PipToggle';
 import styles from './Transport.module.css';
 
 /**
@@ -69,7 +70,7 @@ function ProgressBar() {
   );
 }
 
-export default function Transport() {
+export default function Transport({ pipSupported = false, pipOpen = false, onTogglePip }) {
   return (
     <section className={styles.transport}>
       <ProgressBar />
@@ -79,6 +80,22 @@ export default function Transport() {
           a fragment, so .controls is still their direct flex parent and still
           owns the gap between them, exactly as when they were inline here. */}
       <div className={styles.controls}>
+        {/*
+          * The miniplayer toggle MIRRORS the mode pill: pinned to the opposite
+          * edge of the same row, so the play button stays optically centred
+          * and the row keeps one rule — transport in the middle, a mode
+          * control at each end.
+          *
+          * It is in this row rather than in the video chrome because it works
+          * in BOTH modes, and the video chrome is not on screen in audio mode
+          * — which is the mode it matters most in. It comes FIRST in the DOM
+          * so tab order runs left to right across the row it renders as.
+          *
+          * Omitted outright where Document PiP is unavailable.
+          */}
+        {pipSupported && (
+          <PipToggle open={pipOpen} onToggle={onTogglePip} className={styles.pipAnchor} />
+        )}
         <TransportButtons />
         <ModeToggle className={styles.modeAnchor} />
       </div>

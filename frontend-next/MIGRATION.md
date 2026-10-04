@@ -171,6 +171,57 @@ layout but keeps the preference.
   because a transformed ancestor would become the containing block for the
   `position: fixed` frame the user is dragging.
 
+## Picture-in-picture miniplayer (Document PiP)
+
+A Spotify-style always-on-top miniplayer. New
+`usePictureInPicture.js`, `MiniPlayer.{jsx,module.css}`,
+`PipToggle.{jsx,module.css}`, `chromeButton.module.css`.
+
+- **`window.documentPictureInPicture.requestWindow()`**, not the `<video>` PiP
+  API — it returns a real window whose document we populate, which is the only
+  way to get our own artwork, metadata and transport into it.
+- **Chrome / Edge only.** `PIP_SUPPORTED` is a module-scope feature detection
+  and the control is NOT RENDERED where it is false (Firefox, Safari, every
+  mobile browser). No dead button ships.
+- **Both audio and video mode, with artwork in both.** The YouTube iframe
+  cannot come with us: moving a node into the PiP window reparents it, and
+  reparenting an iframe reloads it. In video mode the video keeps playing in
+  the tab and the window carries art + metadata + transport, with one mono
+  line saying so. YouTube's own context menu still offers real video PiP.
+- **Styles are copied, not inherited.** A PiP window is a separate document
+  with an empty stylesheet set. `copyStyles()` serialises every same-origin
+  sheet rule-by-rule into a `<style>` and re-`<link>`s cross-origin ones by
+  href (the Google Fonts sheet throws on `.cssRules`). Hashed CSS-Module class
+  names keep working once the sheets are there. Constructed
+  `adoptedStyleSheets` are rebuilt with the PiP realm's own `CSSStyleSheet` —
+  nothing uses them today, it is there so a future runtime cannot ship an
+  unstyled window.
+- **The two runtime accent vars are mirrored separately.** `applyAccent()`
+  writes `--vibe-accent` / `--vibe-accent-2` as INLINE STYLE on the main
+  `<html>`, which is in no stylesheet. `MiniPlayer` re-reads them from that
+  inline style on every `vibe` change. `--art-glow-alpha` is deliberately not
+  mirrored (60fps, nothing in the window reads it).
+- **One player, two views.** `MiniPlayer` `createPortal`s into
+  `pipWindow.document.body` and calls the same `usePlayer()` and the same
+  `TransportButtons`. React attaches its listener set to a portal CONTAINER
+  (`preparePortalMount`), so clicks in the other document still reach the
+  synthetic event system — which is why this is a portal and not a second
+  `createRoot` (that would give the window its own copy of every provider).
+  Telemetry is unchanged by construction: a skip from the miniplayer *is*
+  `PlayerContext.next()`, with the same `source` and `reason`.
+- **Where the control lives.** `Transport`'s control row, absolutely pinned to
+  the LEFT edge as the mirror of `.modeAnchor`'s pill on the right, so the play
+  button stays optically centred. In theater the meta column is gone, so it
+  moves into `TheaterBar`'s cluster beside the theater toggle. It is in the
+  transport row rather than the video chrome because it works in audio mode
+  too — the mode it matters most in.
+- `chromeButton.module.css` now holds the 44px square chrome-button shape;
+  `TheaterToggle` and `PipToggle` both `composes` it.
+- **Cleanup has one path.** A `pagehide` listener (`{ once: true }`) on the PiP
+  window covers the user closing it, the browser reclaiming it, and our own
+  `close()`. It nulls the ref and the state, the portal unmounts, nothing
+  dangles. Unmounting the player closes the window.
+
 ## Gotchas discovered during the port
 
 **`trackKey()` must stay spotify_id-first.** `_resolve_anchor`
@@ -207,6 +258,9 @@ so nothing breaks at import time — it 404s.
   for either. The client sends them per the contract, but nothing stores them
   today — which means a `vibe` sample still cannot be told apart from the
   recommender's own echo on the server side.
+- **The miniplayer has no keyboard shortcuts.** `useKeyboardShortcuts` binds
+  to the main document, so space/arrows inside the PiP window do nothing but
+  move focus. The buttons themselves are tab-reachable with visible focus.
 - `source` has no vocabulary for a recent-trail rewind or a mood-grid pick;
   both are logged as `'search'`.
 - `duration_ms` is the duration of *what played*, so a 30s preview reports
