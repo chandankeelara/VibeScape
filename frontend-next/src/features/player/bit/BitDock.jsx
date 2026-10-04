@@ -40,7 +40,7 @@ function BitDockInner() {
 
   return (
     <div
-      className={styles.dock}
+      className={`${styles.dock} ${mode === 'video' ? styles.dockVideo : ''}`}
       style={{ '--beat': `${beat}s` }}
       data-state={state}
       // Purely decorative: every state it reflects is already announced by a

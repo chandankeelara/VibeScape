@@ -69,6 +69,30 @@
   transform: translateX(-50%);
 }
 
+/*
+ * Video mode moves him out of the way, to the bottom right.
+ *
+ * Centred, he stands directly under the video — the one thing the user is
+ * actually looking at — and a dancing mascot beneath a playing video competes
+ * with it. Off to the right he is still present and still grooving, just no
+ * longer in the middle of the picture.
+ *
+ * Only the anchor moves. The dock keeps its full width and its headroom,
+ * because that transparent upper region is where a thrown record or a jump
+ * travels; shrinking the box to a corner would clip those animations.
+ *
+ * Not applied below 640px — the queue sheet's FAB owns that corner on a
+ * phone, and the dock is display:none there anyway.
+ */
+@media (min-width: 641px) {
+  .dockVideo .spot {
+    left: auto;
+    right: var(--sp-5);
+    transform: none;
+    transition: right var(--dur-slow) var(--ease-out);
+  }
+}
+
 .rig {
   display: block;
   /*
