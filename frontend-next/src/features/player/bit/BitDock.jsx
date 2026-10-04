@@ -22,7 +22,7 @@ import styles from './BitDock.module.css';
  * taking props. usePlaybackTime() ticks ~4x/second; if Bit's state lived in
  * PlayerPage, every one of those ticks would re-render the whole stage.
  */
-function BitDockInner() {
+function BitDockInner({ theater }) {
   const { current, playing, loadingTrack, verifying, mode, source, vibe } = usePlayer();
 
   const { state, animKey, prop, beat, fire } = useBitState({
@@ -40,7 +40,7 @@ function BitDockInner() {
 
   return (
     <div
-      className={`${styles.dock} ${mode === 'video' ? styles.dockVideo : ''}`}
+      className={`${styles.dock} ${theater ? styles.dockTheater : ''}`}
       style={{ '--beat': `${beat}s` }}
       data-state={state}
       // Purely decorative: every state it reflects is already announced by a
@@ -138,10 +138,21 @@ class BitBoundary extends Component {
   }
 }
 
-export default function BitDock() {
+/**
+ * `theater` is the one prop this component takes, and it is deliberate.
+ *
+ * The note above about staying a leaf is about Bit's STATE, which ticks
+ * several times a second and would re-render the stage if it lived in
+ * PlayerPage. A boolean that changes only when the user clicks the theater
+ * toggle costs nothing. It cannot come from context — theater is layout
+ * state owned by PlayerPage — and it cannot come from CSS either, because
+ * the dock is fixed, outside the stage subtree, and CSS Module class names
+ * are hashed so a selector in another file would match nothing.
+ */
+export default function BitDock({ theater = false }) {
   return (
     <BitBoundary>
-      <BitDockInner />
+      <BitDockInner theater={theater} />
     </BitBoundary>
   );
 }
