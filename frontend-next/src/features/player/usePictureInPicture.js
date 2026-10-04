@@ -50,13 +50,16 @@ import { useToast } from '../../state/ToastContext';
  * conditions above are met; we cannot trigger that prompt and cannot observe
  * its answer. Any "check the permission first" branch would be fiction.
  *
- * So consent is a CHAIN, and the user is told so:
- *   1. We ask, in our own UI, once — at the first moment the question makes
- *      sense (they switched away while something was playing). Until they say
- *      yes the handler is NOT registered, so the page is not even eligible and
- *      Chrome never prompts.
- *   2. Chrome then asks its own question the first time it would fire.
- * Declining either one leaves the explicit button working exactly as before.
+ * So we do NOT ask a question of our own. We tried that, and it was a prompt
+ * in front of a prompt: the handler was registered only after the user
+ * accepted our toast, which meant anyone who missed it never became eligible,
+ * so Chrome never asked, so the feature silently never worked.
+ *
+ * The handler is registered by default. Chrome's own dialog is the real
+ * consent — it is contextual, it appears at the moment the behaviour first
+ * happens, and "every time" makes it permanent. Closing an auto-opened window
+ * while the tab is still hidden is the off switch, and the explicit button
+ * both opens the window and re-arms the automatic behaviour.
  */
 
 /* Evaluated once at module scope: the capability cannot appear mid-session,
@@ -184,7 +187,6 @@ export default function usePictureInPicture() {
   /* Work that can only happen with the tab in front of the user: a toast
      nobody would see otherwise, and the one-time consent question. */
   const noticeRef = useRef(null);
-  const pendingAskRef = useRef(false);
 
   // Same shape useTheaterMode uses for `theater`: a mirror written during
   // render so the imperative paths below read the live value without
@@ -297,27 +299,6 @@ export default function usePictureInPicture() {
     );
   }, [toast]);
 
-  /**
-   * The one-time question, asked on RETURN to the tab.
-   *
-   * It cannot be asked at the honest moment — the user is gone by then — so
-   * the trigger is "they left while something was playing" and the question
-   * lands when they come back, with the thing that just happened still fresh.
-   * Never on page load: nobody has context for it before they have played
-   * anything.
-   *
-   * The answer is recorded as OFF *before* the toast goes up, so letting it
-   * time out is a "no" that sticks across sessions. Asked once, ever. Missing
-   * it costs nothing permanent: the button arms the same preference.
-   */
-  const ask = useCallback(() => {
-    setAutoPref(OFF);
-    toast(
-      'Keep a small player on top when you switch tabs?',
-      'info',
-      { duration: 14000, action: { label: 'Turn on', onClick: enableAuto } },
-    );
-  }, [toast, enableAuto]);
 
   /* ------------------------------------------------------------- the action */
 
@@ -346,7 +327,21 @@ export default function usePictureInPicture() {
    * off must stop being eligible, not merely have the callback ignored.
    */
   useEffect(() => {
-    if (!PIP_SUPPORTED || autoPref !== ON) {
+    /*
+     * UNASKED counts as ON. We no longer ask our own question first.
+     *
+     * Registering the handler is what makes the page ELIGIBLE, and
+     * eligibility is the ONLY thing that can make Chrome show its own
+     * "every time / only this time / never" dialog. Gating registration
+     * behind a prompt of ours meant a user who missed that toast never
+     * became eligible, so Chrome never asked, so the feature silently never
+     * worked — which is exactly what happened.
+     *
+     * Chrome's dialog is the one that actually governs this behaviour and it
+     * is already permanent on "every time", so ours was a prompt in front of
+     * a prompt. Only an explicit OFF unregisters now.
+     */
+    if (!PIP_SUPPORTED || autoPref === OFF) {
       player.setPipHandler(null);
       return undefined;
     }
@@ -361,11 +356,8 @@ export default function usePictureInPicture() {
 
     const onVis = () => {
       if (document.visibilityState === 'hidden') {
-        // The honest trigger for the one-time question: they just walked away
-        // from something that was playing.
-        if (autoRef.current === UNASKED && player.getState().playing) {
-          pendingAskRef.current = true;
-        }
+        // No question of ours any more — the handler is already registered,
+        // so Chrome asks its own at the moment it first auto-opens.
         return;
       }
 
@@ -387,15 +379,11 @@ export default function usePictureInPicture() {
         noticeRef.current = null;
         toast(notice.msg, notice.kind);
       }
-      if (pendingAskRef.current) {
-        pendingAskRef.current = false;
-        ask();
-      }
     };
 
     document.addEventListener('visibilitychange', onVis);
     return () => document.removeEventListener('visibilitychange', onVis);
-  }, [close, toast, ask]);
+  }, [close, toast]);
 
   /* ------------------------------------------------------------- the button */
 
