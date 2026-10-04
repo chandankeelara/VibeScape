@@ -70,7 +70,12 @@ function ProgressBar() {
   );
 }
 
-export default function Transport({ pipSupported = false, pipOpen = false, onTogglePip }) {
+export default function Transport({
+  pipSupported = false,
+  pipOpen = false,
+  pipAuto = false,
+  onTogglePip,
+}) {
   return (
     <section className={styles.transport}>
       <ProgressBar />
@@ -94,7 +99,12 @@ export default function Transport({ pipSupported = false, pipOpen = false, onTog
           * Omitted outright where Document PiP is unavailable.
           */}
         {pipSupported && (
-          <PipToggle open={pipOpen} onToggle={onTogglePip} className={styles.pipAnchor} />
+          <PipToggle
+            open={pipOpen}
+            auto={pipAuto}
+            onToggle={onTogglePip}
+            className={styles.pipAnchor}
+          />
         )}
         <TransportButtons />
         <ModeToggle className={styles.modeAnchor} />

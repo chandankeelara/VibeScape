@@ -54,8 +54,13 @@ function PlayerStage() {
    * `pipSupported` is false on Firefox, Safari and every mobile browser, and
    * the control is then not rendered at all.
    */
-  const { supported: pipSupported, pipWindow, toggle: togglePip } = usePictureInPicture();
-  const pipProps = { pipSupported, pipOpen: !!pipWindow, onTogglePip: togglePip };
+  const {
+    supported: pipSupported,
+    pipWindow,
+    autoEnabled: pipAuto,
+    toggle: togglePip,
+  } = usePictureInPicture();
+  const pipProps = { pipSupported, pipOpen: !!pipWindow, pipAuto, onTogglePip: togglePip };
 
   useKeyboardShortcuts({
     onToggleMetrics: () => setMetricsOpen((v) => !v),

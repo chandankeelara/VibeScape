@@ -222,6 +222,70 @@ A Spotify-style always-on-top miniplayer. New
   `close()`. It nulls the ref and the state, the portal unmounts, nothing
   dangles. Unmounting the player closes the window.
 
+### Automatic opening (Chrome auto-PiP)
+
+`requestWindow()` needs transient user activation, so a `visibilitychange`
+handler cannot call it. The only sanctioned path is a media-session action
+handler for `'enterpictureinpicture'`, which Chrome invokes WITH activation
+when the tab is occluded. Registered in `media/player.js` alongside the
+existing session wiring (there is no second media-session system), through a
+dedicated `setPipHandler()` rather than `setHooks` — because registering the
+action is itself what makes the page eligible, so it must be unregisterable.
+
+**Verified gating** (published eligibility list, media-playback path, Chrome
+134+): safe top-frame URL, media in the TOP FRAME, audible within the last two
+seconds, holds audio focus, is playing, the handler is registered, and the
+user's Media Engagement Index threshold is exceeded unless they explicitly
+allowed it. **No installed-PWA requirement** — the manifest is irrelevant here.
+(The Chrome 120 path is for `getUserMedia` capture apps and does not apply.)
+
+**The permission cannot be requested or read from JS.** "Automatic
+picture-in-picture" is a Chrome CONTENT SETTING, absent from Chromium's
+`permission_descriptor.idl`, so `navigator.permissions.query()` cannot read it
+and there is no `requestPermission()`. Chrome asks contextually the first time
+the conditions are met; we can neither trigger that prompt nor observe its
+answer.
+
+So consent is a two-link chain, and the UI says so:
+
+1. **We ask once, in our own UI**, triggered by the first `visibilitychange ->
+   hidden` while something is PLAYING, and shown when the user returns (the
+   question cannot be asked of a hidden tab). Never on load. The answer is
+   written as "off" BEFORE the toast goes up, so letting it time out is a no
+   that sticks across sessions. Until the answer is yes the handler is not
+   registered, the page is not eligible, and Chrome never prompts.
+2. **Chrome then asks its own question** the first time it would fire. The
+   success toast tells the user to expect it.
+
+- **Auto-opened vs user-opened** comes from the platform:
+  `enterPictureInPictureReason` is `'contentoccluded'` for a tab switch and
+  `'useraction'` for a browser-provided PiP control. Returning to the tab
+  closes ONLY an auto-opened window; one opened with the button is the user's
+  and is left alone. A `'useraction'` request is honoured even with automatic
+  opening switched off.
+- **The off switch** is closing the auto-opened window from its own close
+  button while the tab is still hidden — the one unambiguous rejection, made
+  while looking straight at the thing being rejected. Guarded by a 1200ms
+  re-check that the tab is still hidden, because Chrome closes the window
+  itself on return and the `pagehide`/`visibilitychange` ordering is not
+  something we can rely on. A deferred toast explains it on return.
+- **Re-arming** is pressing the miniplayer button, which opens the window AND
+  turns automatic opening back on, announced by a toast. That is also the way
+  in for anyone who missed the one-time prompt.
+- **A refused `requestWindow()` now toasts** (`refusalMessage()`), on the
+  deliberate path only — nobody is looking at the tab on the automatic path,
+  and Chrome declining to auto-open is routine. The first pass only logged a
+  console warning, so a click did visibly nothing.
+- `aria-pressed` on the toggle tracks the WINDOW, not the preference: with
+  auto on, the window exists only while the user is looking elsewhere, so an
+  auto-tracking pressed state would read true exactly when nobody can see it.
+  The preference lives in the tooltip and in the toasts.
+- **Video mode may not qualify.** Auto-PiP wants the media in the top frame,
+  audible in the last two seconds. In video mode the media is a cross-origin
+  YouTube iframe and our top-frame element is the silent session anchor, so
+  Chrome may never fire the action there. Unverified. Audio mode is the
+  designed case and the button works in both regardless.
+
 ## Gotchas discovered during the port
 
 **`trackKey()` must stay spotify_id-first.** `_resolve_anchor`

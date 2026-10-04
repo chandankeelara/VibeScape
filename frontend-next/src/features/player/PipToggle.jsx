@@ -21,7 +21,23 @@ import styles from './PipToggle.module.css';
  * Stateless and context-free, like TheaterToggle — the owner of the window
  * (PlayerPage -> usePictureInPicture) owns the state, and this is the handle.
  */
-export default function PipToggle({ open, onToggle, className = '' }) {
+export default function PipToggle({ open, auto = false, onToggle, className = '' }) {
+  /*
+   * `aria-pressed` tracks the WINDOW, not the automatic-open preference.
+   *
+   * The two could not share one indicator: with auto on, the window exists
+   * only while the user is looking at another tab, so an auto-tracking
+   * pressed state would read `true` at the exact moments nobody can see it and
+   * `false` whenever they can. The preference is carried by the tooltip, where
+   * it can be stated in words, and by the toast that announces every change
+   * to it.
+   */
+  const title = open
+    ? 'Close miniplayer'
+    : auto
+      ? 'Miniplayer — opens by itself when you switch tabs'
+      : 'Miniplayer — opens now, and when you switch tabs';
+
   return (
     <button
       className={`${styles.btn} ${className}`}
@@ -29,7 +45,7 @@ export default function PipToggle({ open, onToggle, className = '' }) {
       onClick={onToggle}
       aria-pressed={open}
       aria-label={open ? 'Close miniplayer' : 'Open miniplayer'}
-      title={open ? 'Close miniplayer' : 'Miniplayer — keep controls on top of other windows'}
+      title={title}
     >
       <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
         <rect

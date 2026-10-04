@@ -41,6 +41,7 @@ export default function TheaterBar({
   onToggleTheater,
   pipSupported = false,
   pipOpen = false,
+  pipAuto = false,
   onTogglePip,
 }) {
   const { current, loadingTrack } = usePlayer();
@@ -78,7 +79,12 @@ export default function TheaterBar({
             the user is most likely to tab away. Same cluster, immediately
             before theater's exit. */}
         {pipSupported && (
-          <PipToggle open={pipOpen} onToggle={onTogglePip} className={styles.pipSlot} />
+          <PipToggle
+            open={pipOpen}
+            auto={pipAuto}
+            onToggle={onTogglePip}
+            className={styles.pipSlot}
+          />
         )}
         {/*
           * Theater's EXIT lives here, at the bottom-right of the video region,

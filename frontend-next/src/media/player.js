@@ -43,6 +43,27 @@ let hooks = {
 };
 export const setHooks = (h) => { hooks = { ...hooks, ...h }; };
 
+/*
+ * Chrome's automatic picture-in-picture entry point.
+ *
+ * Kept OUT of `hooks` deliberately. Every other hook is set once by
+ * PlayerContext in a single setHooks() call; this one is registered and
+ * UNREGISTERED by the feature that owns the miniplayer window, because
+ * registering the 'enterpictureinpicture' media-session action is itself what
+ * makes the page eligible for auto-PiP (and what can make Chrome prompt for
+ * the "automatic picture-in-picture" permission). A user who turned the
+ * behaviour off must stop being eligible, not just ignore the callback.
+ *
+ * Setting it re-applies the handler set immediately, and reassertSession()
+ * re-applies it again after a video starts — YouTube overwrites the media
+ * session when it begins playing, which would otherwise drop this with it.
+ */
+let pipHandler = null;
+export const setPipHandler = (fn) => {
+  pipHandler = typeof fn === 'function' ? fn : null;
+  applySessionHandlers();
+};
+
 function emit() {
   const snapshot = { playing: state.playing, source: state.source, mode: state.mode, track: state.track };
   listeners.forEach((fn) => fn(snapshot));
@@ -518,6 +539,12 @@ function applySessionHandlers() {
   });
   set('seekbackward', (details) => seekBy(-(details?.seekOffset || 10)));
   set('seekforward', (details) => seekBy(details?.seekOffset || 10));
+
+  // Chrome fires this with activation when the tab is occluded (and when the
+  // user hits a browser-provided PiP control), which is the only way to open
+  // a Document PiP window without a click. `null` unregisters, which is how
+  // the app stops being eligible — see setPipHandler above.
+  set('enterpictureinpicture', pipHandler ? (details) => pipHandler(details) : null);
 }
 
 function currentDuration() {
