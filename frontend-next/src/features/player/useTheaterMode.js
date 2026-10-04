@@ -130,5 +130,13 @@ export default function useTheaterMode(available) {
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
-  return { theater, morphing, toggleTheater, exitTheater };
+  /*
+   * `canTheater` is the one place that answers "should the control exist at
+   * all". It used to be a `display: none` media query on the button, which
+   * was fine while the button lived in a strip that was itself free — but the
+   * card chrome now RESERVES HEIGHT for it, so the answer has to be available
+   * to the renderer, not just to the cascade. One source of truth beats a
+   * media query that has to be kept in sync with this hook's gate.
+   */
+  return { theater, canTheater: !!available && wide, morphing, toggleTheater, exitTheater };
 }

@@ -1,0 +1,52 @@
+/**
+ * The theater toggle. One component, two homes — see TheaterToggle.jsx for
+ * why, and ArtStage.module.css `.videoBottombar` for where.
+ *
+ * Sized for the hand, not for a chrome strip: --hit-min square, so it clears
+ * the 44px target both ways rather than only in the axis that happened to be
+ * convenient.
+ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--hit-min);
+  height: var(--hit-min);
+  flex-shrink: 0;
+
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--scrim-soft);
+  color: var(--text-2);
+  cursor: pointer;
+
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease),
+              border-color var(--dur) var(--ease), transform 120ms var(--ease);
+}
+
+.btn:hover {
+  color: var(--text);
+  background: var(--scrim);
+  border-color: var(--border-strong);
+}
+
+.btn:active { transform: scale(0.94); }
+
+/* On. Accent-tinted so the way OUT of the mode is legible at a glance rather
+   than looking like one more piece of chrome. */
+.btn[aria-pressed='true'] {
+  color: var(--vibe-accent, var(--accent));
+  border-color: color-mix(in oklab, var(--vibe-accent, var(--accent)) 42%, var(--border-strong));
+  background: color-mix(in oklab, var(--vibe-accent, var(--accent)) 18%, var(--scrim-soft));
+}
+
+/* The outer frame of the icon is the screen and never changes; the inner
+   block is the content and changes proportion. That contrast IS the icon —
+   if the frame moved too, neither state would read. */
+.screen { opacity: 0.55; }
+.content { fill: currentColor; }
+
+@media (prefers-reduced-motion: reduce) {
+  .btn:active { transform: none; }
+}

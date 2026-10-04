@@ -1,6 +1,7 @@
 import { usePlayer } from '../../state/PlayerContext';
 import TransportButtons from './TransportButtons';
 import ModeToggle from './ModeToggle';
+import TheaterToggle from './TheaterToggle';
 import Skeleton from './Skeleton';
 import styles from './TheaterBar.module.css';
 
@@ -33,7 +34,7 @@ import styles from './TheaterBar.module.css';
  * singles vs the album cut) and it costs nothing — it shares one line and is
  * the first thing to be ellipsed.
  */
-export default function TheaterBar({ className = '' }) {
+export default function TheaterBar({ className = '', theater, onToggleTheater }) {
   const { current, loadingTrack } = usePlayer();
 
   return (
@@ -64,6 +65,18 @@ export default function TheaterBar({ className = '' }) {
       <div className={styles.controls}>
         <TransportButtons compact />
         <ModeToggle className={styles.modeSlot} />
+        {/*
+          * Theater's EXIT lives here, at the bottom-right of the video region,
+          * roughly where its entrance was on the card above. It does not need
+          * ArtStage's dock() guard: that guard exists for ENTERING theater
+          * with a detached frame, and detached cannot be true while theater
+          * is — the two are mutually exclusive by construction.
+          */}
+        <TheaterToggle
+          theater={theater}
+          onToggle={onToggleTheater}
+          className={styles.theaterSlot}
+        />
       </div>
     </section>
   );

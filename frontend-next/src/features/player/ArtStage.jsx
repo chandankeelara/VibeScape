@@ -3,6 +3,7 @@ import { usePlayer, useVerifyCountdown } from '../../state/PlayerContext';
 import { MOUNT_ID, createPlayer } from '../../media/youtube';
 import { classificationLabel } from '../../lib/vibe';
 import useVideoFrame, { RESIZE_DIRS } from './useVideoFrame';
+import TheaterToggle from './TheaterToggle';
 import DjSearching from './DjSearching';
 import styles from './ArtStage.module.css';
 
@@ -39,7 +40,12 @@ function VerifyOverlay({ track }) {
   );
 }
 
-export default function ArtStage({ theater = false, onToggleTheater, onExitTheater }) {
+export default function ArtStage({
+  theater = false,
+  canTheater = false,
+  onToggleTheater,
+  onExitTheater,
+}) {
   const { current, mode, videoState, loadingTrack } = usePlayer();
   const [artLoaded, setArtLoaded] = useState(false);
   const frameRef = useRef(null);
@@ -72,9 +78,27 @@ export default function ArtStage({ theater = false, onToggleTheater, onExitTheat
    * conflict only becomes visible on the first switch to video.
    */
   const onTheaterClick = () => {
+    // Belt and braces. The control is not rendered while detached (see the
+    // strip below), so this branch should be unreachable from the UI — it
+    // stays because it is where the rule is stated.
     if (!theater && detached) dock();
     onToggleTheater?.();
   };
+
+  /*
+   * The in-card chrome strip exists only where it is free and useful:
+   * - `canTheater` covers video mode AND >=1024px, from useTheaterMode. It is
+   *   a prop rather than a media query because the strip RESERVES HEIGHT off
+   *   the player, so a narrow viewport must not reserve it for a control that
+   *   could do nothing. Audio mode still HIDES the control rather than
+   *   disabling it — the whole video stage is not on screen there.
+   * - not in theater, where the card IS 16:9 and a strip would cost ~8% of
+   *   the video's width; there the toggle moves to TheaterBar's control
+   *   cluster, directly beneath the video
+   * - not while detached, where the frame can be dragged smaller than the
+   *   strip is useful in
+   */
+  const showCardChrome = canTheater && !theater && !detached;
 
   useEffect(() => {
     if (theater && detached) onExitTheater?.();
@@ -136,7 +160,7 @@ export default function ArtStage({ theater = false, onToggleTheater, onExitTheat
               same object. Driven by --art-glow-alpha / --vibe-accent. */}
           <div className={styles.videoGlow} aria-hidden="true" />
 
-          <div className={styles.videoInner}>
+          <div className={`${styles.videoInner} ${showCardChrome ? styles.innerChrome : ''}`}>
             {/* The ONLY drag origin. A transparent grab layer over the video
                 would swallow every pointerdown, and a cross-origin iframe can
                 never be handed that click back — so YouTube's own controls
@@ -149,47 +173,6 @@ export default function ArtStage({ theater = false, onToggleTheater, onExitTheat
               <span className={styles.topbarHint}>
                 Drag to move · grab any edge or corner to resize
               </span>
-              {/*
-                * The theater control lives HERE, in the one strip of the
-                * video card we own. YouTube puts it in the player's control
-                * bar; we cannot, because that bar belongs to a cross-origin
-                * iframe and any surface we float over it swallows the
-                * pointerdown we can never hand back (see the comment above).
-                *
-                * It is HIDDEN in audio mode, not disabled. A disabled control
-                * is the right answer when the action exists but is momentarily
-                * unavailable — that is the video radio in Transport with no
-                * youtube_id. Here the control's entire context, the video card
-                * chrome, is absent: there is no audio-mode surface to grey it
-                * out on, and leaving a dead button in the tab order of a
-                * visibility:hidden subtree is worse than not rendering it.
-                * It is also display:none below 1024px, where the stage is
-                * already one column and theater means nothing.
-                */}
-              {mode === 'video' && (
-                <button
-                  className={styles.theaterBtn}
-                  type="button"
-                  onClick={onTheaterClick}
-                  aria-pressed={theater}
-                  aria-label={theater ? 'Exit theater mode' : 'Theater mode'}
-                  title={theater ? 'Default view' : 'Theater mode'}
-                >
-                  {/* Both icons show the DESTINATION, the same grammar the
-                      dock button uses: a wide short card to go wide, a
-                      compact one to come back. */}
-                  {theater ? (
-                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
-                      <rect x="5" y="5" width="14" height="14" rx="2" />
-                    </svg>
-                  ) : (
-                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
-                      <rect x="2" y="7" width="20" height="10" rx="2" />
-                    </svg>
-                  )}
-                </button>
-              )}
-
               {detached && (
                 <button
                   className={styles.dockBtn}
@@ -231,6 +214,39 @@ export default function ArtStage({ theater = false, onToggleTheater, onExitTheat
                 NotFoundError. */}
             <div id={MOUNT_ID} className={styles.ytMount} />
 
+            {/*
+              * Card chrome, BELOW the player surface — never over it.
+              *
+              * The user asked for the theater button bottom-right, like
+              * YouTube's. Bottom-right of the player surface is exactly where
+              * YouTube's OWN bottom-right controls are (fullscreen, settings,
+              * miniplayer, its own theater button), and we cannot overlay a
+              * cross-origin iframe without swallowing the pointerdown we can
+              * never hand back — the same reason the legacy drag surface is
+              * display:none. Offsetting above their control row is not
+              * reliable either: its height scales with the player and it
+              * auto-hides, and we cannot measure it across the origin.
+              *
+              * So this strip takes a slice of the CARD, under the iframe, and
+              * is bottom-right of the card without ever touching the player.
+              * In this (non-theater) mode the card is SQUARE and the 16:9
+              * video is already letterboxed inside it with room to spare, so
+              * the slice costs zero picture — it eats existing black.
+              *
+              * It carries no drag handler, so a click here cannot start a
+              * frame drag. (.videoTopbar's handler skips `button` targets,
+              * but that guard no longer has to cover this control at all.)
+              *
+              * Hidden while DETACHED: the frame can be dragged down to
+              * 240x160, where a 52px strip would be a third of it — and
+              * theater and detached are mutually exclusive anyway, so the
+              * way to theater from a detached frame is the dock button above.
+              */}
+            {showCardChrome && (
+              <div className={styles.videoBottombar}>
+                <TheaterToggle theater={theater} onToggle={onTheaterClick} />
+              </div>
+            )}
           </div>
 
           {RESIZE_DIRS.map((dir) => (

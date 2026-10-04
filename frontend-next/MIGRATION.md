@@ -119,12 +119,22 @@ A YouTube-style layout toggle, not a port — the legacy app has no equivalent.
 effective state also requires video mode, so switching to audio drops the
 layout but keeps the preference.
 
-- The control is in `.videoTopbar`, the one strip of the video card we own.
-  It cannot go over the player's own controls: that is a cross-origin iframe
-  and any surface floating on it eats a `pointerdown` we can never give back.
+- **The control is `TheaterToggle.jsx`, one component with two homes.** It
+  cannot sit over the player's bottom-right: that is a cross-origin iframe,
+  that corner is where YouTube's own controls live, and any surface floating
+  there eats a `pointerdown` we can never give back.
+  - *Normal video mode:* `.videoBottombar`, a `--hit-min + 8px` strip inside
+    the card, **under** the iframe, right-aligned. The card is square there
+    and the 16:9 video is already letterboxed with room to spare, so the slice
+    costs zero picture.
+  - *Theater:* the right end of `TheaterBar`'s control cluster, directly
+    beneath the video — the card is 16:9 there and a strip would cost ~8% of
+    the width we just fought for.
+  Neither home overlaps the player surface, so no placement can eat a click.
 - Hidden (not disabled) in audio mode — the control's whole context is the
-  video chrome, which isn't on screen. `display: none` below 1024px too, where
-  the stage is already one column.
+  video card chrome, which isn't on screen. Gated by `canTheater` from
+  `useTheaterMode` (video mode AND >=1024px) rather than a media query,
+  because the strip reserves height and a narrow viewport must not reserve it.
 - **Both rails stay put.** The shell keeps its two columns, so the queue
   flanks on the right and the recent trail stays a vertical strip on the left.
   The video widens by absorbing the **meta column**: the stage goes from

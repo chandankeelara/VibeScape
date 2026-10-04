@@ -95,6 +95,10 @@
   flex-shrink: 0;
 }
 
+/* Last in the cluster, with a little more air than the gap gives, so the
+   mode pill and the theater button do not read as one widget. */
+.theaterSlot { margin-left: var(--sp-1); }
+
 /* The pill sits inline here — no absolute anchor, unlike Transport's
    .modeAnchor, which exists only to keep that layout's play button optically
    centred. Same component, different placement. */

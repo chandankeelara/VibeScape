@@ -78,6 +78,11 @@
   --sp-6: 32px;
   --sp-7: 48px;
 
+  /* Minimum comfortable hit target. WCAG 2.2 AA (2.5.8) asks for 24x24 CSS px;
+     44px is the AAA / platform-HIG figure and what anything the hand has to
+     find deliberately uses here. */
+  --hit-min: 44px;
+
   /* layout — the stage's two width budgets, plus theater's height budget.
      Theater derives its WIDTH from this height (16:9) rather than capping the
      height of a 100%-wide box, so the card stays a true 16:9 at every viewport

@@ -39,7 +39,8 @@ function PlayerStage() {
    * Passing `mode === 'video'` rather than gating on it here keeps the
    * preference alive across a trip through audio mode — see useTheaterMode.
    */
-  const { theater, morphing, toggleTheater, exitTheater } = useTheaterMode(mode === 'video');
+  const { theater, canTheater, morphing, toggleTheater, exitTheater } =
+    useTheaterMode(mode === 'video');
 
   useKeyboardShortcuts({
     onToggleMetrics: () => setMetricsOpen((v) => !v),
@@ -80,6 +81,7 @@ function PlayerStage() {
         </div>
         <ArtStage
           theater={theater}
+          canTheater={canTheater}
           onToggleTheater={toggleTheater}
           onExitTheater={exitTheater}
         />
@@ -93,7 +95,11 @@ function PlayerStage() {
           * height that frees. Normal mode is unchanged.
           */}
         {theater ? (
-          <TheaterBar className={styles.barSlot} />
+          <TheaterBar
+            className={styles.barSlot}
+            theater={theater}
+            onToggleTheater={toggleTheater}
+          />
         ) : (
           <div className={styles.metaCol}>
             <TrackMeta onShowMetrics={() => setMetricsOpen(true)} />

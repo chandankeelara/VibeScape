@@ -167,7 +167,20 @@
 .videoFrame:global(.is-dragging) { cursor: grabbing; user-select: none; }
 .videoFrame:global(.is-resizing) { user-select: none; }
 
-.ytMount { position: relative; z-index: 1; width: 100%; height: 100%; }
+/*
+ * Absolutely positioned, with its bottom inset driven by --video-chrome-h, so
+ * the chrome strip takes a slice of the card and the player keeps a DEFINITE
+ * height (the iframe's `height: 100%` below needs one — a flex-sized parent
+ * would leave it indefinite and the iframe would collapse).
+ *
+ * This is a restyle of the SAME node. #ytPlayer is never re-keyed, moved or
+ * re-created; restyling an iframe's container does not reload it.
+ */
+.ytMount {
+  position: absolute;
+  inset: 0 0 var(--video-chrome-h, 0px) 0;
+  z-index: 1;
+}
 .ytMount iframe { width: 100%; height: 100%; border: 0; display: block; }
 
 /* --------------------------------------------------------------- chrome */
@@ -227,25 +240,34 @@
 
 .dockBtn { composes: topbarBtn; }
 
-/* Theater is a desktop-only affordance: below 1024px the stage is one column
-   and the card is already full width, so the control would promise nothing. */
-.theaterBtn {
-  composes: topbarBtn;
-  display: none;
+
+
+/* ----------------------------------------------------- card chrome strip */
+/*
+ * A slice of the card under the player surface. Set only when the strip is
+ * actually rendered, so a card without chrome gives every pixel to the video.
+ */
+.innerChrome {
+  --video-chrome-h: calc(var(--hit-min) + 2 * var(--sp-1));
 }
 
-@media (min-width: 1024px) {
-  .theaterBtn { display: inline-flex; }
-}
+.videoBottombar {
+  position: absolute;
+  inset: auto 0 0 0;
+  height: var(--video-chrome-h);
+  z-index: 3;
 
-/* On while theater is active, so the way OUT of the mode is legible the
-   moment the bar is revealed rather than looking like one more grip. */
-.theaterBtn[aria-pressed='true'] {
-  color: var(--vibe-accent, var(--accent));
-  border-color: color-mix(in oklab, var(--vibe-accent, var(--accent)) 42%, var(--border-strong));
-  background: color-mix(in oklab, var(--vibe-accent, var(--accent)) 18%, var(--scrim-soft));
-}
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-2);
 
+  /* A hairline so the strip reads as chrome rather than as letterbox, and a
+     touch of lift off the pure black of the card. */
+  border-top: 1px solid var(--border);
+  background: linear-gradient(0deg, var(--scrim-soft), transparent);
+}
 
 /* ------------------------------------------------------------- resize hit */
 
