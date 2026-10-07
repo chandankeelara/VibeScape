@@ -42,6 +42,10 @@ Thumbs.db
 # Claude Code state (contains embedded git worktrees and session cache)
 .claude/
 
+# Claude Code notes — kept local, not pushed
+CLAUDE.md
+**/CLAUDE.md
+
 # ML pipeline artifacts
 ml/data/previews/
 ml/data/*.log

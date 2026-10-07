@@ -31,6 +31,27 @@ $secrets = "SPOTIFY_CLIENT_ID=SPOTIFY_CLIENT_ID:latest," +
            "TURSO_DATABASE_URL=TURSO_DATABASE_URL:latest," +
            "TURSO_AUTH_TOKEN=TURSO_AUTH_TOKEN:latest"
 
+Write-Host "=== turso migrations ==="
+# ensure_db() no-ops on Turso, so schema.sql never reaches production. New
+# tables need their one-shot creation script here, BEFORE the gcloud deploy,
+# so the new revision never comes up pointed at a schema it does not expect.
+# Each script is idempotent (CREATE ... IF NOT EXISTS). Order: event_tables
+# first (older), then user_stats. Add new tables to the end of this list in
+# the same change that adds the one-shot.
+$migrations = @(
+    "scripts/_turso_create_event_tables.py",
+    "scripts/_turso_create_user_stats.py"
+)
+foreach ($m in $migrations) {
+    Write-Host "  running $m ..."
+    & python $m
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Migration $m failed (exit $LASTEXITCODE). Aborting before deploy."
+        exit $LASTEXITCODE
+    }
+}
+
+Write-Host ""
 Write-Host "=== deploy ==="
 & $gcloud run deploy $Service --source . --region $Region --allow-unauthenticated --port 8080 --memory 512Mi --cpu 1 --min-instances 0 --max-instances 3 --timeout 300 --set-env-vars $envVars --set-secrets $secrets --quiet
 if ($LASTEXITCODE -ne 0) {
