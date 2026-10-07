@@ -18,7 +18,7 @@ import { usePlayer } from '../../state/PlayerContext';
 import { useToast } from '../../state/ToastContext';
 import { apiKey, trackKey } from '../../lib/vibe';
 import QueueRow from './QueueRow';
-import { bufferSignature, fetchDjPicks } from './dj';
+import { fetchDjPicks, tracksSignature } from './dj';
 import { PlaybackRatioProbe, useDj } from './useDj';
 import { RECS_LIMIT, useRecs } from './useRecs';
 import { useQueueDrag } from './useQueueDrag';
@@ -48,11 +48,11 @@ export default function QueueSidebar() {
   const queryClient = useQueryClient();
 
   const {
-    enabled: djEnabled, toggle: djToggle, events: djEvents,
+    enabled: djEnabled, toggle: djToggle, tracks: djTracks,
     signature: djSignature, recordQueued, recordTransitionNow, onSample,
   } = useDj();
   const { recs, loading, hasAnchor } = useRecs({
-    djEnabled, events: djEvents, signature: djSignature,
+    djEnabled, tracks: djTracks, signature: djSignature,
   });
 
   const isMobile = useIsMobile();
@@ -157,8 +157,8 @@ export default function QueueSidebar() {
     // useRecs recomputes its key at that moment — so we must fetch through
     // React Query under exactly that key, or useRecs misses the cache and
     // fires a second POST for the vector we are already fetching.
-    const events = recordTransitionNow({ natural: false });
-    const sig = bufferSignature(events);
+    const tracks = recordTransitionNow({ natural: false });
+    const sig = tracksSignature(tracks);
     // apiKey, not trackKey — useRecs builds its queryKey the same way.
     const interimKey = ['queue-recs', apiKey(current), 'dj', sig];
 
@@ -169,7 +169,7 @@ export default function QueueSidebar() {
     const picks = await queryClient.fetchQuery({
       queryKey: interimKey,
       staleTime: 5000,
-      queryFn: () => fetchDjPicks(current, { events, seen: getSeenIds(), queue, limit: RECS_LIMIT }),
+      queryFn: () => fetchDjPicks(current, { tracks, seen: getSeenIds(), queue, limit: RECS_LIMIT }),
     });
     if (!picks?.length) return null;
     const [top, ...rest] = picks;

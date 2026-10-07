@@ -14,14 +14,15 @@ import { usePlayer, usePlaybackTime } from '../../state/PlayerContext';
 import { useToast } from '../../state/ToastContext';
 import { apiKey } from '../../lib/vibe';
 import { emitMascot } from '../../lib/mascotBus';
+import { onDj } from '../../lib/djBus';
 import {
-  appendEvent,
-  bufferSignature,
   classifyTransition,
   loadEnabled,
-  loadEvents,
+  loadTracks,
   persistEnabled,
-  persistEvents,
+  persistTracks,
+  tracksSignature,
+  upsertTrack,
 } from './dj';
 
 /**
@@ -47,22 +48,21 @@ export function useDj() {
   const toast = useToast();
 
   const [enabled, setEnabled] = useState(loadEnabled);
-  const [events, setEvents] = useState(loadEvents);
+  const [tracks, setTracks] = useState(loadTracks);
 
   /**
-   * Re-seed the seen-set from the restored buffer, once, on mount.
+   * Re-seed the seen-set from the restored verdict map, once, on mount.
    *
    * The exclude list is the seen-set alone, and the seen-set is in-memory
-   * while this buffer is in localStorage. Without this, a reload (or the PWA
-   * relaunching) would make the last 100 tracks candidates again, seconds
-   * after the user heard them. These events are by definition already-played
+   * while this map is in localStorage. Without this, a reload (or the PWA
+   * relaunching) would make the recently-touched tracks candidates again,
+   * seconds after the user heard them. These are by definition already-touched
    * tracks, so marking them seen restores the session rather than extending
    * exclusion across genuinely new ones.
    */
   useEffect(() => {
-    for (const e of events) markSeen({ id: e.track_id });
-    // Mount only — `events` is the restored buffer; later appends mark
-    // themselves seen through loadTrack.
+    for (const e of Object.values(tracks)) markSeen({ id: e.id });
+    // Mount only — later upserts mark themselves seen through loadTrack.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -74,14 +74,14 @@ export function useDj() {
   const prevKeyRef = useRef(null);
 
   /**
-   * Synchronous mirror of `events`.
+   * Synchronous mirror of `tracks`.
    *
    * The autoplay picker has to flush the outgoing track's signal and then
-   * immediately fetch with the updated buffer, in one tick — it cannot wait for
-   * a re-render to see its own write. setEvents still drives rendering; this ref
-   * is what the picker reads.
+   * immediately fetch with the updated map, in one tick — it cannot wait for
+   * a re-render to see its own write. setTracks still drives rendering; this
+   * ref is what the picker reads.
    */
-  const eventsRef = useRef(events);
+  const tracksRef = useRef(tracks);
 
   /** Track whose transition has already been recorded, so it isn't counted twice. */
   const flushedRef = useRef(null);
@@ -91,14 +91,14 @@ export function useDj() {
   }, []);
 
   const push = useCallback((evt) => {
-    const next = appendEvent(eventsRef.current, evt);
-    if (next === eventsRef.current) return next;
-    eventsRef.current = next;
-    persistEvents(next);
-    setEvents(next);
-    // Announced AFTER the buffer actually changed, so a de-duplicated event
-    // (appendEvent returns the same array when it rejects one) cannot make the
-    // mascot react to something that was never recorded.
+    const next = upsertTrack(tracksRef.current, evt);
+    if (next === tracksRef.current) return next;
+    tracksRef.current = next;
+    persistTracks(next);
+    setTracks(next);
+    // Announced AFTER the map actually changed, so a verdictless event
+    // (upsertTrack returns the same object when it carries no signal) cannot
+    // make the mascot react to something that was never recorded.
     emitMascot(evt.action, evt);
     return next;
   }, []);
@@ -108,14 +108,14 @@ export function useDj() {
    * buffer.
    *
    * Legacy called this at the top of advanceToNext() so the just-finished
-   * track's signal was already in the buffer by the time the DJ fetched a
+   * track's signal was already in the map by the time the DJ fetched a
    * replacement. The autoplay picker calls it for the same reason; the effect
    * below then sees it was already flushed and skips.
    */
   const recordTransitionNow = useCallback(
     ({ natural = false } = {}) => {
       const key = liveKeyRef.current;
-      if (!key || flushedRef.current === key) return eventsRef.current;
+      if (!key || flushedRef.current === key) return tracksRef.current;
       const ratio = sampleRef.current.key === key ? sampleRef.current.ratio : 0;
       flushedRef.current = key;
       return push({
@@ -159,6 +159,31 @@ export function useDj() {
     [push]
   );
 
+  /**
+   * A search-and-play is explicit intent — "I want this specific vibe NOW."
+   * Fires a positive signal immediately so the next DJ fetch biases toward
+   * the picked song's embedding without waiting for playback outcome. The
+   * subsequent completed/skip event ACCUMULATES on top (upsertTrack signed-
+   * sums repeats), so a search-then-complete lands around +1.75 while a
+   * search-then-early-skip nets to roughly zero — the honest "I wanted it
+   * but it wasn't it" signal.
+   */
+  const recordSearched = useCallback(
+    (t) => {
+      const key = apiKey(t);
+      if (key) push({ track_id: key, action: 'searched', played_ratio: null, ts: Date.now() });
+    },
+    [push]
+  );
+
+  /**
+   * Pick up DJ-worthy events fired from outside the queue sidebar (search,
+   * elsewhere) via the module-singleton bus. One subscription for the life of
+   * this hook — the bus is in lib/ so the emitter never has to know who is
+   * listening or whether anyone is at all.
+   */
+  useEffect(() => onDj((evt) => push(evt)), [push]);
+
   const toggle = useCallback(() => {
     setEnabled((on) => {
       const next = !on;
@@ -171,12 +196,12 @@ export function useDj() {
     });
   }, [toast]);
 
-  const signature = useMemo(() => bufferSignature(events), [events]);
+  const signature = useMemo(() => tracksSignature(tracks), [tracks]);
 
   // Stable identity: the sidebar passes these straight into memoized rows, and
   // a fresh object every render would defeat that.
   return useMemo(
-    () => ({ enabled, toggle, events, signature, recordQueued, recordTransitionNow, onSample }),
-    [enabled, toggle, events, signature, recordQueued, recordTransitionNow, onSample]
+    () => ({ enabled, toggle, tracks, signature, recordQueued, recordSearched, recordTransitionNow, onSample }),
+    [enabled, toggle, tracks, signature, recordQueued, recordSearched, recordTransitionNow, onSample]
   );
 }

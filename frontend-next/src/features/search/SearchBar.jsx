@@ -2,7 +2,8 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import * as api from '../../lib/api';
-import { trackKey } from '../../lib/vibe';
+import { apiKey, trackKey } from '../../lib/vibe';
+import { emitDj } from '../../lib/djBus';
 import { usePlayer } from '../../state/PlayerContext';
 import { useSpotifyAuth } from '../../state/SpotifyAuthContext';
 import { useToast } from '../../state/ToastContext';
@@ -175,6 +176,12 @@ export default function SearchBar({ spotifyToken: tokenProp, className = '' }) {
   const play = useCallback((t) => {
     reset({ blur: true });
     syncVibe(t);
+    // Explicit intent: fire a 'searched' event so the next DJ fetch sees
+    // the picked song's vibe immediately, instead of waiting for the end
+    // of playback. useDj listens on djBus and accumulates with whatever
+    // the subsequent play outcome produces.
+    const key = apiKey(t);
+    if (key) emitDj({ track_id: key, action: 'searched', played_ratio: null, ts: Date.now() });
     loadTrack(t);
   }, [reset, syncVibe, loadTrack]);
 
@@ -189,6 +196,15 @@ export default function SearchBar({ spotifyToken: tokenProp, className = '' }) {
   const resultsRef = useRef({ library: [], spotify: [] });
   resultsRef.current = { library, spotify: spotifyTracks };
 
+  // Dropped-into-queue and "+ queue" from search are both explicit "I want
+  // this" acts, same signal strength as queueing a sidebar rec. Fire 'queued'
+  // through djBus so the taste map picks it up without SearchBar having to
+  // import useDj (which would double-instantiate the taste state).
+  const emitQueued = useCallback((t) => {
+    const key = apiKey(t);
+    if (key) emitDj({ track_id: key, action: 'queued', played_ratio: null, ts: Date.now() });
+  }, []);
+
   useEffect(() => {
     const onDrop = (ev) => {
       const { key, index } = ev.detail ?? {};
@@ -199,17 +215,19 @@ export default function SearchBar({ spotifyToken: tokenProp, className = '' }) {
       const t = lib.find(match) ?? sp.find(match);
       if (!t) return;
       enqueueAt(t, index);
+      emitQueued(t);
       toast('Added to queue.', 'success');
     };
     document.addEventListener('vibescape:queue-drop', onDrop);
     return () => document.removeEventListener('vibescape:queue-drop', onDrop);
-  }, [enqueueAt, toast]);
+  }, [enqueueAt, emitQueued, toast]);
 
   const addToQueue = useCallback((t) => {
     const already = queue.some((x) => trackKey(x) === trackKey(t));
     enqueue(t);
+    if (!already) emitQueued(t);
     toast(already ? 'Already in the queue.' : 'Added to queue.', already ? 'info' : 'success');
-  }, [queue, enqueue, toast]);
+  }, [queue, enqueue, emitQueued, toast]);
 
   /**
    * /api/ingest/single is idempotent and covers all three states: already

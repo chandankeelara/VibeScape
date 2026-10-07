@@ -1,18 +1,21 @@
 /**
- * DJ mode — pure logic, ported from frontend/app.js:5079-5310.
+ * DJ mode — pure logic.
  *
- * A rolling buffer of the last 10 playback events lives in localStorage. When
- * DJ mode is ON the buffer is weighted and POSTed to
- * POST /api/tracks/{seed}/similar (mode: 'dj'), which scores the user's
- * library by session-weighted MERT-embedding cosine similarity. The result
- * replaces the plain vibe-similarity list in the recs sidebar.
+ * The client holds one verdict per unique track touched this session, not a
+ * log of events. On every playback transition / queue-add, the latest verdict
+ * for that track REPLACES the stored entry — nothing accumulates. Repeated
+ * plays of the same track no longer compound into runaway weight; whether a
+ * track is a positive or negative signal is set by what happened to it most
+ * recently.
+ *
+ * Decay is by elapsed time, not buffer position, so an idle hour actually
+ * ages the signal instead of being masked by the next event's reindex.
  *
  * The user's queue is NEVER written to by DJ mode — that promise is load
  * bearing and is why this module returns picks instead of enqueueing them.
  *
- * Everything here is a pure function or a localStorage read/write; React state
- * lives in useDj.js. Keeping them apart is what makes the weighting logic
- * testable without mounting a component.
+ * Everything here is a pure function or a localStorage read/write; React
+ * state lives in useDj.js.
  */
 
 import * as api from '../../lib/api';
@@ -20,77 +23,92 @@ import { apiKey } from '../../lib/vibe';
 
 export const DJ_STORAGE_KEY = 'vibescape.sessionEvents';
 export const DJ_TOGGLE_KEY = 'vibescape.djEnabled';
-export const DJ_MAX_EVENTS = 100;
 
 /**
- * Caps on what actually goes over the wire. The buffer is deep so the taste
- * vector has history; the payload stays small so each DJ fetch stays cheap.
- *
- * The backend loads one 768-float embedding per id sent (_load_mert_vecs_bulk),
- * so an uncapped 100-event buffer would pull ~100 vectors from Turso on every
- * pick. Sending the highest-weighted ids keeps the signal and drops the tail,
- * which contributes almost nothing once decayed.
+ * Cap on unique tracks held in the per-track verdict map. A session rarely
+ * touches more than ~50 unique tracks, so this is a safety limit rather than
+ * a routine pressure. When exceeded, the lowest-DECAYED-weight entry is
+ * evicted — a highly-weighted older positive beats a decayed-to-nothing
+ * recent negative. See pruneTracks().
  */
-export const DJ_MAX_SENT_IDS = 20;
+export const DJ_MAX_TRACKS = 100;
 
 /**
- * Exclude list cap. The exclude list IS the seen-set, so this must equal
- * SEEN_MAX in PlayerContext.jsx — a smaller value here would silently drop
- * the oldest entries the set still remembers, making tracks eligible again
- * while the frontend believed they were excluded.
+ * Cap on ids actually POSTed per DJ fetch (positives AND negatives, each
+ * capped separately — so up to 2*DJ_MAX_SENT_IDS go over the wire).
  *
- * 200 is the backend's own `_DJ_MAX_EXCLUDE_IDS`, which truncates anything
- * longer, and backend/app.py:1385 inlines these as SQL literals in a
- * `NOT IN (...)` clause. At ~7 bytes per id that is ~1.4 KB on the wire.
+ * Each sent id costs one 768-float embedding load on the backend
+ * (_load_mert_vecs_bulk). With the per-track-verdict map we no longer need
+ * the old slack for accumulated noise, so 15 is tighter than the old 20
+ * while still carrying the strongest-weighted slice of the signal.
+ */
+export const DJ_MAX_SENT_IDS = 15;
+
+/**
+ * Exclude list cap. Must equal SEEN_MAX in PlayerContext.jsx — a smaller
+ * value here would silently drop entries the seen-set still remembers,
+ * making tracks eligible again while the frontend believed they were excluded.
+ *
+ * 200 is the backend's own _DJ_MAX_EXCLUDE_IDS, which truncates anything
+ * longer, and backend/app.py inlines these as SQL literals in a `NOT IN (...)`
+ * clause. At ~7 bytes per id that is ~1.4 KB on the wire.
  */
 export const DJ_MAX_EXCLUDES = 200;
 
 /**
- * No age decay: every event in the 10-slot buffer counts at full base weight.
- * Kept as a named constant (rather than deleting the exponent) because the
- * At DJ_MAX_EVENTS=100 a flat 1.0 would weight a track from 100 plays ago the
- * same as the one just skipped, so recency decay is required rather than
- * optional. 0.97^99 ~= 0.05, i.e. the oldest event still counts, barely.
+ * Per-hour recency decay for stored verdicts. 0.6 gives a signal half-life
+ * of ~90 minutes (0.6^1.5 ≈ 0.465), which matches the practical span of the
+ * old positional 0.97^k over a typical session (events ~2-3 min apart ×
+ * ~20-event half-life ≈ 45-90 min). An idle user's older verdicts fade on
+ * their own instead of being frozen in place until the next event reindexes
+ * the buffer.
  */
-export const DJ_DECAY = 0.97;
+export const DJ_DECAY_PER_HOUR = 0.6;
+
+/**
+ * Below this decayed weight an entry contributes nothing meaningful to the
+ * query vector. Filter it out before sorting to keep the top-K honest.
+ */
+const DJ_WEIGHT_FLOOR = 0.001;
 
 /** Played ratio at or above which a transition counts as a full listen. */
 export const DJ_COMPLETED_THRESHOLD = 0.85;
 
-/* ------------------------------------------------------------ event buffer */
+/* --------------------------------------------------------- verdict storage */
 
 /**
  * Buffer schema version + origin stamp.
  *
- * Events now carry internal `tracks.id` ints so the backend skips resolution
- * entirely. Internal ids are ONLY valid against the backend that issued them —
- * local SQLite and prod Turso assign different ids, and a prod push rewrites
- * them. A buffer carried across origins would silently weight the wrong
- * tracks, so we drop it on any mismatch. The buffer is 10 slots of recent
- * behaviour; discarding it costs nothing.
+ * v3: per-track verdict map, {stamp, tracks: {id -> {verdict, weight, ts}}}.
+ * Earlier schemas were arrays or {stamp, events: [...]} and are DROPPED on
+ * load — the buffer is a cheap recent-behaviour signal and discarding it
+ * costs nothing.
+ *
+ * Internal track ids are only valid against the backend that issued them
+ * (local SQLite ≠ prod Turso), so the stamp pins the origin too.
  */
-const DJ_SCHEMA = 2;
+const DJ_SCHEMA = 3;
 const stamp = () => `${DJ_SCHEMA}:${window.location.origin}`;
 
-export function loadEvents() {
+export function loadTracks() {
   try {
     const raw = localStorage.getItem(DJ_STORAGE_KEY);
-    if (!raw) return [];
+    if (!raw) return {};
     const parsed = JSON.parse(raw);
-    // v1 was a bare array of spotify_id-keyed events — discard it.
-    if (Array.isArray(parsed)) return [];
-    if (!parsed || parsed.stamp !== stamp()) return [];
-    return Array.isArray(parsed.events) ? parsed.events.slice(-DJ_MAX_EVENTS) : [];
+    // v1 was a bare array; v2 was {stamp, events: [...]}; both discarded.
+    if (!parsed || Array.isArray(parsed) || parsed.stamp !== stamp()) return {};
+    const tracks = parsed.tracks && typeof parsed.tracks === 'object' ? parsed.tracks : {};
+    return tracks;
   } catch {
-    return [];
+    return {};
   }
 }
 
-export function persistEvents(events) {
+export function persistTracks(tracks) {
   try {
     localStorage.setItem(
       DJ_STORAGE_KEY,
-      JSON.stringify({ stamp: stamp(), events: events.slice(-DJ_MAX_EVENTS) })
+      JSON.stringify({ stamp: stamp(), tracks })
     );
   } catch {
     /* private mode / quota — the buffer is a nicety, not a requirement */
@@ -113,32 +131,38 @@ export function persistEnabled(on) {
   }
 }
 
-/** Append one event, trimming to the newest DJ_MAX_EVENTS. Returns a new array. */
-export function appendEvent(events, evt) {
-  if (!evt || evt.track_id == null || evt.track_id === '') return events;
-  const next = [
-    ...events,
-    {
-      // Native type on purpose: a number short-circuits backend resolution,
-      // a string (un-ingested Spotify result) still batch-resolves.
-      track_id: evt.track_id,
-      action: evt.action,
-      played_ratio: typeof evt.played_ratio === 'number' ? evt.played_ratio : null,
-      ts: evt.ts || Date.now(),
-    },
-  ];
-  return next.slice(-DJ_MAX_EVENTS);
+/**
+ * Classify an action+ratio into a verdict for the taste map.
+ *
+ * Sign is set by the action; magnitude is set by the played ratio. The
+ * action label survives so the mascot bus can still differentiate (a skip
+ * animates differently than a next-click).
+ *
+ *   searched    +0.8 — explicit intent, no outcome yet
+ *   queued      +1.2 — explicit commit, strongest hands-on signal
+ *   completed   +max(r, 0.85) — natural end can report r≈0.998 or lower
+ *   next        +r — classifyTransition guarantees r in [0.45, 0.85]
+ *   skipped     -(1 - r) — classifyTransition guarantees r in [0, 0.45),
+ *               so magnitude lives in (0.55, 1.0]: earlier bail = stronger
+ *
+ * Returns null only for an unknown action.
+ */
+function verdictFor(action, ratio) {
+  const r = typeof ratio === 'number' ? Math.max(0, Math.min(1, ratio)) : 0;
+  if (action === 'searched')  return { verdict: 'positive', weight: 0.8 };
+  if (action === 'queued')    return { verdict: 'positive', weight: 1.2 };
+  if (action === 'completed') return { verdict: 'positive', weight: Math.max(r, 0.85) };
+  if (action === 'next')      return { verdict: 'positive', weight: r };
+  if (action === 'skipped')   return { verdict: 'negative', weight: 1 - r };
+  return null;
 }
 
 /**
- * Classify how a track ended, given how much of it was played.
+ * Classify how a track ended, given how much of it was played. Preserved
+ * from the pre-rewrite API because the mascot bus and useDj.js both call it.
  *
  * `natural` (track ran to its own end) is passed through as a hard "completed"
  * because a player can report a ratio slightly under 1.0 on the final tick.
- * Between 0.45 and the completion threshold the signal is genuinely ambiguous,
- * so it is recorded as 'next' and the weighting table decides what to do with
- * it — that is where a half-listen earns a small positive instead of a
- * negative it hasn't earned.
  */
 export function classifyTransition(ratio, { natural = false } = {}) {
   const r = Number.isFinite(ratio) ? ratio : 0;
@@ -147,79 +171,100 @@ export function classifyTransition(ratio, { natural = false } = {}) {
   return 'skipped';
 }
 
+/**
+ * Upsert one event into the per-track verdict map, returning a new object.
+ *
+ * ACCUMULATE on repeat: when the track is already in the map, the existing
+ * contribution is first decayed by elapsed time and then signed-summed with
+ * the new event's weight. A search followed by a completion stacks (0.8 +
+ * 0.95 → 1.75 positive). A skip followed by a later completion partially
+ * cancels. A play then another play 3h later goes to ~1.16, not 2× — the
+ * decay bounds runaway accumulation that broke the old positional scheme.
+ *
+ * The stored ts always advances to the newest event, so decay in
+ * buildWeights is measured from the latest interaction.
+ *
+ * Returns the same object reference when the event carries no verdict, so
+ * callers can short-circuit on identity to skip side-effects (mascot etc).
+ */
+export function upsertTrack(tracks, evt) {
+  if (!evt || evt.track_id == null || evt.track_id === '') return tracks;
+  const v = verdictFor(evt.action, evt.played_ratio);
+  if (!v) return tracks;
+  const key = String(evt.track_id);
+  const now = evt.ts || Date.now();
+  const existing = tracks[key];
+
+  const new_signed = v.verdict === 'positive' ? v.weight : -v.weight;
+  let combined;
+  if (existing) {
+    const ageHours = Math.max(0, (now - existing.ts) / 3_600_000);
+    const existing_decayed = existing.weight * Math.pow(DJ_DECAY_PER_HOUR, ageHours);
+    const existing_signed = existing.verdict === 'positive' ? existing_decayed : -existing_decayed;
+    combined = existing_signed + new_signed;
+  } else {
+    combined = new_signed;
+  }
+
+  const next = {
+    ...tracks,
+    [key]: {
+      // Native type preserved: a number short-circuits backend resolution,
+      // a string (un-ingested Spotify result) still batch-resolves.
+      id: evt.track_id,
+      // Latest action label wins — matters for the mascot and debugging.
+      // The combined weight is what the ranker sees.
+      action: evt.action,
+      verdict: combined >= 0 ? 'positive' : 'negative',
+      weight: Math.abs(combined),
+      ts: now,
+    },
+  };
+  return Object.keys(next).length > DJ_MAX_TRACKS ? pruneTracks(next) : next;
+}
+
+/**
+ * Keep the DJ_MAX_TRACKS highest-DECAYED-weight entries. Eviction by
+ * decayed weight (not raw ts) because a highly-liked older positive still
+ * carries more signal than a near-zero recent negative.
+ */
+function pruneTracks(tracks) {
+  const now = Date.now();
+  const scored = Object.values(tracks).map((e) => {
+    const ageHours = Math.max(0, (now - e.ts) / 3_600_000);
+    return { e, dw: e.weight * Math.pow(DJ_DECAY_PER_HOUR, ageHours) };
+  });
+  scored.sort((a, b) => b.dw - a.dw);
+  const kept = {};
+  for (let i = 0; i < Math.min(scored.length, DJ_MAX_TRACKS); i++) {
+    kept[String(scored[i].e.id)] = scored[i].e;
+  }
+  return kept;
+}
+
 /* --------------------------------------------------------------- weighting */
 
 /**
- * Collapse the event buffer into {positives, negatives}, each an array of
- * {id, weight} ready to POST.
+ * Collapse the verdict map into {positives, negatives}, each an array of
+ * {id, weight} ready to POST. Weights are decayed by elapsed time.
  *
- * Base weights, ported verbatim:
- *   queued      1.2 positive  — an explicit act of taste, the strongest signal
- *   completed   0.8 positive
- *   next        0.3 positive, but only when >50% was played; otherwise ignored
- *   skipped     0.8 negative under 15% played, 0.4 negative under 45%,
- *               ignored above that (a 45-85% "skip" is not a rejection)
- *
- * Each weight is multiplied by DJ_DECAY^age, where age counts backwards in
- * events (0 = most recent), so re-tuning DJ_DECAY recency-biases the vector.
- *
- * A track can legitimately land in both piles across a session (skipped once,
- * queued later). It is assigned to whichever pile has the larger total, and
- * sent with that pile's own summed weight.
+ * A track lives in exactly one bucket at a time (its latest verdict's) — the
+ * old "same track on both sides, bigger pile wins" dance is gone because
+ * upsertTrack already replaced the losing side.
  */
-export function buildWeights(events) {
-  const n = events.length;
-  const pos = new Map();
-  const neg = new Map();
-
-  for (let i = 0; i < n; i++) {
-    const e = events[i];
-    const age = n - 1 - i; // 0 = most recent
-    const decay = Math.pow(DJ_DECAY, age);
-    const ratio = typeof e.played_ratio === 'number' ? e.played_ratio : 0;
-
-    let base = 0;
-    let bucket = null;
-
-    if (e.action === 'completed') {
-      base = 0.8;
-      bucket = pos;
-    } else if (e.action === 'queued') {
-      base = 1.2;
-      bucket = pos;
-    } else if (e.action === 'next') {
-      if (ratio > 0.5) {
-        base = 0.3;
-        bucket = pos;
-      }
-    } else if (e.action === 'skipped') {
-      if (ratio < 0.15) {
-        base = 0.8;
-        bucket = neg;
-      } else if (ratio < 0.45) {
-        base = 0.4;
-        bucket = neg;
-      }
-    }
-
-    if (!bucket || !base) continue;
-    bucket.set(e.track_id, (bucket.get(e.track_id) || 0) + base * decay);
-  }
-
+export function buildWeights(tracks) {
+  const now = Date.now();
   const positives = [];
   const negatives = [];
-  for (const id of new Set([...pos.keys(), ...neg.keys()])) {
-    const p = pos.get(id) || 0;
-    const g = neg.get(id) || 0;
-    if (p >= g && p > 0) positives.push({ id, weight: Number(p.toFixed(4)) });
-    else if (g > 0) negatives.push({ id, weight: Number(g.toFixed(4)) });
+  for (const e of Object.values(tracks)) {
+    const ageHours = Math.max(0, (now - e.ts) / 3_600_000);
+    const decayed = e.weight * Math.pow(DJ_DECAY_PER_HOUR, ageHours);
+    if (decayed < DJ_WEIGHT_FLOOR) continue;
+    const entry = { id: e.id, weight: Number(decayed.toFixed(4)) };
+    (e.verdict === 'positive' ? positives : negatives).push(entry);
   }
-  // Strongest signal first, then trim. Sorting before the cap matters: the
-  // tail of a decayed 100-event buffer is near-zero weight, so dropping it
-  // costs almost nothing while bounding the request.
   const strongest = (arr) =>
     arr.sort((a, b) => b.weight - a.weight).slice(0, DJ_MAX_SENT_IDS);
-
   return { positives: strongest(positives), negatives: strongest(negatives) };
 }
 
@@ -231,30 +276,20 @@ export function buildWeights(events) {
  * is put in front of the user — played, skipped, queued, however it was
  * reached — because "don't show me this again" doesn't depend on whether they
  * liked it. What they thought of it is a separate question, answered by
- * buildWeights(), which sorts the same event into positives or negatives by
- * played ratio. One event, two independent consumers.
+ * buildWeights().
  *
  * `queue` is unioned in even though enqueue() marks its tracks seen, because
  * that only holds at insertion: the set evicts LRU at SEEN_MAX, so a track
  * queued early and still waiting deep in a long queue can drop out of the set
- * while it is still pending. Queue first, so it survives the cap — queue[0]
- * is what plays next and is the most wasteful thing to recommend.
- *
- * Everything else the old builder unioned in (current, recent, the event
- * buffer) is genuinely redundant: each is already past, so falling out of the
- * set means it aged out fairly.
+ * while it is still pending. Queue first, so it survives the cap.
  *
  * These are `tracks.id` integers rather than spotify keys on purpose — the
- * backend skips per-key resolution for ints, which took a ~50-entry exclude
- * list from ~750ms of DB round-trips down to nothing.
+ * backend skips per-key resolution for ints.
  */
 export function excludeIds({ seen = [], queue = [] }) {
   const ids = new Set();
   const addId = (v) => {
     const n = Number(v);
-    // Ints only. A string here is a spotify_id from a track that isn't in the
-    // library yet, which the backend would have to resolve — and an
-    // un-ingested track can't be a candidate anyway.
     if (Number.isFinite(n)) ids.add(n);
   };
   queue.forEach((t) => { if (t && t.id != null) addId(t.id); });
@@ -262,26 +297,30 @@ export function excludeIds({ seen = [], queue = [] }) {
   return Array.from(ids).slice(0, DJ_MAX_EXCLUDES);
 }
 
-/** Signature of the buffer's current state — used to coalesce redundant fetches. */
-export const bufferSignature = (events) =>
-  `${events.length}:${events.length ? events[events.length - 1].ts : 0}`;
+/**
+ * Signature of the current verdict map — used to coalesce redundant fetches.
+ * Changes whenever any new verdict lands (count or latest-ts moves).
+ */
+export const tracksSignature = (tracks) => {
+  const vals = Object.values(tracks);
+  const latest = vals.reduce((max, e) => (e.ts > max ? e.ts : max), 0);
+  return `${vals.length}:${latest}`;
+};
 
 /* ----------------------------------------------------------------- fetching */
 
 /**
  * Fetch the DJ pick list for `seed`.
  *
- * Wants POST /api/tracks/{key}/similar with the session weights. `api.js` is
- * owned by another agent and currently only wraps the GET variant, so this
- * degrades to plain similarity until `similarTracksDj` is added there (see the
- * note in the port report). The shape of the response is identical either way.
+ * Wants POST /api/tracks/{key}/similar with the session weights. api.js
+ * degrades to plain similarity if similarTracksDj is not wired yet.
  */
-export async function fetchDjPicks(seed, { events, seen = [], queue = [], limit = 8 }) {
+export async function fetchDjPicks(seed, { tracks, seen = [], queue = [], limit = 8 }) {
   const key = apiKey(seed);
   if (!key) return [];
 
   if (typeof api.similarTracksDj === 'function') {
-    const { positives, negatives } = buildWeights(events);
+    const { positives, negatives } = buildWeights(tracks);
     const res = await api.similarTracksDj(key, {
       mode: 'dj',
       positive_ids: positives,

@@ -21,7 +21,7 @@ import { fetchDjPicks, fetchSimilar } from './dj';
 
 export const RECS_LIMIT = 8;
 
-export function useRecs({ djEnabled, events, signature }) {
+export function useRecs({ djEnabled, tracks, signature }) {
   const { current, queue, getSeenIds } = usePlayer();
   const seedKey = apiKey(current);
 
@@ -39,7 +39,7 @@ export function useRecs({ djEnabled, events, signature }) {
       djEnabled
         // getSeenIds() is read at fetch time, so the set is always current
         // even though it lives in a ref and never triggers a re-render.
-        ? fetchDjPicks(current, { events, seen: getSeenIds(), queue, limit: RECS_LIMIT })
+        ? fetchDjPicks(current, { tracks, seen: getSeenIds(), queue, limit: RECS_LIMIT })
         : fetchSimilar(current, { limit: RECS_LIMIT }),
   });
 

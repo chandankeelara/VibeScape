@@ -14,4 +14,4 @@ export { default as QueueSidebar } from './QueueSidebar';
 export { default } from './QueueSidebar';
 
 export { useDj } from './useDj';
-export { buildWeights, classifyTransition, excludeIds, appendEvent } from './dj';
+export { buildWeights, classifyTransition, excludeIds, upsertTrack } from './dj';
