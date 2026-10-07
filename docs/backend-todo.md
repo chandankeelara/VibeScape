@@ -544,9 +544,17 @@ outlive it:
   `u_*` family for preference") would read all zeros today. The preference half
   of the split is unvalidated end to end; confirm it with one manual slider
   drag before building on it.
-- `last_played` is written on every accepted event including a skip, so it
-  means "last touched", not "last listened". Correct for recency, wrong for
-  anyone reading it as listening history.
+- ~~`last_played` is written on every accepted event including a skip~~ —
+  FIXED 2026-10-06. `last_played` is now written ONLY on a qualified listen:
+  `play_end` with `reason='completed'` OR `position_ms >= DJ_QUALIFIED_PLAY_MS`
+  (default 90000 ms). Skips go to `last_skipped_at` only. The library endpoint
+  returns `MAX(last_played, last_skipped_at)` under the pre-existing
+  `last_played` field (no frontend change). `scripts/rebuild_user_track_stats.py`
+  mirrors the predicate. Turso rollout note: no schema change, no new column,
+  no migration — a `--turso --apply` rebuild after deploy is optional, only
+  needed if you want the historical `last_played` recomputed under the new
+  rule (otherwise old qualified listens plus pre-change short-skip timestamps
+  stay in place, biasing recency slightly toward "touched").
 
 
 ## 6. DJ recency re-ranking — shipped 2026-10-03, what is left
@@ -598,6 +606,32 @@ skips suppress tracks for every other guest. Accepted at demo volume; set
 `DJ_RECENCY_SKIP_GUEST=1` to opt the row out. Watch if guest traffic reaches
 a few hundred plays a week — the symptom is "the demo recommends weird
 tracks" with no obvious cause.
+
+### 6.6 Per-user dynamic H_play landed; needs Turso table + rebuild on deploy
+`backend/app.py` (`_fetch_user_halflife`, `_upsert_user_stats`),
+`schema.sql` (`user_stats`), `scripts/_turso_create_user_stats.py`,
+`scripts/rebuild_user_stats.py`
+
+**verified by running on local sqlite 2026-10-06.** `user_stats` caches
+per-user play cadence (EMA of inter-play interval, play_count gate at 5);
+`_recency_penalty` now takes `halflife_h` and the DJ handlers thread
+`H_play_user = clamp(3 * ema, 12, 336)` through for users past the gate,
+falling back to the fixed 72 h env default otherwise. A user with no row
+(cold start, Guest, missing table, read error) is a strict no-op --
+property #1 is preserved.
+
+Deploy preconditions (none have run against Turso yet):
+1. `python scripts/_turso_create_user_stats.py` -- creates the table. Until
+   it has run, `_fetch_user_halflife` logs "no such table: user_stats" per
+   DJ/vibe call and silently uses the env default (safe degrade).
+2. `python scripts/rebuild_user_stats.py --turso --apply` -- optional but
+   recommended; the write path only arms on *new* play events, so without a
+   rebuild everyone stays cold-start until they rack up 5 fresh plays.
+
+Known: the user_track_stats upsert and the user_stats upsert are now two
+separate statements on top of the event INSERT (three on Turso, no
+transaction). Same drift mode as 5's user_track_stats; same recovery
+(rebuild_user_stats.py).
 
 ### 6.5 Still no automated tests
 The three verification scripts for this change lived in the scratchpad and

@@ -79,9 +79,19 @@ for _p, _label in (("u", "user"), ("s", "system")):
 
 # last_skipped_at keys off any skip regardless of label, matching
 # _accumulate_stats (which sets the flag before the label check).
+#
+# last_played means "last QUALIFIED listen" — a play_end with reason='completed'
+# OR position_ms >= DJ_QUALIFIED_PLAY_MS (default 90000). Must match the
+# backend/app.py:_accumulate_stats _qualified flag exactly; redefined here to
+# avoid importing backend.app from a script.
+_QUALIFIED_PLAY_MS = int(os.environ.get("DJ_QUALIFIED_PLAY_MS") or 90000)
 _TIMESTAMPS = [
     ("first_played_at", "MIN(server_ts)"),
-    ("last_played",     "MAX(server_ts)"),
+    ("last_played",
+     f"MAX(CASE WHEN type = 'play_end' "
+     f"           AND (LOWER(COALESCE(reason, '')) = 'completed' "
+     f"             OR COALESCE(position_ms, 0) >= {_QUALIFIED_PLAY_MS}) "
+     f"          THEN server_ts END)"),
     ("last_skipped_at",
      "MAX(CASE WHEN type = 'play_end' AND LOWER(COALESCE(reason, '')) = 'skipped' THEN server_ts END)"),
 ]

@@ -298,7 +298,14 @@ CREATE TABLE IF NOT EXISTS user_track_stats (
     s_vibe_sum_sq          INTEGER NOT NULL DEFAULT 0,
 
     first_played_at        TIMESTAMP,
+    -- last_played: timestamp of last QUALIFIED listen only
+    -- (play_end with reason='completed' OR position_ms >= DJ_QUALIFIED_PLAY_MS,
+    -- default 90s). A play_start or short skim never updates this. The DJ
+    -- recency penalty reads this directly; for "last time user saw this
+    -- track" (library UI), read MAX(last_played, last_skipped_at).
     last_played            TIMESTAMP,
+    -- last_skipped_at: any play_end with reason='skipped', any depth.
+    -- Cross-reference last_played above.
     last_skipped_at        TIMESTAMP,
     updated_at             TIMESTAMP,
 
@@ -308,3 +315,29 @@ CREATE TABLE IF NOT EXISTS user_track_stats (
 -- "what has this user played lately" — recency is a first-class recommender
 -- input and the PK cannot serve this ordering.
 CREATE INDEX IF NOT EXISTS idx_user_track_stats_recent ON user_track_stats(user_id, last_played DESC);
+
+
+-- ---------------------------------------------------------------------------
+-- user_stats — one row per user, derived from track_events (play_start only).
+--
+-- Feeds the DJ recency re-ranker's per-user half-life: a heavy listener's
+-- "played recently" means hours, a light listener's means weeks. Rebuildable
+-- by scripts/rebuild_user_stats.py from track_events alone, so this is a
+-- cache like user_track_stats and the single-writer rule is the same —
+-- POST /api/events is the only writer. Updated only for type='play_start'
+-- (we are modelling play cadence, not interaction cadence); skips do not
+-- advance last_play_at here even though they do in user_track_stats.last_played.
+--
+-- ema_interval_h is the exponentially-weighted mean of hours between
+-- consecutive plays (0.1 new / 0.9 old). Nullable until the second play
+-- lands. play_count is the cold-start gate: the re-ranker falls back to the
+-- fixed DJ_RECENCY_HALFLIFE_H env default until play_count >= 5.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS user_stats (
+    user_id         INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    plays_30d       INTEGER NOT NULL DEFAULT 0,
+    ema_interval_h  REAL,
+    play_count      INTEGER NOT NULL DEFAULT 0,
+    last_play_at    TEXT,
+    updated_at      TEXT NOT NULL
+);

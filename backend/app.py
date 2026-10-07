@@ -1167,6 +1167,14 @@ def _env_int(name: str, default: int) -> int:
 # ranking knob becomes a contract you can never change.
 _DJ_RECENCY_HALFLIFE_H = _env_float("DJ_RECENCY_HALFLIFE_H", 72.0)
 _DJ_SKIP_HALFLIFE_H = _env_float("DJ_SKIP_HALFLIFE_H", 168.0)
+# A play counts as "qualified" (updates user_track_stats.last_played) iff
+# play_end.reason == 'completed' OR position_ms >= DJ_QUALIFIED_PLAY_MS. 90 s
+# is the common recommender-signal bar for a real listen (streaming services
+# count a stream at ~30 s, but we want more than "it autoplayed and I didn't
+# stop it"). A 2-minute skip still qualifies: having had the track playing
+# for two minutes is a real listening event regardless of why the user moved
+# on. See _accumulate_stats and scripts/rebuild_user_track_stats.py.
+_DJ_QUALIFIED_PLAY_MS = _env_int("DJ_QUALIFIED_PLAY_MS", 90000)
 # DJ_RECENCY_WEIGHT=0 is the complete kill switch. It short-circuits before
 # the LEFT JOIN is added and before the pool is widened, so with it set the
 # emitted SQL and the response are byte-for-byte what they were pre-feature.
@@ -1259,7 +1267,8 @@ def _parse_sql_ts(value):
 
 
 def _recency_penalty(now, last_played, last_skipped_at,
-                     skip_count=0, skip_pos_sum=0, duration_ms=None):
+                     skip_count=0, skip_pos_sum=0, duration_ms=None,
+                     halflife_h=None):
     """Pure. Returns (P, explain) with P >= 0 ALWAYS. Takes no connection.
 
     `now` is an aware UTC datetime. The timestamps are whatever the DB handed
@@ -1275,10 +1284,12 @@ def _recency_penalty(now, last_played, last_skipped_at,
     otherwise give 2^(+k) and an unbounded SCORE-RAISING penalty. A future
     timestamp yields P = 1 (maximally recent), not P = 40.
 
-    A skip also writes last_played (verified: _upsert_track_stats sets
-    last_played on every accepted event regardless of type or reason), so the
-    two terms are ADDITIVE rather than max(): a track skipped an hour ago
-    carries both and should be the most suppressed thing in the pool.
+    last_played and last_skipped_at are INDEPENDENT since the DJ_QUALIFIED_PLAY_MS
+    change: a short skip updates only last_skipped_at, a qualifying listen
+    (completed OR >=DJ_QUALIFIED_PLAY_MS, default 90s) updates only last_played,
+    and a long-but-skipped play updates both. The two penalty terms are
+    ADDITIVE rather than max(): a track skipped an hour ago after two minutes
+    of play carries both and should be the most suppressed thing in the pool.
     """
     ex = {
         "p_play": 0.0,
@@ -1297,9 +1308,12 @@ def _recency_penalty(now, last_played, last_skipped_at,
             return None
         return max(0.0, (now - parsed).total_seconds() / 3600.0)
 
+    # Per-user half-life falls back to the env default so existing callers
+    # (and users with no stats) see pre-feature behaviour byte-for-byte.
+    h_half = halflife_h if (halflife_h is not None and halflife_h > 0) else _DJ_RECENCY_HALFLIFE_H
     h_play = _hours_since(last_played)
-    if h_play is not None and _DJ_RECENCY_HALFLIFE_H > 0:
-        ex["p_play"] = float(2.0 ** (-h_play / _DJ_RECENCY_HALFLIFE_H))
+    if h_play is not None and h_half > 0:
+        ex["p_play"] = float(2.0 ** (-h_play / h_half))
 
     h_skip = _hours_since(last_skipped_at)
     if h_skip is not None and _DJ_SKIP_HALFLIFE_H > 0:
@@ -1350,7 +1364,7 @@ class _RecencyCandidate:
         self.duration_ms = duration_ms
 
 
-def _rerank_by_recency(cands, limit, now=None, explain=False):
+def _rerank_by_recency(cands, limit, now=None, explain=False, halflife_h=None):
     """Re-rank `cands` (already sorted best-first) and return the first
     `limit`. Each returned item is (candidate, final_score, explain|None).
 
@@ -1393,6 +1407,7 @@ def _rerank_by_recency(cands, limit, now=None, explain=False):
         p, ex = _recency_penalty(
             now, c.last_played, c.last_skipped_at,
             c.skip_count, c.skip_pos_sum, c.duration_ms,
+            halflife_h=halflife_h,
         )
         penalty = lam * p
         final = c.score - penalty
@@ -1461,6 +1476,54 @@ def _fetch_recency_stats(conn, user_id, now=None):
             r["skip_count"], r["skip_pos_sum"],
         )
     return out
+
+
+# Cold-start gate for the per-user half-life: below this many plays, the
+# ema is too noisy to beat the fixed env default. 5 is deliberately small --
+# an EMA with alpha=0.1 that has seen 4 updates is still ~65% initialisation
+# weight; by the fifth it is ~59%, but we have at least a signal.
+_DJ_USER_HALFLIFE_MIN_PLAYS = 5
+# Hard bounds on the derived half-life. 12 h keeps a very heavy listener from
+# shrinking the "forget this track" window below one listening session; 336 h
+# (two weeks) keeps a very light listener from suppressing a track they heard
+# once a month ago. Both are generous relative to the shipping fixed default
+# of 72 h, which lands inside the window at any realistic cadence.
+_DJ_USER_HALFLIFE_MIN_H = 12.0
+_DJ_USER_HALFLIFE_MAX_H = 336.0
+# Mapping constant: half-life ~= 3 * typical interval between plays. A user
+# who plays every 24 h gets 72 h (matches today's default), a 4-hourly heavy
+# listener gets 12 h, a 100-hourly light listener gets 300 h.
+_DJ_USER_HALFLIFE_MULT = 3.0
+
+
+def _fetch_user_halflife(conn, user_id) -> float:
+    """Return H_play for this user. Falls back to the env default on cold start,
+    unknown user, missing table (prod before _turso_create_user_stats.py has
+    run), or any read failure.
+
+    One SELECT per request, keyed on the PK. Pure read -- no writes, no side
+    effects on the recency re-rank fast path.
+    """
+    try:
+        row = conn.execute(
+            "SELECT ema_interval_h, play_count FROM user_stats WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    except Exception as e:
+        log.warning("[dj] user_stats unavailable: %s", e)
+        return _DJ_RECENCY_HALFLIFE_H
+    if row is None:
+        return _DJ_RECENCY_HALFLIFE_H
+    try:
+        pc = int(row["play_count"] or 0)
+        ema = row["ema_interval_h"]
+        ema_f = float(ema) if ema is not None else None
+    except (TypeError, ValueError):
+        return _DJ_RECENCY_HALFLIFE_H
+    if pc < _DJ_USER_HALFLIFE_MIN_PLAYS or ema_f is None or ema_f <= 0:
+        return _DJ_RECENCY_HALFLIFE_H
+    h = _DJ_USER_HALFLIFE_MULT * ema_f
+    return max(_DJ_USER_HALFLIFE_MIN_H, min(_DJ_USER_HALFLIFE_MAX_H, h))
 
 
 class SimilarBody(BaseModel):
@@ -1553,6 +1616,7 @@ def _similar_vibe(track_key: str, limit: int, user_id,
             "apple_id": anchor["apple_id"],
             "mood": a_mood,
         }
+        h_user = _fetch_user_halflife(conn, user_id) if rerank else None
     finally:
         conn.close()
 
@@ -1577,7 +1641,8 @@ def _similar_vibe(track_key: str, limit: int, user_id,
         ))
 
     out_tracks = []
-    for c, final, block in _rerank_by_recency(cands, limit, explain=explain):
+    for c, final, block in _rerank_by_recency(cands, limit, explain=explain,
+                                              halflife_h=h_user):
         d = _row_to_dict(c.payload)
         d["final_score"] = final
         if block is not None:
@@ -1698,6 +1763,10 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
         raise HTTPException(status_code=404, detail={"error": "track_not_found"})
     anchor_id = int(anchor["id"])
     a_mood = anchor["mood"] or ""
+    # One SELECT, done up front so it is shared across the Turso and numpy
+    # branches below. None when the gate is off -- the re-ranker treats that
+    # as "use the env default".
+    h_user = _fetch_user_halflife(conn, user_id) if rerank else None
 
     # Resolve variant with cross-variant fallback: try requested; if seed
     # has no vector there, try the other variant; if neither, drop to vibe.
@@ -1897,7 +1966,8 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
                         for r in rows
                     ]
                     for c, final, block in _rerank_by_recency(
-                            cands, limit, explain=explain):
+                            cands, limit, explain=explain,
+                            halflife_h=h_user):
                         d = _row_to_dict(c.payload)
                         d["score"] = c.score
                         d["final_score"] = final
@@ -1987,7 +2057,8 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
                     c = _mk_cand(int(tid), 0.0)
                     p, _ex = _recency_penalty(
                         now, c.last_played, c.last_skipped_at,
-                        c.skip_count, c.skip_pos_sum, c.duration_ms)
+                        c.skip_count, c.skip_pos_sum, c.duration_ms,
+                        halflife_h=h_user)
                     w[i] = 1.0 / (1.0 + p)
                 total = float(w.sum())
                 probs = (w / total) if total > 0 else None
@@ -2016,7 +2087,8 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
                 top_ids = []
                 top_scores = {}
                 for c, final, block in _rerank_by_recency(
-                        cands, limit, explain=explain):
+                        cands, limit, explain=explain,
+                        halflife_h=h_user):
                     tid = int(c.payload)
                     top_ids.append(tid)
                     top_scores[tid] = c.score
@@ -4275,6 +4347,11 @@ def _accumulate_stats(acc: dict, ev: dict) -> None:
     reason = (ev["reason"] or "").lower()
     if reason == "skipped":
         acc["_skipped"] = True
+    # A play "qualifies" (updates last_played) only on play_end with either a
+    # completed reason or at least DJ_QUALIFIED_PLAY_MS of playback. play_start
+    # NEVER qualifies — a 2 s skim is not a listen. See _upsert_track_stats.
+    if reason == "completed" or pos >= _DJ_QUALIFIED_PLAY_MS:
+        acc["_qualified"] = True
     if not p:
         return
     acc[p + "end_count"] += 1
@@ -4309,10 +4386,10 @@ def _upsert_track_stats(conn, user_id: int, groups: dict, now: str) -> None:
             (user_id, tid)
             + tuple(acc[c] for c in _STATS_COUNTERS)
             + (
-                now,                                   # first_played_at (COALESCEd on conflict)
-                now,                                   # last_played
-                now if acc.get("_skipped") else None,   # last_skipped_at
-                now,                                   # updated_at
+                now,                                       # first_played_at (COALESCEd on conflict)
+                now if acc.get("_qualified") else None,    # last_played (only on qualified listens)
+                now if acc.get("_skipped") else None,      # last_skipped_at
+                now,                                       # updated_at
             )
         )
 
@@ -4323,7 +4400,8 @@ def _upsert_track_stats(conn, user_id: int, groups: dict, now: str) -> None:
         ON CONFLICT(user_id, track_id) DO UPDATE SET
               {sums},
               first_played_at = COALESCE(user_track_stats.first_played_at, excluded.first_played_at),
-              last_played     = MAX(COALESCE(user_track_stats.last_played, ''), excluded.last_played),
+              last_played     = NULLIF(MAX(COALESCE(user_track_stats.last_played, ''),
+                                           COALESCE(excluded.last_played, '')), ''),
               last_skipped_at = NULLIF(MAX(COALESCE(user_track_stats.last_skipped_at, ''),
                                            COALESCE(excluded.last_skipped_at, '')), ''),
               updated_at      = excluded.updated_at
@@ -4339,7 +4417,74 @@ def _upsert_track_stats(conn, user_id: int, groups: dict, now: str) -> None:
         )
 
 
-def _record_track_events(user_id: int, items: list) -> tuple:
+# EMA parameters for user_stats.ema_interval_h. alpha=0.1 means the current
+# estimate is 90% history / 10% newest interval -- stable enough that one
+# unusually long gap (holiday) does not blow the half-life out.
+_USER_STATS_EMA_ALPHA = 0.1
+# Clamp bounds on a single observed inter-play interval, in hours. 0.01 h
+# (36 s) catches double-fires and clock skew; 720 h (30 d) stops a comeback
+# after months of silence from permanently anchoring the EMA at a huge value.
+_USER_STATS_INTERVAL_MIN_H = 0.01
+_USER_STATS_INTERVAL_MAX_H = 720.0
+
+
+def _upsert_user_stats(conn, user_id: int, play_count_delta: int, now: str) -> None:
+    """Fold play_start events for one user into user_stats.
+
+    Reads the current row (if any), computes the new EMA from the interval
+    between the previous last_play_at and `now`, writes it back. Caller must
+    guarantee play_count_delta > 0 -- this function is skipped entirely for
+    batches with no plays, which is the common skip-only case.
+
+    Two separate statements (SELECT then INSERT/UPDATE) on top of the event
+    INSERT and user_track_stats upsert that already happened. On Turso each
+    is its own Hrana stream so there is no transactional envelope -- a crash
+    between any of them leaves user_stats behind the log, which is exactly
+    the same drift mode as user_track_stats and recoverable the same way
+    (scripts/rebuild_user_stats.py). The read path treats a missing row as
+    "cold start, use the env default", so drift degrades to the pre-feature
+    behaviour rather than to a wrong half-life.
+    """
+    if play_count_delta <= 0:
+        return
+    row = conn.execute(
+        "SELECT ema_interval_h, play_count, last_play_at "
+        "FROM user_stats WHERE user_id = ?",
+        (user_id,),
+    ).fetchone()
+    if row is None:
+        # First play ever. Seed with play_count = delta so a multi-play batch
+        # still arms the cold-start gate correctly.
+        conn.execute(
+            "INSERT INTO user_stats "
+            "(user_id, plays_30d, ema_interval_h, play_count, last_play_at, updated_at) "
+            "VALUES (?, ?, NULL, ?, ?, ?)",
+            (user_id, play_count_delta, play_count_delta, now, now),
+        )
+        return
+    last_ts = _parse_sql_ts(row["last_play_at"])
+    now_dt = _parse_sql_ts(now)
+    new_ema = row["ema_interval_h"]
+    if last_ts is not None and now_dt is not None:
+        gap = max(_USER_STATS_INTERVAL_MIN_H,
+                  min(_USER_STATS_INTERVAL_MAX_H,
+                      (now_dt - last_ts).total_seconds() / 3600.0))
+        if new_ema is None:
+            new_ema = gap
+        else:
+            new_ema = _USER_STATS_EMA_ALPHA * gap + (1.0 - _USER_STATS_EMA_ALPHA) * float(new_ema)
+    conn.execute(
+        "UPDATE user_stats SET "
+        "  ema_interval_h = ?, "
+        "  play_count = play_count + ?, "
+        "  last_play_at = ?, "
+        "  updated_at = ? "
+        "WHERE user_id = ?",
+        (new_ema, play_count_delta, now, now, user_id),
+    )
+
+
+def _record_track_events(user_id: int, items: list, display_name: str = "") -> tuple:
     """Resolve, log and aggregate a batch of already-capped client events.
 
     Returns (accepted, rejected). Runs inline on a worker thread; cost is
@@ -4446,6 +4591,22 @@ def _record_track_events(user_id: int, items: list) -> tuple:
                     "aggregate has drifted — run scripts/rebuild_user_track_stats.py",
                     user_id, len(groups),
                 )
+            # user_stats feeds the per-user DJ half-life. Only play_start
+            # events advance it -- we are modelling play cadence, not
+            # interaction cadence -- and the shared Guest row is skipped
+            # outright rather than conflating many visitors' cadences into one.
+            if (display_name or "") != "Guest":
+                plays = sum(1 for _tid, e in logged if e["type"] == "play_start")
+                if plays:
+                    try:
+                        _upsert_user_stats(conn, user_id, plays, now)
+                    except Exception:
+                        # Same recovery story as above: rebuild from events.
+                        log.exception(
+                            "[events] user_stats upsert failed for user=%s; "
+                            "aggregate has drifted -- run scripts/rebuild_user_stats.py",
+                            user_id,
+                        )
             conn.commit()
         return accepted, rejected
     finally:
@@ -4497,7 +4658,8 @@ async def post_track_events(request: Request, sess: dict = Depends(require_user)
             over = n_seen - _EVENT_BATCH_CAP
             items = items[:_EVENT_BATCH_CAP]
         accepted, rejected = await run_in_threadpool(
-            _record_track_events, int(sess["user_id"]), items
+            _record_track_events, int(sess["user_id"]), items,
+            sess.get("display_name") or "",
         )
         return {"accepted": accepted, "rejected": rejected + over}
     except Exception:
@@ -4651,12 +4813,17 @@ def admin_user_tracks(
 ):
     conn = get_conn()
     try:
+        # 'last_played' in the response is MAX(last_played, last_skipped_at) --
+        # the DB column 'last_played' now means 'qualified listen' only (play_end
+        # completed OR position_ms >= DJ_QUALIFIED_PLAY_MS); the UI wants 'last
+        # time the user saw this track', which is either event.
         rows = conn.execute(
             """
             SELECT t.id, t.title, t.artist, t.album, t.mood, t.vibe_score_ml,
                    t.classification_source, ut.added_at,
                    COALESCE(uts.play_count, 0) AS play_count,
-                   uts.last_played
+                   NULLIF(MAX(COALESCE(uts.last_played, ''),
+                              COALESCE(uts.last_skipped_at, '')), '') AS last_shown_at
             FROM user_tracks ut
             JOIN tracks t ON t.id = ut.track_id
             LEFT JOIN user_track_stats uts
@@ -4686,7 +4853,9 @@ def admin_user_tracks(
                 # SUM(play_count) over them is 0 and always has been, because
                 # nothing ever wrote them. See docs/backend-todo.md.
                 "play_count": int(r["play_count"] or 0),
-                "last_played": r["last_played"],
+                # Response field name preserved (frontend contract). Value is now
+                # MAX(uts.last_played, uts.last_skipped_at) — see SELECT comment.
+                "last_played": r["last_shown_at"],
             }
             for r in rows
         ]
