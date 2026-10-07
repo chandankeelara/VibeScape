@@ -301,7 +301,7 @@ CREATE TABLE IF NOT EXISTS user_track_stats (
     -- last_played: timestamp of last QUALIFIED listen only
     -- (play_end with reason='completed' OR position_ms >= DJ_QUALIFIED_PLAY_MS,
     -- default 90s). A play_start or short skim never updates this. The DJ
-    -- recency penalty reads this directly; for "last time user saw this
+    -- recency penalty reads this directly. For "last time user saw this
     -- track" (library UI), read MAX(last_played, last_skipped_at).
     last_played            TIMESTAMP,
     -- last_skipped_at: any play_end with reason='skipped', any depth.
@@ -325,7 +325,7 @@ CREATE INDEX IF NOT EXISTS idx_user_track_stats_recent ON user_track_stats(user_
 -- by scripts/rebuild_user_stats.py from track_events alone, so this is a
 -- cache like user_track_stats and the single-writer rule is the same —
 -- POST /api/events is the only writer. Updated only for type='play_start'
--- (we are modelling play cadence, not interaction cadence); skips do not
+-- (we are modelling play cadence, not interaction cadence) and skips do not
 -- advance last_play_at here even though they do in user_track_stats.last_played.
 --
 -- ema_interval_h is the exponentially-weighted mean of hours between
