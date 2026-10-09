@@ -10,6 +10,8 @@
  *
  * Decay is by elapsed time, not buffer position, so an idle hour actually
  * ages the signal instead of being masked by the next event's reindex.
+ * Entries past DJ_MAX_AGE_HOURS are dropped outright — the frontend buffer
+ * is session-intent only; cross-session memory is the backend's job.
  *
  * The user's queue is NEVER written to by DJ mode — that promise is load
  * bearing and is why this module returns picks instead of enqueueing them.
@@ -25,11 +27,21 @@ export const DJ_STORAGE_KEY = 'vibescape.sessionEvents';
 export const DJ_TOGGLE_KEY = 'vibescape.djEnabled';
 
 /**
- * Cap on unique tracks held in the per-track verdict map. A session rarely
- * touches more than ~50 unique tracks, so this is a safety limit rather than
- * a routine pressure. When exceeded, the lowest-DECAYED-weight entry is
- * evicted — a highly-weighted older positive beats a decayed-to-nothing
- * recent negative. See pruneTracks().
+ * Hard age cutoff for stored verdicts. Entries older than this are dropped
+ * on next upsert and on load, regardless of weight.
+ *
+ * The frontend buffer represents **this session's intent only** — the backend
+ * carries cross-session memory via its own 72h/168h recency rerank
+ * (`_recency_penalty`). A weight-based eviction policy let a strongly-weighted
+ * early signal (e.g. a `queued`=1.2) squat in the top-K sent slice for hours,
+ * because even heavily decayed it still beat newer small signals. A hard
+ * window makes "rolling" literal.
+ */
+export const DJ_MAX_AGE_HOURS = 1;
+
+/**
+ * Safety cap on map size. Routine pressure is bounded by DJ_MAX_AGE_HOURS;
+ * this is a floor against pathological event storms within the window.
  */
 export const DJ_MAX_TRACKS = 100;
 
@@ -98,7 +110,9 @@ export function loadTracks() {
     // v1 was a bare array; v2 was {stamp, events: [...]}; both discarded.
     if (!parsed || Array.isArray(parsed) || parsed.stamp !== stamp()) return {};
     const tracks = parsed.tracks && typeof parsed.tracks === 'object' ? parsed.tracks : {};
-    return tracks;
+    // Drop entries past the age window so a reload after a long idle gap
+    // starts clean rather than carrying stale verdicts.
+    return pruneByAge(tracks, Date.now());
   } catch {
     return {};
   }
@@ -196,9 +210,11 @@ export function upsertTrack(tracks, evt) {
   const existing = tracks[key];
 
   const new_signed = v.verdict === 'positive' ? v.weight : -v.weight;
+  const ageHours = existing ? Math.max(0, (now - existing.ts) / 3_600_000) : Infinity;
   let combined;
-  if (existing) {
-    const ageHours = Math.max(0, (now - existing.ts) / 3_600_000);
+  // An existing entry past the age window counts as not there — don't
+  // resurrect a stale verdict by signed-summing it into the new one.
+  if (existing && ageHours <= DJ_MAX_AGE_HOURS) {
     const existing_decayed = existing.weight * Math.pow(DJ_DECAY_PER_HOUR, ageHours);
     const existing_signed = existing.verdict === 'positive' ? existing_decayed : -existing_decayed;
     combined = existing_signed + new_signed;
@@ -206,8 +222,9 @@ export function upsertTrack(tracks, evt) {
     combined = new_signed;
   }
 
+  const base = pruneByAge(tracks, now);
   const next = {
-    ...tracks,
+    ...base,
     [key]: {
       // Native type preserved: a number short-circuits backend resolution,
       // a string (un-ingested Spotify result) still batch-resolves.
@@ -220,24 +237,31 @@ export function upsertTrack(tracks, evt) {
       ts: now,
     },
   };
-  return Object.keys(next).length > DJ_MAX_TRACKS ? pruneTracks(next) : next;
+  return Object.keys(next).length > DJ_MAX_TRACKS ? pruneByRecency(next) : next;
 }
 
 /**
- * Keep the DJ_MAX_TRACKS highest-DECAYED-weight entries. Eviction by
- * decayed weight (not raw ts) because a highly-liked older positive still
- * carries more signal than a near-zero recent negative.
+ * Drop entries whose age exceeds DJ_MAX_AGE_HOURS. Primary eviction.
  */
-function pruneTracks(tracks) {
-  const now = Date.now();
-  const scored = Object.values(tracks).map((e) => {
-    const ageHours = Math.max(0, (now - e.ts) / 3_600_000);
-    return { e, dw: e.weight * Math.pow(DJ_DECAY_PER_HOUR, ageHours) };
-  });
-  scored.sort((a, b) => b.dw - a.dw);
+function pruneByAge(tracks, now) {
+  const cutoff = now - DJ_MAX_AGE_HOURS * 3_600_000;
   const kept = {};
-  for (let i = 0; i < Math.min(scored.length, DJ_MAX_TRACKS); i++) {
-    kept[String(scored[i].e.id)] = scored[i].e;
+  for (const [k, e] of Object.entries(tracks)) {
+    if (e.ts >= cutoff) kept[k] = e;
+  }
+  return kept;
+}
+
+/**
+ * Safety trim when the map blows past DJ_MAX_TRACKS inside the window.
+ * Keeps the most recent entries by ts — a true rolling window has no reason
+ * to privilege one weight class over another when it must drop something.
+ */
+function pruneByRecency(tracks) {
+  const entries = Object.values(tracks).sort((a, b) => b.ts - a.ts);
+  const kept = {};
+  for (let i = 0; i < Math.min(entries.length, DJ_MAX_TRACKS); i++) {
+    kept[String(entries[i].id)] = entries[i];
   }
   return kept;
 }
