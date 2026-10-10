@@ -138,7 +138,7 @@ Publishes the `vibescape-ml` app with two functions, both on **T4**,
 | Function | Job |
 |---|---|
 | `predict_from_url(preview_url)` | MERT → `{danceability, energy, valence, vibe_score, model_version}` |
-| `predict_language_from_url(preview_url, model_size)` | Whisper → top-1 language, persisted only when `prob ≥ 0.2` |
+| `predict_language_from_url(preview_url, model_size)` | Whisper → top-1 language. **No caller since 2026-10-10** — the ingest pipeline no longer detects language from audio. |
 
 Two persistent volumes (`vibescape-hf-cache`, `vibescape-whisper-cache`) hold
 the HuggingFace and Whisper weight caches so cold starts don't re-download

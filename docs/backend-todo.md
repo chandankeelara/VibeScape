@@ -695,6 +695,55 @@ values sit around 0.3 rather than 0.9. Nothing in `frontend-next/` reads it
 (grep, 2026-10-10), and the re-rank's lambda scales with the score window, so
 it needs no recalibration.
 
+## 8. Language became a database-queue stage — landed 2026-10-10, what is left
+
+Whisper is out of the pipeline. `ingest_pipeline/stage_language.py` no
+longer loads a model, reads audio or touches the GPU; it parks every live
+row at `language_status='pending'` and a pipeline run **stops there**. A
+Claude Code session queries the DB for those rows, reads title/artist/album
+and writes the tag through `ingest_pipeline/language_tagging.py`, which also
+fires the `fuse_status='pending'` cascade. `ingest_pipeline/README.md`
+§ Tagging languages is the interface document.
+
+**`fuse` and `youtube` now gate on `language_status='done'` exactly**
+(verified by running both `fetch_pending`s against each status on a copy of
+the local DB, 2026-10-10). `'whisper_done'` and `'no_match'` were removed
+from both IN-lists: neither has a producer any more, and the queue flow's
+"no language" is an explicit clear writing `language=NULL,
+language_status='done'`, which passes a `'done'`-only gate on its own merits.
+
+### 8.1 Untagged tracks are now permanently out of the DJ pool
+**verified by reading**, and accepted by the user as the trade. Before, a
+wrong-but-present Whisper tag let every track fuse. Now nothing fuses until
+someone tags it, so the 656 local (and ~1,620 production) rows at
+`'pending'` are invisible to the DJ until a session runs.
+`python scripts/language_tags.py --status` reports the count, the oldest and
+median wait in days, and the number encoded-but-unfused; it exits 1 when
+anything is waiting, so it can be a cron check.
+
+### 8.2 `ingest/ml_backend.py`'s Whisper dispatch is now unused
+**verified** by grep across `*.py`: `predict_language_from_url`,
+`predict_language_from_path`, `_get_local_whisper`,
+`_modal_predict_language_from_url`, `_local_predict_language_from_url` and
+`_MODAL_LANG_FUNCTION_NAME` have no caller left in this repo.
+`ml/src/predict_language.py` imports `whisper` directly and `modal_app.py`
+defines its own copy, so neither is a consumer. **Not removed** — flagged
+for the owner to decide, since the Modal deployment is a separate artifact.
+
+### 8.3 The hand-driven pair is superseded
+`scripts/_llm_verify_export.py` and `scripts/_llm_verify_apply.py` still
+exist and still work, but they select on `language_status='whisper_done'`,
+which no longer has a producer. They are a second writer of the same
+columns with the same cascade — exactly 1.2's failure mode if the two ever
+diverge. Delete them once nobody is mid-flight on a hand-driven batch.
+
+### 8.4 Not verified against production
+Nothing here was run against Turso. Two things to check before/after a prod
+run: `SELECT language_status, COUNT(*) FROM tracks GROUP BY 1` (prod rows
+land NULL, not `'pending'`, because its `tracks` has no column defaults —
+`LanguageStage` normalises them, but only for rows a cohort reaches), and
+whether any `'whisper_done'` rows exist there (local has none).
+
 ## Checked and clean
 
 Recorded so the next audit does not redo them.
@@ -709,8 +758,8 @@ Recorded so the next audit does not redo them.
   only instance** of the `_update_job` / `_bump` / `_is_cancelled` failure
   mode, and it is repaired at `backend/app.py:2332-2354`.
 - **Operational scripts default to dry-run.** `_sync_local_to_turso.py`,
-  `_dedupe_turso_by_isrc.py`, `_fix_language_tags.py` and
-  `_llm_verify_apply.py` all require an explicit `--apply` and print
+  `_dedupe_turso_by_isrc.py`, `_fix_language_tags.py`, `_llm_verify_apply.py`
+  and `language_tags.py` all require an explicit `--apply` and print
   "dry-run — nothing was modified" otherwise.
 - **Secret hygiene.** `scripts/_load_gcp_secrets.ps1` is excluded from the
   deploy upload by `.gcloudignore`'s `scripts/_*.ps1`, and from the image by

@@ -96,7 +96,12 @@ CREATE TABLE IF NOT EXISTS tracks (
     vibe_score_ml    REAL,
     model_version    TEXT,
 
-    -- language detection (filled by Whisper via modal_app.predict_language_from_url)
+    -- language. Read from title/artist/album by a Claude Code session, not
+    -- detected from audio (Whisper was removed 2026-10-10 -- it mispredicted
+    -- routinely on sung audio). language_confidence is 1.0 for an asserted
+    -- tag, NULL when the verdict is "no language" (instrumental).
+    -- language_top3_json is a Whisper leftover with no writer.
+    -- See ingest_pipeline/README.md, section Tagging languages.
     language              TEXT,
     language_confidence   REAL,
     language_top3_json    TEXT,

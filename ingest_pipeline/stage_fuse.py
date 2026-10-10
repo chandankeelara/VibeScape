@@ -70,13 +70,26 @@ class FuseStage(Stage):
             # whose mert vector is stale simply waits for classify to
             # re-encode it.
             f"AND te.model_version = ? "
-            # Language must have finished. In the default order it always
-            # has (language arms fuse), but a targeted --stages run, or a
-            # fuse_status reset during a migration, can reach a row whose
-            # language is still pending — and fusing then silently buckets
-            # it as 'other', which is a wrong vector rather than a missing
-            # one. 'whisper_done'/'no_match' are finished outcomes.
-            f"AND t.language_status IN ('done', 'whisper_done', 'no_match') "
+            # Language must have a real verdict. STRICT 'done', decided
+            # 2026-10-10: fusing without one is not a loss of precision,
+            # it puts the track in the wrong region of the similarity
+            # space (20% of this vector is the language one-hot) and
+            # nothing downstream knows the vector is provisional.
+            #
+            # The tuple used to also admit 'whisper_done' and 'no_match'.
+            # Neither has a producer any more — Whisper is gone, and the
+            # queue flow's equivalent of "no language" is an explicit
+            # clear, which writes language=NULL with language_status
+            # ='done' and so passes this gate on its own merits. Leaving
+            # them in would be dead tolerance that silently let an
+            # untagged row through.
+            #
+            # The cost of strictness is real and accepted: a track
+            # still waiting for a tag never fuses, so it never reaches the
+            # DJ pool. That makes the tagging step load-bearing, not
+            # housekeeping — `python scripts/language_tags.py --status`
+            # is how you find out how many are waiting and for how long.
+            f"AND t.language_status = 'done' "
             f"{_idf}"
             f"ORDER BY t.id ASC LIMIT ?",
             (CURRENT_MERT_VERSION, *_idp, limit),
