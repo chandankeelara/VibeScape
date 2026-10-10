@@ -98,16 +98,12 @@
 .videoStage { position: absolute; inset: 0; z-index: 1; }
 .videoHidden { visibility: hidden; pointer-events: none; }
 
-/* Once detached the frame is fixed to the viewport, so the stage must stop
-   clipping it. */
-.stageDetached { position: static; }
-
 .videoFrame {
   position: absolute;
   inset: 0;
   /* Deliberately NO overflow:hidden here — .videoInner owns the clip. The
-     glow sits at inset:-6% and the resize handles at -3px, both of which a
-     clip on this element would swallow. */
+     glow sits at a negative inset, which a clip on this element would
+     swallow. */
   isolation: isolate;
 }
 
@@ -157,16 +153,6 @@
   pointer-events: none;
 }
 
-.frameDetached {
-  position: fixed;
-  inset: auto;
-  z-index: var(--z-modal);
-  /* left/top/width/height are written directly by useVideoFrame. */
-}
-
-.videoFrame:global(.is-dragging) { cursor: grabbing; user-select: none; }
-.videoFrame:global(.is-resizing) { user-select: none; }
-
 /*
  * Absolutely positioned, with its bottom inset driven by --video-chrome-h, so
  * the chrome strip takes a slice of the card and the player keeps a DEFINITE
@@ -182,65 +168,6 @@
   z-index: 1;
 }
 .ytMount iframe { width: 100%; height: 100%; border: 0; display: block; }
-
-/* --------------------------------------------------------------- chrome */
-
-.videoTopbar {
-  position: absolute;
-  inset: 0 0 auto;
-  z-index: 3;
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: 6px 10px;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.75), transparent);
-  cursor: grab;
-  opacity: 0;
-  transition: opacity var(--dur) var(--ease);
-}
-.videoFrame:hover .videoTopbar,
-.videoTopbar:focus-within { opacity: 1; }
-
-/* Once detached the bar stays visible. A mis-drag can strand the panel at its
-   240x160 minimum in a corner, and that position persists across reloads —
-   a hover-only dock button on a box that small is close to unrecoverable. */
-.frameDetached .videoTopbar { opacity: 1; }
-
-.grip { display: inline-flex; flex-direction: column; gap: 2px; }
-.grip span { width: 12px; height: 1.5px; background: var(--text-3); border-radius: 1px; }
-
-.topbarHint {
-  flex: 1;
-  font-family: var(--mono);
-  font-size: 9.5px;
-  letter-spacing: 0.06em;
-  color: var(--text-3);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Shared chrome button. Matches the surrounding bar: --border hairline, the
-   --sp-2 radius, --text-2 at rest. */
-.topbarBtn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: var(--sp-2);
-  border: 1px solid var(--border);
-  background: var(--scrim-soft);
-  color: var(--text-2);
-  cursor: pointer;
-  transition: color var(--dur) var(--ease), background var(--dur) var(--ease),
-              border-color var(--dur) var(--ease);
-}
-.topbarBtn:hover { color: var(--text); background: var(--scrim); }
-
-.dockBtn { composes: topbarBtn; }
-
-
 
 /* ----------------------------------------------------- card chrome strip */
 /*
@@ -268,21 +195,6 @@
   border-top: 1px solid var(--border);
   background: linear-gradient(0deg, var(--scrim-soft), transparent);
 }
-
-/* ------------------------------------------------------------- resize hit */
-
-.resize { position: absolute; z-index: 4; }
-
-.resize_n { top: -7px; left: 14px; right: 14px; height: 8px; cursor: ns-resize; }
-.resize_s { bottom: -7px; left: 14px; right: 14px; height: 8px; cursor: ns-resize; }
-.resize_e { right: -7px; top: 14px; bottom: 14px; width: 8px; cursor: ew-resize; }
-.resize_w { left: -7px; top: 14px; bottom: 14px; width: 8px; cursor: ew-resize; }
-
-.resize_nw, .resize_ne, .resize_sw, .resize_se { width: 16px; height: 16px; }
-.resize_nw { top: -7px; left: -7px; cursor: nwse-resize; }
-.resize_ne { top: -7px; right: -7px; cursor: nesw-resize; }
-.resize_sw { bottom: -7px; left: -7px; cursor: nesw-resize; }
-.resize_se { bottom: -7px; right: -7px; cursor: nwse-resize; }
 
 /* ------------------------------------------------------------- overlays */
 
@@ -314,11 +226,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .spinner { animation-duration: 2s; }
-}
-
-/* Touch: no hover to reveal the bar, so keep it visible. */
-@media (hover: none) {
-  .videoTopbar { opacity: 1; }
 }
 
 /* ------------------------------------------------------- verify overlay */

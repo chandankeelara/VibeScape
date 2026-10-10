@@ -4,12 +4,10 @@
  * it is fixed rather than a grid row.
  *
  * z-index sits at --z-sticky (100), BELOW --z-overlay (200) and --z-modal
- * (300). Three things already live at the bottom of the viewport and all of
- * them must stay on top of Bit:
+ * (300). Two things already live at the bottom of the viewport and both
+ * must stay on top of Bit:
  *   - the queue sidebar's mobile sheet + FAB  (fixed, --z-overlay, <=640px)
  *   - the queue drag ghost and drop indicator (fixed, --z-overlay, on <body>)
- *   - a detached video frame                  (fixed, --z-modal, draggable
- *                                              anywhere by the user)
  */
 
 .dock {

@@ -41,7 +41,7 @@ function PlayerStage() {
    * Passing `mode === 'video'` rather than gating on it here keeps the
    * preference alive across a trip through audio mode — see useTheaterMode.
    */
-  const { theater, canTheater, morphing, toggleTheater, exitTheater } =
+  const { theater, canTheater, morphing, toggleTheater } =
     useTheaterMode(mode === 'video');
 
   /*
@@ -103,7 +103,6 @@ function PlayerStage() {
           theater={theater}
           canTheater={canTheater}
           onToggleTheater={toggleTheater}
-          onExitTheater={exitTheater}
         />
         {/*
           * Third child either way, so ArtStage stays at index 1 and React
