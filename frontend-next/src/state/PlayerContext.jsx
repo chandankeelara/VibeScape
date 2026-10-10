@@ -30,6 +30,9 @@ const PlayerCtx = createContext(null);
 
 export const RECENT_MAX = 12;
 
+/** A vibe that holds still this long is a settled change (telemetry only). */
+const VIBE_SETTLE_MS = 1000;
+
 /**
  * Session "seen" set — every track the user has interacted with, so the DJ
  * never recommends something already encountered this session.
@@ -59,6 +62,8 @@ export function PlayerProvider({ children }) {
   const [playing, setPlaying] = useState(false);
   const [mode, setMode] = useState('audio'); // 'audio' | 'video'
   const [queue, setQueue] = useState([]);
+  const queueRef = useRef([]);
+  useEffect(() => { queueRef.current = queue; }, [queue]);
   const [recent, setRecent] = useState([]);
   const [source, setSource] = useState(null); // 'spotify' | 'preview' | null
   const [loadingTrack, setLoadingTrack] = useState(false);
@@ -87,6 +92,8 @@ export function PlayerProvider({ children }) {
   /* Live mirrors for the telemetry context provider. Refs so sampling them
      costs no render; they are written from effects, never read during one. */
   const vibeRef = useRef(50);
+  /** Last vibe a vibe_change event reported, so a burst knows where it began. */
+  const vibeLoggedRef = useRef(50);
 
   // Insertion-ordered so the cap drops the OLDEST. A ref, not state: this
   // changes on every play and must not re-render the tree, and the recs
@@ -131,6 +138,29 @@ export function PlayerProvider({ children }) {
   useEffect(() => { applyAccent(vibe); vibeRef.current = vibe; }, [vibe]);
 
   /*
+   * Telemetry: one vibe_change per SETTLED change, not one per slider tick.
+   * A drag is a burst of values; `from` is where the burst started and the
+   * event goes out once the value has held still for VIBE_SETTLE_MS. The
+   * envelope's vibe_source says who moved it (user, or the app following a
+   * track). From an effect, not the setters: setVibeState runs inside updaters
+   * and those must stay pure.
+   */
+  const vibeBurstRef = useRef({ from: null, timer: null });
+  useEffect(() => {
+    const b = vibeBurstRef.current;
+    if (b.from === null) b.from = vibeLoggedRef.current;
+    clearTimeout(b.timer);
+    b.timer = setTimeout(() => {
+      const from = b.from;
+      b.from = null;
+      if (from === vibe) return;
+      vibeLoggedRef.current = vibe;
+      listenLog.logEvent('vibe_change', { data: { from, to: vibe } });
+    }, VIBE_SETTLE_MS);
+    return () => clearTimeout(b.timer);
+  }, [vibe]);
+
+  /*
    * Hand the listening log a way to sample the things only React knows.
    *
    * Registering a getter rather than pushing values means telemetry reads the
@@ -157,8 +187,8 @@ export function PlayerProvider({ children }) {
       onEnded: () => nextRef.current?.(),
       // Separate from onEnded on purpose: a lock-screen "next" is a SKIP, not
       // a completed listen, and DJ mode weights those very differently.
-      onNext: () => nextRef.current?.(),
-      onPrevious: () => prevRef.current?.(),
+      onNext: (opts) => nextRef.current?.(opts),
+      onPrevious: (opts) => prevRef.current?.(opts),
       onNeedsPremium: () =>
         toast('This track requires Spotify Premium to play (no preview available).', 'warning'),
       onVideoError: (info) => toast(info?.message || 'Video unavailable', 'warning'),
@@ -232,15 +262,17 @@ export function PlayerProvider({ children }) {
   }, []);
 
   /**
-   * `source` and `endReason` are telemetry only — they change nothing about
-   * playback. `source` defaults to 'search' because every caller that reaches
-   * here directly is an explicit user pick off a list (search results, recs,
-   * the recent trail); the queue / DJ / autoplay paths below name themselves.
+   * `source`, `endReason` and `trigger` are telemetry only — they change
+   * nothing about playback. `source` defaults to 'pick' because every caller
+   * that reaches here without naming one is an explicit pick off a list (a
+   * rec, the recent trail); search, queue, DJ and autoplay name themselves.
+   * Until 2026-10-10 the default was 'search', so older rows mix the two.
    * `endReason` defaults to 'skipped' inside the media layer — see the note on
-   * player.loadTrack() for why that default is the correct one.
+   * player.loadTrack() for why that default is the correct one. `trigger` is
+   * how the user ended the previous track.
    */
   const loadTrack = useCallback(
-    (t, { syncVibe = true, source = 'search', endReason } = {}) => {
+    (t, { syncVibe = true, source = 'pick', endReason, trigger } = {}) => {
       if (!t) return;
       setCurrent(t);
       pushRecent(t);
@@ -249,7 +281,7 @@ export function PlayerProvider({ children }) {
       // but NOT on the random vibe fetch — that track is already inside the
       // requested band, so snapping would drift the slider on every skip.
       if (syncVibe) setVibeFromTrack(t);
-      player.loadTrack(t, { mode, source, endReason });
+      player.loadTrack(t, { mode, source, endReason, trigger });
     },
     [mode, pushRecent, setVibeFromTrack, markSeen]
   );
@@ -261,7 +293,7 @@ export function PlayerProvider({ children }) {
    * track short); the post-library-sync re-roll passes 'replaced'.
    */
   const fetchForVibe = useCallback(
-    async (v = vibe, { endReason = 'skipped' } = {}) => {
+    async (v = vibe, { endReason = 'skipped', trigger = 'vibe_change' } = {}) => {
       const token = ++fetchToken.current;
       setLoadingTrack(true);
       try {
@@ -272,7 +304,7 @@ export function PlayerProvider({ children }) {
           exclude_ids: exclude.length ? exclude.join(',') : undefined,
         });
         if (token !== fetchToken.current) return;
-        loadTrack(t, { syncVibe: false, source: 'autoplay', endReason });
+        loadTrack(t, { syncVibe: false, source: 'autoplay', endReason, trigger });
       } catch (e) {
         if (token !== fetchToken.current) return;
         if (e.status === 404) {
@@ -377,23 +409,31 @@ export function PlayerProvider({ children }) {
 
   /* ---------------------------------------------------------------- queue */
 
-  const enqueue = useCallback((t) => {
+  /** Telemetry: a real add only — callers usually pre-check, this makes sure. */
+  const logQueueAdd = useCallback((t, via) => {
+    if (queueRef.current.some((x) => trackKey(x) === trackKey(t))) return;
+    listenLog.logTrackEvent('queue_add', t, via ? { data: { via } } : {});
+  }, []);
+
+  const enqueue = useCallback((t, { via } = {}) => {
     markSeen(t);
+    logQueueAdd(t, via);
     setQueue((q) => (q.some((x) => trackKey(x) === trackKey(t)) ? q : [...q, t]));
-  }, [markSeen]);
+  }, [markSeen, logQueueAdd]);
 
   const dequeueAt = useCallback((i) => setQueue((q) => q.filter((_, idx) => idx !== i)), []);
   const clearQueue = useCallback(() => setQueue([]), []);
 
   /** Insert at a position — needed by drag-to-queue from search/recs. */
-  const enqueueAt = useCallback((t, i) => {
+  const enqueueAt = useCallback((t, i, { via } = {}) => {
     markSeen(t);
+    logQueueAdd(t, via);
     setQueue((q) => {
       if (q.some((x) => trackKey(x) === trackKey(t))) return q;
       const at = Math.max(0, Math.min(i, q.length));
       return [...q.slice(0, at), t, ...q.slice(at)];
     });
-  }, [markSeen]);
+  }, [markSeen, logQueueAdd]);
 
   /** Move an item within the queue — drag-to-reorder. */
   const reorderQueue = useCallback((from, to) => {
@@ -412,11 +452,18 @@ export function PlayerProvider({ children }) {
   /** Register an async () => track|null used instead of a random vibe pull. */
   const setNextFallback = useCallback((fn) => { nextFallbackRef.current = fn; }, []);
 
-  const next = useCallback(() => {
+  /*
+   * `trigger` defaults to the on-screen next button. Media keys pass their own
+   * (setHooks above). When a track ended by itself this still runs, but the
+   * play is already closed as 'completed', so the trigger is never used.
+   * Guarded with typeof because a bare onClick={next} passes a click event.
+   */
+  const next = useCallback((opts) => {
+    const trigger = typeof opts?.trigger === 'string' ? opts.trigger : 'next_button';
     if (queue.length) {
       const [head, ...rest] = queue;
       setQueue(rest);
-      loadTrack(head, { source: 'queue' });
+      loadTrack(head, { source: 'queue', trigger });
       return;
     }
     const fallback = nextFallbackRef.current;
@@ -427,15 +474,15 @@ export function PlayerProvider({ children }) {
       // did, which left the hero card sitting on the previous track's art.
       setLoadingTrack(true);
       Promise.resolve(fallback())
-        .then((t) => (t ? loadTrack(t, { source: 'dj' }) : fetchForVibe()))
-        .catch(() => fetchForVibe())
+        .then((t) => (t ? loadTrack(t, { source: 'dj', trigger }) : fetchForVibe(undefined, { trigger })))
+        .catch(() => fetchForVibe(undefined, { trigger }))
         // fetchForVibe() owns the flag once it takes over, and clears it in
         // its own finally — but it may also have bailed early on a stale
         // token, so clearing here too is what guarantees the overlay dies.
         .finally(() => setLoadingTrack(false));
       return;
     }
-    fetchForVibe();
+    fetchForVibe(undefined, { trigger });
   }, [queue, loadTrack, fetchForVibe]);
 
   /*
@@ -448,7 +495,8 @@ export function PlayerProvider({ children }) {
    * Reading `recent` through a ref instead keeps the state fresh without a
    * side effect in the updater, the same indirection nextRef already uses.
    */
-  const prev = useCallback(() => {
+  const prev = useCallback((opts) => {
+    const trigger = typeof opts?.trigger === 'string' ? opts.trigger : 'prev';
     const r = recentRef.current;
     // On the first track of a session there is nowhere to go back to, so no
     // state changes and Bit must not act out a rewind that never happened.
@@ -458,7 +506,7 @@ export function PlayerProvider({ children }) {
     // loadTrack re-pushes the target, so drop the tail first to avoid a
     // duplicate entry in the trail.
     setRecent(r.slice(0, -1));
-    loadTrack(target);
+    loadTrack(target, { source: 'pick', trigger });
   }, [loadTrack]);
 
   useEffect(() => { recentRef.current = recent; }, [recent]);

@@ -744,6 +744,51 @@ land NULL, not `'pending'`, because its `tracks` has no column defaults —
 `LanguageStage` normalises them, but only for rows a cohort reaches), and
 whether any `'whisper_done'` rows exist there (local has none).
 
+## 8. Telemetry v2 — landed 2026-10-10 (branch `dj-replay`), what is left
+
+One envelope for every client event (session_id, tz_offset_min, vibe
+context, client_ts). Track events — play_start / play_end / pause / resume /
+seek / queue_add — go to `track_events`, which gained `listened_ms`,
+`end_trigger`, `playback`, `session_id`, `tz_offset_min`, `data`. App events —
+session_start / session_end / search / vibe_change / dj_toggle — go to the new
+`user_events`. `user_track_stats` gained `total_listened_ms`. New read
+endpoint `GET /api/me/stats`.
+
+### 8.1 Turso must be migrated BEFORE the v2 backend deploys
+`scripts/_turso_migrate_telemetry_v2.py`, then
+`scripts/rebuild_user_track_stats.py --turso --apply`
+
+**verified** (by reading the insert path). The v2 INSERT names the new
+columns, so on an unmigrated Turso every POST /api/events fails its insert
+and the batch is dropped — behind the endpoint's unconditional 202, so
+nothing looks wrong. Local SQLite migrates itself (`_migrate_telemetry`).
+
+### 8.2 [frontend contract] `source` gained 'pick', so old 'search' rows are mixed
+**verified.** A song played off a list (a rec, the trail, prev) is now
+`source='pick'`. Before 2026-10-10 those were `'search'` (or `'dj'` for a rec
+clicked in DJ mode). Any analysis of `source` must split at that date.
+
+### 8.3 Only plays feed the aggregate — keep it that way
+`backend/app.py` `_PLAY_TYPES`, `_accumulate_stats`,
+`scripts/rebuild_user_track_stats.py` `_expected`
+
+**verified.** `_accumulate_stats` used to treat every row that was not a
+play_start as a play_end. With pause / seek / queue_add rows in the same
+table that would have counted each pause as an ended play. Both the inline
+path and the rebuild now filter to play_start / play_end, checked equal on a
+DB copy (rebuild dry-run: 0 missing, 0 differing, 0 stale).
+
+### 8.4 last_played now qualifies on heard time
+`last_played` requires `completed` or **listened_ms** >= 90 s (playhead on
+pre-v2 rows). Seeking to 2:00 and stopping no longer counts as a listen, so
+the DJ recency penalty sees slightly fewer "recently played" tracks.
+
+### 8.5 Old rows stay approximate
+Pre-v2 play_end rows have no `listened_ms`; they count their playhead, which
+over-reports paused wall-clock time when no playhead was readable. 11 of 144
+local completions also recorded 0 ms (the bug fixed earlier). Not
+recoverable; the error shrinks as v2 data accumulates.
+
 ## Checked and clean
 
 Recorded so the next audit does not redo them.

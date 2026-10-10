@@ -280,6 +280,9 @@ export function disconnect() {
 
 export const getDeviceId = () => sp.deviceId;
 
+/** Length of what the SDK is playing, in seconds (0 before the first state). */
+export const getDuration = () => sp.durationMs / 1000;
+
 /**
  * Live playhead in seconds.
  *

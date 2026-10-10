@@ -15,7 +15,7 @@ export default function RecentTrail() {
   const pick = (t) => {
     const key = apiKey(t);
     if (key) emitDj({ track_id: key, action: 'picked', played_ratio: null, ts: Date.now() });
-    loadTrack(t);
+    loadTrack(t, { source: 'pick', trigger: 'pick' });
   };
 
   const items = recent

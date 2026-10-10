@@ -15,6 +15,7 @@ import { useToast } from '../../state/ToastContext';
 import { apiKey } from '../../lib/vibe';
 import { emitMascot } from '../../lib/mascotBus';
 import { onDj } from '../../lib/djBus';
+import { logEvent } from '../../lib/listenLog';
 import {
   appendEvent,
   classifyTransition,
@@ -196,17 +197,18 @@ export function useDj() {
    */
   useEffect(() => onDj((evt) => push(evt)), [push]);
 
+  // Side effects OUTSIDE the updater: StrictMode runs updaters twice, which
+  // here would double the toast and the dj_toggle event.
   const toggle = useCallback(() => {
-    setEnabled((on) => {
-      const next = !on;
-      persistEnabled(next);
-      toast(
-        next ? 'DJ mode on — session-weighted picks in the sidebar.' : 'DJ mode off.',
-        next ? 'success' : 'info'
-      );
-      return next;
-    });
-  }, [toast]);
+    const next = !enabled;
+    setEnabled(next);
+    persistEnabled(next);
+    logEvent('dj_toggle', { data: { on: next } });
+    toast(
+      next ? 'DJ mode on — session-weighted picks in the sidebar.' : 'DJ mode off.',
+      next ? 'success' : 'info'
+    );
+  }, [enabled, toast]);
 
   const signature = useMemo(() => eventsSignature(events), [events]);
 

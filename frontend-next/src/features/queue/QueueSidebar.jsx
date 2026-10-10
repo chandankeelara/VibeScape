@@ -83,7 +83,7 @@ export default function QueueSidebar() {
       for (let i = 0; i <= index; i++) dequeueAt(0);
       // Jumping the queue is a choice made now, on top of the earlier add.
       recordPicked(track);
-      loadTrack(track, { source: 'queue' });
+      loadTrack(track, { source: 'queue', trigger: 'queue_jump' });
     },
     [queue.length, dequeueAt, loadTrack, recordPicked]
   );
@@ -104,7 +104,8 @@ export default function QueueSidebar() {
       // Logged before loadTrack, like a search: the outgoing track's verdict
       // lands after it, and the fetch for the new seed sees both.
       recordPicked(track);
-      loadTrack(track, { source: djEnabled ? 'dj' : 'search' });
+      // 'pick', not 'dj': the DJ offered it, but the user chose it.
+      loadTrack(track, { source: 'pick', trigger: 'pick' });
     },
     [djEnabled, flashConsume, loadTrack, recordPicked]
   );
@@ -115,7 +116,7 @@ export default function QueueSidebar() {
         toast('Already in your queue.', 'info');
         return;
       }
-      enqueue(track);
+      enqueue(track, { via: 'rec' });
       recordQueued(track);
       toast('Added to queue.', 'success');
     },
@@ -128,7 +129,7 @@ export default function QueueSidebar() {
         toast('Already in your queue.', 'info');
         return;
       }
-      enqueueAt(track, index);
+      enqueueAt(track, index, { via: 'drag' });
       recordQueued(track);
       toast('Added to queue.', 'success');
     },

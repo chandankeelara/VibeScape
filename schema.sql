@@ -182,7 +182,10 @@ CREATE TABLE IF NOT EXISTS track_embeddings (
 -- materialised cache of exactly these rows and nothing else, and can always
 -- be rebuilt from them (scripts/rebuild_user_track_stats.py).
 --
--- type:    'play_start' | 'play_end'            (validated server-side)
+-- type:    'play_start' | 'play_end' | 'pause' | 'resume' | 'seek' |
+--          'queue_add'  (validated server-side). Only play_start and play_end
+--          feed user_track_stats. The rest are behaviour inside or around a
+--          play. App-level events with no track go to user_events below.
 -- reason:  'completed' | 'skipped' | 'replaced' (play_end only; stored
 --          verbatim after trimming, so an unexpected client vocabulary shows
 --          up in the data instead of being silently nulled)
@@ -213,7 +216,22 @@ CREATE TABLE IF NOT EXISTS track_events (
     dj_mode     INTEGER,
     source      TEXT,
     client_ts   INTEGER,
-    server_ts   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    server_ts   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Telemetry v2 (2026-10-10). NULL on every older row.
+    -- listened_ms: play_end only. Audible time, counted only while playing,
+    --   so pauses and seek jumps do not inflate it (position_ms does).
+    -- end_trigger: play_end only (wire field 'trigger'). How it was ended -
+    --   next_button, media_key,
+    --   prev, search, pick, queue_jump, vibe_change.
+    -- playback: spotify | preview | youtube - what actually played.
+    -- session_id: one per app session. tz_offset_min: client UTC offset.
+    -- data: JSON object for type-specific extras (seek from/to, queue via).
+    listened_ms   INTEGER,
+    end_trigger   TEXT,
+    playback      TEXT,
+    session_id    TEXT,
+    tz_offset_min INTEGER,
+    data          TEXT
 );
 
 -- "events for this user, recent first". server_ts has 1-second granularity,
@@ -221,6 +239,37 @@ CREATE TABLE IF NOT EXISTS track_events (
 CREATE INDEX IF NOT EXISTS idx_track_events_user_recent ON track_events(user_id, id DESC);
 -- "events for this user and track" — the per-(user, track) aggregation scan.
 CREATE INDEX IF NOT EXISTS idx_track_events_user_track  ON track_events(user_id, track_id, id DESC);
+
+-- ---------------------------------------------------------------------------
+-- user_events - append-only, app-level events that are not about one track.
+-- Same envelope as track_events (session_id, tz_offset_min, vibe context,
+-- client_ts, server_ts), so the two read as one timeline when joined on
+-- session_id. Kept separate because track_events.track_id is NOT NULL and
+-- widening that needs a table rebuild, which Turso cannot do atomically.
+--
+-- type: 'session_start' | 'session_end' | 'search' | 'vibe_change' |
+--       'dj_toggle'.
+-- data: JSON object of type-specific fields, for example
+--   search       {query, results_library, results_spotify, outcome}
+--   vibe_change  {from, to, via}
+--   dj_toggle    {on}
+--   session_*    {platform} / {duration_ms}
+-- NO UPDATES, NO DELETES, same as track_events.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS user_events (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    type          TEXT    NOT NULL,
+    session_id    TEXT,
+    tz_offset_min INTEGER,
+    vibe          INTEGER,
+    vibe_source   TEXT,
+    dj_mode       INTEGER,
+    data          TEXT,
+    client_ts     INTEGER,
+    server_ts     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_user_events_user_recent ON user_events(user_id, id DESC);
 
 
 -- ---------------------------------------------------------------------------
@@ -277,6 +326,9 @@ CREATE TABLE IF NOT EXISTS user_track_stats (
     play_count             INTEGER NOT NULL DEFAULT 0,  -- play_start events
     end_count              INTEGER NOT NULL DEFAULT 0,  -- play_end events, any reason
     total_played_ms        INTEGER NOT NULL DEFAULT 0,  -- sum(position_ms) over play_end
+    -- sum over play_end of listened_ms, falling back to position_ms on rows
+    -- sent before listened_ms existed. This is "time listened".
+    total_listened_ms      INTEGER NOT NULL DEFAULT 0,
     dj_play_count          INTEGER NOT NULL DEFAULT 0,  -- play_start with dj_mode = 1
 
     -- PREFERENCE population (vibe_source = 'user').

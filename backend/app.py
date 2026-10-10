@@ -4364,10 +4364,19 @@ def ingest_cancel(job_id: str, sess: dict = Depends(require_user)):
 # (backend/db_client.py), so a 50-event batch would otherwise be 50 of them.
 
 _EVENT_BATCH_CAP = 50          # events per request; the overflow is rejected, not the request
-_EVENT_INSERT_CHUNK = 25       # track_events rows per statement (25 x 12 = 300 bound params)
+_EVENT_INSERT_CHUNK = 25       # track_events rows per statement (25 x 18 = 450 bound params)
 _STATS_UPSERT_CHUNK = 20       # user_track_stats rows per statement (20 x 28 = 560 params)
-_EVENT_TYPES = ("play_start", "play_end")
+# Track-scoped events, stored in track_events. Only _PLAY_TYPES feed
+# user_track_stats — pause / resume / seek / queue_add are behaviour around a
+# play, not plays, and must never be counted as one (_accumulate_stats used to
+# treat every non-play_start row as a play_end).
+_EVENT_TYPES = ("play_start", "play_end", "pause", "resume", "seek", "queue_add")
+_PLAY_TYPES = ("play_start", "play_end")
+# App-level events with no track, stored in user_events (same envelope).
+_APP_EVENT_TYPES = ("session_start", "session_end", "search", "vibe_change", "dj_toggle")
 _VIBE_SOURCES = ("user", "system")
+_EVENT_DATA_MAX_CHARS = 2000   # serialised `data` object; longer is dropped, not truncated
+_EVENT_DATA_MAX_KEYS = 12
 
 
 def _ev_int(value, lo=None, hi=None):
@@ -4412,6 +4421,25 @@ def _ev_bool(value):
     return None
 
 
+def _ev_data(value):
+    """`data` must be a flat JSON object of scalars. Returns its JSON text, or
+    None when it is absent, not an object, too big, or nests. Strings are
+    capped at 300 chars (a search query is the longest legitimate value)."""
+    if not isinstance(value, dict) or not value or len(value) > _EVENT_DATA_MAX_KEYS:
+        return None
+    clean = {}
+    for k, v in value.items():
+        if not isinstance(k, str) or not k or len(k) > 32:
+            return None
+        if isinstance(v, str):
+            v = v[:300]
+        elif v is not None and not isinstance(v, (bool, int, float)):
+            return None
+        clean[k] = v
+    text = json.dumps(clean, ensure_ascii=False, separators=(",", ":"))
+    return text if len(text) <= _EVENT_DATA_MAX_CHARS else None
+
+
 def _normalize_event(raw):
     """Validate one client event. Returns a dict ready for insertion (with the
     track still unresolved — an internal id under `_tid` or a spotify_id under
@@ -4434,25 +4462,29 @@ def _normalize_event(raw):
     if not isinstance(raw, dict):
         return None
     etype = _ev_text(raw.get("type"), 16)
-    if etype not in _EVENT_TYPES:
+    is_app = etype in _APP_EVENT_TYPES
+    if etype not in _EVENT_TYPES and not is_app:
         return None
 
-    tid = _ev_int(raw.get("track_id"), lo=1)
-    key = None
-    if tid is None:
-        key = _ev_text(raw.get("spotify_id"), 64)
-        if not key:
-            return None
+    tid = key = None
+    if not is_app:
+        tid = _ev_int(raw.get("track_id"), lo=1)
+        if tid is None:
+            key = _ev_text(raw.get("spotify_id"), 64)
+            if not key:
+                return None
 
     vsrc = (_ev_text(raw.get("vibe_source"), 16) or "").lower()
     if vsrc not in _VIBE_SOURCES:
         vsrc = None
 
+    is_end = etype == "play_end"
     return {
+        "_app": is_app,
         "_tid": tid,
         "_key": key,
         "type": etype,
-        "reason": _ev_text(raw.get("reason"), 32) if etype == "play_end" else None,
+        "reason": _ev_text(raw.get("reason"), 32) if is_end else None,
         "position_ms": _ev_int(raw.get("position_ms"), lo=0),
         "duration_ms": _ev_int(raw.get("duration_ms"), lo=0),
         "vibe": _ev_int(raw.get("vibe"), lo=0, hi=100),
@@ -4460,6 +4492,13 @@ def _normalize_event(raw):
         "dj_mode": _ev_bool(raw.get("dj_mode")),
         "source": _ev_text(raw.get("source"), 32),
         "client_ts": _ev_int(raw.get("client_ts"), lo=0),
+        # telemetry v2 — all optional, NULL when absent, never guessed
+        "listened_ms": _ev_int(raw.get("listened_ms"), lo=0) if is_end else None,
+        "end_trigger": _ev_text(raw.get("trigger"), 32) if is_end else None,
+        "playback": _ev_text(raw.get("playback"), 16),
+        "session_id": _ev_text(raw.get("session_id"), 64),
+        "tz_offset_min": _ev_int(raw.get("tz_offset_min"), lo=-900, hi=900),
+        "data": _ev_data(raw.get("data")),
     }
 
 
@@ -4472,7 +4511,7 @@ def _normalize_event(raw):
 # deliberately NOT merged — see the comment on user_track_stats in schema.sql.
 # u_ is stated preference; s_ is the DJ's own output coming back as a reward
 # signal. Averaging them trains the recommender on itself.
-_STATS_TOTALS = ("play_count", "end_count", "total_played_ms", "dj_play_count")
+_STATS_TOTALS = ("play_count", "end_count", "total_played_ms", "dj_play_count", "total_listened_ms")
 _STATS_PER_LABEL = (
     "play_count", "end_count", "complete_count", "skip_count", "replace_count",
     "skip_position_ms_sum", "vibe_count", "vibe_sum", "vibe_sum_sq",
@@ -4497,6 +4536,11 @@ def _accumulate_stats(acc: dict, ev: dict) -> None:
     correct and intended: an unlabelled event is evidence that a play
     happened, but not evidence of whose intent set the vibe.
     """
+    # Only plays are plays. The caller already filters, this makes it a
+    # property of the spec rather than of one call site.
+    if ev["type"] not in _PLAY_TYPES:
+        return
+
     # `p` is the column prefix of the population this event belongs to, or
     # None when the client did not tell us who moved the slider.
     p = _STATS_PREFIX.get(ev["vibe_source"])
@@ -4518,15 +4562,23 @@ def _accumulate_stats(acc: dict, ev: dict) -> None:
 
     # play_end
     pos = ev["position_ms"] or 0
+    # Time actually heard. Clients before telemetry v2 sent no listened_ms,
+    # so their playhead is the best estimate there is — the same number
+    # total_played_ms has always held.
+    heard = ev.get("listened_ms")
+    if heard is None:
+        heard = pos
     acc["end_count"] += 1
     acc["total_played_ms"] += pos
+    acc["total_listened_ms"] += heard
     reason = (ev["reason"] or "").lower()
     if reason == "skipped":
         acc["_skipped"] = True
     # A play "qualifies" (updates last_played) only on play_end with either a
-    # completed reason or at least DJ_QUALIFIED_PLAY_MS of playback. play_start
+    # completed reason or at least DJ_QUALIFIED_PLAY_MS of LISTENING — heard
+    # time, so seeking to 2:00 and stopping is not a listen. play_start
     # NEVER qualifies — a 2 s skim is not a listen. See _upsert_track_stats.
-    if reason == "completed" or pos >= _DJ_QUALIFIED_PLAY_MS:
+    if reason == "completed" or heard >= _DJ_QUALIFIED_PLAY_MS:
         acc["_qualified"] = True
     if not p:
         return
@@ -4677,18 +4729,52 @@ def _record_track_events(user_id: int, items: list, display_name: str = "") -> t
     """
     parsed = []
     rejected = 0
+    app_events = []
     for raw in items:
         ev = _normalize_event(raw)
         if ev is None:
             rejected += 1
+        elif ev["_app"]:
+            app_events.append(ev)
         else:
             parsed.append(ev)
-    if not parsed:
+    if not parsed and not app_events:
         return 0, rejected
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     conn = get_conn()
     try:
+        accepted = 0
+        # App-level events have no track to resolve and feed no aggregate:
+        # append them and move on. Same never-fail rule as track_events.
+        for i in range(0, len(app_events), _EVENT_INSERT_CHUNK):
+            chunk = app_events[i:i + _EVENT_INSERT_CHUNK]
+            values = ",".join(["(?,?,?,?,?,?,?,?,?,?)"] * len(chunk))
+            params = []
+            for e in chunk:
+                params.extend((
+                    user_id, e["type"], e["session_id"], e["tz_offset_min"],
+                    e["vibe"], e["vibe_source"], e["dj_mode"], e["data"],
+                    e["client_ts"], now,
+                ))
+            try:
+                conn.execute(
+                    "INSERT INTO user_events "
+                    "(user_id, type, session_id, tz_offset_min, vibe, vibe_source, "
+                    " dj_mode, data, client_ts, server_ts) VALUES " + values,
+                    tuple(params),
+                )
+                accepted += len(chunk)
+            except Exception:
+                # "no such table: user_events" on a Turso instance that has not
+                # had scripts/_turso_migrate_telemetry_v2.py run against it.
+                log.exception("[events] user_events insert failed for %d event(s), user=%s",
+                              len(chunk), user_id)
+                rejected += len(chunk)
+        if not parsed:
+            conn.commit()
+            return accepted, rejected
+
         want_sids = sorted({e["_key"] for e in parsed if e["_key"]})
         want_ids = sorted({e["_tid"] for e in parsed if e["_tid"] is not None})
 
@@ -4718,25 +4804,28 @@ def _record_track_events(user_id: int, items: list, display_name: str = "") -> t
                 continue
             resolved.append((tid, e))
         if not resolved:
-            return 0, rejected
+            conn.commit()
+            return accepted, rejected
 
-        accepted = 0
         logged = []
         for i in range(0, len(resolved), _EVENT_INSERT_CHUNK):
             chunk = resolved[i:i + _EVENT_INSERT_CHUNK]
-            values = ",".join(["(?,?,?,?,?,?,?,?,?,?,?,?)"] * len(chunk))
+            values = ",".join(["(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"] * len(chunk))
             params = []
             for tid, e in chunk:
                 params.extend((
                     user_id, tid, e["type"], e["reason"], e["position_ms"],
                     e["duration_ms"], e["vibe"], e["vibe_source"], e["dj_mode"],
                     e["source"], e["client_ts"], now,
+                    e["listened_ms"], e["end_trigger"], e["playback"],
+                    e["session_id"], e["tz_offset_min"], e["data"],
                 ))
             try:
                 conn.execute(
                     "INSERT INTO track_events "
                     "(user_id, track_id, type, reason, position_ms, duration_ms, "
-                    " vibe, vibe_source, dj_mode, source, client_ts, server_ts) "
+                    " vibe, vibe_source, dj_mode, source, client_ts, server_ts, "
+                    " listened_ms, end_trigger, playback, session_id, tz_offset_min, data) "
                     "VALUES " + values,
                     tuple(params),
                 )
@@ -4750,6 +4839,10 @@ def _record_track_events(user_id: int, items: list, display_name: str = "") -> t
                               len(chunk), user_id)
                 rejected += len(chunk)
 
+        # Only plays reach the aggregate. A pause or a queue-add of a track
+        # never played must not create a user_track_stats row (it would set
+        # first_played_at for a track nobody played).
+        logged = [(tid, e) for tid, e in logged if e["type"] in _PLAY_TYPES]
         if logged:
             groups = {}
             for tid, e in logged:
@@ -4783,7 +4876,9 @@ def _record_track_events(user_id: int, items: list, display_name: str = "") -> t
                             "aggregate has drifted -- run scripts/rebuild_user_stats.py",
                             user_id,
                         )
-            conn.commit()
+        # Always: a batch of only pauses / seeks has no aggregate to upsert
+        # but its rows still have to land.
+        conn.commit()
         return accepted, rejected
     finally:
         conn.close()
@@ -4796,21 +4891,38 @@ async def post_track_events(request: Request, sess: dict = Depends(require_user)
 
     Body: {"events": [ {...}, ... ]} — at most _EVENT_BATCH_CAP (50) events;
     anything past the cap is counted in `rejected` rather than failing the
-    request. Per-event shape:
+    request. Per-event shape (one envelope for every type):
 
-        type         "play_start" | "play_end"             (required)
-        spotify_id   22-char Spotify id                    (required unless track_id)
+        type         track events -> track_events:          (required)
+                       "play_start" | "play_end" | "pause" | "resume" |
+                       "seek" | "queue_add"
+                     app events -> user_events (no track):
+                       "session_start" | "session_end" | "search" |
+                       "vibe_change" | "dj_toggle"
+        spotify_id   22-char Spotify id                    (track events: required unless track_id)
         track_id     internal tracks.id                    (alternative key)
-        position_ms  play_end: where playback stopped
+        position_ms  play_end / pause / resume: the playhead
         duration_ms  play_end: track length, when known
-        reason       play_end: "completed" | "skipped" | "replaced"
+        reason       play_end: "completed" | "skipped" | "replaced" | "abandoned"
+        listened_ms  play_end: audible time, pauses and seek jumps excluded
+        trigger      play_end: how it was ended — "next_button" | "media_key" |
+                     "prev" | "search" | "pick" | "queue_jump" | "vibe_change"
+                     (stored as end_trigger)
+        playback     "spotify" | "preview" | "youtube"
+        session_id   one per app session
+        tz_offset_min  client offset, minutes east of UTC
+        data         flat JSON object of type-specific extras (seek from_ms /
+                     to_ms, queue_add via, search query / counts / outcome,
+                     vibe_change from / to, dj_toggle on, session platform /
+                     duration_ms). Nested or oversized objects are dropped.
         vibe         slider value 0-100 at the time
         vibe_source  "user" | "system" — who last set that slider value.
                      Expected on every event; an absent or unrecognised value
                      is stored as NULL and the event is still accepted.
         dj_mode      true | false — was DJ mode active. Same NULL-not-guessed
                      treatment as vibe_source.
-        source       "queue" | "dj" | "search" | "autoplay"
+        source       "queue" | "dj" | "search" | "pick" | "autoplay"
+                     ("pick" since 2026-10-10 — older "search" rows include picks)
         client_ts    epoch ms, client clock (untrusted; server_ts is authoritative)
 
     Response: {"accepted": int, "rejected": int}, always HTTP 202. The two
@@ -4842,6 +4954,159 @@ async def post_track_events(request: Request, sess: dict = Depends(require_user)
         # Telemetry is never allowed to produce a client-visible error.
         log.exception("[events] POST /api/events failed for user=%s", sess.get("user_id"))
         return {"accepted": 0, "rejected": n_seen}
+
+
+# ---------------- Listening stats for the signed-in user ----------------
+#
+# Read-only, computed on request from user_track_stats (the all-time totals,
+# already maintained by POST /api/events) and from a bounded window of raw
+# track_events / user_events (anything that needs time of day or local
+# calendar days). Nothing here writes.
+#
+# "Listened" is listened_ms where the client sent it (telemetry v2,
+# 2026-10-10) and the playhead before that, exactly as total_listened_ms.
+# Local time uses each event's own tz_offset_min, else the user's most recent
+# one, else UTC.
+
+_STATS_WINDOW_DAYS_MAX = 365
+
+
+def _ts_utc(value):
+    """server_ts ('YYYY-MM-DD HH:MM:SS', UTC) -> aware datetime, or None."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value)[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+@app.get("/api/me/stats")
+def my_listening_stats(days: int = Query(30, ge=1, le=_STATS_WINDOW_DAYS_MAX),
+                       sess: dict = Depends(require_user)):
+    """Listening metrics for the caller.
+
+    all_time    from user_track_stats: hours listened, plays, completion and
+                skip rates, mean skip position, top tracks and artists by
+                time listened, last played.
+    today / last_7_days / window (the last `days` days, default 30)
+                from track_events: hours listened (local calendar day for
+                today), hours by local hour of day, time per playback kind,
+                and sessions from user_events.
+    """
+    from datetime import timedelta
+
+    uid = int(sess["user_id"])
+    now = datetime.now(timezone.utc)
+    since = (now - timedelta(days=max(days, 7))).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_conn()
+    try:
+        tot = conn.execute(
+            "SELECT COALESCE(SUM(total_listened_ms), 0) AS listened, "
+            "       COALESCE(SUM(play_count), 0) AS plays, "
+            "       COALESCE(SUM(u_complete_count + s_complete_count), 0) AS completed, "
+            "       COALESCE(SUM(u_skip_count + s_skip_count), 0) AS skipped, "
+            "       COALESCE(SUM(u_end_count + s_end_count), 0) AS ended, "
+            "       COALESCE(SUM(u_skip_position_ms_sum + s_skip_position_ms_sum), 0) AS skip_pos, "
+            "       COUNT(*) AS distinct_tracks "
+            "FROM user_track_stats WHERE user_id = ?", (uid,)).fetchone()
+
+        top_tracks = conn.execute(
+            "SELECT t.id, t.title, t.artist, s.total_listened_ms AS listened, s.play_count AS plays "
+            "FROM user_track_stats s JOIN tracks t ON t.id = s.track_id "
+            "WHERE s.user_id = ? AND s.total_listened_ms > 0 "
+            "ORDER BY s.total_listened_ms DESC LIMIT 10", (uid,)).fetchall()
+        top_artists = conn.execute(
+            "SELECT t.artist, SUM(s.total_listened_ms) AS listened, SUM(s.play_count) AS plays "
+            "FROM user_track_stats s JOIN tracks t ON t.id = s.track_id "
+            "WHERE s.user_id = ? AND s.total_listened_ms > 0 AND t.artist IS NOT NULL "
+            "GROUP BY t.artist ORDER BY listened DESC LIMIT 10", (uid,)).fetchall()
+        last = conn.execute(
+            "SELECT t.id, t.title, t.artist, s.last_played "
+            "FROM user_track_stats s JOIN tracks t ON t.id = s.track_id "
+            "WHERE s.user_id = ? AND s.last_played IS NOT NULL "
+            "ORDER BY s.last_played DESC LIMIT 1", (uid,)).fetchone()
+
+        ends = conn.execute(
+            "SELECT server_ts, tz_offset_min, playback, "
+            "       COALESCE(listened_ms, position_ms, 0) AS heard "
+            "FROM track_events WHERE user_id = ? AND type = 'play_end' AND server_ts >= ?",
+            (uid, since)).fetchall()
+        tz_row = conn.execute(
+            "SELECT tz_offset_min FROM track_events WHERE user_id = ? AND tz_offset_min IS NOT NULL "
+            "ORDER BY id DESC LIMIT 1", (uid,)).fetchone()
+        try:
+            sessions = conn.execute(
+                "SELECT data FROM user_events WHERE user_id = ? AND type = 'session_end' "
+                "AND server_ts >= ?", (uid, since)).fetchall()
+        except Exception:
+            sessions = []  # user_events not created yet (Turso before the v2 migration)
+    finally:
+        conn.close()
+
+    user_tz = int(tz_row["tz_offset_min"]) if tz_row and tz_row["tz_offset_min"] is not None else 0
+    local_today = (now + timedelta(minutes=user_tz)).date()
+    window_start = now - timedelta(days=days)
+    week_start = now - timedelta(days=7)
+    today_ms = week_ms = window_ms = 0
+    by_hour = [0] * 24
+    by_playback: dict = {}
+    for r in ends:
+        at = _ts_utc(r["server_ts"])
+        if at is None:
+            continue
+        heard = int(r["heard"] or 0)
+        off = r["tz_offset_min"] if r["tz_offset_min"] is not None else user_tz
+        local = at + timedelta(minutes=int(off))
+        if local.date() == local_today:
+            today_ms += heard
+        if at >= week_start:
+            week_ms += heard
+        if at >= window_start:
+            window_ms += heard
+            by_hour[local.hour] += heard
+            k = r["playback"] or "unknown"
+            by_playback[k] = by_playback.get(k, 0) + heard
+
+    durations = []
+    for r in sessions:
+        try:
+            d = json.loads(r["data"] or "{}").get("duration_ms")
+        except (TypeError, ValueError):
+            d = None
+        if isinstance(d, (int, float)) and d >= 0:
+            durations.append(int(d))
+
+    ended = int(tot["ended"] or 0)
+    skipped = int(tot["skipped"] or 0)
+    return {
+        "all_time": {
+            "listened_ms": int(tot["listened"] or 0),
+            "plays": int(tot["plays"] or 0),
+            "distinct_tracks": int(tot["distinct_tracks"] or 0),
+            "completion_rate": round(int(tot["completed"] or 0) / ended, 4) if ended else None,
+            "skip_rate": round(skipped / ended, 4) if ended else None,
+            "mean_skip_position_ms": int(tot["skip_pos"] or 0) // skipped if skipped else None,
+            "top_tracks": [{"id": int(r["id"]), "title": r["title"], "artist": r["artist"],
+                            "listened_ms": int(r["listened"]), "plays": int(r["plays"])}
+                           for r in top_tracks],
+            "top_artists": [{"artist": r["artist"], "listened_ms": int(r["listened"]),
+                             "plays": int(r["plays"])} for r in top_artists],
+            "last_played": ({"id": int(last["id"]), "title": last["title"],
+                             "artist": last["artist"], "at": last["last_played"]} if last else None),
+        },
+        "today_listened_ms": today_ms,
+        "last_7_days_listened_ms": week_ms,
+        "window": {
+            "days": days,
+            "listened_ms": window_ms,
+            "by_local_hour_ms": by_hour,
+            "by_playback_ms": by_playback,
+            "sessions": len(durations),
+            "mean_session_ms": (sum(durations) // len(durations)) if durations else None,
+        },
+        "tz_offset_min": user_tz,
+    }
 
 
 # ---------------- Admin (chandan-only) ----------------
