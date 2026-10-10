@@ -47,9 +47,15 @@ function spotifySearchErrorMessage(err) {
  * (tests, or a host that already holds a token).
  */
 export default function SearchBar({ spotifyToken: tokenProp, className = '' }) {
-  const { token, isConnected, signIn } = useSpotifyAuth();
+  const { token, isConnected, signIn, getValidToken } = useSpotifyAuth();
   const spotifyToken = tokenProp ?? token ?? null;
   const spotifyEnabled = Boolean(spotifyToken) && (tokenProp ? true : isConnected);
+  // Fetched at request time, not read from render: getValidToken refreshes
+  // when the token is about to lapse, so a long session keeps searching.
+  const currentToken = useCallback(
+    async () => tokenProp ?? (await getValidToken()) ?? null,
+    [tokenProp, getValidToken]
+  );
 
   const { loadTrack, enqueue, enqueueAt, queue, setVibe } = usePlayer();
   const toast = useToast();
@@ -85,7 +91,7 @@ export default function SearchBar({ spotifyToken: tokenProp, className = '' }) {
 
   const spQuery = useQuery({
     queryKey: spKey,
-    queryFn: () => api.spotifySearch({ q: debouncedQ, limit: SPOTIFY_LIMIT }, spotifyToken),
+    queryFn: async () => api.spotifySearch({ q: debouncedQ, limit: SPOTIFY_LIMIT }, await currentToken()),
     enabled: Boolean(debouncedQ) && spotifyEnabled,
     staleTime: 30_000,
     retry: false,
@@ -237,10 +243,11 @@ export default function SearchBar({ spotifyToken: tokenProp, className = '' }) {
    */
   const ingest = useCallback(async (spotifyId) => {
     const body = { spotify_id: spotifyId };
-    if (spotifyToken) body.access_token = spotifyToken;
-    const res = await api.ingestSingle(body, spotifyToken);
+    const tok = await currentToken();
+    if (tok) body.access_token = tok;
+    const res = await api.ingestSingle(body, tok);
     return res?.track ?? null;
-  }, [spotifyToken]);
+  }, [currentToken]);
 
   /** Keep the cached result lists consistent with the DB after an ingest. */
   const markInLibrary = useCallback((spotifyId, track) => {

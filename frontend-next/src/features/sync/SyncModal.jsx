@@ -50,7 +50,7 @@ function SyncModalInner({ onClose, defaultTab }) {
   const toast = useToast();
   const { fetchForVibe } = usePlayer();
   const queryClient = useQueryClient();
-  const { token, isConnected, signIn, signOut } = useSpotifyAuth();
+  const { token, isConnected, signIn, signOut, getValidToken } = useSpotifyAuth();
   const signedIn = isConnected;
 
   // Smart default (legacy openSyncModal): Spotify-connected users land on the
@@ -146,7 +146,7 @@ function SyncModalInner({ onClose, defaultTab }) {
 
   const library = useQuery({
     queryKey: ['spotify-library'],
-    queryFn: () => api.spotifyLibrary({}, token),
+    queryFn: async () => api.spotifyLibrary({}, await getValidToken()),
     enabled: tab === 'library' && signedIn && phase === 'pick',
     staleTime: 60_000,
   });
@@ -205,18 +205,21 @@ function SyncModalInner({ onClose, defaultTab }) {
   /* ------------------------------------------------------------- mutations */
 
   const startLibrary = useMutation({
-    mutationFn: () =>
-      api.ingestSpotify(
+    mutationFn: async () => {
+      // A fresh token at start, so the job does not begin on one about to lapse.
+      const tok = await getValidToken();
+      return api.ingestSpotify(
         {
-          access_token: token,
+          access_token: tok,
           sources: {
             liked: selection.liked,
             top_tracks: selection.top,
             playlist_ids: selection.playlist_ids,
           },
         },
-        token
-      ),
+        tok
+      );
+    },
     onMutate: () => setPicking(false),
     onSuccess: (j) => {
       if (!j?.job_id) {
@@ -230,15 +233,16 @@ function SyncModalInner({ onClose, defaultTab }) {
   });
 
   const startPublic = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       // Backend accepts either field; legacy sends both when it has a real
       // link. The Spotify token is forwarded when present — Spotify killed
       // app-level public-playlist reads in Nov 2024, so without a user token
       // the backend will 403 on most real playlists, which is honest.
       const body = { playlist_id: parsedId };
       if (isPlaylistLink(url)) body.playlist_url = url.trim();
-      if (token) body.access_token = token;
-      return api.ingestSpotifyPublic(body, token || undefined);
+      const tok = token ? await getValidToken() : null;
+      if (tok) body.access_token = tok;
+      return api.ingestSpotifyPublic(body, tok || undefined);
     },
     onMutate: () => {
       setUrlError('');

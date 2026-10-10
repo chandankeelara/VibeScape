@@ -10,9 +10,10 @@
  * token.
  */
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import * as api from '../lib/api';
 import * as spotifyMedia from '../media/spotify';
+import { createSpotifyTokens, REFRESH_MARGIN_MS } from '../lib/spotifyTokens';
 import { useToast } from './ToastContext';
 
 const SpotifyCtx = createContext(null);
@@ -27,6 +28,7 @@ const SCOPE =
 // on an endpoint the old token lacks permission for.
 const SCOPE_VERSION = 3;
 
+
 const keysFor = (uid = '_anon') => ({
   verifier: `spotify_${uid}_pkce_verifier`,
   token: `spotify_${uid}_access_token`,
@@ -34,6 +36,10 @@ const keysFor = (uid = '_anon') => ({
   expiry: `spotify_${uid}_token_expiry`,
   profile: `spotify_${uid}_profile`,
   scopeVersion: `spotify_${uid}_scope_version`,
+  // 'server' (minted by /api/auth/spotify-oauth with the client secret) or
+  // 'pkce' (minted in the browser by the connect button). They refresh
+  // differently — see refreshNow(). Absent on tokens stored before 2026-10-10.
+  source: `spotify_${uid}_token_source`,
 });
 
 /**
@@ -62,6 +68,7 @@ export function persistTokensFor(userId, payload) {
     // The login scope string is kept identical to SCOPE below, so the stored
     // version is honest and the restore path won't force a re-consent.
     localStorage.setItem(k.scopeVersion, String(SCOPE_VERSION));
+    localStorage.setItem(k.source, 'server');
     // Synthesize the /v1/me shape from what the login response already told
     // us, so isPremium is correct on the first render — no extra round-trip.
     localStorage.setItem(k.profile, JSON.stringify({
@@ -135,6 +142,49 @@ export function SpotifyAuthProvider({ userId, children }) {
     spotifyMedia.disconnect();
   }, [keys]);
 
+  /** Latest config, read by refreshNow — a PKCE refresh needs the client id. */
+  const configRef = useRef(config);
+  useEffect(() => { configRef.current = config; }, [config]);
+
+  const persist = useCallback((accessToken, refreshToken, expiresIn, source) => {
+    const expiresAt = Date.now() + (expiresIn || 3600) * 1000;
+    try {
+      localStorage.setItem(keys.token, accessToken);
+      if (refreshToken) localStorage.setItem(keys.refresh, refreshToken);
+      localStorage.setItem(keys.expiry, String(expiresAt));
+      localStorage.setItem(keys.scopeVersion, String(SCOPE_VERSION));
+      if (source) localStorage.setItem(keys.source, source);
+      localStorage.removeItem(keys.verifier);
+    } catch {}
+    setTokenState(accessToken);
+    setExpiresAt(expiresAt);
+    spotifyMedia.setToken(accessToken);
+  }, [keys]);
+
+  const endSession = useCallback(() => {
+    clear();
+    toast('Spotify session ended — reconnect to keep full tracks and search.', 'warning');
+  }, [clear, toast]);
+
+  /**
+   * Token refresh — the logic lives in lib/spotifyTokens.js so it can be
+   * tested without rendering; see its docstrings for the rules. Rebuilt only
+   * when the user namespace changes (persist and endSession are stable then).
+   */
+  const tokens = useMemo(() => createSpotifyTokens({
+    keys,
+    persist,
+    endSession,
+    adopt: (tok, exp) => {
+      setTokenState(tok);
+      setExpiresAt(exp);
+      spotifyMedia.setToken(tok);
+    },
+    getClientId: () => configRef.current.clientId,
+    api,
+  }), [keys, persist, endSession]);
+  const getValidToken = tokens.getValidToken;
+
   /* restore on mount / user change */
   useEffect(() => {
     let tok = '', exp = 0, storedVersion = 0, prof = null;
@@ -153,26 +203,40 @@ export function SpotifyAuthProvider({ userId, children }) {
       toast('Spotify sign-in refresh needed to enable playlist link import.', 'info');
       return;
     }
-    if (Date.now() >= exp) { clear(); return; }
+    if (Date.now() >= exp - REFRESH_MARGIN_MS) {
+      // Expired, or about to be: refresh instead of signing out. The refresh
+      // token outlives the access token by design; only a refused refresh
+      // ends the session, and getValidToken handles that.
+      setProfile(prof);
+      getValidToken();
+      return;
+    }
 
     setTokenState(tok);
     setProfile(prof);
     setExpiresAt(exp);
     spotifyMedia.setToken(tok);
-  }, [keys, clear, toast]);
+  }, [keys, clear, toast, getValidToken]);
 
-  const persist = useCallback((accessToken, refreshToken, expiresIn) => {
-    const expiresAt = Date.now() + (expiresIn || 3600) * 1000;
-    try {
-      localStorage.setItem(keys.token, accessToken);
-      if (refreshToken) localStorage.setItem(keys.refresh, refreshToken);
-      localStorage.setItem(keys.expiry, String(expiresAt));
-      localStorage.setItem(keys.scopeVersion, String(SCOPE_VERSION));
-      localStorage.removeItem(keys.verifier);
-    } catch {}
-    setTokenState(accessToken);
-    setExpiresAt(expiresAt);
-    spotifyMedia.setToken(accessToken);
+  // media/spotify.js lives outside React. Hand it the same token source, so a
+  // new song — or the SDK's own periodic token request — refreshes when due.
+  useEffect(() => {
+    spotifyMedia.setTokenProvider(getValidToken);
+    return () => spotifyMedia.setTokenProvider(null);
+  }, [getValidToken]);
+
+  // Another tab refreshed: follow it, so this tab's state is not left on a
+  // token that tab may already have rotated away.
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (e.key !== keys.token || !e.newValue) return;
+      setTokenState(e.newValue);
+      spotifyMedia.setToken(e.newValue);
+      const exp = parseInt(localStorage.getItem(keys.expiry) || '0', 10);
+      if (exp) setExpiresAt(exp);
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
   }, [keys]);
 
   /** Kick off the PKCE redirect. */
@@ -241,7 +305,7 @@ export function SpotifyAuthProvider({ userId, children }) {
         return false;
       }
       const j = await r.json();
-      persist(j.access_token || '', j.refresh_token || '', j.expires_in);
+      persist(j.access_token || '', j.refresh_token || '', j.expires_in, 'pkce');
 
       // Fetch profile + link the Spotify identity to the VibeScape user.
       try {
@@ -269,7 +333,7 @@ export function SpotifyAuthProvider({ userId, children }) {
    */
   const adoptTokens = useCallback(({ access_token, refresh_token, expires_in }) => {
     if (!access_token) return;
-    persist(access_token, refresh_token || '', expires_in);
+    persist(access_token, refresh_token || '', expires_in, 'server');
     fetch('https://api.spotify.com/v1/me', { headers: { Authorization: `Bearer ${access_token}` } })
       .then((r) => (r.ok ? r.json() : null))
       .then((p) => {
@@ -318,13 +382,15 @@ export function SpotifyAuthProvider({ userId, children }) {
       configReady: config.loaded,
       isConnected: !!token,
       isPremium: profile?.product === 'premium',
+      /** Always call this before talking to Spotify — see its docstring. */
+      getValidToken,
       signIn,
       signOut: clear,
       exchangeCode,
       adoptTokens,
       consumePkcePending,
     }),
-    [token, profile, config, expiresAt, signIn, clear, exchangeCode, adoptTokens, consumePkcePending]
+    [token, profile, config, expiresAt, getValidToken, signIn, clear, exchangeCode, adoptTokens, consumePkcePending]
   );
 
   return <SpotifyCtx.Provider value={value}>{children}</SpotifyCtx.Provider>;

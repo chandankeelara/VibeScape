@@ -83,6 +83,13 @@ export const moods = () => request('/api/moods', { auth: false });
 export const clientConfig = () => request('/api/client-config', { auth: false });
 export const spotifyConfig = () => request('/api/spotify/config', { auth: false });
 /**
+ * Trade a SERVER-minted refresh token (from /api/auth/spotify-oauth) for a
+ * fresh access token. The backend holds the client secret those need. PKCE
+ * tokens never come here — SpotifyAuthContext refreshes them against Spotify.
+ */
+export const spotifyRefresh = (refresh_token) =>
+  request('/api/spotify/refresh', { method: 'POST', body: { refresh_token } });
+/**
  * WARNING: `GET /api/users` does NOT exist in backend/app.py. It is listed in
  * docs/mobile-api.md §7, but that doc is stale — verified 2026-09-27 against
  * the route table. Kept only so the profile-picker UI still compiles; it will

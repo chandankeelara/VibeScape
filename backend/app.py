@@ -611,8 +611,12 @@ def auth_spotify_oauth(body: SpotifyOAuthBody):
 
 
 @app.post("/api/spotify/refresh")
-def spotify_refresh(body: SpotifyRefreshBody):
+def spotify_refresh(body: SpotifyRefreshBody, sess: dict = Depends(require_user)):
     """
+    Requires a VibeScape session (2026-10-10): without one, anyone could use
+    this server's client secret to refresh any Spotify token. Both callers
+    send one — the web app through api.request, mobile through _authOptions.
+
     Exchange a Spotify refresh_token for a fresh access_token using the
     server-side client_secret. This lets the browser avoid an interactive
     re-consent (and PKCE dance) when its short-lived access_token expires.
