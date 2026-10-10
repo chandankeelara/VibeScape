@@ -640,6 +640,61 @@ no connection, and are the first things in this repo that could trivially
 carry a unit test. Worth being the first `tests/` directory.
 
 
+## 7. DJ session replay — landed 2026-10-10 (branch `dj-replay`), what is left
+
+The client now POSTs its raw event log (`events`) and `backend/dj_replay.py`
+replays it into the query, centred on the user's library mean. Offline, on
+local `track_events` 2026-10-02..09: finished-vs-skipped AUC 0.83 vs 0.64 for
+the old weighted sum, and after a search 5.5 of the top 10 sit in the
+searched track's neighbourhood vs 1.4. The harness that produced those
+numbers is local only (`.claude/tmp/dj-compare/`, gitignored).
+
+### 7.1 `user_embedding_mean` must be created on Turso before deploy
+`schema.sql` (end), `scripts/_turso_create_user_embedding_mean.py`
+
+**verified.** `ensure_db()` no-ops on Turso. Without the table the replay
+still works — `_dj_library_mean` logs a warning and keeps the mean in process
+memory — but every cold instance re-reads the user's whole library of vectors
+on its first DJ request. The script takes credentials from the environment,
+not from `_load_gcp_secrets.ps1`.
+
+### 7.2 The legacy `positive_ids` path still drops the seed's own verdict
+`backend/app.py`, the `else:` branch of `_similar_dj`
+
+**verified.** Kept byte-for-byte for old clients. It removes `anchor_id` from
+positives and negatives, and the seed is the current track: a search-and-play
+never shaped the recs while it played, and at autoplay the outgoing track's
+own skip was dropped from the fetch that picked its successor (46% of 655
+replayed fetches). Delete the branch once no client sends `positive_ids`.
+
+### 7.3 Different songs share one preview, so one embedding
+**verified on the local DB, 2026-10-10.** 43 groups (97 tracks) of
+*different* songs by the same artist have byte-identical `fused_embedding`,
+and in all 43 every row has the same `preview_url` — e.g. Frank Ocean's
+*Nights* / *Nikes* / *Lost* / *White Ferrari*. Their vibe scores and DJ
+neighbours are those of whichever song the preview really is. (Another 37
+groups are the same song twice, which is the dedupe question, not this.)
+**suspected** cause: the preview stage's search fallback accepting an
+artist-level match. Cheap check: re-run preview resolution for tracks 2111
+and 2484 and compare what each candidate source returns.
+
+### 7.4 The replay constants are starting values
+`backend/dj_replay.py` (module top)
+
+Set before the offline replay and not tuned on it. The cap on `eta` for a
+finished track is reached at about 0.45 cosine to S, so passive listening may
+turn out to steer too easily — `SURPRISE_GAIN` is the knob.
+
+### 7.5 Explore mode after a run of skips is not built
+The design calls for widening the pool and spreading the picks after three
+or more skips in a row. Not implemented: the logs hold no data to test it on.
+
+### 7.6 [frontend contract] `score` is now cosine against a centred query
+In replay mode `score` is still a cosine, but against the centred query, so
+values sit around 0.3 rather than 0.9. Nothing in `frontend-next/` reads it
+(grep, 2026-10-10), and the re-rank's lambda scales with the score window, so
+it needs no recalibration.
+
 ## Checked and clean
 
 Recorded so the next audit does not redo them.

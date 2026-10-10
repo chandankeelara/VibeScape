@@ -341,3 +341,21 @@ CREATE TABLE IF NOT EXISTS user_stats (
     last_play_at    TEXT,
     updated_at      TEXT NOT NULL
 );
+
+-- ---------------------------------------------------------------------------
+-- user_embedding_mean — mean of unit embedding vectors over a user's
+-- analysed library, per embedding variant. DJ replay centres every vector
+-- on it (backend/dj_replay.py). user_id 0 is the mean over every analysed
+-- track, used for libraries under 50 analysed tracks. mean_json is a JSON
+-- array rather than a BLOB because Turso BLOB reads can come back empty.
+-- A cache: _dj_library_mean rebuilds a row when the live track count
+-- drifts more than 5 percent from n_tracks, so the table is safe to drop.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS user_embedding_mean (
+    user_id        INTEGER NOT NULL,
+    model_version  TEXT    NOT NULL,
+    n_tracks       INTEGER NOT NULL,
+    mean_json      TEXT    NOT NULL,
+    computed_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, model_version)
+);

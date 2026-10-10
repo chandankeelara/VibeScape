@@ -36,6 +36,9 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, Redirec
 from pydantic import BaseModel
 
 from db import ensure_db, get_conn
+from dj_replay import library_mean as _dj_mean_of
+from dj_replay import parse_events as _dj_parse_events
+from dj_replay import replay as _dj_replay
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -1530,6 +1533,10 @@ class SimilarBody(BaseModel):
     mode: Optional[str] = None
     positive_ids: Optional[list] = None
     negative_ids: Optional[list] = None
+    # DJ replay log, oldest first: [{id, action, played_ratio, ts}]. When
+    # present it replaces positive_ids / negative_ids entirely — see
+    # backend/dj_replay.py. [frontend contract] new optional field.
+    events: Optional[list] = None
     exclude_ids: Optional[list] = None
     limit: Optional[int] = None
     # "fused" (default) | "mert". Selects which embedding variant DJ mode uses.
@@ -1731,6 +1738,144 @@ def _resolve_ids_to_track_ids(conn, keys) -> list:
     return ids
 
 
+# ---------------------------------------------------------------------------
+# DJ replay: per-user library mean.
+#
+# dj_replay centres every vector on the mean of the user's analysed library
+# before replaying (the fused space is a narrow cone — see its docstring).
+# The mean is a cache in user_embedding_mean, keyed (user_id, model_version),
+# stored as JSON text because Turso BLOB reads can come back empty. It is
+# rebuilt when the live count of analysed library tracks drifts by more than
+# _DJ_MEAN_DRIFT from the count it was built on. Libraries under
+# _DJ_MEAN_MIN_TRACKS use the all-tracks mean, stored as user_id 0.
+#
+# Per-user vs global made no measurable difference offline (AUC 0.828 vs
+# 0.830, 2026-10-10), but a 343-track library's mean was 0.97 cosine from
+# the global one, and the gap grows with how unusual a library is.
+# ---------------------------------------------------------------------------
+_DJ_MEAN_MIN_TRACKS = 50
+_DJ_MEAN_DRIFT = 0.05
+_DJ_MEAN_RECHECK_S = 600.0
+_dj_mean_cache: dict = {}  # (user_id, model_version) -> (n, mean, checked_at, scope_uid)
+
+
+def _dj_count_embedded(conn, scope_uid: int, emb_col: str) -> int:
+    if scope_uid:
+        row = conn.execute(
+            f"SELECT COUNT(*) AS n FROM user_tracks ut "
+            f"JOIN tracks t ON t.id = ut.track_id "
+            f"JOIN track_embeddings te ON te.track_id = t.id "
+            f"WHERE ut.user_id = ? AND t.ingestion_status = 'done' "
+            f"AND te.{emb_col} IS NOT NULL", (scope_uid,)).fetchone()
+    else:
+        row = conn.execute(
+            f"SELECT COUNT(*) AS n FROM track_embeddings te "
+            f"JOIN tracks t ON t.id = te.track_id "
+            f"WHERE t.ingestion_status = 'done' AND te.{emb_col} IS NOT NULL").fetchone()
+    return int(row["n"] or 0)
+
+
+def _dj_library_mean(conn, user_id, model_version: str, dim: int):
+    """Mean of unit vectors over the user's analysed library, or None."""
+    emb_col = _embedding_column_for(model_version)
+    if emb_col is None:
+        return None
+    now = datetime.now(timezone.utc).timestamp()
+
+    def fresh(n_built, n_live):
+        return n_built > 0 and abs(n_live - n_built) <= _DJ_MEAN_DRIFT * n_built
+
+    # Cached per REQUESTING user: a small library resolves to the global
+    # mean, a large one to its own, and neither may answer for the other.
+    req_key = (int(user_id or 0), model_version)
+    hit = _dj_mean_cache.get(req_key)
+    if hit and now - hit[2] < _DJ_MEAN_RECHECK_S:
+        return hit[1]
+
+    scope = int(user_id or 0)
+    live = _dj_count_embedded(conn, scope, emb_col) if scope else 0
+    if live < _DJ_MEAN_MIN_TRACKS:
+        scope = 0
+        live = _dj_count_embedded(conn, 0, emb_col)
+    if live == 0:
+        return None
+
+    if hit and hit[3] == scope and fresh(hit[0], live):
+        _dj_mean_cache[req_key] = (hit[0], hit[1], now, scope)
+        return hit[1]
+
+    try:
+        row = conn.execute(
+            "SELECT n_tracks, mean_json FROM user_embedding_mean "
+            "WHERE user_id = ? AND model_version = ?", (scope, model_version)).fetchone()
+    except Exception as e:  # table not created yet (Turso needs the one-shot script)
+        log.warning("[dj] user_embedding_mean unreadable (%s); computing in-process", e)
+        row = None
+    if row is not None and fresh(int(row["n_tracks"]), live):
+        try:
+            mean = np.array(json.loads(row["mean_json"]), dtype=np.float64)
+            if mean.shape[0] == dim:
+                _dj_mean_cache[req_key] = (int(row["n_tracks"]), mean, now, scope)
+                return mean
+        except (TypeError, ValueError):
+            pass
+
+    # Rebuild: one pass over the library's vectors. On Turso this is the
+    # expensive read, which is why the result is stored, not recomputed.
+    if scope:
+        ids = [int(r["id"]) for r in conn.execute(
+            f"SELECT t.id AS id FROM user_tracks ut JOIN tracks t ON t.id = ut.track_id "
+            f"JOIN track_embeddings te ON te.track_id = t.id "
+            f"WHERE ut.user_id = ? AND t.ingestion_status = 'done' "
+            f"AND te.{emb_col} IS NOT NULL", (scope,)).fetchall()]
+    else:
+        ids = [int(r["id"]) for r in conn.execute(
+            f"SELECT t.id AS id FROM track_embeddings te JOIN tracks t ON t.id = te.track_id "
+            f"WHERE t.ingestion_status = 'done' AND te.{emb_col} IS NOT NULL").fetchall()]
+    vecs = _load_mert_vecs_bulk(conn, ids, model_version, dim)
+    mean = _dj_mean_of(vecs.values())
+    if mean is None:
+        return None
+    n = len(vecs)
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO user_embedding_mean "
+            "(user_id, model_version, n_tracks, mean_json, computed_at) "
+            "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            (scope, model_version, n, json.dumps([round(float(x), 7) for x in mean])))
+        conn.commit()
+    except Exception as e:
+        log.warning("[dj] could not store user_embedding_mean (%s); kept in memory", e)
+    _dj_mean_cache[req_key] = (n, mean, now, scope)
+    return mean
+
+
+def _dj_events_query(conn, raw_events, user_id, seed_vec, model_version: str, dim: int):
+    """Resolve the client's event log and replay it. Returns (query, result)."""
+    events = _dj_parse_events(raw_events)
+    str_keys = sorted({e["id"] for e in events
+                       if isinstance(e["id"], str) and not e["id"].isdigit()})
+    by_spotify = {}
+    if str_keys:
+        ph = ",".join("?" * len(str_keys))
+        for r in conn.execute(f"SELECT id, spotify_id FROM tracks WHERE spotify_id IN ({ph})",
+                              str_keys).fetchall():
+            by_spotify[r["spotify_id"]] = int(r["id"])
+    resolved = []
+    for e in events:
+        k = e["id"]
+        tid = k if isinstance(k, int) else (int(k) if k.isdigit() else by_spotify.get(k))
+        if tid is not None:
+            resolved.append({**e, "id": tid})
+    vecs = _load_mert_vecs_bulk(conn, sorted({e["id"] for e in resolved}), model_version, dim)
+    mu = _dj_library_mean(conn, user_id, model_version, dim)
+    if mu is None:
+        mu = np.zeros(dim, dtype=np.float64)
+    res = _dj_replay(resolved, vecs, mu, seed_vec)
+    q = res.query.astype(np.float32) if res.query is not None else None
+    return q, res
+
+
 def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
     """Cosine similarity over per-track embedding vectors. Variant selects
     which embedding table row to use ('fused' = MERT + scalars + language,
@@ -1782,7 +1927,13 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
             model_version, dim = fb_model_version, fb_dim
             variant_used = fallback_variant
 
-    if seed_vec is None:
+    # With an event log the seed only matters for cold start, so a seed with
+    # no vector (pending ingest — e.g. a just-searched track) no longer
+    # throws the whole session away.
+    use_events = body.events is not None
+    replay_res = None
+
+    if seed_vec is None and not use_events:
         conn.close()
         resp = _similar_vibe(track_key, limit, user_id,
                              display_name=display_name, explain=explain)
@@ -1791,87 +1942,106 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
         return resp
 
     try:
-        # Resolve positive/negative track_keys to internal ids. The seed
-        # track_key in the URL is used only for exclusion — it does NOT
-        # contribute to the query vector. Recommendations are driven purely
-        # by the user's session (completions, skips, queue-adds).
-        # Strongest weights win when a client sends more than we'll accept.
-        def _cap_pairs(pairs):
-            if len(pairs) <= _DJ_MAX_WEIGHTED_IDS:
-                return pairs
-            return sorted(pairs, key=lambda kw: kw[1], reverse=True)[:_DJ_MAX_WEIGHTED_IDS]
+        if use_events:
+            # Replay path (backend/dj_replay.py): the client sends its raw
+            # event log and every bit of weighting happens here. The seed's
+            # OWN events count — a search-and-play is the seed, and dropping
+            # it (as the weighted path below does) threw away the strongest
+            # signal there is. The seed is still excluded from candidates.
+            query_vec, replay_res = _dj_events_query(
+                conn, body.events, user_id, seed_vec, model_version, dim)
+            if query_vec is None:
+                # No usable event AND a seed with no vector: nothing to
+                # point a query at. Same fallback as a seed without a vector.
+                resp = _similar_vibe(track_key, limit, user_id,
+                                     display_name=display_name, explain=explain)
+                resp["mode_used"] = "vibe_fallback_no_signal"
+                resp["variant_used"] = None
+                return resp
+        else:
+            # Legacy weighted path, kept byte-for-byte for clients that still
+            # send positive_ids / negative_ids.
+            # Resolve positive/negative track_keys to internal ids. The seed
+            # track_key in the URL is used only for exclusion — it does NOT
+            # contribute to the query vector. Recommendations are driven purely
+            # by the user's session (completions, skips, queue-adds).
+            # Strongest weights win when a client sends more than we'll accept.
+            def _cap_pairs(pairs):
+                if len(pairs) <= _DJ_MAX_WEIGHTED_IDS:
+                    return pairs
+                return sorted(pairs, key=lambda kw: kw[1], reverse=True)[:_DJ_MAX_WEIGHTED_IDS]
 
-        pos_pairs = _cap_pairs(_parse_id_weight_list(body.positive_ids))
-        neg_pairs = _cap_pairs(_parse_id_weight_list(body.negative_ids))
+            pos_pairs = _cap_pairs(_parse_id_weight_list(body.positive_ids))
+            neg_pairs = _cap_pairs(_parse_id_weight_list(body.negative_ids))
 
-        def _resolve_pairs(pairs):
-            """Batch-resolve (key, weight) pairs to (internal_id, weight).
+            def _resolve_pairs(pairs):
+                """Batch-resolve (key, weight) pairs to (internal_id, weight).
 
-            Splits int/int-string entries (already resolved) from spotify_id
-            strings (need lookup), then issues a single SQL for the strings.
-            Preserves weights via a key→weight map so we don't lose data on
-            the batch round-trip.
-            """
-            if not pairs:
-                return []
-            resolved: list = []
-            str_keys: list = []
-            str_weight: dict = {}
-            for k, w in pairs:
-                if isinstance(k, int):
-                    resolved.append((k, w))
-                    continue
-                s = str(k)
-                if s.isdigit():
-                    try:
-                        resolved.append((int(s), w))
+                Splits int/int-string entries (already resolved) from spotify_id
+                strings (need lookup), then issues a single SQL for the strings.
+                Preserves weights via a key→weight map so we don't lose data on
+                the batch round-trip.
+                """
+                if not pairs:
+                    return []
+                resolved: list = []
+                str_keys: list = []
+                str_weight: dict = {}
+                for k, w in pairs:
+                    if isinstance(k, int):
+                        resolved.append((k, w))
                         continue
-                    except ValueError:
-                        pass
-                str_keys.append(s)
-                # If the same spotify_id appears twice we keep the last
-                # weight — callers don't emit duplicates today.
-                str_weight[s] = w
-            if str_keys:
-                placeholders = ",".join("?" * len(str_keys))
-                rows = conn.execute(
-                    f"SELECT id, spotify_id FROM tracks "
-                    f"WHERE spotify_id IN ({placeholders})",
-                    str_keys,
-                ).fetchall()
-                for r in rows:
-                    tid = int(r["id"])
-                    w = str_weight.get(r["spotify_id"], 1.0)
-                    resolved.append((tid, w))
-            return resolved
+                    s = str(k)
+                    if s.isdigit():
+                        try:
+                            resolved.append((int(s), w))
+                            continue
+                        except ValueError:
+                            pass
+                    str_keys.append(s)
+                    # If the same spotify_id appears twice we keep the last
+                    # weight — callers don't emit duplicates today.
+                    str_weight[s] = w
+                if str_keys:
+                    placeholders = ",".join("?" * len(str_keys))
+                    rows = conn.execute(
+                        f"SELECT id, spotify_id FROM tracks "
+                        f"WHERE spotify_id IN ({placeholders})",
+                        str_keys,
+                    ).fetchall()
+                    for r in rows:
+                        tid = int(r["id"])
+                        w = str_weight.get(r["spotify_id"], 1.0)
+                        resolved.append((tid, w))
+                return resolved
 
-        pos_id_w = [(tid, w) for (tid, w) in _resolve_pairs(pos_pairs) if tid != anchor_id]
-        neg_id_w = [(tid, w) for (tid, w) in _resolve_pairs(neg_pairs) if tid != anchor_id]
+            pos_id_w = [(tid, w) for (tid, w) in _resolve_pairs(pos_pairs) if tid != anchor_id]
+            neg_id_w = [(tid, w) for (tid, w) in _resolve_pairs(neg_pairs) if tid != anchor_id]
 
-        needed_ids = list({tid for tid, _ in pos_id_w + neg_id_w})
-        ctx_vecs = _load_mert_vecs_bulk(conn, needed_ids, model_version, dim)
+            needed_ids = list({tid for tid, _ in pos_id_w + neg_id_w})
+            ctx_vecs = _load_mert_vecs_bulk(conn, needed_ids, model_version, dim)
 
-        def _combine(pairs):
-            acc = np.zeros(dim, dtype=np.float32)
-            for tid, w in pairs:
-                v = ctx_vecs.get(tid)
-                if v is None:
-                    continue
-                acc = acc + (w * _l2_normalize(v))
-            return acc
+            def _combine(pairs):
+                acc = np.zeros(dim, dtype=np.float32)
+                for tid, w in pairs:
+                    v = ctx_vecs.get(tid)
+                    if v is None:
+                        continue
+                    acc = acc + (w * _l2_normalize(v))
+                return acc
 
-        pos_vec = _combine(pos_id_w)
-        neg_vec = _combine(neg_id_w)
+            pos_vec = _combine(pos_id_w)
+            neg_vec = _combine(neg_id_w)
 
-        pos_norm = float(np.linalg.norm(pos_vec))
-        taste_present = pos_norm >= 0.1
+            pos_norm = float(np.linalg.norm(pos_vec))
+            taste_present = pos_norm >= 0.1
 
-        query_vec = None
-        if taste_present:
-            # Pure session taste. Answers "what's next for me?"
-            query_vec = _l2_normalize(pos_vec - 0.4 * neg_vec)
-        # Cold start (no session signal): query_vec stays None; we'll pick
-        # a random slice of the candidate pool below.
+            query_vec = None
+            if taste_present:
+                # Pure session taste. Answers "what's next for me?"
+                query_vec = _l2_normalize(pos_vec - 0.4 * neg_vec)
+            # Cold start (no session signal): query_vec stays None; we'll pick
+            # a random slice of the candidate pool below.
 
         # Build exclude set: request excludes + seed itself.
         # Truncated, not rejected: excludes are a nicety (avoid replaying
@@ -1885,7 +2055,9 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
         # requested embedding variant, not excluded). Option A layout:
         # one row per track, each variant in its own typed column.
         emb_col = _embedding_column_for(model_version) or "fused_embedding"
-        mode_used = f"dj_{variant_used}"
+        mode_used = f"dj_replay_{variant_used}" if use_events else f"dj_{variant_used}"
+        if replay_res is not None and replay_res.from_seed:
+            mode_used += "_from_seed"
 
         # ------------------------------------------------------------------
         # Ranking backend: on Turso we push the cosine computation into the
