@@ -193,7 +193,7 @@ def _seed_default_user(conn: sqlite3.Connection) -> int:
     if row:
         return int(row[0])
     cur = conn.execute(
-        "INSERT INTO users (display_name, pin_hash) VALUES (?, NULL)",
+        "INSERT INTO users (display_name) VALUES (?)",
         (DEFAULT_USER_NAME,),
     )
     conn.commit()
@@ -584,7 +584,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE tracks ADD COLUMN spotify_id TEXT",
         "ALTER TABLE tracks ADD COLUMN classification_source TEXT",
         "ALTER TABLE tracks ADD COLUMN chroma_mean_json TEXT",
-        "ALTER TABLE tracks ADD COLUMN user_id INTEGER",
+        # NOT "ADD COLUMN user_id" (removed 2026-10-10). Adding it to a fresh
+        # schema.sql database flipped it onto the legacy per-user path below,
+        # which rebuilt `tracks` without `language`, so the third get_conn()
+        # died on schema.sql's language index. Production (Turso) has no
+        # tracks.user_id and runs fine. A DB that already has the column
+        # (every existing dev DB) is unaffected. tests/database covers this.
         "ALTER TABLE tracks ADD COLUMN youtube_id TEXT",
         "ALTER TABLE tracks ADD COLUMN youtube_queried_at TIMESTAMP",
         "ALTER TABLE tracks ADD COLUMN energy_pred REAL",

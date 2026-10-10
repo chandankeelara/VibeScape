@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     ml_predicted_at       TIMESTAMP,
     created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    -- Two-phase ingestion. Sync (online) inserts metadata with status='pending';
+    -- Two-phase ingestion. Sync (online) inserts metadata with status='pending',
     -- scripts/run_ingest_worker.py (offline) does the preview cascade + ML
     -- scoring + language detection and flips to 'done' (or 'no_preview' /
     -- 'failed'). The library / mood-grid queries filter to 'done'.

@@ -127,7 +127,7 @@ so this is reachable by configuration alone. The fix is the same
 `vector_extract()` workaround app.py already uses — or item 2.1 below, which
 removes the need for both.
 
-### 1.7 A fresh local SQLite bootstrap dies in `_seed_default_user`: `users` has no `pin_hash`
+### 1.7 ~~A fresh local SQLite bootstrap dies in `_seed_default_user`: `users` has no `pin_hash`~~ — DONE (2026-10-10)
 `backend/db.py:195` vs `schema.sql:6-20`
 
 **verified by running it** (2026-10-02). On a DB with zero `users` rows,
@@ -140,6 +140,15 @@ does not exist and the statement raises
 request. A developer cloning the repo without `data/vibescape.db` gets a
 500 on everything. The existing dev DB still has the column, which is why
 nobody has hit it. Drop `pin_hash` from the INSERT.
+
+**Fixed 2026-10-10**, together with the bug it was hiding: with the INSERT
+fixed, a fresh DB died on its *third* `get_conn()` instead. `_migrate` added
+`tracks.user_id` unconditionally, which flipped a schema.sql database onto the
+legacy per-user path, which rebuilt `tracks` without `language`, and
+schema.sql's language index then failed. That ALTER is gone (production has no
+`tracks.user_id`). Existing dev DBs already have the column and keep the legacy
+shape — so **local dev DBs still differ from production** (`vibe_score NOT
+NULL`, `user_id` on tracks). Regression tests: `tests/database/test_schema.py`.
 
 ---
 
