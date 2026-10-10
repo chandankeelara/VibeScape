@@ -227,7 +227,16 @@
 }
 
 @media (max-width: 1023px) {
-  .shell { height: auto; min-height: 100dvh; overflow: visible; }
+  /*
+   * overflow-x: clip, not visible. The card glows (.glow, and .videoGlow at
+   * inset:-14%, which counts even in audio mode — visibility:hidden still
+   * takes part in overflow) reach past the 14px gutter, so with `visible`
+   * every phone width scrolled sideways by 32-41px and the player looked
+   * off-centre (measured 2026-10-10, 360-414px). `clip` cuts only what is
+   * already off-screen and, unlike `hidden`, makes no scroll container, so
+   * vertical page scroll and the fixed FAB / sheet are untouched.
+   */
+  .shell { height: auto; min-height: 100dvh; overflow: visible; overflow-x: clip; }
   /* Trail goes horizontal above the card — see RecentTrail.module.css. */
   .trailSlot { width: 100%; }
 }
