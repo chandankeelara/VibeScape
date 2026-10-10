@@ -88,10 +88,7 @@ export default function TheaterBar({
         )}
         {/*
           * Theater's EXIT lives here, at the bottom-right of the video region,
-          * roughly where its entrance was on the card above. It does not need
-          * ArtStage's dock() guard: that guard exists for ENTERING theater
-          * with a detached frame, and detached cannot be true while theater
-          * is — the two are mutually exclusive by construction.
+          * roughly where its entrance was on the card above.
           */}
         <TheaterToggle
           theater={theater}

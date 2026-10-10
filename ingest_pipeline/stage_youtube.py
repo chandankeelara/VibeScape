@@ -63,12 +63,16 @@ class YoutubeStage(Stage):
             "AND librosa_status = 'done' "
             "AND ml_status = 'done' "
             "AND fuse_status = 'done' "
-            # Language is the one stage whose success is not spelled
-            # 'done'. Whisper stops at 'whisper_done' pending LLM
-            # verification, and 'no_match' means it ran but had too
-            # little confidence to call. Both are finished outcomes.
-            # 'failed' and 'pending' are not, and are excluded.
-            "AND language_status IN ('done', 'whisper_done', 'no_match') "
+            # Language, strictly. It used to be the one stage whose
+            # success was not spelled 'done' — Whisper stopped at
+            # 'whisper_done' and could return 'no_match'. Neither state
+            # has a producer since language became a queue-answered
+            # metadata question (2026-10-10); "no language" is now an
+            # explicit clear that writes language=NULL with
+            # language_status='done'. Redundant with fuse's own gate, and
+            # kept anyway: this gate's whole job is to spell out every
+            # upstream stage rather than trust transitivity.
+            "AND language_status = 'done' "
             "AND title IS NOT NULL AND title != '' "
             "AND artist IS NOT NULL AND artist != '' "
             f"{id_filter(only_ids)[0]}"

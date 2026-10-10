@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as api from '../../lib/api';
 import { apiKey, trackKey } from '../../lib/vibe';
 import { emitDj } from '../../lib/djBus';
+import { logEvent } from '../../lib/listenLog';
 import { usePlayer } from '../../state/PlayerContext';
 import { useSpotifyAuth } from '../../state/SpotifyAuthContext';
 import { useToast } from '../../state/ToastContext';
@@ -47,9 +48,15 @@ function spotifySearchErrorMessage(err) {
  * (tests, or a host that already holds a token).
  */
 export default function SearchBar({ spotifyToken: tokenProp, className = '' }) {
-  const { token, isConnected, signIn } = useSpotifyAuth();
+  const { token, isConnected, signIn, getValidToken } = useSpotifyAuth();
   const spotifyToken = tokenProp ?? token ?? null;
   const spotifyEnabled = Boolean(spotifyToken) && (tokenProp ? true : isConnected);
+  // Fetched at request time, not read from render: getValidToken refreshes
+  // when the token is about to lapse, so a long session keeps searching.
+  const currentToken = useCallback(
+    async () => tokenProp ?? (await getValidToken()) ?? null,
+    [tokenProp, getValidToken]
+  );
 
   const { loadTrack, enqueue, enqueueAt, queue, setVibe } = usePlayer();
   const toast = useToast();
@@ -85,7 +92,7 @@ export default function SearchBar({ spotifyToken: tokenProp, className = '' }) {
 
   const spQuery = useQuery({
     queryKey: spKey,
-    queryFn: () => api.spotifySearch({ q: debouncedQ, limit: SPOTIFY_LIMIT }, spotifyToken),
+    queryFn: async () => api.spotifySearch({ q: debouncedQ, limit: SPOTIFY_LIMIT }, await currentToken()),
     enabled: Boolean(debouncedQ) && spotifyEnabled,
     staleTime: 30_000,
     retry: false,
@@ -117,19 +124,41 @@ export default function SearchBar({ spotifyToken: tokenProp, className = '' }) {
     document.getElementById(rowId(cursor))?.scrollIntoView({ block: 'nearest' });
   }, [cursor]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /* ------------------------------------------------------------ telemetry */
+  /*
+   * One `search` event per query the user acted on or walked away from —
+   * not one per keystroke. Each settled query starts unlogged; playing or
+   * queueing a result logs it with that outcome, and closing the panel logs
+   * whatever is still unlogged as 'none'. resultsRef is declared further down
+   * and only read when this runs, never during render.
+   */
+  const searchLogRef = useRef({ q: '', done: false });
+  useEffect(() => { searchLogRef.current = { q: debouncedQ, done: false }; }, [debouncedQ]);
+  const logSearch = useCallback((outcome) => {
+    const cur = searchLogRef.current;
+    if (!cur.q || cur.done) return;
+    cur.done = true;
+    const { library: lib = [], spotify: sp = [] } = resultsRef.current || {};
+    logEvent('search', {
+      data: { query: cur.q, results_library: lib.length, results_spotify: sp.length, outcome },
+    });
+  }, []);
+
   /* ----------------------------------------------------------- open/close */
 
   const close = useCallback(() => {
+    logSearch('none');
     setOpen(false);
     setCursor(-1);
-  }, []);
+  }, [logSearch]);
 
   const reset = useCallback(({ blur = false } = {}) => {
+    logSearch('none');
     setQuery('');
     setOpen(false);
     setCursor(-1);
     if (blur) inputRef.current?.blur();
-  }, []);
+  }, [logSearch]);
 
   // Click outside collapses the panel; the input itself stays put.
   useEffect(() => {
@@ -174,16 +203,17 @@ export default function SearchBar({ spotifyToken: tokenProp, className = '' }) {
   }, [setVibe]);
 
   const play = useCallback((t) => {
+    logSearch('played');
     reset({ blur: true });
     syncVibe(t);
     // Explicit intent: fire a 'searched' event so the next DJ fetch sees
     // the picked song's vibe immediately, instead of waiting for the end
-    // of playback. useDj listens on djBus and accumulates with whatever
-    // the subsequent play outcome produces.
+    // of playback. useDj listens on djBus and logs it; how the song then
+    // ends is logged as its own, later event.
     const key = apiKey(t);
     if (key) emitDj({ track_id: key, action: 'searched', played_ratio: null, ts: Date.now() });
-    loadTrack(t);
-  }, [reset, syncVibe, loadTrack]);
+    loadTrack(t, { source: 'search', trigger: 'search' });
+  }, [logSearch, reset, syncVibe, loadTrack]);
 
   /* ------------------------------------------------- drag into the queue */
   /*
@@ -198,8 +228,8 @@ export default function SearchBar({ spotifyToken: tokenProp, className = '' }) {
 
   // Dropped-into-queue and "+ queue" from search are both explicit "I want
   // this" acts, same signal strength as queueing a sidebar rec. Fire 'queued'
-  // through djBus so the taste map picks it up without SearchBar having to
-  // import useDj (which would double-instantiate the taste state).
+  // through djBus so the event log picks it up without SearchBar having to
+  // import useDj (which would double-instantiate the log's state).
   const emitQueued = useCallback((t) => {
     const key = apiKey(t);
     if (key) emitDj({ track_id: key, action: 'queued', played_ratio: null, ts: Date.now() });
@@ -214,20 +244,22 @@ export default function SearchBar({ spotifyToken: tokenProp, className = '' }) {
         trackKey(t) === key || String(t.spotify_id ?? '') === key || String(t.id ?? '') === key;
       const t = lib.find(match) ?? sp.find(match);
       if (!t) return;
-      enqueueAt(t, index);
+      logSearch('queued');
+      enqueueAt(t, index, { via: 'drag' });
       emitQueued(t);
       toast('Added to queue.', 'success');
     };
     document.addEventListener('vibescape:queue-drop', onDrop);
     return () => document.removeEventListener('vibescape:queue-drop', onDrop);
-  }, [enqueueAt, emitQueued, toast]);
+  }, [enqueueAt, emitQueued, toast, logSearch]);
 
   const addToQueue = useCallback((t) => {
     const already = queue.some((x) => trackKey(x) === trackKey(t));
-    enqueue(t);
+    if (!already) logSearch('queued');
+    enqueue(t, { via: 'search' });
     if (!already) emitQueued(t);
     toast(already ? 'Already in the queue.' : 'Added to queue.', already ? 'info' : 'success');
-  }, [queue, enqueue, emitQueued, toast]);
+  }, [queue, enqueue, emitQueued, toast, logSearch]);
 
   /**
    * /api/ingest/single is idempotent and covers all three states: already
@@ -237,10 +269,11 @@ export default function SearchBar({ spotifyToken: tokenProp, className = '' }) {
    */
   const ingest = useCallback(async (spotifyId) => {
     const body = { spotify_id: spotifyId };
-    if (spotifyToken) body.access_token = spotifyToken;
-    const res = await api.ingestSingle(body, spotifyToken);
+    const tok = await currentToken();
+    if (tok) body.access_token = tok;
+    const res = await api.ingestSingle(body, tok);
     return res?.track ?? null;
-  }, [spotifyToken]);
+  }, [currentToken]);
 
   /** Keep the cached result lists consistent with the DB after an ingest. */
   const markInLibrary = useCallback((spotifyId, track) => {

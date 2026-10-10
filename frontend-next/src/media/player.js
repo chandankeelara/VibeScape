@@ -65,6 +65,9 @@ export const setPipHandler = (fn) => {
 };
 
 function emit() {
+  // Every playing-ness change passes through here, so this is the one place
+  // that drives telemetry's audible-time clock.
+  listenLog.setPlaying(state.playing);
   const snapshot = { playing: state.playing, source: state.source, mode: state.mode, track: state.track };
   listeners.forEach((fn) => fn(snapshot));
 }
@@ -207,7 +210,9 @@ function setPreviewSource(track) {
 /* --------------------------------------------------------------- commands */
 
 /**
- * `endReason` / `source` are telemetry only and never affect playback.
+ * `endReason` / `trigger` / `source` are telemetry only and never affect
+ * playback. `trigger` is how a human ended the previous track (next_button,
+ * media_key, prev, search, pick, queue_jump, vibe_change).
  *
  * endReason defaults to 'skipped' because that is what an open play being
  * displaced actually means: if the track had ended on its own, the 'ended'
@@ -215,7 +220,7 @@ function setPreviewSource(track) {
  * below would find nothing to close. Only the genuinely programmatic callers
  * (player.stop(), the post-sync re-roll) pass 'replaced'.
  */
-export function loadTrack(track, { mode = state.mode, endReason = 'skipped', source } = {}) {
+export function loadTrack(track, { mode = state.mode, endReason = 'skipped', source, trigger } = {}) {
   if (!track) return;
 
   // Re-loading the SAME track is a source switch, not an end: it happens when
@@ -223,7 +228,7 @@ export function loadTrack(track, { mode = state.mode, endReason = 'skipped', sou
   // video mode. Billing that as a skip plus a fresh play would double the
   // play count and invent a skip the user never made.
   const continuing = listenLog.isOpen(track);
-  if (!continuing) listenLog.endPlay(endReason);
+  if (!continuing) listenLog.endPlay(endReason, { trigger });
 
   state.track = track;
   state.mode = mode;
@@ -238,7 +243,7 @@ export function loadTrack(track, { mode = state.mode, endReason = 'skipped', sou
     startSessionAnchor();
     state.source = null;
     emit();
-    if (!continuing) listenLog.startPlay(track, { source });
+    if (!continuing) listenLog.startPlay(track, { source, playback: 'youtube' });
     return; // the video feature resolves the id and calls cueVideo()
   }
 
@@ -274,12 +279,13 @@ export function loadTrack(track, { mode = state.mode, endReason = 'skipped', sou
     glow.stop();
     glow.setAlpha(0.65);
     emit();
-    if (!continuing) listenLog.startPlay(track, { source });
+    if (!continuing) listenLog.startPlay(track, { source, playback: 'spotify' });
     spotify.playTrack(track.spotify_id).then((ok) => {
       // Couldn't take over the device — better a 30s preview than silence.
       if (!ok && state.track === track) {
         // Real element is about to play, so it owns the session on its own.
         stopSessionAnchor();
+        listenLog.setPlayback('preview');
         state.source = 'preview';
         emit();
         setPreviewSource(track);
@@ -295,7 +301,7 @@ export function loadTrack(track, { mode = state.mode, endReason = 'skipped', sou
   stopSessionAnchor();
   state.source = 'preview';
   emit();
-  if (!continuing) listenLog.startPlay(track, { source });
+  if (!continuing) listenLog.startPlay(track, { source, playback: 'preview' });
   setPreviewSource(track);
   state.audioEl.play().catch(() => { state.playing = false; emit(); });
 }
@@ -303,13 +309,20 @@ export function loadTrack(track, { mode = state.mode, endReason = 'skipped', sou
 /** Hand a resolved YouTube id to the iframe player (video mode). */
 export function cueVideo(videoId) { youtube.cueOrPlay(videoId); }
 
+/*
+ * play / pause / seek are the USER commands (buttons, keyboard, media keys),
+ * which is why telemetry's pause / resume / seek are logged here and not from
+ * element events — those also fire on every internal track switch.
+ */
 export function play() {
+  if (!state.playing) listenLog.noteResume();
   if (state.mode === 'video') return youtube.play();
   if (state.source === 'spotify') return spotify.resume();
   state.audioEl?.play().catch(() => {});
 }
 
 export function pause() {
+  if (state.playing) listenLog.notePause();
   if (state.mode === 'video') return youtube.pause();
   if (state.source === 'spotify') return spotify.pause();
   state.audioEl?.pause();
@@ -317,6 +330,8 @@ export function pause() {
 
 export function seek(frac) {
   const f = Math.max(0, Math.min(1, frac));
+  const d = currentDuration();
+  if (d > 0) listenLog.noteSeek(currentPosition() * 1000, f * d * 1000);
   if (state.mode === 'video') {
     const d = youtube.getDuration();
     if (d > 0) youtube.seekTo(d * f);
@@ -528,8 +543,8 @@ function applySessionHandlers() {
   };
   set('play', play);
   set('pause', pause);
-  set('nexttrack', () => hooks.onNext());
-  set('previoustrack', () => hooks.onPrevious());
+  set('nexttrack', () => hooks.onNext({ trigger: 'media_key' }));
+  set('previoustrack', () => hooks.onPrevious({ trigger: 'media_key' }));
   set('stop', stop);
 
   // Scrubbing from the lock screen / car head unit.
@@ -549,6 +564,10 @@ function applySessionHandlers() {
 
 function currentDuration() {
   if (state.mode === 'video') return youtube.getDuration();
+  // The <audio> element is detached during Spotify playback, so its duration
+  // is meaningless there — this made telemetry's duration_ms empty for every
+  // Spotify play and the lock-screen +/-10 s keys dead (2026-10-10).
+  if (state.source === 'spotify') return spotify.getDuration();
   const el = state.audioEl;
   return el && Number.isFinite(el.duration) ? el.duration : 0;
 }

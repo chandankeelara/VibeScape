@@ -322,7 +322,7 @@ Each stage lives in its own module under `ingest_pipeline/`, is gated by exactly
 | 2 | **download** | `stage_download.py` | `download_status` | `preview_status='done'` | 8 | Fetches to `data/audio/<spotify_id>.<ext>` atomically (`.part` rename). Skips if already cached. |
 | 3 | **librosa** | `stage_librosa.py` | `librosa_status` | `download_status='done'` | 3 | The DSP feature bank — 18 columns: `tempo`, `energy`, `brightness`, `bandwidth`, `rolloff`, `spectral_contrast`, `flatness`, `zcr`, `tonnetz_std`, `acousticness`, `mfcc_json`, `chroma_mean_json`, … |
 | 4 | **classify** | `stage_classify.py` | `ml_status` | `librosa_status='done'` | 1 (GPU) | **One** MERT pass over the full 30 s preview with the fine-tuned checkpoint, yielding **both** the vibe scalars and the 768-d mean-pooled embedding. |
-| 5 | **language** | `stage_language.py` | `language_status` | `ml_status='done'` | 1 (GPU) | Whisper `small` detection. Terminal state is `whisper_done`, not `done` — Whisper mispredicts on musical audio, so verification is intended before the tag is trusted. |
+| 5 | **language** | `stage_language.py` | `language_status` | none — armed at ingest entry | 1 (no model) | **The pipeline stops here.** Classifies nothing: parks live rows at `language_status='pending'`, the single predicate a Claude Code session queries. The session reads title/artist/album, writes the tag and the `fuse_status='pending'` cascade (`ingest_pipeline/README.md` § Tagging languages). Whisper was removed 2026-10-10 — it mispredicted routinely on sung audio. |
 | 6 | **fuse** | `stage_fuse.py` | `fuse_status` | `language_status` terminal | 4 | Builds the 788-d retrieval vector from the stored MERT vector + 9 scalars + language one-hot. Pure numpy — a corrected language tag rebuilds in ms, no GPU. |
 | 7 | **youtube** | `stage_youtube.py` | `youtube_status` | all of the above | 6 | `yt-dlp ytsearch`, first hit, no embed/age check. Skips if `youtube_id` is set. **Finisher** — settles `ingestion_status='done'`. |
 
@@ -336,7 +336,7 @@ This replaced a design that leaned on `ALTER TABLE ... DEFAULT 'pending'`. That 
 
 Arming is not *proof* the upstream ran, though: a column also reaches `'pending'` from a migration default or a manual UPDATE. So every gate additionally spells out its real preconditions rather than trusting that it was armed.
 
-Status vocabulary: `pending`, `done`, `no_match`, `failed`, plus `whisper_done` for language. `no_match` is terminal but non-error — the stage ran and found nothing. On `failed` a stage **arms nothing** and sets `ingestion_status='<stage>_stage_error'`, so the chain stops where it broke and one `GROUP BY ingestion_status` says which stage is failing and how often.
+Status vocabulary: `pending`, `done`, `no_match`, `failed`. (`whisper_done` was retired with the Whisper language stage on 2026-10-10; `fuse` and `youtube` now require `language_status='done'` exactly.) `no_match` is terminal but non-error — the stage ran and found nothing. On `failed` a stage **arms nothing** and sets `ingestion_status='<stage>_stage_error'`, so the chain stops where it broke and one `GROUP BY ingestion_status` says which stage is failing and how often.
 
 There is no promote pass. Each stage settles `ingestion_status` itself:
 
@@ -551,7 +551,7 @@ Grouped by what they buy you:
 - **`sqlite3`-compatible HTTP shim.** `backend/db_client.py` implements a `sqlite3` connection/cursor/row shim over Turso's raw Hrana HTTP pipeline. Every call site keeps its plain `sqlite3` API — `DB_BACKEND=sqlite|turso` switches the whole app between local file and remote DB.
 - **F32_BLOB round-trip quirk.** Turso returns F32_BLOB values as base64-encoded blobs that the HTTP shim doesn't fully decode. Any path that needs the raw vectors (positives/negatives for query-vector construction) uses `vector_extract()` to get the text form and parses it. Wrapped in `_decode_embedding_cell()` — one place to update if libSQL changes the wire format.
 - **Empirical crop-length audit.** Before committing to a 30 s embedding + 10 s scalar prediction split, we measured drift (`scripts/_predict_crop_length_test.py`, `_regressor_window_compare.py`). 0.960 correlation, ~3 pt MAE, systematic 1.83 pt bias — small enough to keep the split, large enough to justify the `model_version` column that makes it queryable.
-- **Language-tag correction workflow.** Whisper hallucinates on musical audio (Kannada film songs often mis-tagged as `sa / km / nn`), which is why `language_status` stops at `whisper_done` rather than `done`. `scripts/_llm_verify_export.py` dumps those rows for review and `_llm_verify_apply.py` writes the corrections back, resetting `fuse_status` so the language one-hot is rebuilt — milliseconds, no GPU, because the MERT half is already stored.
+- **Language tagging.** Whisper hallucinated on musical audio (Kannada film songs often mis-tagged as `sa / km / nn`), so it was removed on 2026-10-10 and language is read from title/artist/album instead. The pipeline stops at the language stage with rows at `language_status='pending'`; a Claude Code session queries the database for them and writes the tag plus the `fuse_status='pending'` cascade, which rebuilds the language one-hot in milliseconds with no GPU because the MERT half is already stored. Interface: `ingest_pipeline/README.md` § Tagging languages. Health: `python scripts/language_tags.py --status`.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -709,8 +709,9 @@ VibeScape/
 │   ├── _sync_local_to_turso.py             # local → prod; UPDATE on spotify_id, no DROP
 │   ├── _dedupe_local_by_isrc.py            # merge same-recording duplicates (local)
 │   ├── _dedupe_turso_by_isrc.py            # ...and on prod; re-points user_tracks first
-│   ├── _llm_verify_export.py               # export whisper_done rows for language review
-│   ├── _llm_verify_apply.py                # apply reviewed language corrections
+│   ├── language_tags.py                    # what is waiting for a language tag; write tags
+│   ├── _llm_verify_export.py               # SUPERSEDED (hand-driven whisper_done review)
+│   ├── _llm_verify_apply.py                # SUPERSEDED (hand-driven language corrections)
 │   ├── _turso_create_vector_index.py       # DiskANN index attempt (blocked)
 │   ├── _turso_inspect.py                   # schema/row inspection
 │   ├── _turso_verify.py                    # post-push count/schema verifier

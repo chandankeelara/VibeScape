@@ -47,8 +47,17 @@ class ClassifyStage(Stage):
     name = "classify"
     status_column = "ml_status"
     # Emits the MERT vector itself now, so there is no separate encoding
-    # stage to arm — language is next, then fusion.
-    arms = ("language_status",)
+    # stage to arm — fusion is next.
+    #
+    # It used to arm language. It no longer does: language stopped being a
+    # Whisper pass over the audio and became a metadata question answered
+    # off a queue, so it needs nothing from this stage and is armed at
+    # ingest entry instead (stage_language.py). Fusion still waits for
+    # BOTH — this arms the ml half, language_tagging.tag arms the
+    # language half, and fuse's own gate requires both to be 'done'.
+    # Writing 'pending' twice is harmless, which is what makes the two
+    # arming paths safe in either order.
+    arms = ("fuse_status",)
     # Local GPU mode: MERT weights are ~4 GB, so concurrent loads on an
     # 8 GB card OOM. Sequentialize by default. If running against Modal
     # (VIBESCAPE_ML_MODE=modal), bump this back up (Modal runs each call

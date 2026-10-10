@@ -161,15 +161,15 @@ layout but keeps the preference.
   cannot undo that, so `useTheaterMode` carries a `matchMedia('(min-width:
   1024px)')` listener. Without it, narrowing the window with theater on would
   hide the mood slider with no visible control to bring it back.
-- **Theater and detach are mutually exclusive**, enforced in both directions:
-  entering theater calls `dock()`, and `useVideoFrame`'s new `onDetach` hook
-  exits theater. An `ArtStage` effect re-asserts the invariant for storage
-  written before the feature existed.
+- **The detachable frame is gone (2026-10-10).** The video had a third layout:
+  drag the card out into a floating, 8-way-resizable panel (`useVideoFrame`).
+  It competed with theater for the same job, needed a rule keeping the two
+  mutually exclusive, and a mis-drag could strand the panel in a corner
+  across reloads. Now there are exactly two layouts: the normal card and
+  theater. A `vs.videoFrame.rect` key left in localStorage is ignored.
 - The grid flips in one discrete step; only `transform`/`opacity` are
   animated (`@keyframes settle`). Nothing is re-keyed or reparented, so the
-  YouTube iframe never reloads. The settle is skipped on a detach-driven exit
-  because a transformed ancestor would become the containing block for the
-  `position: fixed` frame the user is dragging.
+  YouTube iframe never reloads.
 
 ## Picture-in-picture miniplayer (Document PiP)
 

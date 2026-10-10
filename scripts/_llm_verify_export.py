@@ -1,4 +1,11 @@
 """
+SUPERSEDED 2026-10-10. Language is no longer detected by Whisper and no
+longer passes through a file-based export/apply pair; the database is the
+queue and ingest_pipeline/language_tagging.py is the write path. This
+script selects on language_status='whisper_done', which has no producer
+any more. See ingest_pipeline/README.md, section Tagging languages.
+Kept only for a batch that was already in flight; delete after that.
+
 Export tracks awaiting LLM language verification to a review queue.
 
 Reads rows with language_status='whisper_done' from local sqlite and

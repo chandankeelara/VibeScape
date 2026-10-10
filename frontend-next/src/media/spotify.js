@@ -50,6 +50,26 @@ export function setToken(token) {
   if (sp.token && !sp.player) connect();
 }
 
+/**
+ * SpotifyAuthContext's getValidToken({ force }), registered once. Everything
+ * here that talks to Spotify asks it first, so the token is refreshed at the
+ * moment it is used — a new song, or the SDK's own periodic request — and
+ * never goes stale behind a long session.
+ */
+let tokenProvider = null;
+export function setTokenProvider(fn) { tokenProvider = fn || null; }
+
+async function freshToken({ force = false } = {}) {
+  if (tokenProvider) {
+    try {
+      const t = await tokenProvider({ force });
+      if (t) sp.token = t;
+      return t || null;
+    } catch { /* provider trouble — fall back to what we hold */ }
+  }
+  return sp.token;
+}
+
 /** Premium flag from the /v1/me profile — set by SpotifyAuthContext. */
 export function setPremium(v) { sp.isPremium = !!v; }
 
@@ -68,7 +88,9 @@ function connect() {
   try {
     const player = new window.Spotify.Player({
       name: 'VibeScape',
-      getOAuthToken: (cb) => cb(sp.token),
+      // The SDK calls this on connect and again whenever its token is about
+      // to lapse (roughly hourly) — including mid-song and after a long pause.
+      getOAuthToken: (cb) => { freshToken().then((t) => cb(t || '')); },
       volume: 0.8,
     });
 
@@ -165,9 +187,11 @@ function stopPolling() {
 async function transferPlayback(deviceId) {
   if (!deviceId || !sp.token) return false;
   try {
+    const tok = await freshToken();
+    if (!tok) return false;
     const r = await fetch('https://api.spotify.com/v1/me/player', {
       method: 'PUT',
-      headers: { Authorization: `Bearer ${sp.token}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ device_ids: [deviceId], play: false }),
     });
     // 204 transferred, 202 accepted (queued) — both fine.
@@ -180,10 +204,10 @@ async function transferPlayback(deviceId) {
 /** Mirrors legacy sdkActive() (app.js:1123) — all four conditions. */
 export const isActive = () => !!(sp.token && sp.isPremium && sp.player && sp.deviceId);
 
-const doPlay = (spotifyId) =>
+const doPlay = (spotifyId, tok) =>
   fetch(`https://api.spotify.com/v1/me/player/play?device_id=${sp.deviceId}`, {
     method: 'PUT',
-    headers: { Authorization: `Bearer ${sp.token}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ uris: [`spotify:track:${spotifyId}`] }),
   });
 
@@ -194,14 +218,26 @@ const doPlay = (spotifyId) =>
 export async function playTrack(spotifyId) {
   if (!isActive()) return false;
   try {
-    let r = await doPlay(spotifyId);
+    // Every new song asks for a token first — this is where a long session
+    // gets its refresh.
+    let tok = await freshToken();
+    if (!tok) return false;
+    let r = await doPlay(spotifyId, tok);
+
+    // 401 = the token died early (revoked elsewhere, clock skew). Force one
+    // refresh and retry once.
+    if (r.status === 401) {
+      tok = await freshToken({ force: true });
+      if (!tok) return false;
+      r = await doPlay(spotifyId, tok);
+    }
 
     // 404 = another Spotify client stole the active-device slot. Re-transfer
     // and retry once; the delay lets Spotify propagate it server-side.
     if (r.status === 404) {
       if (await transferPlayback(sp.deviceId)) {
         await new Promise((res) => setTimeout(res, 300));
-        r = await doPlay(spotifyId);
+        r = await doPlay(spotifyId, tok);
       }
     }
     if (r.status === 404) {
@@ -243,6 +279,9 @@ export function disconnect() {
 }
 
 export const getDeviceId = () => sp.deviceId;
+
+/** Length of what the SDK is playing, in seconds (0 before the first state). */
+export const getDuration = () => sp.durationMs / 1000;
 
 /**
  * Live playhead in seconds.
