@@ -178,8 +178,8 @@ export default function SearchBar({ spotifyToken: tokenProp, className = '' }) {
     syncVibe(t);
     // Explicit intent: fire a 'searched' event so the next DJ fetch sees
     // the picked song's vibe immediately, instead of waiting for the end
-    // of playback. useDj listens on djBus and accumulates with whatever
-    // the subsequent play outcome produces.
+    // of playback. useDj listens on djBus and logs it; how the song then
+    // ends is logged as its own, later event.
     const key = apiKey(t);
     if (key) emitDj({ track_id: key, action: 'searched', played_ratio: null, ts: Date.now() });
     loadTrack(t);
@@ -198,8 +198,8 @@ export default function SearchBar({ spotifyToken: tokenProp, className = '' }) {
 
   // Dropped-into-queue and "+ queue" from search are both explicit "I want
   // this" acts, same signal strength as queueing a sidebar rec. Fire 'queued'
-  // through djBus so the taste map picks it up without SearchBar having to
-  // import useDj (which would double-instantiate the taste state).
+  // through djBus so the event log picks it up without SearchBar having to
+  // import useDj (which would double-instantiate the log's state).
   const emitQueued = useCallback((t) => {
     const key = apiKey(t);
     if (key) emitDj({ track_id: key, action: 'queued', played_ratio: null, ts: Date.now() });

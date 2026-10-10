@@ -1,5 +1,6 @@
 import { usePlayer } from '../../state/PlayerContext';
-import { trackKey } from '../../lib/vibe';
+import { apiKey, trackKey } from '../../lib/vibe';
+import { emitDj } from '../../lib/djBus';
 import styles from './RecentTrail.module.css';
 
 /**
@@ -8,6 +9,14 @@ import styles from './RecentTrail.module.css';
  */
 export default function RecentTrail() {
   const { recent, current, loadTrack } = usePlayer();
+
+  // Going back to something from the trail is a choice — log it for the DJ
+  // (djBus, so this component never instantiates useDj's state).
+  const pick = (t) => {
+    const key = apiKey(t);
+    if (key) emitDj({ track_id: key, action: 'picked', played_ratio: null, ts: Date.now() });
+    loadTrack(t);
+  };
 
   const items = recent
     .filter((t) => !current || trackKey(t) !== trackKey(current))
@@ -25,7 +34,7 @@ export default function RecentTrail() {
           type="button"
           title={`${t.title || 'Untitled'} — ${t.artist || ''}`}
           aria-label={`Play ${t.title || 'Untitled'}`}
-          onClick={() => loadTrack(t)}
+          onClick={() => pick(t)}
         >
           {t.artwork_url && <img src={t.artwork_url} alt="" loading="lazy" />}
         </button>

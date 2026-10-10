@@ -18,7 +18,7 @@ import { usePlayer } from '../../state/PlayerContext';
 import { useToast } from '../../state/ToastContext';
 import { apiKey, trackKey } from '../../lib/vibe';
 import QueueRow from './QueueRow';
-import { fetchDjPicks, tracksSignature } from './dj';
+import { eventsSignature, fetchDjPicks } from './dj';
 import { PlaybackRatioProbe, useDj } from './useDj';
 import { RECS_LIMIT, useRecs } from './useRecs';
 import { useQueueDrag } from './useQueueDrag';
@@ -48,11 +48,11 @@ export default function QueueSidebar() {
   const queryClient = useQueryClient();
 
   const {
-    enabled: djEnabled, toggle: djToggle, tracks: djTracks,
-    signature: djSignature, recordQueued, recordTransitionNow, onSample,
+    enabled: djEnabled, toggle: djToggle, events: djEvents,
+    signature: djSignature, recordQueued, recordPicked, recordTransitionNow, onSample,
   } = useDj();
   const { recs, loading, hasAnchor } = useRecs({
-    djEnabled, tracks: djTracks, signature: djSignature,
+    djEnabled, events: djEvents, signature: djSignature,
   });
 
   const isMobile = useIsMobile();
@@ -81,9 +81,11 @@ export default function QueueSidebar() {
     (track, index) => {
       if (index < 0 || index >= queue.length) return;
       for (let i = 0; i <= index; i++) dequeueAt(0);
+      // Jumping the queue is a choice made now, on top of the earlier add.
+      recordPicked(track);
       loadTrack(track, { source: 'queue' });
     },
-    [queue.length, dequeueAt, loadTrack]
+    [queue.length, dequeueAt, loadTrack, recordPicked]
   );
 
   const removeAt = useCallback((_track, index) => dequeueAt(index), [dequeueAt]);
@@ -99,9 +101,12 @@ export default function QueueSidebar() {
   const playRec = useCallback(
     (track) => {
       if (djEnabled) flashConsume(trackKey(track));
+      // Logged before loadTrack, like a search: the outgoing track's verdict
+      // lands after it, and the fetch for the new seed sees both.
+      recordPicked(track);
       loadTrack(track, { source: djEnabled ? 'dj' : 'search' });
     },
-    [djEnabled, flashConsume, loadTrack]
+    [djEnabled, flashConsume, loadTrack, recordPicked]
   );
 
   const addRec = useCallback(
@@ -157,8 +162,8 @@ export default function QueueSidebar() {
     // useRecs recomputes its key at that moment — so we must fetch through
     // React Query under exactly that key, or useRecs misses the cache and
     // fires a second POST for the vector we are already fetching.
-    const tracks = recordTransitionNow({ natural: false });
-    const sig = tracksSignature(tracks);
+    const events = recordTransitionNow({ natural: false });
+    const sig = eventsSignature(events);
     // apiKey, not trackKey — useRecs builds its queryKey the same way.
     const interimKey = ['queue-recs', apiKey(current), 'dj', sig];
 
@@ -169,7 +174,7 @@ export default function QueueSidebar() {
     const picks = await queryClient.fetchQuery({
       queryKey: interimKey,
       staleTime: 5000,
-      queryFn: () => fetchDjPicks(current, { tracks, seen: getSeenIds(), queue, limit: RECS_LIMIT }),
+      queryFn: () => fetchDjPicks(current, { events, seen: getSeenIds(), queue, limit: RECS_LIMIT }),
     });
     if (!picks?.length) return null;
     const [top, ...rest] = picks;

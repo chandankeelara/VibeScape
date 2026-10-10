@@ -36,14 +36,15 @@ export const RECENT_MAX = 12;
  *
  * This is the ONLY source the DJ exclude list is built from — see
  * excludeIds() in features/queue/dj.js. `recent` (12, drives the trail UI)
- * and the DJ event buffer (100, weights the taste vector) keep their own jobs
+ * and the DJ event log (50, replayed into the query vector) keep their own jobs
  * and their own sizes, but neither feeds exclusion any more: every track that
  * reaches either of them passed through markSeen first.
  *
  * Deliberately in-memory, not persisted: across sessions it would mean never
  * hearing a song twice, which is not the goal. useDj does re-seed it from the
- * restored event buffer on mount, so a mid-session reload doesn't resurrect
- * the last 100 tracks — that is recovering this session, not persisting.
+ * last few hours of the restored event log on mount (DJ_SEEN_RESEED_HOURS),
+ * so a mid-session reload doesn't resurrect what was just heard — that is
+ * recovering this session, not persisting.
  *
  * Must equal DJ_MAX_EXCLUDES. The backend inlines these as SQL literals in a
  * NOT IN (...) clause and truncates at 200, so 200 is the ceiling.

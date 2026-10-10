@@ -1,5 +1,5 @@
 /**
- * DJ mode React state: the toggle, the rolling event buffer, and the signal
+ * DJ mode React state: the toggle, the append-only event log, and the signal
  * collector that decides whether a track was completed or skipped.
  *
  * All the actual weighting lives in dj.js. This file's only job is knowing
@@ -16,13 +16,14 @@ import { apiKey } from '../../lib/vibe';
 import { emitMascot } from '../../lib/mascotBus';
 import { onDj } from '../../lib/djBus';
 import {
+  appendEvent,
   classifyTransition,
+  eventsSignature,
   loadEnabled,
-  loadTracks,
+  loadEvents,
   persistEnabled,
-  persistTracks,
-  tracksSignature,
-  upsertTrack,
+  persistEvents,
+  recentIds,
 } from './dj';
 
 /**
@@ -48,20 +49,21 @@ export function useDj() {
   const toast = useToast();
 
   const [enabled, setEnabled] = useState(loadEnabled);
-  const [tracks, setTracks] = useState(loadTracks);
+  const [events, setEvents] = useState(loadEvents);
 
   /**
-   * Re-seed the seen-set from the restored verdict map, once, on mount.
+   * Re-seed the seen-set from the restored log, once, on mount — but only
+   * from the last DJ_SEEN_RESEED_HOURS.
    *
    * The exclude list is the seen-set alone, and the seen-set is in-memory
-   * while this map is in localStorage. Without this, a reload (or the PWA
+   * while the log is in localStorage. Without this, a reload (or the PWA
    * relaunching) would make the recently-touched tracks candidates again,
-   * seconds after the user heard them. These are by definition already-touched
-   * tracks, so marking them seen restores the session rather than extending
-   * exclusion across genuinely new ones.
+   * seconds after the user heard them. The log itself is kept indefinitely
+   * (it carries the tuned vibe), so re-seeding from ALL of it would turn
+   * per-session exclusion into a permanent ban on the last 50 tracks.
    */
   useEffect(() => {
-    for (const e of Object.values(tracks)) markSeen({ id: e.id });
+    for (const id of recentIds(events)) markSeen({ id });
     // Mount only — later upserts mark themselves seen through loadTrack.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -74,14 +76,14 @@ export function useDj() {
   const prevKeyRef = useRef(null);
 
   /**
-   * Synchronous mirror of `tracks`.
+   * Synchronous mirror of `events`.
    *
    * The autoplay picker has to flush the outgoing track's signal and then
-   * immediately fetch with the updated map, in one tick — it cannot wait for
-   * a re-render to see its own write. setTracks still drives rendering; this
+   * immediately fetch with the updated log, in one tick — it cannot wait for
+   * a re-render to see its own write. setEvents still drives rendering; this
    * ref is what the picker reads.
    */
-  const tracksRef = useRef(tracks);
+  const eventsRef = useRef(events);
 
   /** Track whose transition has already been recorded, so it isn't counted twice. */
   const flushedRef = useRef(null);
@@ -91,14 +93,14 @@ export function useDj() {
   }, []);
 
   const push = useCallback((evt) => {
-    const next = upsertTrack(tracksRef.current, evt);
-    if (next === tracksRef.current) return next;
-    tracksRef.current = next;
-    persistTracks(next);
-    setTracks(next);
-    // Announced AFTER the map actually changed, so a verdictless event
-    // (upsertTrack returns the same object when it carries no signal) cannot
-    // make the mascot react to something that was never recorded.
+    const next = appendEvent(eventsRef.current, evt);
+    if (next === eventsRef.current) return next;
+    eventsRef.current = next;
+    persistEvents(next);
+    setEvents(next);
+    // Announced AFTER the log actually changed, so an unloggable event
+    // (appendEvent returns the same array) cannot make the mascot react to
+    // something that was never recorded.
     emitMascot(evt.action, evt);
     return next;
   }, []);
@@ -108,14 +110,14 @@ export function useDj() {
    * buffer.
    *
    * Legacy called this at the top of advanceToNext() so the just-finished
-   * track's signal was already in the map by the time the DJ fetched a
+   * track's signal was already in the log by the time the DJ fetched a
    * replacement. The autoplay picker calls it for the same reason; the effect
    * below then sees it was already flushed and skips.
    */
   const recordTransitionNow = useCallback(
     ({ natural = false } = {}) => {
       const key = liveKeyRef.current;
-      if (!key || flushedRef.current === key) return tracksRef.current;
+      if (!key || flushedRef.current === key) return eventsRef.current;
       const ratio = sampleRef.current.key === key ? sampleRef.current.ratio : 0;
       flushedRef.current = key;
       return push({
@@ -161,17 +163,27 @@ export function useDj() {
 
   /**
    * A search-and-play is explicit intent — "I want this specific vibe NOW."
-   * Fires a positive signal immediately so the next DJ fetch biases toward
-   * the picked song's embedding without waiting for playback outcome. The
-   * subsequent completed/skip event ACCUMULATES on top (upsertTrack signed-
-   * sums repeats), so a search-then-complete lands around +1.75 while a
-   * search-then-early-skip nets to roughly zero — the honest "I wanted it
-   * but it wasn't it" signal.
+   * Logged immediately, so the very next DJ fetch (whose seed IS this track)
+   * already leans on it; the replay moves the vibe most of the way there.
+   * How the track then ends is logged as its own, later event. In practice
+   * SearchBar emits this through djBus; this is the in-sidebar entry point.
    */
   const recordSearched = useCallback(
     (t) => {
       const key = apiKey(t);
       if (key) push({ track_id: key, action: 'searched', played_ratio: null, ts: Date.now() });
+    },
+    [push]
+  );
+
+  /**
+   * Played straight off a list — a rec, the queue, the recent trail. Weaker
+   * than a search (it was offered, not asked for) but still a choice.
+   */
+  const recordPicked = useCallback(
+    (t) => {
+      const key = apiKey(t);
+      if (key) push({ track_id: key, action: 'picked', played_ratio: null, ts: Date.now() });
     },
     [push]
   );
@@ -196,12 +208,12 @@ export function useDj() {
     });
   }, [toast]);
 
-  const signature = useMemo(() => tracksSignature(tracks), [tracks]);
+  const signature = useMemo(() => eventsSignature(events), [events]);
 
   // Stable identity: the sidebar passes these straight into memoized rows, and
   // a fresh object every render would defeat that.
   return useMemo(
-    () => ({ enabled, toggle, tracks, signature, recordQueued, recordSearched, recordTransitionNow, onSample }),
-    [enabled, toggle, tracks, signature, recordQueued, recordSearched, recordTransitionNow, onSample]
+    () => ({ enabled, toggle, events, signature, recordQueued, recordSearched, recordPicked, recordTransitionNow, onSample }),
+    [enabled, toggle, events, signature, recordQueued, recordSearched, recordPicked, recordTransitionNow, onSample]
   );
 }
