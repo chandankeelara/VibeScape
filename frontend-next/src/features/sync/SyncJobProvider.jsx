@@ -125,7 +125,7 @@ export function SyncJobProvider({ children }) {
       queryClient.invalidateQueries({ queryKey: ['search'] });
       queryClient.invalidateQueries({ queryKey: ['tracks'] });
     } else if (s.status === 'error') {
-      setErrorMsg(s.error_message || 'Sync failed.');
+      setErrorMsg(jobErrorMessage(s));
       setPhase('error');
     } else if (s.status === 'cancelled') {
       setPhase('idle');
@@ -191,13 +191,32 @@ export function useSyncJob() {
   return useContext(SyncJobCtx);
 }
 
+/**
+ * What a failed job tells the user. Server codes are machine words; the
+ * playlist-link import adds a few that need a sentence. A server `note`
+ * (e.g. how long Spotify's rate limit lasts) wins when present.
+ */
+const JOB_ERRORS = {
+  spotify_rate_limited: 'Spotify is limiting VibeScape right now. Songs added so far are kept — try again later.',
+  playlist_not_found: "That playlist couldn't be found. Is it public?",
+  source_unreadable: "We couldn't read that playlist page. Try again later.",
+  invalid_playlist_url: 'That link is not a playlist we can read.',
+};
+export function jobErrorMessage(s) {
+  const code = s?.error_message || '';
+  if (code === 'spotify_rate_limited' && s?.note) return s.note;
+  return JOB_ERRORS[code] || code || 'Sync failed.';
+}
+
 /** Plain-language wrap-up. Mirrors what the progress view counts. */
 export function completionSummary(s) {
   const ready = (s.added_to_library || 0) + (s.already_in_library || 0);
   const pending = s.queued_for_analysis || 0;
-  if (!ready && !pending) return 'Nothing new to add.';
+  const missing = s.not_matched || 0;
+  if (!ready && !pending) return missing ? `None of the ${missing} songs were found on Spotify.` : 'Nothing new to add.';
   const bits = [];
   if (ready) bits.push(`${ready} ready to play`);
   if (pending) bits.push(`${pending} still being analysed`);
+  if (missing) bits.push(`${missing} not found`);
   return bits.join(' · ');
 }

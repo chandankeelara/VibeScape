@@ -30,6 +30,17 @@ os.environ["VIBESCAPE_DB_PATH"] = str(REPO / "tests" / ".never-used.db")
 
 sys.path.insert(0, str(REPO / "backend"))
 sys.path.insert(0, str(REPO / "scripts"))
+sys.path.append(str(REPO / "ingest"))   # last: ingest/db.py must not shadow backend/db.py
+
+
+@pytest.fixture(autouse=True)
+def _fresh_spotify_guard():
+    """The guard is process-wide state: a block recorded by one test must not
+    leak into the next."""
+    import spotify_guard
+    spotify_guard._reset_for_tests()
+    yield
+    spotify_guard._reset_for_tests()
 
 FUSED_DIM = 788
 

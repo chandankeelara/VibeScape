@@ -218,6 +218,13 @@ export const ingestSpotify = (payload, spotifyToken) =>
   request('/api/ingest/spotify', { method: 'POST', body: payload, spotifyToken });
 export const ingestSpotifyPublic = (payload, spotifyToken) =>
   request('/api/ingest/spotify-public', { method: 'POST', body: payload, spotifyToken });
+/**
+ * Import a public playlist from Spotify, Apple Music, YouTube or Amazon
+ * Music by link: { url, access_token? } -> { job_id, platform }. Progress comes from
+ * the same /api/ingest/status/<id> poll, plus `not_matched` / `unmatched`.
+ */
+export const ingestPlaylistUrl = (payload) =>
+  request('/api/ingest/playlist-url', { method: 'POST', body: payload });
 export const ingestSingle = (payload, spotifyToken) =>
   request('/api/ingest/single', { method: 'POST', body: payload, spotifyToken });
 export const ingestStatus = (jobId) => request(`/api/ingest/status/${encodeURIComponent(jobId)}`);

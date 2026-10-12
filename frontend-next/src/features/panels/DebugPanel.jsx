@@ -16,6 +16,7 @@ import { useCallback, useState } from 'react';
 import { usePlayer } from '../../state/PlayerContext';
 import { useToast } from '../../state/ToastContext';
 import { useSpotifyAuth } from '../../state/SpotifyAuthContext';
+import { spotifyFetch } from '../../lib/spotifyGuard';
 import Panel from './Panel';
 import { useDevEnv } from './useDevEnv';
 import { classificationLabel, fmtMetricValue, useTrackFeatures } from './features';
@@ -85,7 +86,7 @@ function DebugBody({ authMode }) {
       // call goes straight to Spotify's own API with the OAuth token. Routing
       // it through api.js would mean inventing a backend proxy that only the
       // debug panel uses. This is the single documented exception.
-      const r = await fetch('https://api.spotify.com/v1/me', {
+      const r = await spotifyFetch('https://api.spotify.com/v1/me', {
         headers: { Authorization: `Bearer ${token}` },
       });
       const text = await r.text();

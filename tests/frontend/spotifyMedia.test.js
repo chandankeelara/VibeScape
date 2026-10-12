@@ -63,3 +63,10 @@ it('reports the playing track duration from the SDK', async () => {
   player.handlers.player_state_changed({ paused: true, position: 0, duration: 211000 });
   expect(sp.getDuration()).toBe(211);
 });
+
+it('while Spotify is holding us off, a new song makes no request and falls back', async () => {
+  const sp = await connected(vi.fn(async () => 'fresh'));
+  localStorage.setItem('vibescape.spotifyBlockedUntil', String(Date.now() + 3_600_000));
+  expect(await sp.playTrack('abc')).toBe(false);          // -> player.js plays the 30 s preview
+  expect(fetch).not.toHaveBeenCalled();
+});

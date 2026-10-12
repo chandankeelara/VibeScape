@@ -59,3 +59,6 @@ ml/data/*.compact.tmp
 ml/models/*.ckpt
 ml/models/*.pt
 ml/experiments/
+
+# Dated production snapshots — local only, never committed
+data/backups/

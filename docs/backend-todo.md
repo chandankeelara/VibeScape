@@ -798,6 +798,69 @@ over-reports paused wall-clock time when no playhead was readable. 11 of 144
 local completions also recorded 0 ms (the bug fixed earlier). Not
 recoverable; the error shrinks as v2 data accumulates.
 
+## 9. Import any public playlist by link — built 2026-10-10, what is left
+
+`POST /api/ingest/playlist-url` + `backend/playlist_import.py`: Spotify,
+Apple Music, YouTube / YT Music and Amazon Music links are read without the
+user's Spotify login, matched to Spotify, and imported through
+`_process_track` (pending rows, as with library sync). Deezer links are
+recognised and refused with `deezer_not_supported` (built and measured —
+public API with ISRCs, 15/15 — then dropped from the first version by
+product decision). Measured live before the rate limit below (with the older 3-query
+ladder): matching 15/15 for Spotify and Apple samples, 95/100 on a YouTube
+chart playlist. Tests in tests/backend cover it with fakes.
+
+### 9.1 The app's Spotify quota is shared with production — don't spend it testing
+**verified 2026-10-10.** ~650 Spotify calls in ~30 min of test imports earned
+a `429` with `Retry-After: 70320` (19.5 h) for this client id, which
+production uses too. The importer now spends nothing on Spotify links (embed
+ids) or songs the catalogue has, ONE search per new song (two for an
+ambiguous YouTube title), paces calls
+0.35 s apart, and stops a job on a long Retry-After. **Use a separate Spotify
+app for local development.**
+
+**One gate for every api.spotify.com call:** `ingest/spotify_guard.py`
+(server) and `frontend-next/src/lib/spotifyGuard.js` (browser, kept in
+localStorage). The first real 429 records "blocked until T"; until T every
+call is answered locally with the same 429, with no request, so existing 429
+handling runs without spending more quota. Retry loops use `should_retry()`,
+which is true only for Retry-After ≤ 30 s (`spotify_matcher._search` used
+to sleep the full Retry-After, which would have been 19.5 h). `GET
+/api/spotify/status` reports `{blocked, retry_after_s}` without calling
+Spotify. Limits: a block is per process (each process learns it from one
+call of its own) and per browser; `accounts.spotify.com` (token refresh)
+is not gated. **New Spotify calls must go through the guard**, never bare
+`requests` or `fetch`.
+
+### 9.2 One full live run is still owed
+After the block lifts (~06:15 UTC 2026-10-11, from a Retry-After of 70320 s
+seen at 10:43 UTC): one import per service on a DB copy, once, to confirm
+the paced, one-query path end to end and measure its match rate.
+
+### 9.3 Amazon uses Amazon's private web-player API — by decision, with risks
+`playlist_import.fetch_amazon`. Two calls, as the public web player makes for
+a signed-out visitor: `POST music.amazon.com/config.json` (anonymous token),
+then `POST na.web.skill.music.a2z.com/api/showHome`. Live 2026-10-10: 190/190
+and 60/60 songs, matching the counts on the page. Product decision, taken
+knowing that:
+- it is undocumented and against Amazon's terms, and can change or be closed
+  without notice — every failure maps to `source_unreadable` /
+  `playlist_not_found`, never a crash;
+- `AMAZON_APP_VERSION` and the header set are copied from the web player and
+  may need refreshing if Amazon starts rejecting them;
+- only the North-America endpoint is used; other storefronts and playlists
+  longer than 190 songs are untested;
+- keep it user-triggered — heavy use from one server IP could get it blocked.
+
+### 9.4 Known limits
+- Spotify links without the user's Spotify login read the public embed, which
+  stops at 100 songs (the job's `note` says so).
+- Apple playlists over 100 songs and user `pl.u-` playlists are untested.
+- None of the supported services give ISRCs, so matching is by title +
+  artist + duration; misses are listed (`unmatched`), never guessed.
+- Same thread + JOBS-dict machinery as the other imports (backlog 1.5), and
+  the same post-import `_recompute_axes_and_zscores` (backlog 1.1).
+
 ## Checked and clean
 
 Recorded so the next audit does not redo them.

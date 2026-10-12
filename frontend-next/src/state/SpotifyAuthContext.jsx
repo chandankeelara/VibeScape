@@ -14,6 +14,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import * as api from '../lib/api';
 import * as spotifyMedia from '../media/spotify';
 import { createSpotifyTokens, REFRESH_MARGIN_MS } from '../lib/spotifyTokens';
+import { spotifyFetch } from '../lib/spotifyGuard';
 import { useToast } from './ToastContext';
 
 const SpotifyCtx = createContext(null);
@@ -309,7 +310,7 @@ export function SpotifyAuthProvider({ userId, children }) {
 
       // Fetch profile + link the Spotify identity to the VibeScape user.
       try {
-        const pr = await fetch('https://api.spotify.com/v1/me', {
+        const pr = await spotifyFetch('https://api.spotify.com/v1/me', {
           headers: { Authorization: `Bearer ${j.access_token}` },
         });
         if (pr.ok) {
@@ -334,7 +335,7 @@ export function SpotifyAuthProvider({ userId, children }) {
   const adoptTokens = useCallback(({ access_token, refresh_token, expires_in }) => {
     if (!access_token) return;
     persist(access_token, refresh_token || '', expires_in, 'server');
-    fetch('https://api.spotify.com/v1/me', { headers: { Authorization: `Bearer ${access_token}` } })
+    spotifyFetch('https://api.spotify.com/v1/me', { headers: { Authorization: `Bearer ${access_token}` } })
       .then((r) => (r.ok ? r.json() : null))
       .then((p) => {
         if (!p) return;

@@ -20,6 +20,8 @@
  * no-ops when there's no token or no device, which is the common case.
  */
 
+import { spotifyFetch } from '../lib/spotifyGuard';
+
 const sp = {
   sdkRequested: false,
   player: null,
@@ -189,7 +191,7 @@ async function transferPlayback(deviceId) {
   try {
     const tok = await freshToken();
     if (!tok) return false;
-    const r = await fetch('https://api.spotify.com/v1/me/player', {
+    const r = await spotifyFetch('https://api.spotify.com/v1/me/player', {
       method: 'PUT',
       headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ device_ids: [deviceId], play: false }),
@@ -205,7 +207,7 @@ async function transferPlayback(deviceId) {
 export const isActive = () => !!(sp.token && sp.isPremium && sp.player && sp.deviceId);
 
 const doPlay = (spotifyId, tok) =>
-  fetch(`https://api.spotify.com/v1/me/player/play?device_id=${sp.deviceId}`, {
+  spotifyFetch(`https://api.spotify.com/v1/me/player/play?device_id=${sp.deviceId}`, {
     method: 'PUT',
     headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ uris: [`spotify:track:${spotifyId}`] }),

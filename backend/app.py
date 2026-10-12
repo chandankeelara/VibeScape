@@ -12,6 +12,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time as _time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +40,8 @@ from db import ensure_db, get_conn
 from dj_replay import library_mean as _dj_mean_of
 from dj_replay import parse_events as _dj_parse_events
 from dj_replay import replay as _dj_replay
+import playlist_import as _pli
+import library_search as _libsearch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -50,6 +53,7 @@ except Exception:
     app_config = None
 
 import scoring  # noqa: E402
+import spotify_guard  # noqa: E402  — every api.spotify.com call goes through it
 import spotify_library as splib  # noqa: E402
 import spotify_matcher  # noqa: E402
 
@@ -466,7 +470,7 @@ def _spotify_token_exchange(code: str, redirect_uri: str) -> dict:
 
 
 def _spotify_me(access_token: str) -> dict:
-    r = requests.get(
+    r = spotify_guard.get(
         "https://api.spotify.com/v1/me",
         headers={"Authorization": f"Bearer {access_token}"},
         timeout=15,
@@ -889,6 +893,32 @@ def list_tracks(
     return [_row_to_dict(r) for r in rows]
 
 
+# user_id -> (fetched_at, [{id, title, artist, album, language}]). Narrow rows
+# only; a burst of keystrokes reads the library once. 60 s staleness is fine:
+# new tracks only become searchable after the offline pipeline anyway.
+_SEARCH_ROWS_TTL_S = 60
+_search_rows_cache: dict = {}
+
+
+def _search_rows(conn, user_id: int) -> list:
+    hit = _search_rows_cache.get(user_id)
+    now = _time.time()
+    if hit and now - hit[0] < _SEARCH_ROWS_TTL_S:
+        return hit[1]
+    rows = conn.execute(
+        "SELECT t.id, t.title, t.artist, t.album, t.language FROM tracks t "
+        "JOIN user_tracks ut ON ut.track_id = t.id "
+        "WHERE ut.user_id = ? AND t.ingestion_status = 'done'",
+        (user_id,),
+    ).fetchall()
+    out = [{"id": r[0], "title": r[1], "artist": r[2], "album": r[3], "language": r[4]}
+           for r in rows]
+    if len(_search_rows_cache) > 256:
+        _search_rows_cache.clear()
+    _search_rows_cache[user_id] = (now, out)
+    return out
+
+
 @app.get("/api/tracks/search")
 def search_tracks(
     q: str = Query(..., min_length=1, max_length=200),
@@ -896,43 +926,32 @@ def search_tracks(
     sess: dict = Depends(require_user),
 ):
     """
-    Case-insensitive substring search over the caller's library, matching
-    title, artist, or album. Ordered by title prefix hit first, then
-    generic hits. Returns full track rows so results are directly playable.
+    Fuzzy search over the caller's analysed library: title, artist, album and
+    language by name ("kannada"), tolerant of typos and partial words, every
+    query word required. Scoring is in library_search.py. Returns full track
+    rows, best first, so results are directly playable.
     """
     query = (q or "").strip()
     if not query:
         return {"tracks": []}
 
-    like = f"%{query}%"
-    prefix = f"{query}%"
-    select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
-    sql = (
-        f"SELECT {select} FROM tracks t "
-        f"JOIN user_tracks ut ON ut.track_id = t.id "
-        f"WHERE ut.user_id = ? "
-        f"AND t.ingestion_status = 'done' "
-        f"AND (t.title LIKE ? COLLATE NOCASE "
-        f"     OR t.artist LIKE ? COLLATE NOCASE "
-        f"     OR t.album LIKE ? COLLATE NOCASE) "
-        f"ORDER BY "
-        f"  CASE WHEN t.title LIKE ? COLLATE NOCASE THEN 0 "
-        f"       WHEN t.artist LIKE ? COLLATE NOCASE THEN 1 "
-        f"       ELSE 2 END, "
-        f"  t.title COLLATE NOCASE "
-        f"LIMIT ?"
-    )
-    params = [sess["user_id"], like, like, like, prefix, prefix, limit]
-
     conn = get_conn()
     try:
-        rows = conn.execute(sql, params).fetchall()
+        hits = _libsearch.search(_search_rows(conn, sess["user_id"]), query, limit)
+        if not hits:
+            return {"tracks": []}
+        ids = [h["id"] for h in hits]
+        select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
+        rows = conn.execute(
+            f"SELECT {select} FROM tracks t WHERE t.id IN ({','.join('?' * len(ids))})", ids
+        ).fetchall()
     except Exception as e:
         log.warning("search_tracks failed for q=%r: %s", query, e)
-        rows = []
+        return {"tracks": []}
     finally:
         conn.close()
-    return {"tracks": [_row_to_dict(r) for r in rows]}
+    by_id = {r["id"]: r for r in rows}
+    return {"tracks": [_row_to_dict(by_id[i]) for i in ids if i in by_id]}
 
 
 MERT_MODEL_VERSION = "mert_v1_95m_fp32_30s"
@@ -2408,6 +2427,15 @@ def random_track(
         conn.close()
 
     raise HTTPException(status_code=404, detail={"error": "no tracks in vibe range"})
+
+
+@app.get("/api/spotify/status")
+def spotify_status():
+    """Is this server holding off Spotify after a 429? Answered from memory —
+    checking never calls Spotify. {blocked, retry_after_s}. See
+    ingest/spotify_guard.py. Per process: another Cloud Run instance learns
+    of a block from its own first 429."""
+    return spotify_guard.status()
 
 
 @app.get("/api/spotify/config")
@@ -4188,7 +4216,7 @@ def ingest_spotify_public(req: PublicPlaylistIngestRequest,
         preflight_token = user_token if use_user_token else _get_app_token()
 
         # (1) metadata
-        r_meta = requests.get(
+        r_meta = spotify_guard.get(
             f"https://api.spotify.com/v1/playlists/{playlist_id}",
             headers={"Authorization": f"Bearer {preflight_token}"},
             params={"fields": "id,name,tracks(total)"},
@@ -4287,6 +4315,200 @@ def ingest_spotify_public(req: PublicPlaylistIngestRequest,
     )
     t.start()
     return {"job_id": job_id, "playlist_id": playlist_id, "note": followed_note}
+
+
+# ---------------------------------------------------------------------------
+# Import a public playlist from any supported service by link.
+#
+# Spotify, Apple Music, YouTube / YouTube Music and Amazon Music links are read by
+# backend/playlist_import.py (its docstring says how and why for each), every
+# song is matched to a Spotify track, and the match goes through the same
+# _process_track as a library sync — so an imported song is a metadata row
+# with ingestion_status='pending', or just a library link when the catalogue
+# already has it. Songs with no confident match are reported, not guessed.
+#
+# Same job machinery as /api/ingest/spotify-public (thread + JOBS dict), so
+# the same Cloud Run caveat applies (backlog 1.5); a ~100-song playlist takes
+# about a minute, which the client's polling keeps alive.
+# ---------------------------------------------------------------------------
+
+class PlaylistUrlIngestRequest(BaseModel):
+    url: str
+    # The user's Spotify token, optional. Only used for Spotify links, where
+    # it lifts the public embed's 100-song cap. Never persisted.
+    access_token: Optional[str] = None
+
+
+_UNMATCHED_REPORT_CAP = 200
+_PLATFORM_NAMES = {"spotify": "Spotify", "apple": "Apple Music", "youtube": "YouTube",
+                   "deezer": "Deezer", "amazon": "Amazon Music"}
+
+
+def _catalog_match(conn, item):
+    """A song the catalogue already has, as a Spotify-shaped track — so it
+    costs no Spotify call. By ISRC when the source gave one, else by exact
+    (case-insensitive) title, scored with the same matcher as search."""
+    cols = "spotify_id, title, artist, album, artwork_url, duration_ms, isrc"
+    rows = []
+    if item.isrc:
+        rows = conn.execute(f"SELECT {cols} FROM tracks WHERE isrc = ? AND spotify_id IS NOT NULL LIMIT 1",
+                            (item.isrc,)).fetchall()
+    if not rows and item.title:
+        rows = conn.execute(f"SELECT {cols} FROM tracks WHERE LOWER(title) = LOWER(?) "
+                            f"AND spotify_id IS NOT NULL LIMIT 10", (item.title,)).fetchall()
+    cands = [{"id": r["spotify_id"], "name": r["title"], "artists": [{"name": r["artist"]}],
+              "album": {"name": r["album"], "images": [{"url": r["artwork_url"]}] if r["artwork_url"] else []},
+              "duration_ms": r["duration_ms"], "external_ids": {"isrc": r["isrc"]} if r["isrc"] else {},
+              "preview_url": None} for r in rows]
+    best, _score = _pli.choose(item, cands)
+    return best
+
+
+@app.post("/api/ingest/playlist-url", status_code=202)
+def ingest_playlist_url(req: PlaylistUrlIngestRequest, sess: dict = Depends(require_user)):
+    """Start importing a public playlist link. Returns {job_id, platform}.
+
+    Errors (detail.error): invalid_playlist_url (400), and
+    <service>_not_supported (400) for links we recognise but do not read yet
+    (deezer). Everything that needs the network — not found,
+    unreadable — is reported by the job, so this call stays fast.
+    """
+    src = _pli.detect(req.url or "")
+    if not src:
+        raise HTTPException(status_code=400, detail={"error": "invalid_playlist_url"})
+    if src.kind not in _pli.SUPPORTED:
+        raise HTTPException(status_code=400, detail={
+            "error": f"{src.kind}_not_supported",
+            "message": f"{_PLATFORM_NAMES.get(src.kind, src.kind)} playlists are not supported yet."})
+    job_id = uuid.uuid4().hex
+    with JOBS_LOCK:
+        JOBS[job_id] = {
+            "status": "pending",
+            "user_id": sess["user_id"],
+            "current_track": None,
+            "source": f"playlist_url:{src.kind}",
+            "platform": src.kind,
+            "playlist_name": None,
+            "note": None,
+            "total": 0,
+            "processed": 0,
+            "collecting": True,
+            "added_to_library": 0,
+            "already_in_library": 0,
+            "queued_for_analysis": 0,
+            "skipped": 0,
+            # Songs read from the source that matched nothing on Spotify.
+            # A separate bucket from `skipped` (which is failures), with the
+            # titles so the user can see exactly what did not come across.
+            "not_matched": 0,
+            "unmatched": [],
+            "cancel_requested": False,
+            "error_message": None,
+        }
+    user_token = (req.access_token or "").strip() or None
+    threading.Thread(target=_run_playlist_url_job,
+                     args=(job_id, src, sess["user_id"], user_token), daemon=True).start()
+    return {"job_id": job_id, "platform": src.kind}
+
+
+def _run_playlist_url_job(job_id: str, src, user_id: int, user_token: Optional[str]):
+    try:
+        _update_job(job_id, status="running", current_track=f"reading {src.kind} playlist…")
+
+        # Spotify + the user's own token: the Web API returns the whole
+        # playlist with full track objects. Anything else, or any failure
+        # there, falls back to the public readers.
+        direct = None
+        if src.kind == "spotify" and user_token:
+            try:
+                direct = splib.fetch_public_playlist_tracks(src.id, user_token)
+            except Exception as e:  # 403/404/expired: the public embed still works
+                log.info("[playlist-url job=%s] Spotify API read failed (%s); using public embed",
+                         job_id, e.__class__.__name__)
+        if direct is not None:
+            work = [(t, None) for t in direct if t and t.get("id")]
+        else:
+            try:
+                pl = _pli.fetch(src, requests.get)
+            except _pli.ImportError_ as e:
+                _update_job(job_id, status="error", error_message=e.code)
+                return
+            _update_job(job_id, playlist_name=pl.name, note=pl.note)
+            work = [(None, it) for it in pl.items]
+        _update_job(job_id, total=len(work), collecting=False)
+
+        conn = get_conn()
+        cancelled = False
+        rate_limited = None
+        seen: set = set()
+        src_label = f"{src.kind}:{src.id}"[:120]
+        try:
+            for track, item in work:
+                if _is_cancelled(job_id):
+                    cancelled = True
+                    break
+                counted = True               # every outcome counts as processed but a rate-limit stop
+                try:
+                    if track is None:
+                        _update_job(job_id, current_track=f"matching {item.label()}")
+                        track, why = _pli.resolve(item, _get_app_token(), spotify_guard.get,
+                                                  catalog=lambda it: _catalog_match(conn, it))
+                        if track is None:
+                            _bump(job_id, "not_matched", 1)
+                            with JOBS_LOCK:
+                                lst = JOBS[job_id]["unmatched"]
+                                if len(lst) < _UNMATCHED_REPORT_CAP:
+                                    lst.append({"title": item.title, "artist": item.artist})
+                            continue
+                    sid = track.get("id")
+                    if sid in seen:              # the same song twice in one playlist
+                        _bump(job_id, "already_in_library", 1)
+                        continue
+                    seen.add(sid)
+                    result = _process_track(conn, track, job_id, user_id, source=src_label)
+                    bucket = result if result in ("added_to_library", "already_in_library",
+                                                  "queued_for_analysis") else "skipped"
+                    _bump(job_id, bucket, 1)
+                except _pli.SpotifyRateLimited as e:
+                    # Stop, don't retry: retrying into a long Retry-After is
+                    # how the app earned a 19.5 h block on 2026-10-10. What
+                    # already landed stays; the rest is never marked
+                    # "not matched", because it was never tried.
+                    rate_limited, counted = e, False
+                    break
+                except Exception as e:
+                    log.exception("[playlist-url job=%s] track failed: %s", job_id, e)
+                    _bump(job_id, "skipped", 1)
+                finally:
+                    if counted:
+                        _bump(job_id, "processed", 1)
+        finally:
+            conn.close()
+
+        try:  # same post-ingest refresh as the other import paths
+            conn2 = get_conn()
+            try:
+                _recompute_axes_and_zscores(conn2, user_id=user_id)
+            finally:
+                conn2.close()
+        except Exception as e:
+            log.exception("post-ingest recompute (playlist-url) failed: %s", e)
+        if rate_limited is not None:
+            hours = rate_limited.retry_after_s / 3600
+            _update_job(job_id, status="error", current_track=None,
+                        error_message="spotify_rate_limited",
+                        note=(f"Spotify is limiting VibeScape right now (try again in about "
+                              f"{hours:.0f} h). Songs added so far are kept."
+                              if hours >= 1 else
+                              "Spotify is limiting VibeScape right now — try again in a few "
+                              "minutes. Songs added so far are kept."))
+            log.warning("[playlist-url job=%s] stopped: Spotify rate limit, Retry-After %.0fs",
+                        job_id, rate_limited.retry_after_s)
+            return
+        _update_job(job_id, status="cancelled" if cancelled else "complete", current_track=None)
+    except Exception as e:
+        log.exception("playlist-url job crashed: %s", e)
+        _update_job(job_id, status="error", error_message=f"{e.__class__.__name__}: {e}")
 
 
 @app.get("/api/ingest/status/{job_id}")
