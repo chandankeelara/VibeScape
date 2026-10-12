@@ -1,0 +1,39 @@
+.eq {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  width: 12px;
+  height: 12px;
+  flex: none;
+  transform-origin: bottom;
+  transform: scaleY(0.3);
+  transition: transform var(--d-3) var(--ease);
+}
+.eq i {
+  display: block;
+  width: 3px;
+  height: 100%;
+  border-radius: 1px;
+  background: var(--acc);
+  transform-origin: bottom;
+  animation: eq 900ms ease-in-out infinite alternate;
+  animation-play-state: paused;
+}
+.eq i:nth-child(2) { animation-duration: 700ms; animation-delay: -300ms; }
+.eq i:nth-child(3) { animation-duration: 1100ms; animation-delay: -600ms; }
+.on { transform: none; }
+.on i { animation-play-state: running; }
+
+@keyframes eq {
+  from { transform: scaleY(0.25); }
+  to { transform: scaleY(1); }
+}
+
+/* Reduced motion: a READABLE resting pose, staggered rather than flat. */
+@media (prefers-reduced-motion: reduce) {
+  .eq { transform: none; }
+  .eq i { animation: none; }
+  .eq i:nth-child(1) { transform: scaleY(0.55); }
+  .eq i:nth-child(2) { transform: scaleY(1); }
+  .eq i:nth-child(3) { transform: scaleY(0.75); }
+}

@@ -8,9 +8,11 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: var(--sans);
+  font: 400 var(--fs-md) / 1.45 var(--font);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  transition: background-color var(--d-2) var(--ease), color var(--d-2) var(--ease);
 }
 
 a { color: inherit; text-decoration: none; }
@@ -21,14 +23,18 @@ button {
   cursor: pointer;
 }
 
-/* Visible focus everywhere — the legacy app has good keyboard support and we
-   must not regress it. */
+/* One focus ring everywhere: the accent TEXT tone, so it re-lights with the
+   vibe and is held to 4.6:1 against every surface (lib/vibe.js). */
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--acc-text);
   outline-offset: 2px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-sm);
 }
+:focus:not(:focus-visible) { outline: none; }
 
+/* Every transition collapses to an instant change and every loop stops.
+   Components that loop (equalizer, loading dots) set their own READABLE
+   resting pose under the same query. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;

@@ -23,6 +23,7 @@ import * as player from '../media/player';
 import * as verifyMedia from '../media/verify';
 import { applyAccent, canVerify, moodFor, trackKey, trackVibe } from '../lib/vibe';
 import { emitMascot } from '../lib/mascotBus';
+import { startKind } from '../lib/startReason';
 import * as listenLog from '../lib/listenLog';
 import { useToast } from './ToastContext';
 
@@ -115,6 +116,22 @@ export function PlayerProvider({ children }) {
      updater — see prev() below. */
   const recentRef = useRef([]);
 
+  /*
+   * Why the current track started — UI only, never telemetry. Drives the one
+   * quiet line Bit speaks under the vibe card ("Because you played …",
+   * "Steering away after a skip"). { kind, from } where `from` is the title
+   * of the track it replaced.
+   *
+   * endedRef is raised by the media layer's onEnded just before it calls
+   * next(), so loadTrack can tell a finished track from a skip. It cannot use
+   * `trigger` for that: on a natural end the play is already closed as
+   * 'completed' and the trigger passed through next() is the button default.
+   */
+  const [startInfo, setStartInfo] = useState({ kind: 'vibe', from: null });
+  const currentRef = useRef(null);
+  useEffect(() => { currentRef.current = current; }, [current]);
+  const endedRef = useRef(false);
+
   /* ------------------------------------------------------------ media sync */
 
   useEffect(() => {
@@ -184,7 +201,7 @@ export function PlayerProvider({ children }) {
   // and nothing advances when a track finishes — autoplay is dead app-wide.
   useEffect(() => {
     player.setHooks({
-      onEnded: () => nextRef.current?.(),
+      onEnded: () => { endedRef.current = true; nextRef.current?.(); },
       // Separate from onEnded on purpose: a lock-screen "next" is a SKIP, not
       // a completed listen, and DJ mode weights those very differently.
       onNext: (opts) => nextRef.current?.(opts),
@@ -272,8 +289,14 @@ export function PlayerProvider({ children }) {
    * how the user ended the previous track.
    */
   const loadTrack = useCallback(
-    (t, { syncVibe = true, source = 'pick', endReason, trigger } = {}) => {
+    (t, { syncVibe = true, source = 'pick', endReason, trigger, reason } = {}) => {
       if (!t) return;
+      const ended = endedRef.current;
+      endedRef.current = false;
+      setStartInfo({
+        kind: reason || startKind({ source, trigger, ended }),
+        from: currentRef.current?.title || null,
+      });
       setCurrent(t);
       pushRecent(t);
       markSeen(t);
@@ -506,7 +529,7 @@ export function PlayerProvider({ children }) {
     // loadTrack re-pushes the target, so drop the tail first to avoid a
     // duplicate entry in the trail.
     setRecent(r.slice(0, -1));
-    loadTrack(target, { source: 'pick', trigger });
+    loadTrack(target, { source: 'pick', trigger, reason: 'recent' });
   }, [loadTrack]);
 
   useEffect(() => { recentRef.current = recent; }, [recent]);
@@ -537,11 +560,11 @@ export function PlayerProvider({ children }) {
       source,
       queue, enqueue, enqueueAt, dequeueAt, clearQueue, reorderQueue,
       markSeen, getSeenIds,
-      recent,
+      recent, startInfo,
     }),
     [vibe, setVibe, shiftVibe, current, loadTrack, fetchForVibe, loadingTrack, setVibeFromTrack,
      playing, togglePlay, seek, next, prev, setNextFallback, mode, setPlaybackMode, videoState, resolveYoutubeId, verifying, startVerify, stopVerify, source,
-     queue, enqueue, enqueueAt, dequeueAt, clearQueue, reorderQueue, markSeen, getSeenIds, recent]
+     queue, enqueue, enqueueAt, dequeueAt, clearQueue, reorderQueue, markSeen, getSeenIds, recent, startInfo]
   );
 
   return <PlayerCtx.Provider value={value}>{children}</PlayerCtx.Provider>;

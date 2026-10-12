@@ -17,6 +17,7 @@ import * as glow from './glow';
 import * as youtube from './youtube';
 import * as spotify from './spotify';
 import * as verify from './verify';
+import * as volume from './volume';
 import { getToken } from '../lib/session';
 import * as listenLog from '../lib/listenLog';
 
@@ -115,7 +116,11 @@ export function init() {
   // taints the Web Audio graph, and because audio routes through
   // ctx.destination the symptom is silence rather than an error.
   el.crossOrigin = 'anonymous';
-  el.volume = 0.8;
+  // Element volume is applied BEFORE createMediaElementSource's output, so
+  // it scales what reaches glow's graph and the speakers alike. The graph
+  // itself is untouched.
+  el.volume = volume.effectiveVolume();
+  volume.registerSink((v) => { el.volume = v; });
   document.body.appendChild(el);
   state.audioEl = el;
 

@@ -1,17 +1,108 @@
+/* Track row (queue panel, phone home). S2 .row. */
 .row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 56px;
+  padding: 6px var(--sp-2);
+  border-radius: var(--r-md);
+  list-style: none;
+  transition: background-color var(--d-1) var(--ease), opacity var(--d-2) var(--ease);
+}
+.withGrip { grid-template-columns: auto minmax(0, 1fr) auto; }
+.row:hover,
+.row:focus-within { background: var(--hover); }
+.current,
+.current:hover { background: var(--raised); }
+
+.main {
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: var(--sp-1);
-  border-radius: var(--radius-sm);
-  transition: background var(--dur) var(--ease), opacity var(--dur) var(--ease);
+  gap: var(--sp-3);
+  text-align: left;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  border-radius: var(--r-sm);
+}
+/* The whole row is the hit area for "play". */
+.mainBtn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--r-md);
 }
 
-.row:hover {
-  background: rgba(255, 255, 255, 0.04);
+.thumb {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  color: var(--text-3);
+  background: var(--raised);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.titleText { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.current .titleText { color: var(--acc-text); }
+.sub {
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+}
+.artist { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+.grip {
+  position: relative;
+  z-index: 1;
+  width: 24px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  color: var(--text-3);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: grab;
+  border-radius: var(--r-sm);
+  touch-action: none;
+}
+.grip:active { cursor: grabbing; }
+
+.actions { position: relative; z-index: 1; display: flex; align-items: center; gap: 2px; }
+.act { width: 32px; height: 32px; }
+
+/* Secondary row actions recede until the row is hovered or focused — but
+   only where hover exists. On touch they are always shown. */
+@media (hover: hover) {
+  .reveal { visibility: hidden; }
+  .row:hover .reveal,
+  .row:focus-within .reveal { visibility: visible; }
 }
 
-/* The row the DJ just consumed as the next track — fades out before the list
-   re-renders without it. Purely decorative. */
 .consuming {
   opacity: 0.35;
   transform: translateX(2px);
@@ -19,116 +110,11 @@
   pointer-events: none;
 }
 
+@media (max-width: 767px) {
+  .act { width: var(--hit-min); height: var(--hit-min); }
+  .grip { width: 32px; height: var(--hit-min); }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .row, .consuming { transition: none; }
   .consuming { transform: none; }
-}
-
-/* The whole card is one button so the row is a single keyboard stop. */
-.main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-2);
-  background: none;
-  border: 0;
-  border-radius: var(--radius-sm);
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.main:focus-visible,
-.grip:focus-visible,
-.btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.art {
-  flex: none;
-  width: 38px;
-  height: 38px;
-  border-radius: var(--radius-sm);
-  object-fit: cover;
-  background: var(--surface-2);
-}
-
-.body {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.title, .sub {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.title { font-size: 13px; font-weight: 500; color: var(--text); }
-.sub { font-size: 11.5px; color: var(--text-3); }
-
-.meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-1);
-  margin-top: 2px;
-}
-
-.vibe, .lang, .sdk {
-  font-family: var(--mono);
-  font-size: 9.5px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  padding: 1px 6px;
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--border);
-  color: var(--text-3);
-  white-space: nowrap;
-}
-
-.vibe { color: var(--text-2); border-color: var(--border-strong); }
-.sdk { color: var(--spotify); border-color: rgba(30, 215, 96, 0.35); }
-
-.actions {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding-right: var(--sp-1);
-}
-
-.grip, .btn {
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  flex: none;
-  background: none;
-  border: 0;
-  border-radius: var(--radius-sm);
-  color: var(--text-4);
-  cursor: pointer;
-  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
-}
-
-.grip {
-  cursor: grab;
-  /* Stops the browser claiming a vertical swipe on the grip as a page scroll,
-     so a touch drag actually reaches the pointer handlers. */
-  touch-action: none;
-}
-
-.grip:hover, .btn:hover { color: var(--text-2); background: rgba(255, 255, 255, 0.07); }
-.btn:hover { color: var(--danger); }
-.add:hover { color: var(--accent); }
-
-/* Touch targets: keep the 26px visual box but extend the hit area to 44px. */
-@media (pointer: coarse) {
-  .grip, .btn { width: 40px; height: 40px; }
 }

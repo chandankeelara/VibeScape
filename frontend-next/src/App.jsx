@@ -4,6 +4,7 @@ import { Routes, Route, Navigate, useSearchParams, useNavigate } from 'react-rou
 import AuthGate, { useAuth } from './features/login';
 import { PlayerProvider } from './state/PlayerContext';
 import { SpotifyAuthProvider, useSpotifyAuth } from './state/SpotifyAuthContext';
+import { ThemeProvider } from './state/ThemeContext';
 import PlayerPage from './features/player/PlayerPage';
 import AdminPage from './features/admin/AdminPage';
 
@@ -86,12 +87,14 @@ function AuthedApp() {
   return (
     <SpotifyAuthProvider userId={user?.user_id ?? user?.id ?? '_anon'}>
       <PlayerProvider>
-        <SpotifyCallback />
-        <Routes>
-          <Route path="/" element={<PlayerPage />} />
-          <Route path="/admin" element={<AdminPage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        <ThemeProvider>
+          <SpotifyCallback />
+          <Routes>
+            <Route path="/" element={<PlayerPage />} />
+            <Route path="/admin" element={<AdminPage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </ThemeProvider>
       </PlayerProvider>
     </SpotifyAuthProvider>
   );

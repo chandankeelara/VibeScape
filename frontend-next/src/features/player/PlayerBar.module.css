@@ -1,0 +1,121 @@
+.bar {
+  position: relative;
+  z-index: var(--z-bar);
+  height: var(--bar-h);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-4);
+  padding: 0 var(--sp-4);
+  background: var(--bg);
+}
+
+/* YouTube Music's seek: a full-width line on the bar's top edge. */
+.seek { position: absolute; left: 0; right: 0; top: -9px; height: 20px; }
+.seekPhone { display: none; }
+
+.left { min-width: 0; display: flex; align-items: center; }
+.now {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  max-width: 100%;
+  text-align: left;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: var(--r-md);
+  padding: var(--sp-1);
+  margin-left: calc(-1 * var(--sp-1));
+}
+.thumb {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  flex: none;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  color: var(--text-3);
+  background: var(--raised);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.text { min-width: 0; display: flex; flex-direction: column; }
+.title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.titleText { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.artist { font-size: var(--fs-sm); color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pick { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-sm); color: var(--text-2); }
+
+.center { display: flex; align-items: center; gap: var(--sp-3); }
+.desk { display: contents; }
+.phone { display: none; }
+
+.right { justify-self: end; display: flex; align-items: center; gap: var(--sp-1); }
+.divider { width: 1px; height: 24px; background: var(--line-2); margin: 0 var(--sp-2); }
+.vol { display: flex; align-items: center; gap: 2px; }
+
+.chipWrap { position: relative; }
+.vibeChip { gap: var(--sp-2); padding: 0 var(--sp-3) 0 10px; }
+.chipDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--acc);
+  box-shadow: 0 0 0 3px var(--acc-soft);
+}
+.chipNum { color: var(--text); font-variant-numeric: tabular-nums; }
+.chipWord { text-transform: capitalize; }
+.vibePop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + var(--sp-3));
+  z-index: var(--z-pop);
+  width: 340px;
+  padding: var(--sp-4) var(--sp-4) var(--sp-2);
+  background: var(--raised);
+  border-radius: var(--r-lg);
+  box-shadow: var(--pop-shadow);
+  animation: popIn var(--d-2) var(--ease);
+}
+@keyframes popIn { from { opacity: 0; transform: translateY(4px); } }
+
+/* 768-1099px: the queue is a drawer; volume yields its room. */
+@media (max-width: 1099px) {
+  .vol { display: none; }
+}
+
+/* Phone: the bar becomes a floating mini-player — same element, same buttons. */
+@media (max-width: 767px) {
+  .bar {
+    position: fixed;
+    left: var(--sp-2);
+    right: var(--sp-2);
+    bottom: calc(var(--sp-2) + env(safe-area-inset-bottom));
+    height: 64px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--sp-1);
+    padding: 0 var(--sp-1) 0 var(--sp-2);
+    border-radius: var(--r-lg);
+    background: var(--raised);
+    box-shadow: var(--pop-shadow);
+    overflow: hidden;
+  }
+  .seek { top: auto; bottom: 0; left: var(--sp-2); right: var(--sp-2); height: 2px; pointer-events: none; }
+  .seekDesk { display: none; }
+  .seekPhone { display: block; }
+  .thumb { width: 44px; height: 44px; }
+  .now { flex: 1; }
+  .center { gap: 0; }
+  .timeDesk, .desk, .right { display: none; }
+  .phone { display: flex; align-items: center; }
+}

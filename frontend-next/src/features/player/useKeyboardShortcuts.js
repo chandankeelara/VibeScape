@@ -10,10 +10,11 @@ import { usePlayer } from '../../state/PlayerContext';
  *   ↑ ↓          shift vibe ±5
  *   Home / End   seek 0 / 100%
  *   PgUp / PgDn  seek ±15s
+ *   q            show / hide the queue
  *
  * Ctrl+K (search focus) is owned by the search feature.
  */
-export default function useKeyboardShortcuts({ onToggleMetrics, onToggleHelp } = {}) {
+export default function useKeyboardShortcuts({ onToggleMetrics, onToggleHelp, onToggleQueue } = {}) {
   const { togglePlay, next, prev, shiftVibe, seek, fetchForVibe } = usePlayer();
 
   useEffect(() => {
@@ -43,11 +44,13 @@ export default function useKeyboardShortcuts({ onToggleMetrics, onToggleHelp } =
         case 'Home':       e.preventDefault(); seek(0); break;
         case 'End':        e.preventDefault(); seek(1); break;
         case '?':          e.preventDefault(); onToggleHelp?.(); break;
+        case 'q':
+        case 'Q':          e.preventDefault(); onToggleQueue?.(); break;
         default: break;
       }
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [togglePlay, next, prev, shiftVibe, seek, fetchForVibe, onToggleMetrics, onToggleHelp]);
+  }, [togglePlay, next, prev, shiftVibe, seek, fetchForVibe, onToggleMetrics, onToggleHelp, onToggleQueue]);
 }

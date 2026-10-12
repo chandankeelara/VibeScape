@@ -1,123 +1,28 @@
-/**
- * Ported from legacy frontend/style.css:
- *   .transport :1493 (+ desktop override :1930)
- *   .progress / -track / -fill / -thumb :1496-1553
- *   .times :1560, .controls :1570
- *
- * .btn* (:1578-1606) now lives in TransportButtons.module.css and
- * .mode-toggle / .mode-btn (:1608-1681) in ModeToggle.module.css — both are
- * shared with the theater bar.
- */
-
-.transport {
-  padding: clamp(8px, 1.4dvh, 14px) 0 clamp(4px, 0.8dvh, 8px);
-  border-top: 1px solid var(--border);
+.time {
+  width: 44px;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
 }
-
-/* Desktop drops the divider and padding — .meta-divider handles separation. */
-@media (min-width: 1024px) {
-  .transport { padding: 0; border-top: none; }
-}
-
-/* Wider hit-pad: the visible track is 6px, the hover region is track + 14px
-   of padding above, so casual mouse hovers are catchable. */
-.progress {
-  position: relative;
-  padding: 14px 0 6px;
-  cursor: pointer;
-  outline: none;
-  touch-action: none;
-}
-
-.progressTrack {
-  position: relative;
-  height: 6px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.08);
-  overflow: visible;
-}
-
-.progressFill {
-  position: absolute;
-  inset: 0;
-  right: auto;
-  border-radius: 6px;
-  background: var(--vibe-accent, var(--accent));
-  transition: background 400ms var(--ease);
-}
-
-/* Always visible, unlike a hover-only thumb — it doubles as the position
-   marker. Scales up on hover/focus rather than fading in. */
-.progressThumb {
-  position: absolute;
-  top: 50%;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #fff;
-  transform: translate(-50%, -50%) scale(1);
-  transition: transform 150ms var(--ease), box-shadow 200ms var(--ease);
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--vibe-accent, var(--accent)) 40%, transparent);
-}
-
-.progress:hover .progressThumb {
-  transform: translate(-50%, -50%) scale(1.3);
-}
-
-.progress:focus-visible .progressThumb {
-  transform: translate(-50%, -50%) scale(1.3);
-  box-shadow:
-    0 0 0 3px color-mix(in oklab, var(--vibe-accent, var(--accent)) 55%, transparent),
-    0 0 0 6px color-mix(in oklab, var(--vibe-accent, var(--accent)) 25%, transparent);
-}
+.timeEl { text-align: right; }
 
 .times {
   display: flex;
   justify-content: space-between;
-  margin-top: 4px;
-  font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
-  /* Stops the clock jittering as digits change width. */
   font-variant-numeric: tabular-nums;
 }
 
-.controls {
-  margin-top: clamp(6px, 1.2dvh, 12px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: clamp(14px, 3vw, 24px);
-  position: relative;
-}
+/* Phone now-playing: big transport. */
+.play_lg { width: 64px; height: 64px; }
+.skip_lg { width: 56px; height: 56px; color: var(--text); }
 
-/* prev / play / next moved to TransportButtons.module.css and the audio/video
-   pill to ModeToggle.module.css — theater mode needs both, and two copies of a
-   control that writes the same state drift apart. What stays here is where
-   they SIT: .controls is still their flex parent, and .modeAnchor is the
-   positioning this layout wants on the pill.
-
-   Pinned to the right edge of .controls so the play button stays optically
-   centred in the column. */
-.modeAnchor {
-  position: absolute;
-  right: 0;
-  top: 50%;
-  transform: translateY(-50%);
+/* Mini-player: a bare glyph, no disc. */
+.play_bare {
+  width: var(--hit-min);
+  height: var(--hit-min);
+  background: transparent;
+  color: var(--text);
 }
-
-/* The mirror of .modeAnchor, pinned to the LEFT edge, so neither control
-   displaces the centred play button. Both are absolute, so the row's flex
-   centring sees only prev/play/next. */
-.pipAnchor {
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-}
-
-@media (max-width: 640px) {
-  .modeAnchor { position: static; transform: none; margin-left: 6px; }
-  .pipAnchor { position: static; transform: none; margin-right: 6px; }
-  .controls { flex-wrap: wrap; row-gap: var(--sp-3); }
-}
+.play_bare:hover:not(:disabled) { transform: none; background: var(--hover); }

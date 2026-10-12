@@ -1,0 +1,86 @@
+/*
+ * Real <input type=range>, so keyboard, AT and click-to-set come for free
+ * (the WCAG 2.2 dragging alternative). --p is the fill stop, computed in JS
+ * with the thumb inset so fill and thumb never disagree.
+ *
+ * Variants set the track height / thumb size; the default is the Spotify
+ * seek bar: neutral at rest, accent + thumb on hover or focus.
+ */
+.range {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  cursor: pointer;
+  display: block;
+  --track-h: 4px;
+  --thumb: 12px;
+  --thumb-s: 0;
+  --fill: var(--text);
+  --p: 50%;
+}
+.range:disabled { cursor: default; opacity: 0.5; }
+.range::-webkit-slider-runnable-track {
+  height: var(--track-h);
+  border-radius: var(--r-pill);
+  background: linear-gradient(to right, var(--fill) 0 var(--p), var(--rail) var(--p) 100%);
+}
+.range::-moz-range-track {
+  height: var(--track-h);
+  border-radius: var(--r-pill);
+  background: linear-gradient(to right, var(--fill) 0 var(--p), var(--rail) var(--p) 100%);
+}
+.range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: var(--thumb);
+  height: var(--thumb);
+  border-radius: 50%;
+  border: 0;
+  margin-top: calc((var(--track-h) - var(--thumb)) / 2);
+  background: var(--text);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.35);
+  transform: scale(var(--thumb-s));
+  transition: transform var(--d-1) var(--ease);
+}
+.range::-moz-range-thumb {
+  width: var(--thumb);
+  height: var(--thumb);
+  border-radius: 50%;
+  border: 0;
+  background: var(--text);
+  transform: scale(var(--thumb-s));
+}
+.range:hover:not(:disabled),
+.range:focus-visible { --thumb-s: 1; --fill: var(--acc); }
+.range:focus-visible { outline-offset: 4px; }
+
+/* The bar's top-edge seek line. */
+.seekBar { height: 20px; --track-h: 3px; }
+.seekBar:hover:not(:disabled) { --track-h: 5px; }
+
+/* The phone now-playing seek: always shows its thumb, 44px hit area. */
+.seekPhone { height: var(--hit-min); --thumb-s: 1; margin: -10px 0; }
+
+/* The mini-player's hairline: display only. */
+.hairline { height: 2px; --track-h: 2px; --fill: var(--text); pointer-events: none; }
+.hairline::-webkit-slider-thumb { display: none; }
+.hairline::-moz-range-thumb { display: none; }
+
+/* The vibe slider. Always accent, big thumb with a soft halo. */
+.vibe { --track-h: 6px; --thumb: 22px; --thumb-s: 1; --fill: var(--acc); height: 28px; }
+.vibe:hover:not(:disabled),
+.vibe:focus-visible { --fill: var(--acc); }
+.vibe::-webkit-slider-thumb {
+  background: var(--on-dark);
+  box-shadow: 0 0 0 4px var(--acc-soft), 0 2px 6px rgb(0 0 0 / 0.35);
+  transition: transform var(--d-1) var(--ease), box-shadow var(--d-1) var(--ease);
+}
+.vibe::-moz-range-thumb { background: var(--on-dark); box-shadow: 0 0 0 4px var(--acc-soft); }
+.vibe:active::-webkit-slider-thumb {
+  transform: scale(1.12);
+  box-shadow: 0 0 0 7px var(--acc-soft), 0 2px 6px rgb(0 0 0 / 0.35);
+}
+
+.volume { width: 96px; }

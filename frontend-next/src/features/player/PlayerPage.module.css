@@ -1,251 +1,39 @@
-/**
- * App shell. Mirrors the legacy body grid (frontend/style.css:56-82):
- *
- *   rows:    topbar | search bar | content
- *   columns: main stage (fluid) | queue sidebar (fixed 320px)
- */
-.shell {
-  height: 100dvh;
-  /* Legacy sets body{overflow:hidden} — the stage is sized to fit the
-     viewport, and the scrollbar it avoids is worth ~15px of stage width.
-     Only applied where the 3-column layout is designed to fit; narrower
-     viewports scroll normally. */
-  overflow: hidden;
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
-  grid-template-columns: minmax(0, 1fr) 320px;
-}
-
-.topSlot,
-.searchSlot { grid-column: 1 / -1; }
-
-/* Stage: single column by default, becoming the legacy 3-column desktop
-   layout at >=1024px (style.css:1891). */
-.stage {
-  grid-column: 1;
-  grid-row: 3;
-  min-width: 0;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  justify-items: center;
-  align-items: center;
-  gap: clamp(18px, 3vh, 32px);
-  width: 100%;
-  max-width: var(--stage-max);
-  margin: 0 auto;
-  /* legacy: padding: 0 var(--pad-x) var(--pad-y) — no top padding */
-  padding: 0 clamp(14px, 3vw, 28px) clamp(10px, 2dvh, 20px);
-}
-
-.sidebarSlot {
-  grid-column: 2;
-  grid-row: 3;
-  min-width: 0;
-  min-height: 0;
-  /*
-   * Above the mascot's dock, which is fixed and spans the full viewport width
-   * so its floor runs under this rail. A grid item takes z-index without
-   * needing position, and without this the scenery would paint over the
-   * bottom rows of the DJ picks.
-   */
-  z-index: 2;
-}
-
-.trailSlot { min-width: 0; }
-
-.metaCol {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  /* legacy: clamp(14px, 2.4dvh, 26px) */
-  gap: clamp(14px, 2.4dvh, 26px);
-  min-width: 0;
-  width: 100%;
-}
-
-.divider {
-  width: 100%;
-  height: 1px;
-  border: 0;
-  margin: 0;
-  background: var(--border);
-  align-self: stretch;
-}
-
-/* ---------------------------------------------------------- desktop 3-col */
-/* Ported verbatim from legacy style.css:1891-1943. */
-@media (min-width: 1024px) {
-  .stage {
-    grid-template-rows: minmax(0, 1fr);
-    grid-template-columns: 64px minmax(0, 1.05fr) minmax(0, 1fr);
-    column-gap: clamp(20px, 2.4vw, 32px);
-    justify-items: stretch;
-    align-items: center;
-    align-content: center;
-  }
-
-  /* Right-aligned in its 64px column → sits immediately left of the art. */
-  .trailSlot {
-    grid-column: 1;
-    grid-row: 1;
-    align-self: center;
-    justify-self: end;
-  }
-
-  .metaCol {
-    grid-column: 3;
-    grid-row: 1;
-    max-height: 92dvh;
-  }
-}
-
-/* ------------------------------------------------------------ theater mode */
 /*
- * YouTube's theater mode, as the user wants it: both RAILS STAY PUT. Recently
- * played flanks on the left, the queue flanks on the right, and the video
- * widens between them by absorbing the META COLUMN — track meta, transport
- * and mood slider drop to a row underneath the video, spanning its width.
- *
- * So the shell keeps its two columns and .sidebarSlot never moves; the stage
- * goes from [64px | 1.05fr | 1fr] to [64px | 1fr] over two rows.
- *
- * Gated at >=1024px because below that the shell is already one column and
- * the card already spans it. The control is display:none there too
- * (ArtStage.module.css).
- *
- * THE STAGE DOES NOT SCROLL ANY MORE — but it can.
- *
- * The first cut kept the full meta column (~430-520px) under the video and
- * had to scroll by 180-230px. Replacing it with TheaterBar (~62-74px) buys
- * all of that back: at --theater-h 72dvh the video is WIDTH-limited by the
- * column at every size checked, and the stack clears the stage with 35/120/36
- * px of slack at 1280x700 / 1440x900 / 1920x1080.
- *
- * `overflow-y: auto` stays as a safety valve, because those figures come from
- * computed type metrics rather than a browser: if a font or a locale makes
- * the bar taller than budgeted, the column scrolls a little instead of
- * guillotining the transport under .shell's overflow:hidden.
- *
- * If it ever does engage, the scroller is the STAGE, not the shell. Scrolling
- * the shell would take the queue rail with it, which is precisely what the
- * user asked us to stop doing — and .sidebar's `max-height: min(<row budget>,
- * 100%)` only resolves because .shell gives row 3 a definite height, so
- * leaving the shell at 100dvh keeps the rail's sizing contract untouched.
- *
- * HOW THIS IS ANIMATED, and why it is not animated the obvious way:
- *
- * The grid flips in ONE discrete step. grid-template-columns is interpolable
- * in modern engines, but animating it relayouts the entire stage on every
- * frame — including the subtree holding the YouTube iframe — which is exactly
- * the layout thrash to avoid. Instead the settled result is animated with
- * `transform` and `opacity` only, both of which the compositor handles with
- * no layout work at all.
- *
- * Nothing is remounted, re-keyed or reparented by any of this: the toggle
- * changes class names and nothing else, so the iframe is never torn out of
- * the document and playback position survives untouched. (Moving an iframe
- * in the DOM reloads it; restyling one does not.)
- *
- * `.shellMorphing` is transient — raised by useTheaterMode for 460ms — so the
- * will-change hint below never outlives the transition.
+ * App shell (S2). Desktop: three rows — top bar, content, player bar — sized
+ * to the viewport, nothing scrolls but the panels themselves.
  */
-@media (min-width: 1024px) {
-  .stageTheater {
-    grid-template-columns: 64px minmax(0, 1fr);
-    grid-template-rows: auto auto;
-    max-width: var(--stage-max-theater);
-    justify-items: stretch;
-    align-items: start;
-    align-content: start;
-    padding-top: clamp(6px, 1.5dvh, 16px);
-
-    overflow-y: auto;
-    /*
-     * Explicit, and not cosmetic. Setting one axis to a non-visible value
-     * makes the other compute to `auto`, and .videoGlow is a real box at
-     * inset:-14% — visually transparent at its horizontal extremes, but a box
-     * all the same, so `auto` would raise a horizontal scrollbar for a halo
-     * nobody can see.
-     */
-    overflow-x: hidden;
-    /*
-     * Reserved even though the column should never scroll. Without it, a
-     * column that overflowed by a few pixels would gain a scrollbar, lose
-     * 15px of width, make the 16:9 video SHORTER, stop overflowing, lose the
-     * scrollbar, and start again — a real oscillation, not a theoretical one,
-     * because the video's height is derived from the column's width. 15px is
-     * the price of that loop never happening.
-     */
-    scrollbar-gutter: stable;
-
-    /*
-     * Above BitDock. The dock is position:fixed at the bottom of the viewport,
-     * and a fixed element paints over non-positioned in-flow content whatever
-     * its z-index — so the video and the transport scrolling past would have
-     * the mascot's floor drawn across them. A grid item takes z-index without
-     * needing position (the same trick .sidebarSlot already uses), and the
-     * dock sits at 1. The dock is pointer-events:none, so this is purely a
-     * paint-order fix; nothing was ever blocked.
-     */
-    z-index: 2;
-  }
-
-  /* Spans both rows and sticks, so the trail stays beside the video instead
-     of scrolling away with it. Its 8 items cap at ~400px, well inside the
-     column. */
-  .stageTheater .trailSlot {
-    grid-column: 1;
-    grid-row: 1 / -1;
-    align-self: start;
-    justify-self: end;
-    position: sticky;
-    top: 0;
-  }
-
-  /* The absorbed column: TheaterBar takes row 2 in place of .metaCol, which
-     is not rendered at all in theater. Placement lives here because the stage
-     grid is this module's business; the bar styles itself. */
-  .barSlot {
-    grid-column: 2;
-    grid-row: 2;
-    min-width: 0;
-  }
-
-  .shellMorphing .stage > *,
-  .shellMorphing .sidebarSlot {
-    animation: settle var(--dur-slow) var(--ease-out) both;
-    will-change: transform, opacity;
-  }
+.app {
+  height: 100dvh;
+  display: grid;
+  grid-template-rows: var(--top-h) minmax(0, 1fr) var(--bar-h);
+  overflow: hidden;
 }
 
-/* Starts at 0.35 rather than 0: the video is PLAYING through this, and a hard
-   fade from nothing reads as a reload. */
-@keyframes settle {
-  from { opacity: 0.35; transform: translateY(10px); }
-  to   { opacity: 1; transform: none; }
+.content {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--queue-w);
+  gap: var(--sp-2);
+  padding: 0 var(--sp-2) var(--sp-2);
+}
+.queueClosed .content { grid-template-columns: minmax(0, 1fr); }
+
+/* 768-1099px: the queue is a drawer, the panel takes the whole row. */
+@media (max-width: 1099px) {
+  .content { grid-template-columns: minmax(0, 1fr); }
 }
 
-@media (max-width: 1023px) {
-  /*
-   * overflow-x: clip, not visible. The card glows (.glow, and .videoGlow at
-   * inset:-14%, which counts even in audio mode — visibility:hidden still
-   * takes part in overflow) reach past the 14px gutter, so with `visible`
-   * every phone width scrolled sideways by 32-41px and the player looked
-   * off-centre (measured 2026-10-10, 360-414px). `clip` cuts only what is
-   * already off-screen and, unlike `hidden`, makes no scroll container, so
-   * vertical page scroll and the fixed FAB / sheet are untouched.
-   */
-  .shell { height: auto; min-height: 100dvh; overflow: visible; overflow-x: clip; }
-  /* Trail goes horizontal above the card — see RecentTrail.module.css. */
-  .trailSlot { width: 100%; }
-}
-
-@media (max-width: 900px) {
-  .shell { grid-template-columns: minmax(0, 1fr); }
-  .sidebarSlot { grid-column: 1; grid-row: 4; }
-}
-
-@media (max-width: 640px) {
-  .stage { padding-bottom: 120px; }
+/* Phone: a normal scrolling page — home list, with the mini-player floating
+   over its bottom edge. overflow-x: clip (not hidden) cuts off-screen glow
+   without making a scroll container, so the sticky top bar still works. */
+@media (max-width: 767px) {
+  .app {
+    display: block;
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+    overflow-x: clip;
+    padding-bottom: calc(var(--bar-h) + env(safe-area-inset-bottom));
+  }
+  .content { display: block; padding: 0; }
 }

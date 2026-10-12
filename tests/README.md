@@ -51,6 +51,9 @@ with fakes; no test needs a network.
 | Spotify tokens | `frontend/spotifyTokens.test.js` | refresh near expiry, PKCE vs server, single flight, refusal vs network failure, another tab's rotation |
 | Spotify playback | `frontend/spotifyMedia.test.js` | a new song refreshes, a 401 forces one refresh and retry, the SDK callback gets a fresh token, a blocked play makes no request |
 | Spotify guard (browser) | `frontend/spotifyGuard.test.js` | held calls make no request, lifts on time, kept across reloads, never shortens |
+| Accent | `frontend/accent.test.js` | accent text clears 4.6:1 on every surface and badge at every vibe in both themes, ink on the fill too, the solver's surfaces match `tokens.css`, track badges coloured by the track |
+| Volume | `frontend/volume.test.js` | clamping, persistence, mute, subscribers, effective volume 0 while muted |
+| DJ line | `frontend/startReason.test.js` | a finish vs a skip vs a slider move, a stale "ended" flag never relabels a search or pick |
 
 Each fix above was checked by breaking it on purpose and confirming a test
 fails (2026-10-10).

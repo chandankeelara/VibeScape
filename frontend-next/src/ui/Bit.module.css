@@ -1,0 +1,32 @@
+/* Parts that CSS transforms carry NO transform attribute, and rotate in
+   view-box units. */
+.bit { width: 34px; height: 44px; flex: none; overflow: visible; display: block; }
+.body, .head { transform-box: view-box; }
+.body { transform-origin: 50px 84px; }
+.head { transform-origin: 50px 48px; transition: transform var(--d-3) var(--ease); }
+
+.part { fill: var(--raised); stroke: var(--text-3); stroke-width: 2.4; }
+.line { fill: none; stroke: var(--text-3); stroke-width: 2.4; stroke-linecap: round; }
+.visor { fill: var(--visor); }
+.mark { fill: var(--acc); }
+.eyes circle { fill: var(--acc); }
+.eyes path { fill: none; stroke: var(--acc); stroke-width: 2.6; stroke-linecap: round; }
+
+.eHappy, .eSad { opacity: 0; }
+.happy .eOpen, .sad .eOpen { opacity: 0; }
+.happy .eHappy { opacity: 1; }
+.sad .eSad { opacity: 1; }
+.happy .body { animation: hop 620ms var(--ease) 1; }
+.sad .head { transform: rotate(-10deg) translateY(1.5px); }
+.thinking .head { transform: rotate(6deg); }
+.thinking .bulb { animation: bulb 900ms ease-in-out infinite alternate; }
+
+@keyframes hop {
+  35% { transform: translateY(-7px); }
+  70% { transform: translateY(1px); }
+}
+@keyframes bulb { to { opacity: 0.3; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .happy .body, .thinking .bulb { animation: none; }
+}

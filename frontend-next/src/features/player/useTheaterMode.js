@@ -13,13 +13,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  *
  * The viewport guard IS here, and it did not used to be.
  *
- * While theater was only a restyle, CSS media queries covered it for free and
- * a matchMedia subscription would have been dead weight. Now theater also
- * SWAPS THE DOM — the meta column is replaced by TheaterBar — and CSS cannot
- * undo that. Below 1024px the control is display:none, so a user who had
- * theater on, narrowed the window and lost the mood slider would have had no
- * way to get it back. The guard is a `change` listener on one media query, so
- * it fires on crossing the breakpoint and not on every resize tick.
+ * Below 1024px the theater control is not rendered (NowPlaying), so a user
+ * who had theater on and narrowed the window would have no way to turn it
+ * off; the guard drops the layout instead. It is a `change` listener on one
+ * media query, so it fires on crossing the breakpoint, not on every resize.
  *
  * `morphing` is a transient flag that drives the settle animation. The layout
  * itself flips in one discrete step — see PlayerPage.module.css for why

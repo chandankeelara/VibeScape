@@ -21,6 +21,7 @@
  */
 
 import { spotifyFetch } from '../lib/spotifyGuard';
+import * as volume from './volume';
 
 const sp = {
   sdkRequested: false,
@@ -46,6 +47,11 @@ export const setOnState = (fn) => { onState = fn; };
 export const setOnReady = (fn) => { onReady = fn; };
 export const setOnEnded = (fn) => { onEnded = fn; };
 export const setOnError = (fn) => { onError = fn; };
+
+// The SDK device reads volume at construction (connect()); this keeps it in
+// step afterwards. setVolume returns a promise that rejects while the device
+// is not connected — nothing to do then, connect() will pick the level up.
+volume.registerSink((v) => { sp.player?.setVolume?.(v)?.catch?.(() => {}); });
 
 export function setToken(token) {
   sp.token = token || null;
@@ -93,7 +99,7 @@ function connect() {
       // The SDK calls this on connect and again whenever its token is about
       // to lapse (roughly hourly) — including mid-song and after a long pause.
       getOAuthToken: (cb) => { freshToken().then((t) => cb(t || '')); },
-      volume: 0.8,
+      volume: volume.effectiveVolume(),
     });
 
     player.addListener('ready', ({ device_id }) => {

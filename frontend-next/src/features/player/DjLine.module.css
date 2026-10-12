@@ -1,0 +1,22 @@
+.line {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: var(--hit-min);
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+.say { margin: 0; min-width: 0; }
+.say b { color: var(--text-2); font-weight: 600; }
+.cap { text-transform: capitalize; }
+.tag {
+  font-size: var(--fs-2xs);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--acc-text);
+  border: 1px solid currentColor;
+  border-radius: var(--r-xs);
+  padding: 2px 5px;
+  margin-right: 6px;
+  vertical-align: 1px;
+}

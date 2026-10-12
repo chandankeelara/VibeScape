@@ -3,16 +3,14 @@
  * The minimized import. See SyncPill.jsx for why this exists rather than a
  * toast.
  *
- * Sits bottom-left, clear of everything that already claims screen edges: the
- * queue sidebar (right), the mobile queue sheet and FAB (bottom-right), and
- * the mascot dock (full width but pointer-events:none and purely decorative,
- * so overlapping it costs nothing).
+ * Sits bottom-left, just above the persistent player bar (desktop) or the
+ * floating mini-player (phone), clear of the queue on the right.
  */
 
 .pill {
   position: fixed;
   left: var(--sp-4);
-  bottom: var(--sp-4);
+  bottom: calc(var(--bar-h) + var(--sp-4));
   z-index: var(--z-overlay);
 
   display: flex;
@@ -121,13 +119,13 @@
 
 /* Full width on phones, where a floating pill at 420px would cover the
    transport it is meant to sit beside. */
-@media (max-width: 640px) {
+@media (max-width: 767px) {
   .pill {
     left: var(--sp-3);
     right: var(--sp-3);
     max-width: none;
-    /* Above the queue FAB, which owns the bottom-right corner. */
-    bottom: calc(var(--sp-4) + 64px + env(safe-area-inset-bottom, 0px));
+    /* Above the floating mini-player (64px + its 8px gap). */
+    bottom: calc(var(--sp-2) + 64px + var(--sp-3) + env(safe-area-inset-bottom, 0px));
   }
 }
 

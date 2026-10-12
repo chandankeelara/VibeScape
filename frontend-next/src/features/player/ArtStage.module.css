@@ -1,273 +1,154 @@
-/* Sizing ported verbatim from legacy .art-wrap (style.css base + :1902).
-   Base caps at 480px; desktop grows to 62dvh / 640px — the hero card is
-   meant to dominate the stage. */
-.wrap {
+.stage {
   position: relative;
-  /* Explicit stacking context. Without this a child's negative z-index
-     escapes to the root and paints behind the whole page subtree — which is
-     exactly how the video glow went missing. */
-  isolation: isolate;
-  align-self: center;
-  justify-self: center;
-  width: min(100%, clamp(180px, 58dvh, 480px));
   aspect-ratio: 1;
-  min-height: 0;
-  margin: 0 auto;
+  width: 100%;
+  border-radius: var(--r-md);
 }
+.isVideo { aspect-ratio: 16 / 9; }
 
-@media (min-width: 1024px) {
-  .wrap {
-    grid-column: 2;
-    grid-row: 1;
-    width: min(100%, clamp(420px, 62dvh, 640px));
-    max-height: 92dvh;
-  }
-}
-
-/* ---------------------------------------------------------- theater mode */
-/*
- * Only >=1024px. Below that the shell is already one column and the hero card
- * already spans it, so there is nothing for theater to widen.
- *
- * Width is DERIVED from the height budget (--theater-h * 16/9), not the other
- * way round. Capping the height of a width:100% box would leave a card wider
- * than 16:9 and the YouTube player would pillarbox inside it; deriving the
- * width keeps a true 16:9 card at every viewport, centred in the stage.
- * Every term is positive, so this cannot collapse the way a
- * calc(100vw - fixed) can.
- *
- * NOTE: this is a sizing + placement change only. The #ytPlayer mount is not
- * touched, moved or re-keyed, so the iframe is never reloaded and playback
- * position is untouched.
- */
-@media (min-width: 1024px) {
-  .wrapTheater {
-    /* Column 2 of the theater stage's [64px | 1fr]: the recent-trail rail
-       keeps column 1 and the queue rail keeps its own shell column. The video
-       widens by absorbing the META column, which drops to row 2 beneath it. */
-    grid-column: 2;
-    grid-row: 1;
-    width: min(100%, calc(var(--theater-h) * 16 / 9));
-    max-width: 100%;
-    max-height: none;
-    aspect-ratio: 16 / 9;
-    align-self: start;
-    justify-self: center;
-  }
-}
-
-.glow {
+/* Light pool, not a drop shadow: the cover lights the panel beneath it in
+   its own colour. In light theme a real soft shadow does that job. */
+.stage::before {
+  content: '';
   position: absolute;
-  inset: -6%;
-  border-radius: 30px;
-  background: radial-gradient(
-    closest-side,
-    color-mix(in oklab, var(--vibe-accent, var(--accent)) 45%, transparent),
-    transparent 70%
-  );
-  filter: blur(16px);
-  opacity: var(--art-glow-alpha, 0.65);
-  transition: background 400ms var(--ease), opacity 120ms linear;
-  z-index: 0;
-  will-change: opacity;
+  inset: 8% 6% -6%;
+  z-index: -1;
+  border-radius: 50%;
+  background: var(--pool, var(--acc));
+  filter: blur(40px);
+  opacity: 0.45;
+  transition: background-color var(--d-fade) var(--ease);
   pointer-events: none;
+}
+:global(html[data-theme='light']) .stage::before { opacity: 0.3; }
+
+.art,
+.video,
+.novideo {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
 }
 
 .art {
+  background: var(--raised);
+  box-shadow: inset 0 0 0 1px var(--line);
+  transition: opacity var(--d-3) var(--ease);
+}
+:global(html[data-theme='light']) .art,
+:global(html[data-theme='light']) .video { box-shadow: 0 18px 40px -18px rgb(17 19 23 / 0.45); }
+/* Rim light: a 1px top highlight sells the cover as an object. */
+.art::after,
+.video::after {
+  content: '';
   position: absolute;
   inset: 0;
-  z-index: 1;
-  border-radius: var(--radius-card);
-  overflow: hidden;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.7),
-              0 0 0 1px rgba(255, 255, 255, 0.02) inset;
-}
-
-.artHidden { visibility: hidden; }
-.artImg { width: 100%; height: 100%; object-fit: cover; }
-.artEmpty { color: var(--text-4); }
-
-/* ------------------------------------------------------------ video stage */
-/* Toggled by VISIBILITY, never unmounted — the YT iframe must survive every
-   re-render. */
-.videoStage { position: absolute; inset: 0; z-index: 1; }
-.videoHidden { visibility: hidden; pointer-events: none; }
-
-.videoFrame {
-  position: absolute;
-  inset: 0;
-  /* Deliberately NO overflow:hidden here — .videoInner owns the clip. The
-     glow sits at a negative inset, which a clip on this element would
-     swallow. */
-  isolation: isolate;
-}
-
-/* The visible card: rounded, clipped, black.
-   The border is accent-tinted rather than plain white-alpha — against a solid
-   black video surface a 0.16 white hairline reads as nothing, where on the
-   album art the same border sits against a colour image and defines an edge.
-   The inset ring adds a second, brighter line just inside it. */
-.videoInner {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  border-radius: var(--radius-card);
-  overflow: hidden;
-  background: #000;
-  border: 1px solid color-mix(in oklab, var(--vibe-accent, var(--accent)) 38%, var(--border-strong));
-  box-shadow:
-    0 0 0 1px color-mix(in oklab, var(--vibe-accent, var(--accent)) 16%, transparent) inset,
-    0 0 24px -4px color-mix(in oklab, var(--vibe-accent, var(--accent)) 40%, transparent),
-    0 30px 80px -30px rgba(0, 0, 0, 0.7);
-  transition: border-color 400ms var(--ease), box-shadow 400ms var(--ease);
-}
-
-/* Same accent glow the album art gets, so the video card reads as the same
-   object rather than a bare black box. Sits outside the frame's bounds via a
-   negative inset, under everything else. */
-.videoGlow {
-  position: absolute;
-  /* Wider and hotter than the album-art glow on purpose. The art card is a
-     full-colour image, so a 6% whisper reads against it; the video card is
-     solid #000 on a near-black page, where the same values vanish. */
-  inset: -14%;
-  z-index: 0;
-  border-radius: 40px;
-  background: radial-gradient(
-    closest-side,
-    color-mix(in oklab, var(--vibe-accent, var(--accent)) 70%, transparent),
-    color-mix(in oklab, var(--vibe-accent, var(--accent)) 22%, transparent) 55%,
-    transparent 78%
-  );
-  filter: blur(30px);
-  /* Floor the alpha: --art-glow-alpha sits at its 0.5 minimum during video
-     because the RMS analyser taps the <audio> element, which is silent. */
-  opacity: max(0.75, var(--art-glow-alpha, 0.65));
-  transition: background 400ms var(--ease), opacity 120ms linear;
-  will-change: opacity;
+  border-radius: inherit;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.12), inset 0 0 0 1px rgb(255 255 255 / 0.05);
   pointer-events: none;
+  z-index: 2;
+}
+.coverLayer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.coverIn { animation: fadeIn var(--d-3) var(--ease) both; }
+@keyframes fadeIn { from { opacity: 0; } }
+.coverEmpty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-3); }
+
+/* Video surface — ALWAYS in the DOM; mode only toggles visibility, so the
+   YouTube iframe mounts once and never moves. */
+.video,
+.novideo {
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity var(--d-3) var(--ease), visibility 0s linear var(--d-3);
+}
+.video { background: var(--visor); }
+.isVideo .video {
+  visibility: visible;
+  opacity: 1;
+  transition: opacity var(--d-3) var(--ease), visibility 0s;
+}
+.isVideo .art { opacity: 0; }
+.isVideo.noVideo .video { visibility: hidden; opacity: 0; }
+.isVideo.noVideo .novideo {
+  visibility: visible;
+  opacity: 1;
+  transition: opacity var(--d-3) var(--ease), visibility 0s;
 }
 
-/*
- * Absolutely positioned, with its bottom inset driven by --video-chrome-h, so
- * the chrome strip takes a slice of the card and the player keeps a DEFINITE
- * height (the iframe's `height: 100%` below needs one — a flex-sized parent
- * would leave it indefinite and the iframe would collapse).
- *
- * This is a restyle of the SAME node. #ytPlayer is never re-keyed, moved or
- * re-created; restyling an iframe's container does not reload it.
- */
-.ytMount {
-  position: absolute;
-  inset: 0 0 var(--video-chrome-h, 0px) 0;
-  z-index: 1;
-}
+.ytMount { position: absolute; inset: 0; z-index: 1; }
 .ytMount iframe { width: 100%; height: 100%; border: 0; display: block; }
 
-/* ----------------------------------------------------- card chrome strip */
-/*
- * A slice of the card under the player surface. Set only when the strip is
- * actually rendered, so a card without chrome gives every pixel to the video.
- */
-.innerChrome {
-  --video-chrome-h: calc(var(--hit-min) + 2 * var(--sp-1));
-}
-
-.videoBottombar {
-  position: absolute;
-  inset: auto 0 0 0;
-  height: var(--video-chrome-h);
-  z-index: 3;
-
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--sp-2);
-  padding: 0 var(--sp-2);
-
-  /* A hairline so the strip reads as chrome rather than as letterbox, and a
-     touch of lift off the pure black of the card. */
-  border-top: 1px solid var(--border);
-  background: linear-gradient(0deg, var(--scrim-soft), transparent);
-}
-
-/* ------------------------------------------------------------- overlays */
-
-.videoOverlay {
+.videoNote {
   position: absolute;
   inset: 0;
-  z-index: 2;
-  display: flex;
-  flex-direction: column;
+  z-index: 0;
+  display: grid;
+  grid-auto-flow: column;
+  place-content: center;
   align-items: center;
-  justify-content: center;
-  gap: var(--sp-3);
-  color: var(--text-3);
-  background: #000;
-  font-size: 13px;
-}
-.videoOverlay p { margin: 0; }
-
-.spinner {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  border: 2px solid var(--border-strong);
-  border-top-color: var(--vibe-accent, var(--accent));
-  animation: spin 720ms linear infinite;
+  gap: 10px;
+  color: var(--on-dark-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
 }
 
-@keyframes spin { to { transform: rotate(360deg); } }
-
-@media (prefers-reduced-motion: reduce) {
-  .spinner { animation-duration: 2s; }
-}
-
-/* ------------------------------------------------------- verify overlay */
-/* Sits above the album art while the classification clip plays. */
-.verifyOverlay {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--sp-2);
-  border-radius: var(--radius-card);
-  background: color-mix(in oklab, var(--bg) 72%, transparent);
-  backdrop-filter: blur(10px);
+.novideo {
+  background: var(--raised);
+  display: grid;
+  place-items: center;
   text-align: center;
-  animation: verifyIn var(--dur) var(--ease-out);
-}
-
-@keyframes verifyIn { from { opacity: 0; } to { opacity: 1; } }
-
-.verifyIcon {
-  color: var(--vibe-accent, var(--accent));
-  display: inline-flex;
-}
-
-.verifyTitle {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--text-2);
-}
-
-.verifySub {
-  font-family: var(--mono);
-  font-size: 11px;
+  padding: var(--sp-5);
+  box-shadow: inset 0 0 0 1px var(--line);
   color: var(--text-3);
-  font-variant-numeric: tabular-nums;
+}
+.novideo > div > svg { margin: 0 auto var(--sp-3); }
+.novideo h3 { margin: 0 0 var(--sp-1); font-size: var(--fs-base); font-weight: 700; color: var(--text); }
+.novideo p { margin: 0 0 var(--sp-4); font-size: var(--fs-sm); }
+
+/* DJ picking: the art dims and a calm pill names the wait. */
+.loading .art { opacity: 0.45; }
+.picking {
+  position: absolute;
+  left: 50%;
+  bottom: var(--sp-4);
+  z-index: 3;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: var(--sp-2) 14px var(--sp-2) 10px;
+  border-radius: var(--r-pill);
+  background: var(--glass-dark);
+  color: var(--on-dark);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .verifyOverlay { animation: none; }
+.verify {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: var(--sp-1);
+  text-align: center;
+  color: var(--on-dark);
+  background: var(--scrim);
+  border-radius: inherit;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
 }
+.verify b { font-size: var(--fs-base); }
+.verify span { font-size: var(--fs-sm); color: var(--on-dark-2); }

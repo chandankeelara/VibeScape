@@ -1,28 +1,50 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { usePlayer } from '../../state/PlayerContext';
-import { SearchBar } from '../search';
-import { QueueSidebar } from '../queue';
+import { useApplyTheme } from '../../state/ThemeContext';
+import { applyAccent } from '../../lib/vibe';
+import useMediaQuery, { PHONE, WIDE } from '../../lib/useMediaQuery';
+import { QueueSidebar, QueueStateProvider } from '../queue';
 import { SyncJobProvider, SyncPill, useSyncJob } from '../sync';
 import TopBar from './TopBar';
-import ArtStage from './ArtStage';
-import TrackMeta from './TrackMeta';
-import Transport from './Transport';
-import TheaterBar from './TheaterBar';
-import MoodSlider from './MoodSlider';
-import RecentTrail from './RecentTrail';
+import NowPlaying from './NowPlaying';
+import PhoneHome from './PhoneHome';
+import PlayerBar from './PlayerBar';
 import useKeyboardShortcuts from './useKeyboardShortcuts';
 import useTheaterMode from './useTheaterMode';
 import usePictureInPicture from './usePictureInPicture';
 import MiniPlayer from './MiniPlayer';
-import BitDock from './bit/BitDock';
 import styles from './PlayerPage.module.css';
 
+/**
+ * The player, in the S2 "Familiar" frame (design/premium-player/s2-familiar.html):
+ *
+ *   desktop  top bar · [now-playing panel | queue panel] · player bar
+ *   tablet   top bar · now-playing panel · player bar; queue is a drawer
+ *   phone    top bar · home list · floating mini-player; now-playing is a
+ *            full-screen view and the queue a bottom sheet
+ *
+ * The now-playing panel and the phone's now-playing screen are ONE element
+ * restyled, and so are the player bar and the mini-player — which is what
+ * keeps the YouTube iframe from ever moving in the DOM.
+ */
 export default function PlayerPage() {
   return (
     <SyncJobProvider>
-      <PlayerStage />
+      <QueueStateProvider>
+        <PlayerStage />
+      </QueueStateProvider>
     </SyncJobProvider>
   );
+}
+
+const QUEUE_KEY = 'vs.queueOpen';
+
+function readQueuePref() {
+  try {
+    return localStorage.getItem(QUEUE_KEY) !== '0';
+  } catch {
+    return true;
+  }
 }
 
 function PlayerStage() {
@@ -31,26 +53,52 @@ function PlayerStage() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
 
-  /*
-   * Theater state lives HERE, not in ArtStage, because the layout it changes
-   * belongs to this module: CSS Module class names are hashed, so ArtStage
-   * physically cannot reach .shell or .stage, and a :global() selector aimed
-   * at them would match nothing. The control is rendered down in ArtStage's
-   * video chrome and reaches back up through these props.
-   *
-   * Passing `mode === 'video'` rather than gating on it here keeps the
-   * preference alive across a trip through audio mode — see useTheaterMode.
-   */
-  const { theater, canTheater, morphing, toggleTheater } =
-    useTheaterMode(mode === 'video');
+  const isPhone = useMediaQuery(PHONE);
+  const isWide = useMediaQuery(WIDE);
+  const queueVariant = isPhone ? 'sheet' : isWide ? 'panel' : 'drawer';
+
+  // The desktop column remembers whether it was open; the drawer and the
+  // sheet always start closed — they cover content.
+  const [panelOpen, setPanelOpen] = useState(readQueuePref);
+  const [overlayOpen, setOverlayOpen] = useState(false);
+  const [npOpen, setNpOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const queueOpen = queueVariant === 'panel' ? panelOpen : overlayOpen;
+
+  useEffect(() => {
+    try { localStorage.setItem(QUEUE_KEY, panelOpen ? '1' : '0'); } catch { /* not remembered */ }
+  }, [panelOpen]);
+
+  // Crossing a breakpoint must not strand an overlay half-open.
+  useEffect(() => { setOverlayOpen(false); }, [queueVariant]);
+  useEffect(() => { if (!isPhone) { setNpOpen(false); setSearchOpen(false); } }, [isPhone]);
+
+  const toggleQueue = useCallback(() => {
+    if (queueVariant === 'panel') setPanelOpen((v) => !v);
+    else setOverlayOpen((v) => !v);
+  }, [queueVariant]);
+  const closeQueue = useCallback(() => setOverlayOpen(false), []);
+
+  // Phone: the page behind a full-screen view or a sheet must not scroll.
+  useEffect(() => {
+    if (!isPhone || !(npOpen || overlayOpen || searchOpen)) return undefined;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, [isPhone, npOpen, overlayOpen, searchOpen]);
+
+  useApplyTheme(vibe, applyAccent);
 
   /*
-   * The miniplayer window lives here for the same reason theater does: it is
-   * an app-level surface, the control that opens it sits two components down,
-   * and the thing it renders (MiniPlayer) has to be a child of the player
-   * tree so it shares PlayerContext. Owning it here keeps ONE window and ONE
-   * source of truth; a hook instance per button would mean two.
-   *
+   * Theater: a layout class on the now-playing panel, owned here because
+   * the control sits in that panel's header and the preference must survive
+   * a trip through audio mode (see useTheaterMode).
+   */
+  const { theater, canTheater, toggleTheater } = useTheaterMode(mode === 'video');
+
+  /*
+   * The miniplayer window is app-level: ONE window, ONE source of truth, and
+   * MiniPlayer must render inside the player tree to share PlayerContext.
    * `pipSupported` is false on Firefox, Safari and every mobile browser, and
    * the control is then not rendered at all.
    */
@@ -60,11 +108,11 @@ function PlayerStage() {
     autoEnabled: pipAuto,
     toggle: togglePip,
   } = usePictureInPicture();
-  const pipProps = { pipSupported, pipOpen: !!pipWindow, pipAuto, onTogglePip: togglePip };
 
   useKeyboardShortcuts({
     onToggleMetrics: () => setMetricsOpen((v) => !v),
     onToggleHelp: () => setHelpOpen((v) => !v),
+    onToggleQueue: toggleQueue,
   });
 
   // Seed the first track once, on mount.
@@ -75,74 +123,49 @@ function PlayerStage() {
 
   useAutoMinimise(syncOpen, () => setSyncOpen(false));
 
-  // The shell itself does NOT change in theater: it keeps both columns, so the
-  // queue rail stays flanking on the right. Only the stage re-flows.
-  // .shellMorphing is transient and drives the settle animation.
-  return (
-    <div className={`${styles.shell} ${morphing ? styles.shellMorphing : ''}`}>
-      {/* Grid slots mirror the legacy body grid (frontend/style.css:56-82):
-          topbar and search span both columns, the stage takes column 1, and
-          the queue sidebar is a fixed 320px column 2. */}
-      <div className={styles.topSlot}>
-        <TopBar onOpenSync={() => setSyncOpen(true)} onToggleHelp={() => setHelpOpen((v) => !v)} />
-      </div>
-      <div className={styles.searchSlot}>
-        <SearchBar />
-      </div>
+  const appCls = [
+    styles.app,
+    queueVariant === 'panel' && !panelOpen ? styles.queueClosed : '',
+  ].filter(Boolean).join(' ');
 
-      <main className={`${styles.stage} ${theater ? styles.stageTheater : ''}`}>
-        {/* Three flow columns, matching legacy at >=1024px (style.css:1891):
-            [trail 64px] [art 1.05fr] [meta 1fr]. The trail is right-aligned
-            inside its own column so it sits immediately left of the hero card.
-            Placement lives here rather than in RecentTrail's CSS Module — its
-            class names are hashed, so a :global() selector matches nothing. */}
-        <div className={styles.trailSlot}>
-          <RecentTrail />
-        </div>
-        <ArtStage
+  return (
+    <div className={appCls}>
+      <TopBar
+        onOpenSync={() => setSyncOpen(true)}
+        onToggleHelp={() => setHelpOpen((v) => !v)}
+        searchOpen={searchOpen}
+        onSearchOpen={() => setSearchOpen(true)}
+        onSearchClose={() => setSearchOpen(false)}
+      />
+
+      <div className={styles.content}>
+        <PhoneHome />
+        <NowPlaying
           theater={theater}
           canTheater={canTheater}
           onToggleTheater={toggleTheater}
+          phoneOpen={npOpen}
+          onPhoneClose={() => setNpOpen(false)}
+          onOpenQueue={() => setOverlayOpen(true)}
+          onShowMetrics={() => setMetricsOpen(true)}
         />
-        {/*
-          * Third child either way, so ArtStage stays at index 1 and React
-          * never touches the subtree holding #ytPlayer. Swapping a SIBLING
-          * cannot reparent the iframe; re-ordering or keying it would.
-          *
-          * In theater the whole meta column is replaced — mood slider, vibe
-          * meter and chips included — by one strip, and the video takes the
-          * height that frees. Normal mode is unchanged.
-          */}
-        {theater ? (
-          <TheaterBar
-            className={styles.barSlot}
-            theater={theater}
-            onToggleTheater={toggleTheater}
-            {...pipProps}
-          />
-        ) : (
-          <div className={styles.metaCol}>
-            <TrackMeta onShowMetrics={() => setMetricsOpen(true)} />
-            <hr className={styles.divider} aria-hidden="true" />
-            <Transport {...pipProps} />
-            <MoodSlider />
-          </div>
-        )}
-      </main>
-
-      <div className={styles.sidebarSlot}>
-        <QueueSidebar />
+        <QueueSidebar variant={queueVariant} open={queueOpen} onClose={closeQueue} />
       </div>
 
-      {/* Fixed to the bottom of the stage column and pointer-events:none, so
-          it sits outside the grid and cannot reflow or block anything. */}
-      <BitDock theater={theater} />
+      <PlayerBar
+        queueOpen={queueOpen}
+        onToggleQueue={toggleQueue}
+        onOpenNowPlaying={() => { if (isPhone) setNpOpen(true); }}
+        pipSupported={pipSupported && !isPhone}
+        pipOpen={!!pipWindow}
+        pipAuto={pipAuto}
+        onTogglePip={togglePip}
+      />
 
       <SyncPill onOpen={() => setSyncOpen(true)} />
 
       {/* Portals into the PiP window's document. Rendered only while that
-          window exists, so closing it (by the user, by the browser, or by the
-          toggle) unmounts the portal — there is nothing left to dangle. */}
+          window exists, so closing it unmounts the portal. */}
       {pipWindow && <MiniPlayer pipWindow={pipWindow} />}
 
       <LazyPanels
@@ -190,10 +213,9 @@ function LazyPanels({ metricsOpen, onCloseMetrics, helpOpen, onCloseHelp, syncOp
  * Gets the sync window out of the way the moment music can play.
  *
  * The import keeps running in the background and the pill carries it from
- * there, so there is nothing left for the modal to do — and every extra
- * second it stays up is a second the user is watching a progress bar instead
- * of listening. The provider raises the flag once per job and this consumes
- * it, so re-opening the window mid-import does not slam it shut again.
+ * there, so there is nothing left for the modal to do. The provider raises
+ * the flag once per job and this consumes it, so re-opening the window
+ * mid-import does not slam it shut again.
  */
 function useAutoMinimise(isOpen, close) {
   const job = useSyncJob();
