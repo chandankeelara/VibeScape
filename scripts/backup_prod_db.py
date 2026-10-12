@@ -79,15 +79,20 @@ def main() -> int:
         ).fetchone()[0]
         dst.execute(ddl)
 
-        # hex() for blobs; everything else straight through.
-        select = ", ".join(f"hex({c})" if c in blobs else c for c in cols)
+        # hex() for blobs; everything else straight through. hex(NULL) is ''
+        # in SQLite, so NULL is kept NULL explicitly — without the CASE, the
+        # 28 tracks with no embedding yet came back as empty blobs and the
+        # check below reported a mismatch (2026-10-12).
+        select = ", ".join(
+            f"CASE WHEN {c} IS NULL THEN NULL ELSE hex({c}) END" if c in blobs else c
+            for c in cols)
         rows = src.execute(f"SELECT {select} FROM {name}").fetchall()
 
         out_rows = []
         for r in rows:
             vals = []
             for c, v in zip(cols, r):
-                vals.append(bytes.fromhex(v) if (c in blobs and v) else v)
+                vals.append(bytes.fromhex(v) if (c in blobs and v is not None) else v)
             out_rows.append(tuple(vals))
 
         if out_rows:
