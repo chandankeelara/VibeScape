@@ -18,11 +18,17 @@ copies, a plain UPDATE would violate PRIMARY KEY (user_id, track_id) — so
 those rows are merged (play_count summed, earliest added_at kept) rather
 than moved.
 
+track_events and user_track_stats also reference tracks(id) ON DELETE
+CASCADE, so deleting a loser would delete the listening history on it.
+Events are moved onto the survivor before any delete and the stats cache is
+rebuilt from them — see scripts/_dedupe_history.py.
+
 Survivor: ingestion_status='done' > has an embedding > lowest id.
 
 Run:
     python scripts/_dedupe_local_by_isrc.py            # dry-run
     python scripts/_dedupe_local_by_isrc.py --apply
+    python scripts/_dedupe_local_by_isrc.py --db <copy of a prod backup> --apply
 """
 from __future__ import annotations
 
@@ -41,6 +47,8 @@ except Exception:
 
 _REPO = Path(__file__).resolve().parents[1]
 _DB = _REPO / "data" / "vibescape.db"
+sys.path.insert(0, str(_REPO / "scripts"))
+import _dedupe_history as hist  # noqa: E402
 
 
 def snapshot_user_isrcs(conn) -> dict:
@@ -62,9 +70,13 @@ def snapshot_user_isrcs(conn) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--db", type=Path, default=_DB,
+                    help="SQLite file to dedupe (default data/vibescape.db)")
     args = ap.parse_args()
+    db = args.db.resolve()
+    print(f"database: {db}")
 
-    conn = sqlite3.connect(str(_DB))
+    conn = sqlite3.connect(str(db))
     conn.row_factory = sqlite3.Row
     # Deliberately OFF. Local user_tracks still declares
     #   track_id ... REFERENCES "tracks_old"(id)
@@ -140,6 +152,14 @@ def main() -> int:
     print(f"  merged into existing     : {merges}")
     print(f"  re-pointed               : {repoints}")
     print(f"user_tracks : {n_ut} -> {n_ut - merges}")
+    users = hist.affected_users(conn, plan)
+    print(f"track_events rows on losers     : {hist.count_on(conn, 'track_events', losers)}"
+          f"  (moved to the survivor)")
+    print(f"user_track_stats rows on losers : {hist.count_on(conn, 'user_track_stats', losers)}"
+          f"  (rebuilt from events)")
+    print(f"users whose stats are rebuilt   : {users}")
+    print(f"stats drift before (rows a rebuild would change for them): "
+          f"{hist.stats_drift(users, db_path=db)}")
     print("\nsample:")
     for sid, ls, isrc, title in plan[:5]:
         print(f"  keep id={sid:5} drop {ls}  isrc={isrc}  {str(title)[:34]}")
@@ -149,11 +169,12 @@ def main() -> int:
         return 0
 
     ts = time.strftime("%Y%m%dT%H%M%S")
-    backup = _DB.with_name(f"vibescape.db.pre-dedupe-{ts}")
-    shutil.copyfile(_DB, backup)
+    backup = db.with_name(f"{db.name}.pre-dedupe-{ts}")
+    shutil.copyfile(db, backup)
     print(f"\nbackup -> {backup.name}")
 
     before = snapshot_user_isrcs(conn)
+    hist_before = hist.history_snapshot(conn)
 
     print("re-pointing user_tracks (before any delete) ...")
     n_merge = n_move = 0
@@ -182,6 +203,10 @@ def main() -> int:
                     n_move += 1
     print(f"  merged {n_merge}   re-pointed {n_move}")
 
+    print("moving listening history (before any delete) ...")
+    print(f"  track_events moved {hist.repoint_events(conn, plan)}")
+    print(f"  user_track_stats loser rows dropped {hist.drop_loser_stats(conn, losers)}")
+
     print("removing duplicate rows ...")
     n_del = 0
     for i in range(0, len(losers), 400):
@@ -191,6 +216,9 @@ def main() -> int:
         n_del += conn.execute(f"DELETE FROM tracks WHERE id IN ({ph})", chunk).rowcount
     conn.commit()
     print(f"  removed {n_del}")
+
+    print("rebuilding user_track_stats from track_events ...")
+    hist.rebuild_stats(users, db_path=db)
 
     print("\nverifying ...")
     after = snapshot_user_isrcs(conn)
@@ -209,7 +237,8 @@ def main() -> int:
     print(f"  remaining duplicate ISRC groups (MUST be 0): {dupes_left}")
     print(f"  users who LOST a recording (MUST be empty): {lost or 'none'}")
     print(f"  integrity: {conn.execute('PRAGMA integrity_check').fetchone()[0]}")
-    return 0
+    ok = hist.verify_history(conn, hist_before, users, db_path=db)
+    return 0 if ok and not lost and not dupes_left else 2
 
 
 if __name__ == "__main__":

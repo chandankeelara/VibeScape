@@ -150,6 +150,39 @@ schema.sql's language index then failed. That ALTER is gone (production has no
 shape — so **local dev DBs still differ from production** (`vibe_score NOT
 NULL`, `user_id` on tracks). Regression tests: `tests/database/test_schema.py`.
 
+### 1.8 ~~The iTunes matcher gave tracks another song's audio~~ — DONE (2026-10-12)
+`ingest_pipeline/preview_providers.py` `ItunesPreview._pick_best`
+
+**verified by querying the DB and iTunes.** The third tier returned "the first
+result with a preview", and a search for one song usually returns its album,
+so 183 prod tracks (124 local) carried a neighbour's preview — 82 groups of
+different songs with byte-identical MERT vectors, served to each other by the
+DJ at cosine 1.000 (EoO / FINA / EL CLúB / Después de la Playa; four *Blonde*
+tracks; Icey / Memo). The matcher now accepts only the same recording
+(title, a shared artist, length within max(15 s, 10 %), matching version
+markers) or nothing. Tests: `tests/ingest/test_preview_matcher.py`.
+
+All 183 were reset in prod on 2026-10-12 (`scripts/_turso_reset_shared_previews.py`,
+backup `data/backups/prod_20261012T080039Z.db`): `ingestion_status='pending'`,
+preview, audio-derived columns and embeddings cleared, `language_status`
+kept `'done'` so they fuse without re-tagging. They are out of `/similar` and
+the vibe queues until the offline runners re-ingest them. **Runners must
+have this matcher and must not hold a cached `data/audio/<spotify_id>.*` for
+them** — the download stage reuses any cached file.
+
+### 1.9 ~~The ISRC dedupe scripts delete listening history~~ — DONE (2026-10-12), prod run pending
+`scripts/_dedupe_local_by_isrc.py`, `scripts/_dedupe_turso_by_isrc.py`
+
+**verified by running both versions on a copy of the 2026-10-12 prod
+backup.** They re-pointed `user_tracks` only, but `track_events` and
+`user_track_stats` also reference `tracks(id) ON DELETE CASCADE`; the old
+version passed all its own checks while orphaning 12 events and 6 stats rows
+(deleted outright on prod, where the cascade is live). Now events move to the
+survivor first and stats are rebuilt from them (`scripts/_dedupe_history.py`);
+on the copy: 288 duplicates removed, events 3998 → 3998, stats equal a fresh
+rebuild. **Not yet run against Turso, not even dry** — its connection and the
+`--turso` rebuild path are untested.
+
 ---
 
 ## 2. Will break
@@ -340,6 +373,36 @@ parse error rather than a 404 it could handle. Return 404 for paths starting
 with `/api/`. **[frontend contract]** — error handling changes shape.
 
 ---
+
+### 3.8 ~70 tracks have no iTunes preview at all and will park at `no_preview`
+`ingest_pipeline/preview_providers.py` `default_chain`
+
+**verified against iTunes** (2026-10-12). After 1.8, 71 of the 124 local
+re-ingests found no match, and they are genuine: iTunes does not sell
+*Blonde* or the recent Bad Bunny albums, and neither `title artist`, a
+`songTerm` search, nor an ISRC lookup returns them (Nights, STATS, Icey,
+Ladders, EoO, FINA, The Box checked by hand). These songs are unplayable by
+the DJ until a second source exists. The chain is iTunes-only on purpose —
+Deezer audio shifts MERT embeddings — so the choice (Deezer, or a 30 s clip
+from the `youtube_id` already on the row) is a design decision, not a fix.
+
+### 3.9 The same song stored twice under different ISRCs is recommended twice
+`backend/app.py` `_similar_dj`
+
+**verified by querying the 2026-10-12 prod backup.** 78 groups share a
+preview and name the same recording (Starboy ×2, Save Your Tears ×2, Veera
+Raja Veera ×2); only 43 share an ISRC, so the dedupe scripts (1.9) cannot
+merge the other 35 — a single vs its `(From "…")` release, typically. The DJ
+returns both: Levitating's top neighbour is "Levitating (feat. DaBaby)".
+Collapse versions in the result list (normalised title + shared artist, the
+same test as `titles_match` / `artists_match`) rather than in the catalogue.
+
+### 3.10 17 junk rows titled `?` share one embedding
+`tracks` where `title = '?' AND artist = '?'`
+
+**verified by querying the prod backup.** 16 have `preview_source='itunes'`.
+They are excluded from `reset_shared_previews.py` on purpose. Check
+`user_tracks` for references before deleting them.
 
 ## 4. Cleanup
 
