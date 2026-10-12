@@ -6,6 +6,7 @@ One test tree for the whole repo.
 tests/
   conftest.py        shared fixtures: a fresh SQLite DB per test, users, tracks, embeddings
   backend/           FastAPI endpoints and pure backend modules (pytest)
+  ingest/            pure ingest_pipeline modules (pytest)
   database/          schema.sql, migrations, the stats cache vs its rebuild (pytest)
   frontend/          frontend-next modules (vitest, config in frontend-next/vitest.config.js)
   run_all.py         runs everything, non-zero exit on any failure
@@ -44,6 +45,7 @@ with fakes; no test needs a network.
 | Spotify refresh | `backend/test_spotify_refresh.py` | session required, secret sent only server-side, rotation passed through, refusal is a 400 |
 | Library search | `backend/test_library_search.py` | typos and partial words, language by name, every word required across fields, own songs above features, phrase above scattered words, only the caller's analysed tracks |
 | Spotify rate-limit guard | `backend/test_spotify_guard.py` | one 429 holds every later call with no request, counts down and lifts, never shortens, library/matcher/importer fail fast instead of sleeping, `/api/spotify/status` |
+| iTunes preview matcher | `ingest/test_preview_matcher.py` | an album neighbour is never the song, accents and ` - ` / `(From ...)` suffixes, a shared film name is not a match, 8D / slowed / reprise are different recordings, artist overlap, length tolerance |
 | Schema | `database/test_schema.py` | applies and re-applies, no `;` in comments breaks the Turso scripts' split (commit 322c7c1), fresh bootstrap survives many connections and keeps the production shape, old telemetry tables are widened in place |
 | Cache = rebuild | `database/test_rollup_rebuild.py` | randomised sessions: the inline `user_track_stats` equals `scripts/rebuild_user_track_stats.py` |
 | DJ event log | `frontend/dj.test.js` | append-only log, cap, v3 migration, request body |
@@ -61,7 +63,8 @@ fails (2026-10-10).
 ## Not covered yet
 
 React components (no DOM test environment is set up), the Turso transport
-(`db_client` over Hrana), the offline ingest pipeline, and the Flutter app.
+(`db_client` over Hrana), the offline ingest pipeline apart from the preview
+matcher, and the Flutter app.
 
 ## Writing a test
 

@@ -356,6 +356,27 @@ Distinguish the two failure modes in the logs: `search failed ... 403` is
 throttling (retry it), while a plain `no_match` with no 403 means iTunes
 answered and had nothing (genuine).
 
+### The preview matcher returns the track or nothing
+
+`ItunesPreview._pick_best` accepts a result only when the title names the
+same recording (brackets, `feat.` and ` - ` suffixes aside; version markers
+like 8D / slowed / remix / reprise must agree), at least one credited artist
+is shared, and the length is within max(15 s, 10 %). There is **no "closest
+result" fallback**. It had one until 2026-10-11, and since a search for one
+song often returns its album, 124 tracks ended up carrying another song's
+audio — identical vectors under different titles, which the DJ served to
+each other at cosine 1.000. A miss is `no_preview`, which is visible; a
+wrong match is not.
+
+`scripts/reset_shared_previews.py` finds rows that share a `preview_url` or a
+byte-identical MERT vector under different titles, clears everything derived
+from the audio (including the cached file — re-runs short-circuit on it) and
+re-arms them. `run_ingest_v2.py --only-ids FILE` then advances just those rows
+and exits when they are idle, rather than also draining whatever else is
+pending.
+
+The matcher's tests are `tests/ingest/test_preview_matcher.py`.
+
 ## Prod
 
 The pipeline runs locally against `data/vibescape.db`; prod is Turso.

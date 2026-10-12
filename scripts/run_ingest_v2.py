@@ -107,7 +107,7 @@ def pending_snapshot(conn) -> dict[str, int]:
     return out
 
 
-def select_cohort(conn, batch: int) -> list[int]:
+def select_cohort(conn, batch: int, only_ids=None) -> list[int]:
     """
     Pick the tracks this pass will advance, oldest first.
 
@@ -136,17 +136,23 @@ def select_cohort(conn, batch: int) -> list[int]:
     # to re-fuse them. One term keeps them reachable.
     armed += " OR language_status = 'whisper_done'"
 
+    # --only-ids pins the run to a hand-picked set (a re-ingest of suspect
+    # rows) so it does not also drain whatever else happens to be pending.
+    scope = ""
+    if only_ids is not None:
+        scope = f"AND id IN ({','.join(str(int(i)) for i in only_ids) or 'NULL'}) "
     rows = conn.execute(
         "SELECT id FROM tracks "
-        "WHERE ingestion_status = 'pending' OR ingestion_status IS NULL "
-        f"   OR {armed} "
+        "WHERE (ingestion_status = 'pending' OR ingestion_status IS NULL "
+        f"   OR {armed}) "
+        f"{scope}"
         "ORDER BY id ASC LIMIT ?",
         (batch,),
     ).fetchall()
     return [int(r[0]) for r in rows]
 
 
-def run_pass(stages: list, batch: int) -> int:
+def run_pass(stages: list, batch: int, only_ids=None) -> int:
     """One orchestrator pass.
 
     Selects ONE cohort of tracks and walks it through every stage in
@@ -168,7 +174,7 @@ def run_pass(stages: list, batch: int) -> int:
     conn = get_conn()
     total_processed = 0
     try:
-        cohort = select_cohort(conn, batch)
+        cohort = select_cohort(conn, batch, only_ids)
         if not cohort:
             return 0
         log.info("pass cohort: %d tracks (ids %d..%d)",
@@ -192,6 +198,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="keep running; sleep --interval when nothing to do")
     parser.add_argument("--interval", type=int, default=30,
                         help="seconds to sleep between empty passes (default 30)")
+    parser.add_argument("--only-ids", type=str, default=None,
+                        help="file of tracks.id, one per line: advance only these "
+                             "rows; with --loop, exit once they are idle")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -210,13 +219,21 @@ def main(argv: list[str] | None = None) -> int:
         conn.close()
     log.info("startup pending: %s", snap)
 
+    only_ids = None
+    if args.only_ids:
+        only_ids = [int(x) for x in Path(args.only_ids).read_text().split() if x.strip()]
+        log.info("scoped to %d ids from %s", len(only_ids), args.only_ids)
+
     if not args.loop:
-        processed = run_pass(stages, args.batch)
+        processed = run_pass(stages, args.batch, only_ids)
         log.info("pass done: processed=%d", processed)
         return 0
 
     while True:
-        processed = run_pass(stages, args.batch)
+        processed = run_pass(stages, args.batch, only_ids)
+        if processed == 0 and only_ids is not None:
+            log.info("scoped ids idle; done")
+            return 0
         if processed == 0:
             log.info("all stages idle; sleeping %ds", args.interval)
             time.sleep(args.interval)
