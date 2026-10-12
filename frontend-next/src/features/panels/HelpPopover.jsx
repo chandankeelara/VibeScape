@@ -16,6 +16,8 @@ const SHORTCUTS = [
   { keys: ['↑', '↓'], label: 'shift vibe ±5' },
   { keys: ['Home', 'End'], label: 'seek 0 / 100%' },
   { keys: ['PgUp', 'PgDn'], label: 'seek ±15s' },
+  { keys: ['Q'], label: 'show / hide the queue' },
+  { keys: ['Ctrl', 'K'], label: 'search' },
   { keys: ['Ctrl', 'Shift', 'M'], label: 'track metrics' },
   { keys: ['Ctrl', 'Shift', 'D'], label: 'Spotify debug' },
   { keys: ['?'], label: 'toggle this panel' },

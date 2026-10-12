@@ -13,13 +13,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  *
  * The viewport guard IS here, and it did not used to be.
  *
- * While theater was only a restyle, CSS media queries covered it for free and
- * a matchMedia subscription would have been dead weight. Now theater also
- * SWAPS THE DOM — the meta column is replaced by TheaterBar — and CSS cannot
- * undo that. Below 1024px the control is display:none, so a user who had
- * theater on, narrowed the window and lost the mood slider would have had no
- * way to get it back. The guard is a `change` listener on one media query, so
- * it fires on crossing the breakpoint and not on every resize tick.
+ * Below 1024px the theater control is not rendered (NowPlaying), so a user
+ * who had theater on and narrowed the window would have no way to turn it
+ * off; the guard drops the layout instead. It is a `change` listener on one
+ * media query, so it fires on crossing the breakpoint, not on every resize.
  *
  * `morphing` is a transient flag that drives the settle animation. The layout
  * itself flips in one discrete step — see PlayerPage.module.css for why
@@ -85,41 +82,12 @@ export default function useTheaterMode(available) {
 
   const toggleTheater = useCallback(() => setPreferred((v) => !v), []);
 
-  /*
-   * Leaves theater WITHOUT raising `morphing`, and this is load-bearing.
-   *
-   * The only caller is the detach gesture (and the one-shot boot guard in
-   * ArtStage). The settle keyframe puts a `transform` on every stage child,
-   * including the ArtStage section that CONTAINS the video frame — and a
-   * transformed ancestor becomes the containing block for position:fixed
-   * descendants. Detaching while that animation ran would re-anchor the
-   * frame the user is actively dragging to the stage column for 460ms, so it
-   * would leap out from under the pointer and snap back.
-   *
-   * It is also simply the right behaviour: the frame is popping out under
-   * the cursor, which is motion enough.
-   */
-  const theaterRef = useRef(theater);
-  theaterRef.current = theater;
-  const skipMorphRef = useRef(false);
-  const exitTheater = useCallback(() => {
-    // Guarded so a detach that wasn't leaving theater cannot leave the skip
-    // flag armed and swallow the next real toggle.
-    if (!theaterRef.current) return;
-    skipMorphRef.current = true;
-    setPreferred(false);
-  }, []);
-
   // Raise `morphing` on every effective change, including the one caused by
   // leaving video mode, so the stage always settles rather than snapping.
   const firstRef = useRef(true);
   useEffect(() => {
     if (firstRef.current) {
       firstRef.current = false;
-      return undefined;
-    }
-    if (skipMorphRef.current) {
-      skipMorphRef.current = false;
       return undefined;
     }
     setMorphing(true);
@@ -138,5 +106,5 @@ export default function useTheaterMode(available) {
    * to the renderer, not just to the cascade. One source of truth beats a
    * media query that has to be kept in sync with this hook's gate.
    */
-  return { theater, canTheater: !!available && wide, morphing, toggleTheater, exitTheater };
+  return { theater, canTheater: !!available && wide, morphing, toggleTheater };
 }

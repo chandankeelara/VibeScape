@@ -3,7 +3,8 @@
  *
  * Two tabs:
  *   library — pick Liked Songs / Top Tracks / playlists, POST /api/ingest/spotify
- *   url     — paste a public playlist link, POST /api/ingest/spotify-public
+ *   url     — paste a public playlist link from Spotify, Apple Music,
+ *             YouTube or Amazon Music, POST /api/ingest/playlist-url
  *
  * Both kick off a background job and then poll /api/ingest/status/<id>. The
  * legacy code hand-rolled a setInterval; here the poll is a React Query with
@@ -11,8 +12,9 @@
  * and is torn down automatically on unmount.
  *
  * The modal only needs a VibeScape session — NOT a Spotify one. The url tab
- * degrades to a sign-in prompt and the library tab to an explanatory error
- * when the Spotify token is absent (useSpotifyAuth().isConnected === false).
+ * works for everyone (a Spotify sign-in only lifts the 100-song cap on
+ * Spotify links); the library tab shows an explanatory error when the Spotify
+ * token is absent (useSpotifyAuth().isConnected === false).
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -23,7 +25,7 @@ import { useToast } from '../../state/ToastContext';
 import { usePlayer } from '../../state/PlayerContext';
 import { useSpotifyAuth } from '../../state/SpotifyAuthContext';
 import { useFocusTrap } from './useFocusTrap';
-import { isPlaylistLink, parsePlaylistId } from './playlist';
+import { PLAYLIST_SERVICES, SUPPORTED_SERVICES, detectPlaylistLink } from './playlist';
 import { useSyncJob } from './SyncJobProvider';
 import styles from './SyncModal.module.css';
 
@@ -37,20 +39,11 @@ const ZERO_PROGRESS = {
   current_track: 'Starting…',
 };
 
-function SpotifyMark({ size = 24 }) {
-  return (
-    <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor" aria-hidden="true">
-      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.59 14.42a.62.62 0 0 1-.86.21c-2.36-1.44-5.33-1.77-8.83-.97a.62.62 0 1 1-.28-1.22c3.83-.87 7.13-.49 9.77 1.12.3.18.39.57.2.86zm1.23-2.74a.78.78 0 0 1-1.07.26c-2.7-1.66-6.82-2.14-10.02-1.17a.78.78 0 1 1-.45-1.5c3.66-1.1 8.2-.57 11.29 1.33.37.23.49.71.25 1.08zm.11-2.85c-3.24-1.92-8.59-2.1-11.68-1.16a.94.94 0 1 1-.54-1.8c3.55-1.07 9.45-.86 13.19 1.36a.94.94 0 0 1-.97 1.6z" />
-    </svg>
-  );
-}
-
-
 function SyncModalInner({ onClose, defaultTab }) {
   const toast = useToast();
   const { fetchForVibe } = usePlayer();
   const queryClient = useQueryClient();
-  const { token, isConnected, signIn, signOut } = useSpotifyAuth();
+  const { token, isConnected, signIn, signOut, getValidToken } = useSpotifyAuth();
   const signedIn = isConnected;
 
   // Smart default (legacy openSyncModal): Spotify-connected users land on the
@@ -146,7 +139,7 @@ function SyncModalInner({ onClose, defaultTab }) {
 
   const library = useQuery({
     queryKey: ['spotify-library'],
-    queryFn: () => api.spotifyLibrary({}, token),
+    queryFn: async () => api.spotifyLibrary({}, await getValidToken()),
     enabled: tab === 'library' && signedIn && phase === 'pick',
     staleTime: 60_000,
   });
@@ -181,16 +174,19 @@ function SyncModalInner({ onClose, defaultTab }) {
 
   /* ------------------------------------------------------------------- url */
 
-  const parsedId = useMemo(() => parsePlaylistId(url), [url]);
-  const urlValid = !!parsedId;
+  const parsedLink = useMemo(() => detectPlaylistLink(url), [url]);
+  const urlValid = !!parsedLink && SUPPORTED_SERVICES.has(parsedLink.kind);
   const urlState = !url.trim() ? 'empty' : urlValid ? 'valid' : 'invalid';
+  const service = parsedLink ? PLAYLIST_SERVICES[parsedLink.kind] : '';
   const urlHint = urlError
     ? urlError
     : urlState === 'empty'
       ? 'Paste a playlist link to continue'
-      : urlState === 'valid'
-        ? `Looks good — playlist ${parsedId}`
-        : 'Not a Spotify playlist URL';
+      : urlValid
+        ? `Looks good — ${service} playlist`
+        : parsedLink
+          ? `${service} isn't supported yet`
+          : 'Not a playlist link we can read';
 
   /* -------------------------------------------------------------- polling */
   /* Owned by SyncJobProvider — see the note at the top of this component.
@@ -205,18 +201,21 @@ function SyncModalInner({ onClose, defaultTab }) {
   /* ------------------------------------------------------------- mutations */
 
   const startLibrary = useMutation({
-    mutationFn: () =>
-      api.ingestSpotify(
+    mutationFn: async () => {
+      // A fresh token at start, so the job does not begin on one about to lapse.
+      const tok = await getValidToken();
+      return api.ingestSpotify(
         {
-          access_token: token,
+          access_token: tok,
           sources: {
             liked: selection.liked,
             top_tracks: selection.top,
             playlist_ids: selection.playlist_ids,
           },
         },
-        token
-      ),
+        tok
+      );
+    },
     onMutate: () => setPicking(false),
     onSuccess: (j) => {
       if (!j?.job_id) {
@@ -230,15 +229,17 @@ function SyncModalInner({ onClose, defaultTab }) {
   });
 
   const startPublic = useMutation({
-    mutationFn: () => {
-      // Backend accepts either field; legacy sends both when it has a real
-      // link. The Spotify token is forwarded when present — Spotify killed
-      // app-level public-playlist reads in Nov 2024, so without a user token
-      // the backend will 403 on most real playlists, which is honest.
-      const body = { playlist_id: parsedId };
-      if (isPlaylistLink(url)) body.playlist_url = url.trim();
-      if (token) body.access_token = token;
-      return api.ingestSpotifyPublic(body, token || undefined);
+    mutationFn: async () => {
+      // One endpoint for every service. The Spotify token is only worth
+      // sending for a Spotify link: with it the backend reads the whole
+      // playlist through the Web API; without it, Spotify's public player
+      // page (first 100 songs). Other services never need it.
+      const body = { url: url.trim() };
+      if (parsedLink?.kind === 'spotify' && token) {
+        const tok = await getValidToken();
+        if (tok) body.access_token = tok;
+      }
+      return api.ingestPlaylistUrl(body);
     },
     onMutate: () => {
       setUrlError('');
@@ -261,7 +262,9 @@ function SyncModalInner({ onClose, defaultTab }) {
       setTab('url');
       const code = e?.body?.detail?.error || e?.body?.error || '';
       if (e?.status === 400) {
-        setUrlError('Invalid playlist URL. Double-check the link.');
+        setUrlError(code.endsWith('_not_supported')
+          ? `${service || 'That service'} isn't supported yet.`
+          : 'Invalid playlist URL. Double-check the link.');
         return;
       }
       if (e?.status === 401) {
@@ -330,9 +333,8 @@ function SyncModalInner({ onClose, defaultTab }) {
     primaryHidden = true;
   } else if (tab === 'url') {
     primaryLabel = 'Add playlist';
-    primaryHidden = !signedIn;
     primaryDisabled = !urlValid;
-    meta = !signedIn ? 'Spotify sign-in required' : urlValid ? 'Ready to add' : 'Paste a playlist link';
+    meta = urlValid ? `Ready to add from ${service}` : 'Paste a playlist link';
   } else if (library.isSuccess) {
     primaryDisabled = !selection.any;
     meta = selection.any
@@ -483,8 +485,25 @@ function SyncModalInner({ onClose, defaultTab }) {
                   <polyline points="20 6 9 17 4 12" />
                 </svg>
               </div>
-              <p className={styles.titleMini}>Library synced</p>
+              <p className={styles.titleMini}>
+                {progress.playlist_name ? `Added “${progress.playlist_name}”` : 'Library synced'}
+              </p>
               <p className={styles.hint}>{summary || 'All done.'}</p>
+              {progress.note && <p className={styles.urlNote}>{progress.note}</p>}
+              {/* Matching is by title and artist for most services, so say
+                  plainly what did not come across rather than guessing. */}
+              {(progress.unmatched || []).length > 0 && (
+                <details className={styles.unmatched}>
+                  <summary>
+                    {progress.not_matched} song{progress.not_matched === 1 ? '' : 's'} not found on Spotify
+                  </summary>
+                  <ul>
+                    {progress.unmatched.map((u, i) => (
+                      <li key={i}>{u.artist ? `${u.title} — ${u.artist}` : u.title}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
               {/* Only the sources you ticked came across, so "sync more" is
                   an ordinary next step rather than a recovery path. */}
               <button
@@ -499,10 +518,8 @@ function SyncModalInner({ onClose, defaultTab }) {
 
           {phase === 'pick' && tab === 'url' && (
             <div className={styles.view} role="tabpanel" id="syncPanelUrl" aria-labelledby="syncTabUrl">
-              {signedIn ? (
-                <>
-                  <p className={styles.hint}>
-                    Paste a link to any public Spotify playlist. Its tracks get added to your library.
+                <p className={styles.hint}>
+                    Paste a link to a public playlist from Spotify, Apple Music, YouTube or Amazon Music. Its songs get added to your library.
                   </p>
                   <div className={styles.urlField}>
                     <label className={styles.urlInputWrap} data-state={urlError ? 'invalid' : urlState}>
@@ -516,8 +533,8 @@ function SyncModalInner({ onClose, defaultTab }) {
                         inputMode="url"
                         autoComplete="off"
                         spellCheck="false"
-                        placeholder="https://open.spotify.com/playlist/..."
-                        aria-label="Spotify playlist URL"
+                        placeholder="https://open.spotify.com/playlist/…  or music.apple.com, youtube.com, music.amazon.com"
+                        aria-label="Playlist link"
                         aria-describedby="syncUrlHint"
                         value={url}
                         onChange={(e) => {
@@ -541,29 +558,12 @@ function SyncModalInner({ onClose, defaultTab }) {
                     </div>
                   </div>
                   <p className={styles.urlNote}>
-                    Using your Spotify token to fetch the playlist. Only public playlists work.
+                    Only public playlists work. Songs are matched to Spotify by title and artist,
+                    and anything we can&apos;t match confidently is listed at the end.
+                    {parsedLink?.kind === 'spotify' && !signedIn
+                      ? ' Without a Spotify sign-in, Spotify playlists import their first 100 songs.'
+                      : ''}
                   </p>
-                </>
-              ) : (
-                <div className={styles.centered}>
-                  <div className={styles.signedOutIcon} aria-hidden="true">
-                    <SpotifyMark size={28} />
-                  </div>
-                  <p className={styles.titleMini}>Sign in with Spotify to enable playlist URL sync</p>
-                  <p className={styles.hint}>
-                    Public playlist access requires a linked account — Spotify killed anonymous
-                    access in late 2024.
-                  </p>
-                  <button
-                    className={`${styles.btn} ${styles.btnPrimary}`}
-                    type="button"
-                    onClick={() => signIn()}
-                  >
-                    <SpotifyMark size={14} />
-                    <span>Sign in with Spotify</span>
-                  </button>
-                </div>
-              )}
             </div>
           )}
 

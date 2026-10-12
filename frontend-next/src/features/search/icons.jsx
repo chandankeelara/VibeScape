@@ -39,3 +39,21 @@ export function CloseIcon({ size = 14 }) {
     </svg>
   );
 }
+
+export function BackIcon({ size = 20 }) {
+  return (
+    <svg {...base} width={size} height={size}>
+      <path d="M19 12H5" />
+      <path d="M11 18l-6-6 6-6" />
+    </svg>
+  );
+}
+
+export function ClockIcon({ size = 16 }) {
+  return (
+    <svg {...base} width={size} height={size}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}

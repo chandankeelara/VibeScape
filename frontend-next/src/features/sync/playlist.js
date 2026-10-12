@@ -27,3 +27,62 @@ export function parsePlaylistId(raw) {
 
 /** True when the raw string is a real link/URI rather than a bare ID. */
 export const isPlaylistLink = (raw) => /^https?:|^spotify:/.test(String(raw || ''));
+
+/* ------------------------------------------------------- any service */
+
+/**
+ * Services POST /api/ingest/playlist-url can read (backend/playlist_import.py).
+ * Deezer is recognised only so the user gets "not supported yet" rather than
+ * "invalid link" — the backend refuses it with deezer_not_supported.
+ * Amazon is read through its web player's own (undocumented) API — see
+ * backend/playlist_import.py.
+ */
+export const PLAYLIST_SERVICES = {
+  spotify: 'Spotify',
+  apple: 'Apple Music',
+  youtube: 'YouTube',
+  deezer: 'Deezer',
+  amazon: 'Amazon Music',
+};
+// Deezer is recognised, not read (backend: deezer_not_supported).
+export const SUPPORTED_SERVICES = new Set(['spotify', 'apple', 'youtube', 'amazon']);
+
+/**
+ * Which service a pasted link belongs to: {kind, id} or null. Mirrors
+ * playlist_import.detect() closely enough to validate as the user types; the
+ * backend re-checks and is the authority.
+ */
+export function detectPlaylistLink(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  const spotify = parsePlaylistId(s);
+  if (spotify && (SPOTIFY_BARE_ID_RE.test(s) || /spotify/i.test(s))) return { kind: 'spotify', id: spotify };
+  let u;
+  try {
+    u = new URL(/^https?:\/\//i.test(s) ? s : `https://${s}`);
+  } catch {
+    return null;
+  }
+  const host = u.hostname.toLowerCase();
+  const parts = u.pathname.split('/').filter(Boolean);
+  if (host.endsWith('music.apple.com')) {
+    const id = parts.find((p) => p.startsWith('pl.'));
+    return id ? { kind: 'apple', id } : null;
+  }
+  if (/(^|\.)youtube\.com$|^youtu\.be$/.test(host)) {
+    const id = u.searchParams.get('list');
+    return id && /^[A-Za-z0-9_-]{10,64}$/.test(id) ? { kind: 'youtube', id } : null;
+  }
+  if (host.endsWith('deezer.com')) {
+    const i = parts.indexOf('playlist');
+    return i >= 0 && /^\d+$/.test(parts[i + 1] || '') ? { kind: 'deezer', id: parts[i + 1] } : null;
+  }
+  if (host.endsWith('deezer.page.link') || host === 'link.deezer.com') return { kind: 'deezer', id: '' };
+  if (host.startsWith('music.amazon.') || (host.includes('amazon.') && host.includes('music'))) {
+    const at = parts.length - 2;
+    return at >= 0 && ['playlists', 'user-playlists'].includes(parts[at])
+      ? { kind: 'amazon', id: parts[at + 1] }
+      : null;
+  }
+  return null;
+}

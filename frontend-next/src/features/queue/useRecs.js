@@ -4,10 +4,9 @@
  * Two data sources behind one hook:
  *   DJ off — GET /similar, plain vibe similarity for the current track. The
  *            result only depends on the anchor, so it is cached forever.
- *   DJ on  — POST /similar with the session weights. The result depends on the
- *            event buffer too, so the buffer signature is part of the key:
- *            every new play/skip/queue event invalidates the list and refetches
- *            with the updated taste vector.
+ *   DJ on  — POST /similar with the event log. The result depends on the log
+ *            too, so its signature is part of the key: every new play / skip /
+ *            queue / pick event invalidates the list and refetches.
  *
  * The 5s staleTime on the DJ path is the React Query equivalent of the legacy
  * `lastFetchSig` guard, which existed because a song ending fired two refreshes
@@ -21,7 +20,7 @@ import { fetchDjPicks, fetchSimilar } from './dj';
 
 export const RECS_LIMIT = 8;
 
-export function useRecs({ djEnabled, tracks, signature }) {
+export function useRecs({ djEnabled, events, signature }) {
   const { current, queue, getSeenIds } = usePlayer();
   const seedKey = apiKey(current);
 
@@ -39,7 +38,7 @@ export function useRecs({ djEnabled, tracks, signature }) {
       djEnabled
         // getSeenIds() is read at fetch time, so the set is always current
         // even though it lives in a ref and never triggers a re-render.
-        ? fetchDjPicks(current, { tracks, seen: getSeenIds(), queue, limit: RECS_LIMIT })
+        ? fetchDjPicks(current, { events, seen: getSeenIds(), queue, limit: RECS_LIMIT })
         : fetchSimilar(current, { limit: RECS_LIMIT }),
   });
 

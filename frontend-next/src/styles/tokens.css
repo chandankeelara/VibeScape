@@ -1,113 +1,205 @@
 /**
- * Design tokens.
+ * Design tokens — the S2 "Familiar" system (design/premium-player/s2-familiar.html).
  *
- * Lifted from the legacy frontend/login.css :root block so the two apps look
- * identical during the migration. Unlike the legacy style.css — which had only
- * 19 custom properties across 5,497 lines and hardcoded the rest — every value
- * used by a component should come from here.
+ * Two layers:
+ *   1. S2 names (--panel, --raised, --hover, --line, --acc-*, --fs-*, --r-*)
+ *      — what new and restyled components use.
+ *   2. The pre-S2 names (--surface, --border, --text-2, --radius, …), kept as
+ *      aliases onto the S2 values so screens not yet restyled (landing, login,
+ *      admin, sync, panels) still resolve, and follow the theme.
  *
  * Adding a raw hex or px value in a component's .module.css is a code smell:
  * add a token instead.
+ *
+ * THEME. Dark is the default. `html[data-theme="light"]` is set only while the
+ * player is mounted (state/ThemeContext.jsx), so the landing, login and admin
+ * screens — never designed for light — stay dark whatever the preference.
  */
 
 :root {
-  /* surfaces */
-  --bg: #08080c;
-  --bg-2: #0d0d14;
-  --surface: #12121a;
-  --surface-2: #191922;
+  color-scheme: dark;
 
-  --border: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.16);
+  /* ---------------------------------------------------------- surfaces */
+  /* Depth by VALUE, not shadow: bg < panel < raised < hover. A dark shadow on
+     a near-black page is invisible. */
+  --bg: #08090b;
+  --panel: #121316;
+  --raised: #1b1c20;
+  --hover: #23252a;
 
-  /* text */
-  --text: #f2f2f5;
-  --text-2: rgba(242, 242, 245, 0.72);
-  --text-3: rgba(242, 242, 245, 0.48);
-  --text-4: rgba(242, 242, 245, 0.3);
+  --line: rgb(255 255 255 / 0.08);
+  --line-2: rgb(255 255 255 / 0.14);
+  /* Unfilled part of a range / switch track. */
+  --rail: rgb(255 255 255 / 0.18);
 
-  /* brand */
+  /* -------------------------------------------------------------- text */
+  --text: #f4f5f7;
+  --text-2: #b4b7bf;
+  --text-3: #8d919a;
+  --text-4: rgb(244 245 247 / 0.3);
+
+  --play-bg: #f4f5f7;
+  --play-ink: #08090b;
+  --pop-shadow: 0 0 0 1px var(--line-2), 0 16px 40px rgb(0 0 0 / 0.55);
+  --skel: rgb(255 255 255 / 0.07);
+  /* Bit's visor, and anything else that must stay dark in both themes. */
+  --visor: #0b0c0f;
+  /* Text on a surface that is always dark (video chrome, the picking pill). */
+  --on-dark: #ffffff;
+  --on-dark-2: rgb(255 255 255 / 0.82);
+  --glass-dark: rgb(10 11 13 / 0.78);
+
+  /* ------------------------------------------------------------- brand */
   --spotify: #1ed760;
-  --accent: #22c1e3;
-  --accent-soft: rgba(34, 193, 227, 0.16);
-  --accent-glow: rgba(34, 193, 227, 0.35);
+  --spotify-hover: #3be477;
+  --spotify-ink: #0b0c0e;
+  --youtube: #ff0033;
   --danger: #ff5d5d;
-  --danger-soft: rgba(255, 93, 93, 0.12);
+  --danger-soft: rgb(255 93 93 / 0.12);
+  --avatar-grad: linear-gradient(135deg, #6f7bf7, #c86dd7);
 
-  /* Runtime-written by lib/vibe.js applyAccent(). Declared here so the UI is
-     styled before the player boots — consumers should still use the
-     var(--vibe-accent, var(--accent)) form defensively. */
-  --vibe-accent: #7c3aed;
-  --vibe-accent-2: #a78bfa;
-  --art-glow-alpha: 0.65;
+  /*
+   * Accent family — rewritten on every vibe change by applyAccent() in
+   * lib/vibe.js, as inline style on <html>. Values here are only the
+   * pre-boot defaults (vibe 50, dark).
+   *   --acc       marks only (fills, dots, slider). Never carries text.
+   *   --acc-text  solved until >= 4.6:1 on every surface it can sit on
+   *   --acc-fill  a solid that --acc-ink reads on at >= 4.6:1
+   *   --acc-soft  a quiet tinted surface (the VIBE badge, focus halo)
+   */
+  --acc: rgb(167 139 250);
+  --acc-text: rgb(190 170 255);
+  --acc-fill: rgb(196 178 255);
+  --acc-ink: #0b0c0e;
+  --acc-soft: rgb(167 139 250 / 0.16);
 
-  /* overlays */
-  --scrim: rgba(0, 0, 0, 0.75);
-  /* Half-strength scrim for chrome that sits ON a black video surface, where
-     the full --scrim is indistinguishable from the background. */
-  --scrim-soft: rgba(0, 0, 0, 0.5);
-  --shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.55);
+  /* ---------------------------------------------------------- overlays */
+  --scrim: rgb(0 0 0 / 0.6);
+  /* Half-strength scrim for chrome that sits ON a black video surface. */
+  --scrim-soft: rgb(0 0 0 / 0.5);
+  --shadow-modal: var(--pop-shadow);
 
-  /* radii */
-  --radius-sm: 10px;
-  --radius: 14px;
-  --radius-lg: 20px;
-  /* Player hero card. Legacy style.css sets --radius:20px for the player
-     while login.css uses 14px — two different scales in one app. Kept
-     separate so the ported auth/admin screens stay at 14px. */
-  --radius-card: 20px;
-  --radius-pill: 999px;
-
-  /* type */
-  --sans: 'Space Grotesk', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  /* -------------------------------------------------------------- type */
+  --font: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --sans: var(--font);
   --serif: 'Instrument Serif', ui-serif, Georgia, 'Times New Roman', serif;
   --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 
-  /* motion */
+  /* Seven-step scale. 12px is the floor: badges and times, never body copy. */
+  --fs-2xs: 11px;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 14px;
+  --fs-base: 16px;
+  --fs-lg: 20px;
+  --fs-phone-title: 24px;
+  --fs-xl: 28px;
+  --fs-vibe-phone: 34px;
+  --fs-vibe: 40px;
+  --fs-2xl: 44px;
+
+  /* ------------------------------------------------------------- radii */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-pill: 999px;
+  /* Pre-S2 names. */
+  --radius-sm: var(--r-md);
+  --radius: var(--r-lg);
+  --radius-lg: var(--r-xl);
+  --radius-card: var(--r-md);
+  --radius-pill: var(--r-pill);
+
+  /* ------------------------------------------------------------ motion */
+  /* Three durations, one deceleration curve. Exits use the shorter one. */
+  --d-1: 150ms;
+  --d-2: 220ms;
+  --d-3: 300ms;
+  --d-fade: 600ms;
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --dur: 220ms;
+  --dur: var(--d-2);
   --dur-slow: 420ms;
 
-  /* spacing scale — new; legacy hardcoded these */
+  /* ----------------------------------------------------------- spacing */
   --sp-1: 4px;
   --sp-2: 8px;
   --sp-3: 12px;
   --sp-4: 16px;
+  /* 20px — S2's in-between step. Named rather than numbered because --sp-5
+     was already 24px across ~20 modules (landing, login, admin, sync) and
+     renumbering would have shifted every one of them. */
+  --sp-mid: 20px;
   --sp-5: 24px;
   --sp-6: 32px;
+  --sp-8: 32px;
+  --sp-10: 40px;
   --sp-7: 48px;
 
-  /* Minimum comfortable hit target. WCAG 2.2 AA (2.5.8) asks for 24x24 CSS px;
-     44px is the AAA / platform-HIG figure and what anything the hand has to
-     find deliberately uses here. */
+  /* Minimum comfortable hit target (WCAG AAA / platform HIG). */
   --hit-min: 44px;
 
-  /* layout — the stage's two width budgets, plus theater's height budget.
-     Theater derives its WIDTH from this height (16:9) rather than capping the
-     height of a 100%-wide box, so the card stays a true 16:9 at every viewport
-     and the YouTube player never pillarboxes inside a too-wide black card.
-
-     --theater-h is THE tuning knob for how big theater gets, and since the
-     meta column was replaced by a ~70px strip it acts mostly as a SAFETY CAP:
-     at 72dvh the video is limited by the COLUMN's width, not by this, at
-     1280x700 and 1440x900, and only slightly by it at 1920x1080 (1382px of a
-     possible 1433). It is what stops a short, very wide viewport from asking
-     for a video taller than the stage fits. Raising it to ~76dvh would reclaim
-     that last 51px at 1080 but cuts the stage's vertical slack from ~49px to
-     ~20px, which is inside the error bar on the computed type metrics these
-     figures come from — not worth 3.7% of width. */
+  /* ------------------------------------------------------------ layout */
+  --top-h: 64px;
+  --bar-h: 88px;
+  --queue-w: 352px;
   --stage-max: 1200px;
-  --stage-max-theater: 1680px;
-  --theater-h: 72dvh;
 
   /*
-   * z-index scale — new. Legacy style.css has 43 unscaled z-index values,
-   * which is a stacking-order bug waiting to happen. Use these names only.
+   * z-index scale. Use these names only. A fixed sheet must never sit inside
+   * a z-indexed ancestor, or it renders under a scrim that is outside it.
    */
   --z-base: 0;
   --z-sticky: 100;
+  --z-bar: 100;
+  --z-np: 200;
   --z-overlay: 200;
+  --z-scrim: 290;
+  --z-sheet: 300;
   --z-modal: 300;
-  --z-toast: 400;
+  --z-pop: 350;
+  --z-search: 400;
+  --z-toast: 600;
+
+  /* --------------------------------------------------- pre-S2 aliases */
+  --bg-2: var(--panel);
+  --surface: var(--panel);
+  --surface-2: var(--raised);
+  --border: var(--line);
+  --border-strong: var(--line-2);
+  /* The landing / login brand cyan. Not the vibe accent: those screens run
+     before the player (and applyAccent) exists. Player modules use --acc-*. */
+  --accent: #22c1e3;
+  --accent-soft: rgb(34 193 227 / 0.16);
+  --accent-glow: rgb(34 193 227 / 0.35);
+  /* Mirrors of the accent for modules written against the old names. Written
+     by applyAccent() too, so the PiP window (which copies these by name)
+     stays in step. */
+  --vibe-accent: var(--acc);
+  --vibe-accent-2: var(--acc-fill);
+  --art-glow-alpha: 0.65;
+}
+
+/* Light: same structure, real shadows (they read on a light page). */
+html[data-theme='light'] {
+  color-scheme: light;
+  --bg: #eceef2;
+  --panel: #ffffff;
+  --raised: #f4f5f7;
+  --hover: #e9ebef;
+  --line: rgb(17 19 23 / 0.09);
+  --line-2: rgb(17 19 23 / 0.16);
+  --rail: rgb(17 19 23 / 0.16);
+  --text: #111317;
+  --text-2: #474b54;
+  --text-3: #5f6470;
+  --text-4: rgb(17 19 23 / 0.32);
+  --play-bg: #111317;
+  --play-ink: #ffffff;
+  --pop-shadow: 0 0 0 1px var(--line), 0 16px 40px rgb(17 19 23 / 0.16);
+  --scrim: rgb(17 19 23 / 0.38);
+  --skel: rgb(17 19 23 / 0.07);
+  --visor: #15171c;
 }

@@ -1,55 +1,77 @@
+import { useId } from 'react';
 import { usePlayer } from '../../state/PlayerContext';
-import { MOOD_NAMES } from '../../lib/vibe';
+import { MOODS } from '../../lib/vibe';
+import Range from '../../ui/Range';
 import styles from './MoodSlider.module.css';
 
 /**
- * The mood grid slider. Ported from frontend/app.js:441 (updateSliderVisual)
- * and index.html:437-468.
+ * The vibe card — the one signature element (S2).
  *
- * The accent CSS variables are written directly by applyAccent() in
- * PlayerContext — not through React — because they change on every tick of a
- * drag and would otherwise re-render the whole tree.
+ * A real range input (keyboard, screen reader and click-to-set for free) with
+ * detent ticks at the band edges and five tappable band names. Dragging
+ * re-tints the accent live: applyAccent() writes the CSS variables straight
+ * onto <html> from PlayerContext, not through React, because it changes on
+ * every tick of a drag.
+ *
+ * A new track is fetched on COMMIT (pointer up, key up, band click), never per
+ * tick — holding an arrow key must not fire a request per keypress.
+ *
+ *   compact — the bar's popover copy: no hint line, no card chrome.
  */
-export default function MoodSlider() {
+const COMMIT_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'];
+
+export default function MoodSlider({ compact = false, className = '' }) {
   const { vibe, setVibe, mood, fetchForVibe } = usePlayer();
+  const labelId = useId();
+
+  const pickBand = (m) => {
+    const centre = Math.round((m.min + m.max) / 2);
+    setVibe(centre);
+    fetchForVibe(centre);
+  };
 
   return (
-    <section className={styles.vibe}>
-      <div className={styles.hero}>
-        <div className={styles.num}>{vibe}</div>
-        <div className={styles.mood}>{mood}</div>
-      </div>
-
-      <div className={styles.sliderWrap}>
-        <div className={styles.track}>
-          <div className={styles.gradient} />
-          <div className={styles.fill} style={{ width: `${vibe}%` }} />
+    <section className={`${styles.card} ${compact ? styles.compact : ''} ${className}`} aria-labelledby={labelId}>
+      <div className={styles.top}>
+        <div>
+          <p className={styles.label} id={labelId}>Your vibe</p>
+          <div className={styles.read}>
+            <span className={styles.num}>{vibe}</span>
+            <span className={styles.word}>{mood}</span>
+          </div>
         </div>
-        <input
-          className={styles.slider}
-          type="range"
-          min="0"
-          max="100"
-          step="1"
-          value={vibe}
-          aria-label="Vibe"
-          onChange={(e) => setVibe(Number(e.target.value))}
-          onMouseUp={() => fetchForVibe()}
-          onTouchEnd={() => fetchForVibe()}
-          onKeyUp={(e) => {
-            // Commit on arrow-key release so holding an arrow doesn't fire a
-            // request per keypress.
-            if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) fetchForVibe();
-          }}
-        />
-        <div className={styles.thumb} style={{ left: `${vibe}%` }} aria-hidden="true" />
+        {!compact && <p className={styles.hint}>The DJ plays music near this energy</p>}
       </div>
 
-      <div className={styles.ticks}>
-        {MOOD_NAMES.map((name) => (
-          <span key={name} className={name === mood ? styles.tickActive : undefined}>
-            {name}
-          </span>
+      <div className={styles.slider}>
+        <Range
+          variant="vibe"
+          min={0}
+          max={100}
+          step={1}
+          value={vibe}
+          aria-labelledby={labelId}
+          aria-valuetext={`${vibe}, ${mood}`}
+          onChange={(e) => setVibe(Number(e.target.value))}
+          onPointerUp={() => fetchForVibe()}
+          onKeyUp={(e) => { if (COMMIT_KEYS.includes(e.key)) fetchForVibe(); }}
+        />
+        <div className={styles.ticks} aria-hidden="true">
+          {[20, 40, 60, 80].map((v) => <i key={v} style={{ left: `${v}%` }} />)}
+        </div>
+      </div>
+
+      <div className={styles.bands}>
+        {MOODS.map((m) => (
+          <button
+            key={m.name}
+            type="button"
+            aria-current={m.name === mood ? 'true' : undefined}
+            aria-label={`Set vibe to ${m.name}`}
+            onClick={() => pickBand(m)}
+          >
+            {m.name}
+          </button>
         ))}
       </div>
     </section>

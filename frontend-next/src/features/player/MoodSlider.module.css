@@ -1,166 +1,85 @@
-/**
- * Ported from legacy frontend/style.css:
- *   .vibe :1700, .vibe-hero :1708, .vibe-num :1716, .vibe-mood :1740
- *   .slider-wrap :1750, -track :1757, -gradient :1766, -fill :1772
- *   .slider :1782, .slider-thumb :1798, .ticks :1830
- * Desktop overrides at :1932-1935.
- */
+.card {
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: var(--sp-4) var(--sp-mid) var(--sp-3);
+}
+.compact { background: none; border: 0; padding: 0; }
 
-.vibe {
+.top {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: clamp(6px, 1.2dvh, 14px);
-  min-width: 0;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-2);
 }
-
-/* Number and mood sit SIDE BY SIDE on a shared baseline — not stacked. */
-.hero {
-  display: flex;
-  align-items: baseline;
-  justify-content: center;
-  gap: 14px;
-  min-width: 0;
-  padding: 0.08em 0 0.04em;
+.label {
+  margin: 0 0 2px;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
 }
-
-@media (min-width: 1024px) {
-  .hero { justify-content: flex-start; }
-}
-
-/* Gradient-filled italic serif. line-height 1.1 (not 1) gives the glyph
-   headroom — at 1 the ascender/descender clip against overflow:hidden. */
+.read { display: flex; align-items: baseline; gap: 10px; }
 .num {
-  font-family: var(--serif);
-  font-style: italic;
-  font-size: clamp(48px, 9dvh, 88px);
-  line-height: 1.1;
-  font-weight: 400;
-  letter-spacing: -0.045em;
-  padding: 0 0.05em 0 0.02em;
-  background: linear-gradient(180deg, var(--vibe-accent, var(--accent)), var(--vibe-accent-2, var(--accent)));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  transition: background 400ms var(--ease);
-  /* Keeps the italic slant from pushing the flex row past its grid cell. */
-  min-width: 0;
-  flex-shrink: 1;
+  font-size: var(--fs-vibe);
+  line-height: 1;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  min-width: 2.2ch;
 }
-
-.mood {
-  font-size: clamp(12px, 1.6dvh, 15px);
-  font-weight: 500;
-  color: var(--text-2);
-  text-transform: lowercase;
-  letter-spacing: 0.02em;
+.word {
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  color: var(--acc-text);
+  text-transform: capitalize;
+  transition: color var(--d-1) var(--ease);
 }
+.hint { margin: 0; font-size: var(--fs-sm); color: var(--text-3); text-align: right; max-width: 18ch; }
 
-.sliderWrap {
-  position: relative;
-  height: 48px;
-  display: flex;
-  align-items: center;
-}
-
-.track {
-  position: relative;
-  width: 100%;
-  height: 14px;
-  border-radius: var(--radius-pill);
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.gradient {
+.slider { position: relative; padding: 6px 0; }
+/* Band detents: four hairline ticks at 20/40/60/80, inset by half the 22px
+   thumb (the same inset the fill uses), so a tick sits exactly where the
+   thumb centre lands at that value. */
+.ticks {
   position: absolute;
-  inset: 0;
-  opacity: 0.28;
-  background: linear-gradient(
-    90deg,
-    #4c5b8a 0%, #5b7fbd 20%, #00b4d8 30%, #22c1e3 40%, #7c3aed 50%,
-    #a78bfa 60%, #ec4899 70%, #f43f5e 80%, #f97316 90%, #dc2626 100%
-  );
+  left: 11px;
+  right: 11px;
+  top: 50%;
+  height: 12px;
+  margin-top: -6px;
+  pointer-events: none;
 }
-
-.fill {
+.ticks i {
   position: absolute;
   top: 0;
-  left: 0;
-  bottom: 0;
-  border-radius: var(--radius-pill) 0 0 var(--radius-pill);
-  background: linear-gradient(
-    90deg,
-    color-mix(in oklab, var(--vibe-accent, var(--accent)) 70%, transparent),
-    var(--vibe-accent, var(--accent))
-  );
-  transition: background 400ms var(--ease);
+  width: 2px;
+  height: 12px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--panel);
 }
+.compact .ticks i { background: var(--raised); }
 
-/* Transparent native input on top — keeps real keyboard and touch behaviour
-   while the visuals below are ours. */
-.slider {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  opacity: 0;
-  cursor: grab;
-  z-index: 3;
-  touch-action: manipulation;
-  -webkit-appearance: none;
-  appearance: none;
-}
-.slider:active { cursor: grabbing; }
-
-.thumb {
-  position: absolute;
-  top: 50%;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: #fff;
-  transform: translate(-50%, -50%);
-  pointer-events: none;
-  box-shadow:
-    0 0 0 3px color-mix(in oklab, var(--vibe-accent, var(--accent)) 55%, transparent),
-    0 0 22px color-mix(in oklab, var(--vibe-accent, var(--accent)) 65%, transparent),
-    0 4px 16px rgba(0, 0, 0, 0.4);
-  transition: box-shadow 400ms var(--ease), transform 120ms var(--ease);
-}
-
-.slider:focus-visible ~ .thumb {
-  transform: translate(-50%, -50%) scale(1.08);
-  box-shadow:
-    0 0 0 4px color-mix(in oklab, var(--vibe-accent, var(--accent)) 40%, transparent),
-    0 0 0 8px color-mix(in oklab, var(--vibe-accent, var(--accent)) 20%, transparent),
-    0 4px 16px rgba(0, 0, 0, 0.4);
-}
-
-.slider:active ~ .thumb {
-  transform: translate(-50%, -50%) scale(1.12);
-}
-
-.ticks {
-  display: flex;
-  justify-content: space-between;
-  padding: 0 2px;
-  font-size: 11px;
+.bands { display: grid; grid-template-columns: repeat(5, 1fr); padding: 0 1px; margin-top: 2px; }
+.bands button {
+  height: 32px;
+  border-radius: var(--r-sm);
+  border: 0;
+  background: none;
+  font-size: var(--fs-xs);
+  font-weight: 600;
   color: var(--text-3);
-  text-transform: lowercase;
-  letter-spacing: 0.06em;
-  font-family: var(--mono);
+  text-transform: capitalize;
+  transition: color var(--d-1) var(--ease), background-color var(--d-1) var(--ease);
 }
+.bands button:hover { color: var(--text); background: var(--hover); }
+.bands button[aria-current='true'] { color: var(--acc-text); font-weight: 700; }
 
-@media (min-width: 1024px) {
-  .ticks { padding: 0 4px; }
-}
-
-.ticks span { transition: color 250ms var(--ease); }
-
-.tickActive {
-  color: var(--vibe-accent, var(--accent));
-  font-weight: 500;
+@media (max-width: 767px) {
+  .card { padding: var(--sp-4) var(--sp-4) var(--sp-2); }
+  .num { font-size: var(--fs-vibe-phone); }
+  .bands button { height: var(--hit-min); }
 }

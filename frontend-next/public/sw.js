@@ -1,11 +1,17 @@
 // VibeScape service worker.
 // Goal: installability (PWA) + fast repeat loads of static assets.
 // Strategy:
-//   - Static app shell: cache-first, network fallback, revalidate in background.
+//   - The page itself (navigations, /, /index.html): NETWORK-FIRST, cache only
+//     as the offline fallback. It names the current hashed bundles; serving a
+//     cached copy ran the PREVIOUS build after every deploy — found 2026-10-11
+//     when a rebuilt app kept loading a bundle that no longer existed in dist/.
+//   - Hashed assets (/assets/*): cache-first, network fallback, revalidate in
+//     background. Safe because a new build gives them new names.
 //   - API + Spotify SDK + third-party audio/video: network-only (no caching).
 //   - Never cache Spotify OAuth callbacks or any query-stringed navigation.
 
-const VERSION = 'v2';
+// Bumped to v3 with the network-first page, so the stale v2 shell is purged.
+const VERSION = 'v3';
 const STATIC_CACHE = `vibescape-static-${VERSION}`;
 
 // React emits content-hashed bundles (/assets/index-<hash>.js), so they
@@ -50,6 +56,22 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
 
   if (!isStaticAsset(url)) return;
+
+  const isPage = req.mode === 'navigate' || url.pathname === '/' || url.pathname === '/index.html';
+  if (isPage) {
+    event.respondWith(
+      fetch(req)
+        .then((resp) => {
+          if (resp && resp.status === 200 && resp.type === 'basic') {
+            const copy = resp.clone();
+            caches.open(STATIC_CACHE).then((cache) => cache.put(req, copy)).catch(() => {});
+          }
+          return resp;
+        })
+        .catch(() => caches.match(req).then((c) => c || caches.match('/index.html')))
+    );
+    return;
+  }
 
   event.respondWith(
     caches.match(req).then((cached) => {

@@ -1,127 +1,121 @@
 """
-Whisper language-detection stage.
+Language stage -- the stopping point. It classifies nothing.
 
-Streams the preview URL through ml_backend.predict_language_from_url and
-records the top-1 language + confidence + top-3 distribution. Blocks on
-preview_status='done' (needs a URL) but is otherwise independent — a
-'failed' here does not block ingestion_status='done'.
+Replaced the Whisper stage on 2026-10-10. Whisper's own docstring admitted
+it "reliably mispredicts on musical audio -- Kannada songs frequently
+misclassify as Telugu / Sanskrit / Khmer / Norwegian Nynorsk, and
+instrumentals drift randomly", which is why its terminal state was
+'whisper_done' and it deferred to a verification stage that was never
+written. Language is now read off metadata -- title, artist, album -- by a
+Claude Code session querying the database directly.
 
-Confidence gate: below 0.20 we treat the prediction as no_match (not
-enough signal to trust). Above the gate, we persist all three top guesses
-so the frontend can degrade gracefully.
+So the pipeline runs preview -> download -> librosa -> classify and STOPS
+here. This stage's entire job is to leave every live row in one
+unambiguous waiting state so the session's query is a single obvious
+predicate:
 
-Terminal state is 'whisper_done', NOT 'done'. A subsequent LLM-verify
-stage (stage_language_verify.py) transitions whisper_done → done after a
-human/LLM confirms the tag. This is because Whisper reliably mispredicts
-on musical audio — Kannada songs frequently misclassify as Telugu /
-Sanskrit / Khmer / Norwegian Nynorsk, and instrumentals drift randomly.
+    language_status = 'pending'
+
+That takes real work, because "not answered yet" has three spellings in
+this database and a session cannot be expected to remember them:
+
+  NULL           production's Turso `tracks` was rebuilt from
+                 PRAGMA table_info's `type` field alone, dropping every
+                 DEFAULT 'pending' (see base.py). App-inserted rows land
+                 NULL there, 'pending' locally.
+  'whisper_done' the retired Whisper terminal state -- a guess nothing had
+                 verified. No producer any more.
+  'pending'      the one we want.
+
+The stage folds the first two into the third. A row normalised out of
+'whisper_done' keeps `tracks.language` as Whisper's guess, so the session
+sees it as a weak prior rather than losing it.
+
+It is deliberately NOT normalising every NULL in the table. Rows parked at
+ingestion_status='no_preview' keep their NULL: they can never be analysed,
+so asking about them is work that buys nothing, and promoting them to
+'pending' would make them permanently cohort-eligible and jam the head of
+every pass (see docs/backend-todo.md 3.1).
+
+Three consequences of classifying from metadata rather than audio:
+
+  - No preview, no cached file, no GPU. The old stage gated on
+    download_status='done'; this one has no upstream dependency at all and
+    is armed at ingest entry, in parallel with preview. The row is
+    answerable the instant the app inserts it, so a session can tag it
+    while the GPU is still working on the audio stages.
+  - This stage never writes 'done'. Only a tagging session does, through
+    language_tagging.tag(), which also fires the fuse cascade.
+  - It arms nothing. fuse_status='pending' is written by the tag, which is
+    the only moment at which fuse could act on it.
 """
 from __future__ import annotations
 
-import json
 import logging
-import sys
-from pathlib import Path
 
-from .base import (
-    RowResult, Stage,
-    STATUS_DONE, STATUS_FAILED, STATUS_NO_MATCH, STATUS_WHISPER_DONE,
-    id_filter, iso_now,
-)
+from . import language_tagging as lt
+from .base import (RowResult, Stage, STATUS_PENDING, STATUS_WHISPER_DONE,
+                   id_filter)
 
 
 log = logging.getLogger("vibescape.ingest.language")
 
 
-_MIN_TOP1_CONFIDENCE = 0.20
-
-
-def _ml_backend():
-    _root = Path(__file__).resolve().parents[1]
-    for _sub in ("backend", "ingest"):
-        p = _root / _sub
-        if str(p) not in sys.path:
-            sys.path.insert(0, str(p))
-    import ml_backend  # type: ignore
-    return ml_backend
-
-
 class LanguageStage(Stage):
     name = "language"
     status_column = "language_status"
-    # Feeds the language one-hot into the fused vector, so fusion waits
-    # for it. This is the whole point of the reorder: fusing before
-    # language meant every new track fused with the 'other' bucket.
-    arms = ("fuse_status",)
-    # This stage never returns plain 'done' — 'whisper_done' is its
-    # success — and a 'no_match' (ran, too little confidence) must not
-    # stall the chain either; fusion just falls back to 'other'.
-    arms_on = (STATUS_WHISPER_DONE, STATUS_NO_MATCH, STATUS_DONE)
-    # Whisper on local GPU: same story as ClassifyStage — share the card,
-    # no concurrent model loads. Modal mode can bump this back up.
+    # Arms nothing -- see the module docstring.
+    arms = ()
     max_workers = 1
 
-    def __init__(self, model_size: str = "small"):
-        self._ml = _ml_backend()
-        self._model_size = model_size
-
     def fetch_pending(self, conn, limit: int, only_ids=None) -> list:
-        # Strict gate on DownloadStage — no URL fallback.
-        rows = conn.execute(
-            "SELECT id, spotify_id, title, artist, audio_path "
+        """Live rows whose language_status is not yet the waiting spelling.
+
+        No upstream gate: metadata is present from the INSERT. The only
+        preconditions are that the row has a title to read and that it is
+        still worth asking about.
+        """
+        idf, idp = id_filter(only_ids)
+        return list(conn.execute(
+            "SELECT id, spotify_id, title, artist, album, language "
             "FROM tracks "
-            "WHERE language_status = 'pending' "
-            "AND download_status = 'done' "
-            "AND audio_path IS NOT NULL AND audio_path != '' "
-            f"{id_filter(only_ids)[0]}"
+            "WHERE (language_status IS NULL OR language_status = ?) "
+            # Don't promote rows that can never be analysed. A 'no_preview'
+            # row's NULL stays NULL. The whisper_done arm overrides that:
+            # a row in a state nothing recognises is worse than a pointless
+            # question, and it is a handful of rows at most.
+            "AND (ingestion_status = 'pending' OR ingestion_status IS NULL "
+            "     OR language_status = ?) "
+            "AND title IS NOT NULL AND title != '' "
+            f"{idf}"
             "ORDER BY id ASC LIMIT ?",
-            (*id_filter(only_ids)[1], limit),
-        ).fetchall()
-        return list(rows)
+            (STATUS_WHISPER_DONE, STATUS_WHISPER_DONE, *idp, limit),
+        ).fetchall())
 
     def process_row(self, row) -> RowResult:
-        from .stage_download import resolve_audio_path
-        local = resolve_audio_path(row["audio_path"])
-        if local is None:
-            return RowResult(
-                track_id=int(row["id"]),
-                status=STATUS_FAILED,
-                fields={"ingestion_attempted_at": iso_now()},
-                error="cached audio missing",
-            )
-        preds = self._ml.predict_language_from_path(str(local), model_size=self._model_size)
-        if not preds:
-            return RowResult(
-                track_id=int(row["id"]),
-                status=STATUS_FAILED,
-                fields={"ingestion_attempted_at": iso_now()},
-                error="whisper returned nothing",
-            )
-        top1_prob = float(preds.get("top1_prob", 0.0))
-        now = iso_now()
-        if top1_prob < _MIN_TOP1_CONFIDENCE:
-            return RowResult(
-                track_id=int(row["id"]),
-                status=STATUS_NO_MATCH,
-                fields={
-                    "language_predicted_at": now,
-                    "ingestion_attempted_at": now,
-                },
-            )
-        top3_json = json.dumps({
-            "top1": [preds.get("top1_lang"), top1_prob],
-            "top2": [preds.get("top2_lang"), float(preds.get("top2_prob", 0.0))],
-            "top3": [preds.get("top3_lang"), float(preds.get("top3_prob", 0.0))],
-        })
-        return RowResult(
-            track_id=int(row["id"]),
-            status=STATUS_WHISPER_DONE,
-            fields={
-                "language":               preds.get("top1_lang"),
-                "language_confidence":    top1_prob,
-                "language_top3_json":     top3_json,
-                "language_model_version": str(preds.get("model_version") or f"whisper_{self._model_size}"),
-                "language_predicted_at":  now,
-                "ingestion_attempted_at": now,
-            },
-        )
+        """Normalise to the waiting state. No network, no model, no audio.
+
+        Returning STATUS_PENDING is the point: the base class stamps the
+        result straight onto language_status, and because 'pending' is not
+        in `arms_on` and is not 'failed', nothing downstream is armed and
+        no failure is recorded. The row simply sits, correctly labelled,
+        until somebody answers it.
+        """
+        return RowResult(track_id=int(row["id"]), status=STATUS_PENDING, fields={})
+
+    def run_batch(self, conn, limit: int, log_, only_ids=None) -> dict[str, int]:
+        counts = super().run_batch(conn, limit, log_, only_ids)
+        # The waiting count is the thing worth seeing in a pass log: it is
+        # the size of the backlog that only a tagging session can clear,
+        # and since fuse gates strictly on 'done' it is also the number of
+        # tracks that cannot reach the DJ pool until it is cleared.
+        try:
+            waiting = conn.execute(
+                f"SELECT COUNT(*) FROM tracks WHERE {lt.WAITING_PREDICATE}"
+            ).fetchone()[0]
+            log_.info("[%s] %d row(s) waiting for a language tag "
+                      "(see ingest_pipeline/README.md 'Tagging languages')",
+                      self.name, int(waiting))
+        except Exception as e:
+            log_.warning("[%s] could not count waiting rows: %s", self.name, e)
+        return counts

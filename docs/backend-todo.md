@@ -127,7 +127,7 @@ so this is reachable by configuration alone. The fix is the same
 `vector_extract()` workaround app.py already uses — or item 2.1 below, which
 removes the need for both.
 
-### 1.7 A fresh local SQLite bootstrap dies in `_seed_default_user`: `users` has no `pin_hash`
+### 1.7 ~~A fresh local SQLite bootstrap dies in `_seed_default_user`: `users` has no `pin_hash`~~ — DONE (2026-10-10)
 `backend/db.py:195` vs `schema.sql:6-20`
 
 **verified by running it** (2026-10-02). On a DB with zero `users` rows,
@@ -140,6 +140,15 @@ does not exist and the statement raises
 request. A developer cloning the repo without `data/vibescape.db` gets a
 500 on everything. The existing dev DB still has the column, which is why
 nobody has hit it. Drop `pin_hash` from the INSERT.
+
+**Fixed 2026-10-10**, together with the bug it was hiding: with the INSERT
+fixed, a fresh DB died on its *third* `get_conn()` instead. `_migrate` added
+`tracks.user_id` unconditionally, which flipped a schema.sql database onto the
+legacy per-user path, which rebuilt `tracks` without `language`, and
+schema.sql's language index then failed. That ALTER is gone (production has no
+`tracks.user_id`). Existing dev DBs already have the column and keep the legacy
+shape — so **local dev DBs still differ from production** (`vibe_score NOT
+NULL`, `user_id` on tracks). Regression tests: `tests/database/test_schema.py`.
 
 ---
 
@@ -640,6 +649,218 @@ no connection, and are the first things in this repo that could trivially
 carry a unit test. Worth being the first `tests/` directory.
 
 
+## 7. DJ session replay — landed 2026-10-10 (branch `dj-replay`), what is left
+
+The client now POSTs its raw event log (`events`) and `backend/dj_replay.py`
+replays it into the query, centred on the user's library mean. Offline, on
+local `track_events` 2026-10-02..09: finished-vs-skipped AUC 0.83 vs 0.64 for
+the old weighted sum, and after a search 5.5 of the top 10 sit in the
+searched track's neighbourhood vs 1.4. The harness that produced those
+numbers is local only (`.claude/tmp/dj-compare/`, gitignored).
+
+### 7.1 `user_embedding_mean` must be created on Turso before deploy
+`schema.sql` (end), `scripts/_turso_create_user_embedding_mean.py`
+
+**verified.** `ensure_db()` no-ops on Turso. Without the table the replay
+still works — `_dj_library_mean` logs a warning and keeps the mean in process
+memory — but every cold instance re-reads the user's whole library of vectors
+on its first DJ request. The script takes credentials from the environment,
+not from `_load_gcp_secrets.ps1`.
+
+### 7.2 The legacy `positive_ids` path still drops the seed's own verdict
+`backend/app.py`, the `else:` branch of `_similar_dj`
+
+**verified.** Kept byte-for-byte for old clients. It removes `anchor_id` from
+positives and negatives, and the seed is the current track: a search-and-play
+never shaped the recs while it played, and at autoplay the outgoing track's
+own skip was dropped from the fetch that picked its successor (46% of 655
+replayed fetches). Delete the branch once no client sends `positive_ids`.
+
+### 7.3 Different songs share one preview, so one embedding
+**verified on the local DB, 2026-10-10.** 43 groups (97 tracks) of
+*different* songs by the same artist have byte-identical `fused_embedding`,
+and in all 43 every row has the same `preview_url` — e.g. Frank Ocean's
+*Nights* / *Nikes* / *Lost* / *White Ferrari*. Their vibe scores and DJ
+neighbours are those of whichever song the preview really is. (Another 37
+groups are the same song twice, which is the dedupe question, not this.)
+**suspected** cause: the preview stage's search fallback accepting an
+artist-level match. Cheap check: re-run preview resolution for tracks 2111
+and 2484 and compare what each candidate source returns.
+
+### 7.4 The replay constants are starting values
+`backend/dj_replay.py` (module top)
+
+Set before the offline replay and not tuned on it. The cap on `eta` for a
+finished track is reached at about 0.45 cosine to S, so passive listening may
+turn out to steer too easily — `SURPRISE_GAIN` is the knob.
+
+### 7.5 Explore mode after a run of skips is not built
+The design calls for widening the pool and spreading the picks after three
+or more skips in a row. Not implemented: the logs hold no data to test it on.
+
+### 7.6 [frontend contract] `score` is now cosine against a centred query
+In replay mode `score` is still a cosine, but against the centred query, so
+values sit around 0.3 rather than 0.9. Nothing in `frontend-next/` reads it
+(grep, 2026-10-10), and the re-rank's lambda scales with the score window, so
+it needs no recalibration.
+
+## 8. Language became a database-queue stage — landed 2026-10-10, what is left
+
+Whisper is out of the pipeline. `ingest_pipeline/stage_language.py` no
+longer loads a model, reads audio or touches the GPU; it parks every live
+row at `language_status='pending'` and a pipeline run **stops there**. A
+Claude Code session queries the DB for those rows, reads title/artist/album
+and writes the tag through `ingest_pipeline/language_tagging.py`, which also
+fires the `fuse_status='pending'` cascade. `ingest_pipeline/README.md`
+§ Tagging languages is the interface document.
+
+**`fuse` and `youtube` now gate on `language_status='done'` exactly**
+(verified by running both `fetch_pending`s against each status on a copy of
+the local DB, 2026-10-10). `'whisper_done'` and `'no_match'` were removed
+from both IN-lists: neither has a producer any more, and the queue flow's
+"no language" is an explicit clear writing `language=NULL,
+language_status='done'`, which passes a `'done'`-only gate on its own merits.
+
+### 8.1 Untagged tracks are now permanently out of the DJ pool
+**verified by reading**, and accepted by the user as the trade. Before, a
+wrong-but-present Whisper tag let every track fuse. Now nothing fuses until
+someone tags it, so the 656 local (and ~1,620 production) rows at
+`'pending'` are invisible to the DJ until a session runs.
+`python scripts/language_tags.py --status` reports the count, the oldest and
+median wait in days, and the number encoded-but-unfused; it exits 1 when
+anything is waiting, so it can be a cron check.
+
+### 8.2 `ingest/ml_backend.py`'s Whisper dispatch is now unused
+**verified** by grep across `*.py`: `predict_language_from_url`,
+`predict_language_from_path`, `_get_local_whisper`,
+`_modal_predict_language_from_url`, `_local_predict_language_from_url` and
+`_MODAL_LANG_FUNCTION_NAME` have no caller left in this repo.
+`ml/src/predict_language.py` imports `whisper` directly and `modal_app.py`
+defines its own copy, so neither is a consumer. **Not removed** — flagged
+for the owner to decide, since the Modal deployment is a separate artifact.
+
+### 8.3 The hand-driven pair is superseded
+`scripts/_llm_verify_export.py` and `scripts/_llm_verify_apply.py` still
+exist and still work, but they select on `language_status='whisper_done'`,
+which no longer has a producer. They are a second writer of the same
+columns with the same cascade — exactly 1.2's failure mode if the two ever
+diverge. Delete them once nobody is mid-flight on a hand-driven batch.
+
+### 8.4 Not verified against production
+Nothing here was run against Turso. Two things to check before/after a prod
+run: `SELECT language_status, COUNT(*) FROM tracks GROUP BY 1` (prod rows
+land NULL, not `'pending'`, because its `tracks` has no column defaults —
+`LanguageStage` normalises them, but only for rows a cohort reaches), and
+whether any `'whisper_done'` rows exist there (local has none).
+
+## 8. Telemetry v2 — landed 2026-10-10 (branch `dj-replay`), what is left
+
+One envelope for every client event (session_id, tz_offset_min, vibe
+context, client_ts). Track events — play_start / play_end / pause / resume /
+seek / queue_add — go to `track_events`, which gained `listened_ms`,
+`end_trigger`, `playback`, `session_id`, `tz_offset_min`, `data`. App events —
+session_start / session_end / search / vibe_change / dj_toggle — go to the new
+`user_events`. `user_track_stats` gained `total_listened_ms`. New read
+endpoint `GET /api/me/stats`.
+
+### 8.1 Turso must be migrated BEFORE the v2 backend deploys
+`scripts/_turso_migrate_telemetry_v2.py`, then
+`scripts/rebuild_user_track_stats.py --turso --apply`
+
+**verified** (by reading the insert path). The v2 INSERT names the new
+columns, so on an unmigrated Turso every POST /api/events fails its insert
+and the batch is dropped — behind the endpoint's unconditional 202, so
+nothing looks wrong. Local SQLite migrates itself (`_migrate_telemetry`).
+
+### 8.2 [frontend contract] `source` gained 'pick', so old 'search' rows are mixed
+**verified.** A song played off a list (a rec, the trail, prev) is now
+`source='pick'`. Before 2026-10-10 those were `'search'` (or `'dj'` for a rec
+clicked in DJ mode). Any analysis of `source` must split at that date.
+
+### 8.3 Only plays feed the aggregate — keep it that way
+`backend/app.py` `_PLAY_TYPES`, `_accumulate_stats`,
+`scripts/rebuild_user_track_stats.py` `_expected`
+
+**verified.** `_accumulate_stats` used to treat every row that was not a
+play_start as a play_end. With pause / seek / queue_add rows in the same
+table that would have counted each pause as an ended play. Both the inline
+path and the rebuild now filter to play_start / play_end, checked equal on a
+DB copy (rebuild dry-run: 0 missing, 0 differing, 0 stale).
+
+### 8.4 last_played now qualifies on heard time
+`last_played` requires `completed` or **listened_ms** >= 90 s (playhead on
+pre-v2 rows). Seeking to 2:00 and stopping no longer counts as a listen, so
+the DJ recency penalty sees slightly fewer "recently played" tracks.
+
+### 8.5 Old rows stay approximate
+Pre-v2 play_end rows have no `listened_ms`; they count their playhead, which
+over-reports paused wall-clock time when no playhead was readable. 11 of 144
+local completions also recorded 0 ms (the bug fixed earlier). Not
+recoverable; the error shrinks as v2 data accumulates.
+
+## 9. Import any public playlist by link — built 2026-10-10, what is left
+
+`POST /api/ingest/playlist-url` + `backend/playlist_import.py`: Spotify,
+Apple Music, YouTube / YT Music and Amazon Music links are read without the
+user's Spotify login, matched to Spotify, and imported through
+`_process_track` (pending rows, as with library sync). Deezer links are
+recognised and refused with `deezer_not_supported` (built and measured —
+public API with ISRCs, 15/15 — then dropped from the first version by
+product decision). Measured live before the rate limit below (with the older 3-query
+ladder): matching 15/15 for Spotify and Apple samples, 95/100 on a YouTube
+chart playlist. Tests in tests/backend cover it with fakes.
+
+### 9.1 The app's Spotify quota is shared with production — don't spend it testing
+**verified 2026-10-10.** ~650 Spotify calls in ~30 min of test imports earned
+a `429` with `Retry-After: 70320` (19.5 h) for this client id, which
+production uses too. The importer now spends nothing on Spotify links (embed
+ids) or songs the catalogue has, ONE search per new song (two for an
+ambiguous YouTube title), paces calls
+0.35 s apart, and stops a job on a long Retry-After. **Use a separate Spotify
+app for local development.**
+
+**One gate for every api.spotify.com call:** `ingest/spotify_guard.py`
+(server) and `frontend-next/src/lib/spotifyGuard.js` (browser, kept in
+localStorage). The first real 429 records "blocked until T"; until T every
+call is answered locally with the same 429, with no request, so existing 429
+handling runs without spending more quota. Retry loops use `should_retry()`,
+which is true only for Retry-After ≤ 30 s (`spotify_matcher._search` used
+to sleep the full Retry-After, which would have been 19.5 h). `GET
+/api/spotify/status` reports `{blocked, retry_after_s}` without calling
+Spotify. Limits: a block is per process (each process learns it from one
+call of its own) and per browser; `accounts.spotify.com` (token refresh)
+is not gated. **New Spotify calls must go through the guard**, never bare
+`requests` or `fetch`.
+
+### 9.2 One full live run is still owed
+After the block lifts (~06:15 UTC 2026-10-11, from a Retry-After of 70320 s
+seen at 10:43 UTC): one import per service on a DB copy, once, to confirm
+the paced, one-query path end to end and measure its match rate.
+
+### 9.3 Amazon uses Amazon's private web-player API — by decision, with risks
+`playlist_import.fetch_amazon`. Two calls, as the public web player makes for
+a signed-out visitor: `POST music.amazon.com/config.json` (anonymous token),
+then `POST na.web.skill.music.a2z.com/api/showHome`. Live 2026-10-10: 190/190
+and 60/60 songs, matching the counts on the page. Product decision, taken
+knowing that:
+- it is undocumented and against Amazon's terms, and can change or be closed
+  without notice — every failure maps to `source_unreadable` /
+  `playlist_not_found`, never a crash;
+- `AMAZON_APP_VERSION` and the header set are copied from the web player and
+  may need refreshing if Amazon starts rejecting them;
+- only the North-America endpoint is used; other storefronts and playlists
+  longer than 190 songs are untested;
+- keep it user-triggered — heavy use from one server IP could get it blocked.
+
+### 9.4 Known limits
+- Spotify links without the user's Spotify login read the public embed, which
+  stops at 100 songs (the job's `note` says so).
+- Apple playlists over 100 songs and user `pl.u-` playlists are untested.
+- None of the supported services give ISRCs, so matching is by title +
+  artist + duration; misses are listed (`unmatched`), never guessed.
+- Same thread + JOBS-dict machinery as the other imports (backlog 1.5), and
+  the same post-import `_recompute_axes_and_zscores` (backlog 1.1).
+
 ## Checked and clean
 
 Recorded so the next audit does not redo them.
@@ -654,8 +875,8 @@ Recorded so the next audit does not redo them.
   only instance** of the `_update_job` / `_bump` / `_is_cancelled` failure
   mode, and it is repaired at `backend/app.py:2332-2354`.
 - **Operational scripts default to dry-run.** `_sync_local_to_turso.py`,
-  `_dedupe_turso_by_isrc.py`, `_fix_language_tags.py` and
-  `_llm_verify_apply.py` all require an explicit `--apply` and print
+  `_dedupe_turso_by_isrc.py`, `_fix_language_tags.py`, `_llm_verify_apply.py`
+  and `language_tags.py` all require an explicit `--apply` and print
   "dry-run — nothing was modified" otherwise.
 - **Secret hygiene.** `scripts/_load_gcp_secrets.ps1` is excluded from the
   deploy upload by `.gcloudignore`'s `scripts/_*.ps1`, and from the image by

@@ -53,6 +53,9 @@ _COUNTERS = [
     ("end_count",       "SUM(CASE WHEN type = 'play_end'   THEN 1 ELSE 0 END)"),
     ("total_played_ms", "SUM(CASE WHEN type = 'play_end' THEN COALESCE(position_ms, 0) ELSE 0 END)"),
     ("dj_play_count",   "SUM(CASE WHEN type = 'play_start' AND dj_mode = 1 THEN 1 ELSE 0 END)"),
+    # Heard time, falling back to the playhead on pre-v2 rows (no listened_ms).
+    ("total_listened_ms",
+     "SUM(CASE WHEN type = 'play_end' THEN COALESCE(listened_ms, position_ms, 0) ELSE 0 END)"),
 ]
 for _p, _label in (("u", "user"), ("s", "system")):
     _is = f"vibe_source = '{_label}'"
@@ -81,7 +84,8 @@ for _p, _label in (("u", "user"), ("s", "system")):
 # _accumulate_stats (which sets the flag before the label check).
 #
 # last_played means "last QUALIFIED listen" — a play_end with reason='completed'
-# OR position_ms >= DJ_QUALIFIED_PLAY_MS (default 90000). Must match the
+# OR heard time (listened_ms, else position_ms on pre-v2 rows) >=
+# DJ_QUALIFIED_PLAY_MS (default 90000). Must match the
 # backend/app.py:_accumulate_stats _qualified flag exactly; redefined here to
 # avoid importing backend.app from a script.
 _QUALIFIED_PLAY_MS = int(os.environ.get("DJ_QUALIFIED_PLAY_MS") or 90000)
@@ -90,7 +94,7 @@ _TIMESTAMPS = [
     ("last_played",
      f"MAX(CASE WHEN type = 'play_end' "
      f"           AND (LOWER(COALESCE(reason, '')) = 'completed' "
-     f"             OR COALESCE(position_ms, 0) >= {_QUALIFIED_PLAY_MS}) "
+     f"             OR COALESCE(listened_ms, position_ms, 0) >= {_QUALIFIED_PLAY_MS}) "
      f"          THEN server_ts END)"),
     ("last_skipped_at",
      "MAX(CASE WHEN type = 'play_end' AND LOWER(COALESCE(reason, '')) = 'skipped' THEN server_ts END)"),
@@ -98,7 +102,7 @@ _TIMESTAMPS = [
 
 _ALL = _COUNTERS + _TIMESTAMPS
 _COLS = ["user_id", "track_id"] + [c for c, _ in _ALL] + ["updated_at"]
-_CHUNK = 20   # rows per INSERT (20 x 28 bound params)
+_CHUNK = 20   # rows per INSERT (20 x 29 bound params)
 
 
 def _connect(use_turso: bool):
@@ -114,9 +118,12 @@ def _connect(use_turso: bool):
 
 def _expected(conn, user_id):
     sel = ", ".join(f"{expr} AS {col}" for col, expr in _ALL)
-    where, params = "", ()
+    # Only plays feed the aggregate (pause / resume / seek / queue_add rows
+    # share the table). Without this, first_played_at would pick up a
+    # queue-add, and a never-played track would get a row.
+    where, params = "WHERE type IN ('play_start', 'play_end')", ()
     if user_id is not None:
-        where, params = "WHERE user_id = ?", (user_id,)
+        where, params = where + " AND user_id = ?", (user_id,)
     rows = conn.execute(
         f"SELECT user_id, track_id, {sel} FROM track_events {where} "
         f"GROUP BY user_id, track_id",

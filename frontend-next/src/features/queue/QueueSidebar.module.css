@@ -1,447 +1,199 @@
-.sidebar {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-5);
-  width: 320px;
-  padding: var(--sp-4);
-  /*
-   * The RAIL does not scroll — each section scrolls its own list instead.
-   *
-   * This used to be overflow-y:auto, which made the whole column one scroller:
-   * the queue grew to fit its content, shoved the DJ picks below the fold, and
-   * you had to scroll past every queued track to reach the recommendations.
-   * Clipping here is what forces the two lists to share the height.
-   */
+/* ----------------------------------------------------------- the panel */
+.queue {
+  background: var(--panel);
+  border-radius: var(--r-lg);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
   overflow: hidden;
-  min-height: 0;
-
-  /*
-   * ---- the rail's row budget ----------------------------------------
-   * Spec: at most 8 rows visible across BOTH lists, the queue showing at
-   * most 5 of them, the picks never fewer than 3.
-   *
-   * --qrow is a measured stride, not a guess: QueueRow is a 38px thumbnail
-   * plus 2 x --sp-2 of padding (54px), and .list puts a 2px gap between
-   * rows. Rounding the stride UP by that gap is deliberate — it leaves the
-   * next row peeking a sliver above the fold, which is what tells you the
-   * list scrolls at all.
-   */
-  --qrow: 56px;
-  --qhead: 28px; /* .sectionHead min-height */
-  --qbudget: 10; /* rows visible across both lists */
-
-  /*
-   * min() of the row budget and the space actually available.
-   *
-   * The budget alone is ~688px at 10 rows, which is taller than the content
-   * row on a 768px laptop — the rail would overflow its grid cell and .shell's
-   * overflow:hidden would silently guillotine the bottom of the picks. 100%
-   * resolves because .shell gives row 3 a definite height (minmax(0, 1fr) of
-   * a 100dvh grid), so short screens simply show fewer rows instead.
-   */
-  max-height: min(
-    calc(
-      var(--qbudget) * var(--qrow)  /* the shared row budget */
-      + 2 * var(--qhead)            /* both section headers */
-      + var(--sp-5)                 /* gap between the two sections */
-      + 2 * var(--sp-2)             /* header -> list gap, each section */
-      + 2 * var(--sp-4)             /* the rail's own padding */
-    ),
-    100%
-  );
-
-  /* Hug that height instead of stretching to fill the grid row, so a tall
-     window leaves the space below the rail genuinely free. */
-  align-self: start;
-  /* Deliberately borderless and transparent so the rail blends into the page
-     rather than reading as a separate panel. The mobile sheet below re-adds a
-     surface background and top border, because there it IS an overlay. */
-  background: transparent;
 }
 
-.sidebar:focus { outline: none; }
+/* >=1100px: a grid column. Closed = gone; PlayerPage drops the column. */
+.panel { height: 100%; }
+.panel:not(.open) { display: none; }
 
-/* Sheet chrome is mobile-only; on desktop the panel is just a sidebar. */
-.sheetHead { display: none; }
+/* 768-1099px: a drawer from the right. */
+.drawer {
+  position: fixed;
+  top: var(--top-h);
+  right: var(--sp-2);
+  bottom: calc(var(--bar-h) + var(--sp-2));
+  width: min(var(--queue-w), calc(100vw - 2 * var(--sp-2)));
+  z-index: var(--z-sheet);
+  box-shadow: var(--pop-shadow);
+  transform: translateX(calc(100% + var(--sp-4)));
+  visibility: hidden;
+  transition: transform var(--d-2) var(--ease), visibility 0s linear var(--d-2);
+}
+.drawer.open {
+  transform: none;
+  visibility: visible;
+  transition: transform var(--d-3) var(--ease), visibility 0s;
+}
 
-/*
- * `min-height: 0` is the whole trick. A flex child defaults to
- * min-height:auto, which refuses to shrink below its content — so an inner
- * overflow:auto never engages and the content pushes the parent open instead.
- *
- * `flex: 1 1 auto` lets both sections start at their natural size and shrink
- * when they do not both fit. Shrinkage is proportional to content, so a long
- * queue gives up far more room than a short list of picks — which is the
- * behaviour we want: the picks stay roughly their natural size.
- */
-.section {
+/* <=767px: a bottom sheet. */
+.sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 88dvh;
+  z-index: var(--z-sheet);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  box-shadow: var(--pop-shadow);
+  transform: translateY(100%);
+  visibility: hidden;
+  transition: transform var(--d-2) var(--ease), visibility 0s linear var(--d-2);
+}
+.sheet.open {
+  transform: none;
+  visibility: visible;
+  transition: transform var(--d-3) var(--ease), visibility 0s;
+}
+.grab { display: grid; place-items: center; height: var(--sp-6); width: 100%; }
+.grab i { display: block; width: 36px; height: 4px; border-radius: 2px; background: var(--line-2); }
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-scrim);
+  border: 0;
+  padding: 0;
+  background: var(--scrim);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--d-2) var(--ease), visibility 0s linear var(--d-2);
+}
+.scrimOn {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity var(--d-3) var(--ease), visibility 0s;
+}
+
+/* ----------------------------------------------------------- contents */
+.head {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--sp-2);
-  flex: 1 1 auto;
+  padding: var(--sp-4) var(--sp-3) var(--sp-3) var(--sp-mid);
+}
+.sheet .head { padding-top: 0; }
+.heading { margin: 0; font-size: var(--fs-base); font-weight: 700; }
+.heading:focus { outline: none; }
+.headRight { display: flex; align-items: center; gap: var(--sp-2); }
+
+.scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 var(--sp-2) var(--sp-4);
+  scrollbar-gutter: stable;
   min-height: 0;
 }
-
-/* Headers stay pinned; only the list below them moves. */
-.sectionHead { flex: 0 0 auto; }
-
-/*
- * The queue is RIGID: it takes min(its content, 5 rows) and gives up nothing.
- * The picks absorb the whole shortfall instead, down to their 3-row floor.
- *
- * This ordering is the spec. Letting flex share the shortfall proportionally
- * — which is what it does by default, weighted by content size — crushed a
- * 20-track queue to 1.7 visible rows while the picks kept 6.3.
- */
-.section:first-of-type { flex: 0 0 auto; }
-.section:last-of-type { flex: 1 1 auto; }
-
-.section:first-of-type .list {
-  flex: 0 1 auto;
-  max-height: calc(5 * var(--qrow));
+.sheet .scroll {
+  padding-bottom: calc(var(--sp-5) + env(safe-area-inset-bottom));
+  scrollbar-gutter: auto;
 }
 
-/*
- * Picks: never fewer than 3 rows, and takes whatever the queue leaves. With
- * the budget above that lands on exactly the spec — a full queue gives 5 + 3,
- * an empty one gives the picks all 8.
- */
-.section:last-of-type .list {
-  flex: 1 1 auto;
-  min-height: calc(3 * var(--qrow));
+.sec { padding-top: var(--sp-3); }
+.sec + .sec { margin-top: var(--sp-2); border-top: 1px solid var(--line); }
+.secTitle {
+  margin: 0;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  padding: var(--sp-2) var(--sp-3);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
 }
+.secRight { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.count { font-weight: 600; letter-spacing: 0; text-transform: none; }
+.clear {
+  font: inherit;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-3);
+  background: none;
+  border: 0;
+  padding: 2px 6px;
+  border-radius: var(--r-xs);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.clear:hover { color: var(--text); }
+.secSub { margin: -4px 0 0; font-size: var(--fs-xs); color: var(--text-3); padding: 0 var(--sp-3) var(--sp-2); }
 
-/* Placeholders are fixed-size cards, never a scroll area. */
-.empty, .recsState { flex: 0 0 auto; }
+.list { margin: 0; padding: 0; list-style: none; }
 
-.sectionHead {
+.empty {
+  margin: var(--sp-1) var(--sp-2) var(--sp-2);
+  padding: var(--sp-4);
+  border-radius: var(--r-md);
+  border: 1px dashed var(--line-2);
+  text-align: center;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+.empty b { display: block; color: var(--text-2); font-weight: 600; margin-bottom: 2px; }
+
+.loading {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  min-height: 28px;
-}
-
-.sectionTitle {
-  flex: 1;
-  min-width: 0;
   margin: 0;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  font-weight: 500;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--text-3);
-}
-
-.count {
-  font-family: var(--mono);
-  font-size: 10px;
-  padding: 1px 7px;
-  border-radius: var(--radius-pill);
-  background: var(--accent-soft);
+  padding: 0 var(--sp-3) var(--sp-2);
+  font-size: var(--fs-sm);
   color: var(--text-2);
 }
+.loadingBit { width: 26px; height: 34px; }
+.note { margin: 0; padding: var(--sp-2) var(--sp-3); font-size: var(--fs-sm); color: var(--text-3); }
 
-.clear, .djToggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 9px;
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--border);
-  background: none;
-  color: var(--text-3);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease),
-              background var(--dur) var(--ease);
-}
-
-.clear:hover { color: var(--danger); border-color: var(--danger); }
-.djToggle:hover { color: var(--text-2); border-color: var(--border-strong); }
-
-.djDot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--text-4);
-  transition: background var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
-}
-
-.djOn {
-  color: var(--text);
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.djOn .djDot {
-  background: var(--accent);
-  box-shadow: 0 0 8px var(--accent-glow);
-}
-
-/* Tints the recs list while DJ mode is driving it, so it reads as a different
-   data source from plain "similar to this track". */
-/* DJ mode tints the recs section HEADER with an accent gradient
-   (legacy style.css:4051 .queue-section-recs.is-dj-active .queue-section-head).
-   Replaces an invented left-border treatment that legacy doesn't have. */
-.djActive .sectionHead {
-  background: linear-gradient(
-    90deg,
-    color-mix(in oklab, var(--vibe-accent, var(--accent)) 10%, transparent) 0%,
-    transparent 60%
-  );
-}
-
-.clear:focus-visible,
-.djToggle:focus-visible,
-.sheetClose:focus-visible,
-.fab:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-
-  /* The actual scroller. */
-  flex: 1 1 auto;
-  overflow-y: auto;
-  overscroll-behavior: contain; /* don't chain scroll to the page behind */
-
-  /* Floor, not a shrink-lock: an explicit min-height still allows shrinking
-     below content (which is all min-height:0 does), while stopping either
-     list from collapsing to nothing when the other is enormous. ~1.5 rows. */
-  min-height: 64px;
-
-  /* Room for the scrollbar so rows do not sit under it. */
-  padding-right: 2px;
-
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-strong) transparent;
-}
-
-/* WebKit needs the explicit parts; the two declarations above cover Firefox
-   and modern Chrome. */
-.list::-webkit-scrollbar { width: 8px; }
-.list::-webkit-scrollbar-track { background: transparent; }
-
-.list::-webkit-scrollbar-thumb {
-  border-radius: var(--radius-pill);
-  background: var(--border-strong);
-  /* Transparent border + background-clip insets the thumb inside the track,
-     so it reads as a floating pill rather than a full-width bar. */
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-
-.list::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in oklab, var(--vibe-accent, var(--accent)) 55%, var(--border-strong));
-  background-clip: padding-box;
-}
-
-.empty, .recsState {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-4) var(--sp-3);
-  border: 1px dashed var(--border);
-  border-radius: var(--radius);
-  text-align: center;
-}
-
-.emptyMsg { margin: 0; font-size: 12.5px; color: var(--text-2); }
-.emptyHint { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--text-4); }
-
-.spinner {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  border: 2px solid var(--border-strong);
-  border-top-color: var(--accent);
-  animation: spin 700ms linear infinite;
-}
-
-@keyframes spin { to { transform: rotate(360deg); } }
-
-@media (prefers-reduced-motion: reduce) {
-  .spinner { animation-duration: 2s; }
-}
-
-/* --------------------------------------------------------- drag artifacts */
-
-/* Ghost and indicator are appended to <body> by useQueueDrag, so they are
-   positioned against the viewport rather than any local stacking context. */
+/* ------------------------------------------- drag engine (useQueueDrag) */
 .ghost {
   position: fixed;
-  z-index: var(--z-overlay);
+  z-index: var(--z-pop);
   display: flex;
   align-items: center;
   gap: var(--sp-2);
   padding: var(--sp-2);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-strong);
-  background: var(--surface-2);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  border-radius: var(--r-md);
+  background: var(--raised);
+  box-shadow: var(--pop-shadow);
   pointer-events: none;
   opacity: 0.95;
 }
-
 .ghostArt {
   width: 34px;
   height: 34px;
   flex: none;
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-sm);
   object-fit: cover;
-  background: var(--surface);
+  background: var(--panel);
 }
-
 .ghostTitle {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
   color: var(--text);
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-.ghostSub { font-size: 11px; color: var(--text-3); }
-
+.ghostSub { font-size: var(--fs-xs); color: var(--text-3); }
 .dropIndicator {
   position: fixed;
-  z-index: var(--z-overlay);
+  z-index: var(--z-pop);
   height: 2px;
-  border-radius: 2px;
-  background: var(--accent);
-  box-shadow: 0 0 10px var(--accent-glow);
+  border-radius: 1px;
+  background: var(--acc);
   pointer-events: none;
   opacity: 0;
 }
-
-.isDragging { opacity: 0.4; }
+.isDragging { opacity: 0.5; }
 .dragActive { user-select: none; }
-
-/* ------------------------------------------------------------ mobile sheet */
-
-.scrim, .fab { display: none; }
-
-@media (max-width: 640px) {
-  .sidebar {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: var(--z-overlay);
-    width: auto;
-    max-height: 78vh;
-    padding-bottom: calc(var(--sp-5) + env(safe-area-inset-bottom, 0px));
-    border-left: 0;
-    border-top: 1px solid var(--border-strong);
-    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-    background: var(--surface);
-    box-shadow: 0 -18px 48px rgba(0, 0, 0, 0.55);
-    transform: translateY(100%);
-    visibility: hidden;
-    transition: transform var(--dur-slow) var(--ease-out), visibility var(--dur-slow);
-  }
-
-  .sheetOpen {
-    transform: translateY(0);
-    visibility: visible;
-  }
-
-  .sheetHead {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    align-items: center;
-    row-gap: var(--sp-2);
-    margin-bottom: var(--sp-1);
-    /* The grabber and close button must never be squeezed out when the sheet
-       is full — the lists below absorb the shortfall instead. */
-    flex: 0 0 auto;
-  }
-
-  .grabber {
-    grid-column: 1 / -1;
-    justify-self: center;
-    width: 36px;
-    height: 4px;
-    border-radius: var(--radius-pill);
-    background: var(--border-strong);
-  }
-
-  .sheetTitle { font-size: 14px; font-weight: 500; color: var(--text); }
-
-  .sheetClose {
-    display: grid;
-    place-items: center;
-    width: 32px;
-    height: 32px;
-    border: 0;
-    border-radius: 50%;
-    background: rgba(255, 255, 255, 0.06);
-    color: var(--text-2);
-    cursor: pointer;
-  }
-
-  .scrim {
-    display: block;
-    position: fixed;
-    inset: 0;
-    z-index: calc(var(--z-overlay) - 1);
-    border: 0;
-    padding: 0;
-    background: rgba(0, 0, 0, 0.55);
-    opacity: 0;
-    visibility: hidden;
-    transition: opacity var(--dur) var(--ease), visibility var(--dur);
-  }
-
-  .scrim[data-open='true'] { opacity: 1; visibility: visible; }
-
-  .fab {
-    display: grid;
-    place-items: center;
-    position: fixed;
-    right: var(--sp-4);
-    bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
-    z-index: var(--z-sticky);
-    width: 52px;
-    height: 52px;
-    border-radius: 50%;
-    border: 1px solid var(--border-strong);
-    background: var(--surface-2);
-    color: var(--text);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-    cursor: pointer;
-  }
-
-  .fabCount {
-    position: absolute;
-    top: -2px;
-    right: -2px;
-    min-width: 19px;
-    height: 19px;
-    padding: 0 5px;
-    display: grid;
-    place-items: center;
-    border-radius: var(--radius-pill);
-    background: var(--accent);
-    color: var(--bg);
-    font-family: var(--mono);
-    font-size: 10px;
-    font-weight: 600;
-  }
-}
-
-@media (max-width: 640px) and (prefers-reduced-motion: reduce) {
-  .sidebar, .scrim { transition: none; }
-}

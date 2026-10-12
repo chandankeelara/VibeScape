@@ -6,15 +6,33 @@ stage), then advances to the next stage. Each stage settles
 ingestion_status itself; there is no separate promote pass.
 Songs move through the pipeline in waves — not one-by-one.
 
-Wired stages:
-  preview   (ingest_pipeline/stage_preview.py)   — resolves preview_url
-  classify  (ingest_pipeline/stage_classify.py)  — MERT + vibe/mood + embeddings
-  youtube   (ingest_pipeline/stage_youtube.py)   — first ytsearch hit, no embed check
-  language  (ingest_pipeline/stage_language.py)  — Whisper language detection
+Wired stages, in order:
+  preview   (stage_preview.py)   — resolves a 30s preview URL
+  download  (stage_download.py)  — caches the audio locally
+  librosa   (stage_librosa.py)   — DSP feature bank
+  classify  (stage_classify.py)  — MERT: vibe/mood scalars + the 768-d vector
+  language  (stage_language.py)  — the stopping point; classifies nothing
+  fuse      (stage_fuse.py)      — builds the 788-d retrieval vector
+  youtube   (stage_youtube.py)   — first ytsearch hit, then settles ingestion_status
 
-Stage dependencies:
-  classify / language depend on preview_status='done'
-  youtube  is independent (uses title/artist only)
+Dependencies: preview -> download -> librosa -> classify -> fuse -> youtube
+is one armed chain. `language` sits outside it — since 2026-10-10 it is
+read off metadata rather than audio, so it needs no preview, no cached
+file and no GPU, and is armed at ingest entry in parallel with preview.
+
+A pipeline run STOPS at language. The stage classifies nothing; it only
+normalises every live row into one unambiguous waiting state,
+`language_status='pending'`. A Claude Code session then queries the
+database for those rows, reads title/artist/album, and writes the tag plus
+the `fuse_status='pending'` cascade (ingest_pipeline/language_tagging.py).
+The next run sees 'done' and proceeds to fuse → youtube.
+
+`fuse` gates strictly on language_status='done' — 20% of the fused vector
+is a language one-hot, so fusing early puts a track in the wrong region of
+the similarity space rather than merely a less precise one. That makes the
+tagging step load-bearing: untagged tracks never reach the DJ pool.
+`python scripts/language_tags.py --status` says how many are waiting and
+for how long.
 
 Usage:
     # One pass across all four stages, up to 50 rows per stage:
@@ -109,6 +127,15 @@ def select_cohort(conn, batch: int) -> list[int]:
                   "ml_status", "language_status", "fuse_status",
                   "youtube_status")
     armed = " OR ".join(f"{c} = 'pending'" for c in stage_cols)
+    # Legacy term: 'whisper_done' was the retired Whisper stage's terminal
+    # state (no producer since 2026-10-10). Those rows are usually
+    # ingestion_status='done' with nothing else armed, so without this they
+    # could never enter a cohort, LanguageStage could never normalise them
+    # to 'pending', and no tagging session would ever see them — while
+    # fuse, which now requires language_status='done' exactly, would refuse
+    # to re-fuse them. One term keeps them reachable.
+    armed += " OR language_status = 'whisper_done'"
+
     rows = conn.execute(
         "SELECT id FROM tracks "
         "WHERE ingestion_status = 'pending' OR ingestion_status IS NULL "

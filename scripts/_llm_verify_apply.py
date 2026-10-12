@@ -1,4 +1,11 @@
 """
+SUPERSEDED 2026-10-10. Language is no longer detected by Whisper and no
+longer passes through a file-based export/apply pair; the database is the
+queue and ingest_pipeline/language_tagging.py is the write path. This
+script selects on language_status='whisper_done', which has no producer
+any more. See ingest_pipeline/README.md, section Tagging languages.
+Kept only for a batch that was already in flight; delete after that.
+
 Apply LLM-produced language corrections from
 data/_llm_verify_corrections.json to local + Turso.
 

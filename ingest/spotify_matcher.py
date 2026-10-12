@@ -3,6 +3,8 @@ from typing import Optional
 
 import requests
 
+import spotify_guard  # every api.spotify.com call goes through it
+
 SEARCH_URL = "https://api.spotify.com/v1/search"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 
@@ -22,10 +24,13 @@ def _search(query: str, access_token: str) -> Optional[str]:
     headers = {"Authorization": f"Bearer {access_token}"}
     params = {"q": query, "type": "track", "limit": 1}
     for attempt in range(2):
-        r = requests.get(SEARCH_URL, headers=headers, params=params, timeout=15)
+        r = spotify_guard.get(SEARCH_URL, headers=headers, params=params, timeout=15)
         if r.status_code == 429:
-            retry_after = int(r.headers.get("Retry-After", "1"))
-            time.sleep(retry_after)
+            # This used to sleep the FULL Retry-After — 19.5 h during the
+            # 2026-10-10 block, hanging the offline pipeline. Short waits only.
+            if not spotify_guard.should_retry(r):
+                return None
+            time.sleep(int(r.headers.get("Retry-After", "1")))
             continue
         if r.status_code != 200:
             return None

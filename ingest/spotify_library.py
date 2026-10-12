@@ -4,6 +4,8 @@ from typing import Iterator, Optional
 
 import requests
 
+import spotify_guard  # every api.spotify.com call goes through it
+
 BASE = "https://api.spotify.com/v1"
 
 
@@ -101,15 +103,16 @@ def _get(url: str, token: str, params: Optional[dict] = None) -> dict:
     token = _normalize_token(token)
     headers = {"Authorization": f"Bearer {token}"}
     for attempt in range(3):
-        r = requests.get(url, headers=headers, params=params, timeout=20)
+        r = spotify_guard.get(url, headers=headers, params=params, timeout=20)
         if r.status_code == 401:
             _log.warning("spotify 401 on GET %s (token head=%s… len=%d) body=%s",
                          url, token[:8] if token else "", len(token or ""),
                          (r.text or "")[:200])
             raise SpotifyAuthError("spotify_token_expired")
         if r.status_code == 429:
-            retry = int(r.headers.get("Retry-After", "1"))
-            time.sleep(min(retry, 10))
+            if not spotify_guard.should_retry(r):
+                raise SpotifyAPIError("429: Spotify rate limit — not retrying a long block")
+            time.sleep(min(int(r.headers.get("Retry-After", "1")), 10))
             continue
         if r.status_code >= 500:
             time.sleep(1 + attempt)
@@ -313,12 +316,13 @@ def follow_playlist(playlist_id: str, user_token: str, public: bool = False) -> 
     }
     body = {"public": bool(public)}
     for attempt in range(2):
-        r = requests.put(url, headers=headers, json=body, timeout=15)
+        r = spotify_guard.put(url, headers=headers, json=body, timeout=15)
         if r.status_code in (200, 204):
             return "ok"
         if r.status_code == 429:
-            retry = int(r.headers.get("Retry-After", "1"))
-            time.sleep(min(retry, 10))
+            if not spotify_guard.should_retry(r):
+                return "other"
+            time.sleep(min(int(r.headers.get("Retry-After", "1")), 10))
             continue
         if r.status_code == 401:
             raise SpotifyAuthError("spotify_token_expired")
@@ -342,7 +346,7 @@ def probe_playlist_tracks(playlist_id: str, token: str) -> int:
     """
     token = _normalize_token(token)
     url = f"{BASE}/playlists/{playlist_id}/items"
-    r = requests.get(
+    r = spotify_guard.get(
         url,
         headers={"Authorization": f"Bearer {token}"},
         params={"limit": 1, "fields": "total"},
@@ -370,7 +374,7 @@ def fetch_public_playlist_tracks(playlist_id: str, app_token: str) -> list[dict]
     headers = {"Authorization": f"Bearer {app_token}"}
     while url:
         for attempt in range(3):
-            r = requests.get(url, headers=headers, params=params, timeout=20)
+            r = spotify_guard.get(url, headers=headers, params=params, timeout=20)
             if r.status_code == 404:
                 raise PlaylistNotFoundError(f"playlist_not_found: {playlist_id}")
             if r.status_code in (401, 403):
@@ -380,8 +384,9 @@ def fetch_public_playlist_tracks(playlist_id: str, app_token: str) -> list[dict]
                 # both 401 and 403 as `playlist_private` for the caller.
                 raise PlaylistPrivateError(f"playlist_private: {playlist_id}")
             if r.status_code == 429:
-                retry = int(r.headers.get("Retry-After", "1"))
-                time.sleep(min(retry, 10))
+                if not spotify_guard.should_retry(r):
+                    raise SpotifyAPIError("429: Spotify rate limit — not retrying a long block")
+                time.sleep(min(int(r.headers.get("Retry-After", "1")), 10))
                 continue
             if r.status_code >= 500:
                 time.sleep(1 + attempt)

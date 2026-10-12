@@ -72,8 +72,11 @@ STATUS_FAILED = "failed"
 # --retry-failed still knows where to resume.
 def stage_error_status(stage_name: str) -> str:
     return f"{stage_name}_stage_error"
-# Used by language_status: Whisper produced a tag but LLM hasn't verified yet.
-# The language_verify stage transitions whisper_done → done.
+# RETIRED 2026-10-10 with the Whisper language stage. It meant "Whisper
+# produced a tag but nothing has verified it", and nothing writes it any
+# more. LanguageStage normalises leftover rows in this state back to
+# 'pending' so a tagging session can find them with one predicate; see
+# ingest_pipeline/language_tagging.py.
 STATUS_WHISPER_DONE = "whisper_done"
 
 
@@ -137,11 +140,11 @@ class Stage(ABC):
     arms: tuple[str, ...] = ()
 
     # Which of this stage's statuses count as "succeeded" for arming.
-    # Defaults to 'done'. LanguageStage overrides it because its success
-    # is spelled 'whisper_done' (Whisper ran; LLM verification still
-    # outstanding) and because 'no_match' — ran, too little confidence —
-    # must not stall the chain either: the fused vector simply falls back
-    # to the 'other' language bucket.
+    # Defaults to 'done' and no stage overrides it any more. LanguageStage
+    # used to, because Whisper's success was spelled 'whisper_done'; it
+    # now arms nothing at all — the arming moves to the moment a tagging
+    # session writes the tag (language_tagging.tag), which is the only
+    # point at which fuse could act on it.
     arms_on: tuple[str, ...] = (STATUS_DONE,)
 
     # Stage status -> the ingestion_status it settles the whole track on.

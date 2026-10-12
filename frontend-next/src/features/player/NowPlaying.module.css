@@ -1,0 +1,118 @@
+.np {
+  position: relative;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: var(--panel);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/* The art-colour tint: static, two layers for a crossfade on track change.
+   Generated at a fixed LOW (dark) / HIGH (light) lightness so text on the
+   brightest point still clears AA — see tintFor() in lib/vibe.js. */
+.tint { position: absolute; inset: 0; z-index: -1; pointer-events: none; }
+.tint > div { position: absolute; inset: 0; }
+.tintIn { animation: tintIn var(--d-fade) var(--ease) both; }
+@keyframes tintIn { from { opacity: 0; } }
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  min-height: 60px;
+  padding: var(--sp-3) var(--sp-5) 0 var(--sp-10);
+}
+.headLeft { display: flex; align-items: center; gap: var(--sp-2); }
+.from { margin: 0; font-size: var(--fs-sm); color: var(--text-3); display: flex; align-items: center; gap: 6px; }
+.from b { color: var(--text-2); font-weight: 600; }
+.phoneOnly { display: none !important; }
+
+.scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  padding: var(--sp-2) var(--sp-10) var(--sp-8);
+}
+
+.hero {
+  --stage-w: clamp(280px, min(32vw, 42vh), 400px);
+  display: grid;
+  grid-template-columns: var(--stage-w) minmax(0, 1fr);
+  gap: var(--sp-10);
+  align-items: center;
+}
+.isVideo .hero { --stage-w: min(56%, 560px); }
+
+.meta { min-width: 0; display: flex; flex-direction: column; gap: var(--sp-5); }
+.side { display: flex; flex-direction: column; gap: var(--sp-3); }
+.phTransport { display: none; }
+
+.recent { margin-top: var(--sp-5); }
+
+/* Theater: the video takes the whole column; meta and vibe fold into two
+   columns below. Height-led width, so YouTube never pillarboxes. */
+.isTheater .hero { grid-template-columns: minmax(0, 1fr); gap: var(--sp-5); }
+.isTheater .stage {
+  --th-h: calc(100dvh - var(--top-h) - var(--bar-h) - 64px - 56px);
+  width: min(100%, calc(var(--th-h) * 16 / 9));
+  justify-self: center;
+}
+.isTheater .meta {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 400px);
+  gap: var(--sp-5) var(--sp-10);
+  align-items: start;
+}
+
+/* Narrower desktop: tighter gutters. */
+@media (max-width: 1279px) {
+  .head { padding-left: var(--sp-5); }
+  .scroll { padding-left: var(--sp-5); padding-right: var(--sp-5); }
+  .hero { gap: var(--sp-6); }
+}
+@media (max-width: 1023px) and (min-width: 768px) {
+  .hero, .isVideo .hero { grid-template-columns: minmax(0, 1fr); }
+  .stage { width: min(100%, 420px); justify-self: center; }
+  .isVideo .stage { width: 100%; }
+}
+
+/* Phone: a full-screen view that slides up from the mini-player. Same element
+   as desktop — the video never moves. */
+@media (max-width: 767px) {
+  .np {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-np);
+    border-radius: 0;
+    transform: translateY(100%);
+    visibility: hidden;
+    transition: transform var(--d-2) var(--ease), visibility 0s linear var(--d-2);
+  }
+  .phoneOpen {
+    transform: none;
+    visibility: visible;
+    transition: transform var(--d-3) var(--ease), visibility 0s;
+  }
+  .head {
+    display: grid;
+    grid-template-columns: var(--hit-min) 1fr var(--hit-min);
+    padding: env(safe-area-inset-top) var(--sp-2) 0;
+    min-height: 56px;
+  }
+  .headLeft { justify-content: center; }
+  .phoneOnly { display: inline-grid !important; }
+  .deskOnly { display: none !important; }
+  .scroll { padding: var(--sp-3) var(--sp-5) var(--sp-8); scrollbar-gutter: auto; }
+  .hero, .isVideo .hero { grid-template-columns: minmax(0, 1fr); gap: var(--sp-5); }
+  .stage { width: min(100%, 36dvh); justify-self: center; }
+  .isVideo .stage { width: 100%; }
+  .meta { gap: var(--sp-3); }
+  .phTransport { display: block; margin-top: var(--sp-2); }
+  .phButtons { display: flex; align-items: center; justify-content: center; gap: var(--sp-5); margin-top: var(--sp-1); }
+  .side { margin-top: var(--sp-3); gap: var(--sp-2); }
+  .recent { display: none; }
+}

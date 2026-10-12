@@ -1,0 +1,79 @@
+import { usePlayer } from '../../state/PlayerContext';
+import { trackKey } from '../../lib/vibe';
+import { QueueRow, useQueueState } from '../queue';
+import ui from '../../ui/controls.module.css';
+import RecentTrail from './RecentTrail';
+import styles from './PhoneHome.module.css';
+
+/**
+ * Phone only: the home list behind the mini-player (S2). Recently played as
+ * shortcuts, then Up next and For this track — the same lists the queue sheet
+ * shows, read from the same QueueStateProvider, so there is one DJ.
+ *
+ * Hidden above 767px by its own CSS; on desktop the now-playing panel and
+ * the queue column carry all of this.
+ */
+export default function PhoneHome() {
+  const { queue, reorderQueue, current } = usePlayer();
+  const { recs, recsLoading, jumpTo, removeAt, playRec, addRec, consumingKey } = useQueueState();
+
+  return (
+    <section className={styles.home} aria-label="Home">
+      <RecentTrail variant="shortcuts" className={styles.block} />
+
+      <div className={styles.block}>
+        <div className={ui.secHead}>
+          <h2 className={ui.secTitle}>Up next</h2>
+          {queue.length > 0 && <span className={ui.secAside}>{queue.length} track{queue.length === 1 ? '' : 's'}</span>}
+        </div>
+        {queue.length === 0 ? (
+          <p className={styles.empty}>Nothing queued. Add songs from search or from the picks below.</p>
+        ) : (
+          <ol className={styles.list}>
+            {queue.map((t, i) => (
+              <QueueRow
+                key={`${trackKey(t)}:${i}`}
+                track={t}
+                index={i}
+                kind="queue"
+                draggable={false}
+                onActivate={jumpTo}
+                onAction={removeAt}
+                onMove={reorderQueue}
+              />
+            ))}
+          </ol>
+        )}
+      </div>
+
+      {current && (
+        <div className={styles.block}>
+          <div className={ui.secHead}>
+            <h2 className={ui.secTitle}>For this track</h2>
+            <span className={ui.secAside}>by sound</span>
+          </div>
+          {recsLoading ? (
+            <p className={styles.empty}>Finding similar songs…</p>
+          ) : recs.length === 0 ? (
+            <p className={styles.empty}>No similar tracks in your library yet.</p>
+          ) : (
+            <ul className={styles.list}>
+              {recs.map((t, i) => (
+                <QueueRow
+                  key={trackKey(t)}
+                  track={t}
+                  index={i}
+                  kind="rec"
+                  draggable={false}
+                  onActivate={playRec}
+                  onAction={addRec}
+                  consuming={consumingKey === trackKey(t)}
+                />
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}

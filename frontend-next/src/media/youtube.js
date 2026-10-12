@@ -11,6 +11,8 @@
  *     <div id="ytPlayer"> and never keys or conditionally unmounts it.
  */
 
+import * as volume from './volume';
+
 export const MOUNT_ID = 'ytPlayer';
 
 // The node YT.Player actually consumes. It is created HERE, imperatively,
@@ -29,6 +31,20 @@ export const MOUNT_ID = 'ytPlayer';
 // So React owns the OUTER div (#ytPlayer, rendered with no children, so
 // React never reconciles inside it) and YouTube destroys this inner one.
 const TARGET_ID = 'ytPlayerTarget';
+
+/**
+ * YT takes 0..100 and has a separate mute flag. Mute is used for 0 rather
+ * than setVolume(0) alone, so YouTube's own control bar shows the muted icon
+ * instead of a full-looking slider at zero.
+ */
+function applyVolume(v) {
+  const p = video.player;
+  if (!p || !video.ready) return;
+  try {
+    p.setVolume(Math.round(v * 100));
+    if (v <= 0) p.mute(); else p.unMute();
+  } catch { /* iframe torn down */ }
+}
 
 const YT_ERROR_MSG = {
   2: 'Invalid video reference',
@@ -49,6 +65,8 @@ const video = {
 };
 
 // Host callbacks, wired by player.js so this module stays UI-agnostic.
+volume.registerSink((v) => applyVolume(v));
+
 let handlers = { onPlaying: () => {}, onPaused: () => {}, onEnded: () => {}, onError: () => {}, onTime: () => {} };
 
 export function setHandlers(h) {
@@ -92,6 +110,7 @@ export function createPlayer() {
       events: {
         onReady: () => {
           video.ready = true;
+          applyVolume(volume.effectiveVolume());
           if (video.pendingVideoId) {
             const id = video.pendingVideoId;
             video.pendingVideoId = null;

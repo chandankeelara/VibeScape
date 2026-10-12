@@ -2,8 +2,9 @@ import { usePlayer } from '../../state/PlayerContext';
 import styles from './TransportButtons.module.css';
 
 /**
- * prev / play-pause / next — one implementation, used by both `Transport`
- * (normal layout) and `TheaterBar`.
+ * prev / play-pause / next for the PiP miniplayer (MiniPlayer.jsx), which
+ * renders into a second document with its own copied styles. The main player
+ * uses the S2 versions in Transport.jsx.
  *
  * Returns a FRAGMENT on purpose: the caller's flex row stays the direct
  * parent, so `.controls` keeps owning the spacing exactly as it did when

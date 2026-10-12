@@ -193,7 +193,7 @@ def _seed_default_user(conn: sqlite3.Connection) -> int:
     if row:
         return int(row[0])
     cur = conn.execute(
-        "INSERT INTO users (display_name, pin_hash) VALUES (?, NULL)",
+        "INSERT INTO users (display_name) VALUES (?)",
         (DEFAULT_USER_NAME,),
     )
     conn.commit()
@@ -584,7 +584,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE tracks ADD COLUMN spotify_id TEXT",
         "ALTER TABLE tracks ADD COLUMN classification_source TEXT",
         "ALTER TABLE tracks ADD COLUMN chroma_mean_json TEXT",
-        "ALTER TABLE tracks ADD COLUMN user_id INTEGER",
+        # NOT "ADD COLUMN user_id" (removed 2026-10-10). Adding it to a fresh
+        # schema.sql database flipped it onto the legacy per-user path below,
+        # which rebuilt `tracks` without `language`, so the third get_conn()
+        # died on schema.sql's language index. Production (Turso) has no
+        # tracks.user_id and runs fine. A DB that already has the column
+        # (every existing dev DB) is unaffected. tests/database covers this.
         "ALTER TABLE tracks ADD COLUMN youtube_id TEXT",
         "ALTER TABLE tracks ADD COLUMN youtube_queried_at TIMESTAMP",
         "ALTER TABLE tracks ADD COLUMN energy_pred REAL",
@@ -940,6 +945,25 @@ def ensure_db():
         conn.close()
 
 
+# Columns added to existing telemetry tables after they first shipped, in
+# order. Shared with scripts/_turso_migrate_telemetry_v2.py so local and
+# production cannot be widened differently.
+TRACK_EVENTS_ADDED_COLUMNS = (
+    ("vibe_source", "TEXT"),
+    ("dj_mode", "INTEGER"),
+    # telemetry v2, 2026-10-10
+    ("listened_ms", "INTEGER"),
+    ("end_trigger", "TEXT"),
+    ("playback", "TEXT"),
+    ("session_id", "TEXT"),
+    ("tz_offset_min", "INTEGER"),
+    ("data", "TEXT"),
+)
+USER_TRACK_STATS_ADDED_COLUMNS = (
+    ("total_listened_ms", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+
 def _migrate_telemetry(conn: sqlite3.Connection) -> None:
     """Bring the listening-event tables up to the current shape.
 
@@ -961,9 +985,17 @@ def _migrate_telemetry(conn: sqlite3.Connection) -> None:
     allowed to be disposable.
     """
     if _table_exists(conn, "track_events"):
-        for col, decl in (("vibe_source", "TEXT"), ("dj_mode", "INTEGER")):
+        for col, decl in TRACK_EVENTS_ADDED_COLUMNS:
             if not _has_column(conn, "track_events", col):
                 conn.execute(f"ALTER TABLE track_events ADD COLUMN {col} {decl}")
+
+    # Telemetry v2 widened the cache by one counter. A plain ADD COLUMN is
+    # enough here (unlike the label split below): existing rows read 0 until
+    # scripts/rebuild_user_track_stats.py --apply recomputes them.
+    if _table_exists(conn, "user_track_stats"):
+        for col, decl in USER_TRACK_STATS_ADDED_COLUMNS:
+            if not _has_column(conn, "user_track_stats", col):
+                conn.execute(f"ALTER TABLE user_track_stats ADD COLUMN {col} {decl}")
 
     # u_play_count is the marker for the preference/reward split. Its absence
     # means the pre-split shape.

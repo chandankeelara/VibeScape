@@ -1,6 +1,7 @@
 import { memo } from 'react';
-import { isMetadataOnly } from '../../lib/vibe';
+import { isMetadataOnly, trackAccentStyle } from '../../lib/vibe';
 import { trackVibe } from './trackVibe';
+import { languageLabel } from '../queue/labels';
 import { PlusIcon } from './icons';
 import styles from './TrackRow.module.css';
 
@@ -44,6 +45,8 @@ function TrackRow({
   const title = track.title || '(unknown)';
   const artist = track.artist || '';
   const album = track.album || '';
+  // Two-letter code in the badge; the full name lives in the title tooltip.
+  const lang = track.language ? String(track.language).trim().slice(0, 4).toUpperCase() : '';
   const interactive = typeof onActivate === 'function';
 
   const rowClass = [
@@ -101,43 +104,47 @@ function TrackRow({
       <div className={styles.body}>
         <div className={styles.titleRow}>
           <span className={styles.title}>{title}</span>
-          {vibe != null && (
-            <span className={styles.vibe} data-vibe={vibe} title="predicted vibe">
-              vibe {vibe}
-            </span>
-          )}
-          {isMetadataOnly(track) && (
-            <span
-              className={styles.sdkOnly}
-              title="No local audio — playable only via Spotify Premium"
-            >
-              sdk-only
-            </span>
-          )}
         </div>
         <div className={styles.sub}>
-          {artist}
-          {artist && album ? ' · ' : ''}
-          {album}
+          {/* Coloured by the TRACK's own score, never the global vibe — a
+              "VIBE 61" badge that changed colour with the slider would show
+              one song in two colours. Unscored tracks get no badge rather
+              than an invented number. */}
+          {vibe != null && (
+            <span className={`${styles.badge} ${styles.vibe}`} style={trackAccentStyle(vibe)} title="Measured energy">
+              VIBE {vibe}
+            </span>
+          )}
+          {lang && <span className={styles.badge} title={languageLabel(track.language)}>{lang}</span>}
+          {isMetadataOnly(track) && (
+            <span className={styles.badge} title="No local audio — playable only via Spotify Premium">
+              SDK only
+            </span>
+          )}
+          <span className={styles.subText}>
+            {artist}
+            {artist && album ? ' · ' : ''}
+            {album}
+          </span>
         </div>
       </div>
 
       {onQueue && (
         <button
-          className={`${styles.queue} ${busy === 'queue' ? styles.busy : ''}`}
+          className={`${styles.iconBtn} ${busy === 'queue' ? styles.busy : ''}`}
           type="button"
           disabled={busy === 'queue'}
           aria-label={`Add ${title} to queue`}
           title="Add to queue"
           onClick={stop(onQueue)}
         >
-          <PlusIcon />
+          <PlusIcon size={18} />
         </button>
       )}
 
       {variant === 'spotify' && (
         inLibrary ? (
-          <span className={`${styles.badge} ${styles.badgeLib}`}>in library</span>
+          <span className={styles.inLib}>In library</span>
         ) : onAdd ? (
           <button
             className={`${styles.add} ${busy === 'add' ? styles.busy : ''}`}
@@ -145,7 +152,7 @@ function TrackRow({
             disabled={busy === 'add'}
             onClick={stop(onAdd)}
           >
-            <PlusIcon />
+            <PlusIcon size={16} />
             <span>{busy === 'add' ? 'Adding…' : 'Add'}</span>
           </button>
         ) : null
