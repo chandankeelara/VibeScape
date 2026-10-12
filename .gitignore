@@ -62,3 +62,7 @@ ml/experiments/
 
 # Dated production snapshots — local only, never committed
 data/backups/
+
+# Design review screenshots and the scripts that took them — regenerable, ~76 MB
+design/*/shots/
+design/*/tmp/
