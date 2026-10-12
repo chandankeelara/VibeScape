@@ -542,7 +542,7 @@ Two ops helpers exist for offline maintenance:
 
 Grouped by what they buy you:
 
-- **Torch-free API container.** Cloud Run stays at 512 MB / 1 CPU / scale-to-zero because it never imports `torch`, `librosa`, or ffmpeg beyond ingest. Only 6 pip deps land in prod (`fastapi / uvicorn / requests / modal / python-dotenv / numpy`). Every GPU op goes through the `ml_backend.py` dispatcher to Modal.
+- **Torch-free API container.** Cloud Run stays at 512 MB / 1 CPU / scale-to-zero because it never imports `torch`, `librosa`, or ffmpeg beyond ingest. Only 7 pip deps land in prod (`fastapi / uvicorn / requests / modal / python-dotenv / numpy / yt-dlp`); yt-dlp is pure Python and only reads YouTube playlist metadata. Every GPU op goes through the `ml_backend.py` dispatcher to Modal.
 - **DB-as-queue via per-stage status columns.** No external queue (SQS/Celery/Redis). The `tracks.<stage>_status` columns *are* the work queue — `SELECT ... WHERE status='pending' LIMIT N` is the claim protocol. Weaker semantics than SQS (no leases, single-worker-per-stage today), but correct for the actual workload and dependency-free.
 - **Cascade rules keep pending counts meaningful.** `preview_status='no_match'` cascading to `download_status`, and `download_status='no_match'` cascading to `ml/language/embedding` prevents rows sitting `pending` forever waiting on audio that will never arrive. Without this the pipeline metrics lie.
 - **Strict cache gate, no URL fallback.** Downstream stages require `download_status='done' AND audio_path IS NOT NULL`. Missing audio propagates as a `no_match` cascade instead of silently retrying — failures visible instead of hidden.

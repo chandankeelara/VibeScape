@@ -22,7 +22,8 @@ RUN pip install --no-cache-dir \
     "requests>=2.31.0" \
     "modal>=0.63.0" \
     "python-dotenv>=1.0.0" \
-    "numpy>=1.24"
+    "numpy>=1.24" \
+    "yt-dlp>=2026.8.19"
 
 COPY backend/ /app/backend/
 COPY ingest/ /app/ingest/
