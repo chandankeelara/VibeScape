@@ -386,6 +386,9 @@ python scripts/run_ingest_v2.py --loop --batch 30 --interval 30
 
 # Restrict to a subset of stages:
 python scripts/run_ingest_v2.py --stages preview,download,classify
+
+# Only the library-wide score recompute (runs on its own after a scoring pass, or once when --loop drains):
+python scripts/run_ingest_v2.py --recompute-only
 ```
 
 The orchestrator is a thin loop over `Stage.run_batch()` calls followed by `promote()`. Stages are stateless — swap in Modal-backed classify/language stages later by changing `ml_backend` mode without touching orchestration.
