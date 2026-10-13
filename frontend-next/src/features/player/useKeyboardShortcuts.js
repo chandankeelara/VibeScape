@@ -39,8 +39,10 @@ export default function useKeyboardShortcuts({ onToggleMetrics, onToggleHelp, on
           break;
         case 'ArrowRight': e.preventDefault(); next(); break;
         case 'ArrowLeft':  e.preventDefault(); prev(); break;
-        case 'ArrowUp':    e.preventDefault(); shiftVibe(5);  fetchForVibe(); break;
-        case 'ArrowDown':  e.preventDefault(); shiftVibe(-5); fetchForVibe(); break;
+        // shiftVibe returns the new value; fetchForVibe() with no argument
+        // would use the render-time vibe, i.e. the one just left.
+        case 'ArrowUp':    e.preventDefault(); fetchForVibe(shiftVibe(5));  break;
+        case 'ArrowDown':  e.preventDefault(); fetchForVibe(shiftVibe(-5)); break;
         case 'Home':       e.preventDefault(); seek(0); break;
         case 'End':        e.preventDefault(); seek(1); break;
         case '?':          e.preventDefault(); onToggleHelp?.(); break;
