@@ -48,6 +48,7 @@ with fakes; no test needs a network.
 | iTunes preview matcher | `ingest/test_preview_matcher.py` | an album neighbour is never the song, accents and ` - ` / `(From ...)` suffixes, a shared film name is not a match, 8D / slowed / reprise are different recordings, artist overlap, length tolerance |
 | Schema | `database/test_schema.py` | applies and re-applies, no `;` in comments breaks the Turso scripts' split (commit 322c7c1), fresh bootstrap survives many connections and keeps the production shape, old telemetry tables are widened in place |
 | Cache = rebuild | `database/test_rollup_rebuild.py` | randomised sessions: the inline `user_track_stats` equals `scripts/rebuild_user_track_stats.py` |
+| Sync job | `frontend/syncJobProvider.test.jsx` | a job `note` becomes a toast instead of crashing the poll effect (the real `ToastProvider`, only the API and the player mocked), once per job |
 | DJ event log | `frontend/dj.test.js` | append-only log, cap, v3 migration, request body |
 | Listening log | `frontend/listenLog.test.js` | audible time excludes pauses and seeks, envelope, triggers, killed-tab recovery, a live tab is never recovered, sessions |
 | Spotify tokens | `frontend/spotifyTokens.test.js` | refresh near expiry, PKCE vs server, single flight, refusal vs network failure, another tab's rotation |
@@ -62,7 +63,7 @@ fails (2026-10-10).
 
 ## Not covered yet
 
-React components (no DOM test environment is set up), the Turso transport
+React components beyond `SyncJobProvider`, the Turso transport
 (`db_client` over Hrana), the offline ingest pipeline apart from the preview
 matcher, and the Flutter app.
 
@@ -75,3 +76,9 @@ embedding groups). Frontend: no bare `import ... from 'vitest'` (files here sit
 outside the package) — `describe` / `it` / `expect` / `vi` are globals, and
 `tests/frontend/setup.js` gives each test a fresh `localStorage`, `window`
 and `document`.
+
+A component test is a `.test.jsx` file that starts with
+`// @vitest-environment jsdom`; it then gets a real DOM (`setup.js` leaves
+it alone) and `@testing-library/react`. Bare imports of `react`,
+`react-dom`, `@tanstack/react-query` and `@testing-library/react` resolve
+through aliases in `vitest.config.js`; add any other package there.
