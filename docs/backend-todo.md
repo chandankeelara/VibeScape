@@ -183,6 +183,20 @@ on the copy: 288 duplicates removed, events 3998 → 3998, stats equal a fresh
 rebuild. **Not yet run against Turso, not even dry** — its connection and the
 `--turso` rebuild path are untested.
 
+### 1.10 ~~Clearing a library deleted the caller's listening history~~ — DONE (2026-10-13)
+`backend/app.py` `ingest_clear`
+
+**verified by reading the code and schema.sql; covered by
+`tests/backend/test_ingest_clear.py`.** `POST /api/ingest/clear` deleted the
+caller's `user_tracks`, then every track no other user still linked, then its
+audio file. On Turso (foreign keys on) `track_events`, `user_track_stats` and
+`track_embeddings` cascade from `tracks(id)`, so a clear erased the caller's
+history and the track's MERT/fused vectors. The endpoint now removes
+`user_tracks` only; `tracks_pruned` and `audio_files_removed` stay in the
+body, always 0. Catalogue rows nobody links now accumulate; if they ever need
+pruning, that is an offline admin script that keeps history, not this
+endpoint.
+
 ---
 
 ## 2. Will break
@@ -223,8 +237,6 @@ against no transaction and swallows the error. Concretely, on Turso:
   between them leaves a catalogue row no user references and the user without
   the track — permanently, since `_process_track` short-circuits on
   `SELECT … FROM tracks WHERE spotify_id = ?` on the next attempt.
-- `ingest_clear` (`backend/app.py:2563`) deletes `user_tracks` then loops
-  deleting `tracks` row by row with no way to roll back a partial run.
 - `scripts/_dedupe_turso_by_isrc.py:219-220` deletes a track's embeddings and
   then the track as two separate commits.
 

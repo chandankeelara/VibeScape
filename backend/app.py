@@ -3427,51 +3427,33 @@ def spotify_search(
 
 @app.post("/api/ingest/clear")
 def ingest_clear(sess: dict = Depends(require_user)):
-    """Clear only the caller's library membership. Global tracks that no
-    other user still references are pruned in a second pass along with
-    their on-disk audio files."""
+    """Remove the caller's library links (`user_tracks`) and nothing else.
+
+    Catalogue rows are kept on purpose (2026-10-13). `tracks` is a global,
+    song-level catalogue shared by every user, and on Turso, where foreign
+    keys are enforced, `track_events`, `user_track_stats` and
+    `track_embeddings` all reference `tracks(id) ON DELETE CASCADE`. This
+    endpoint used to delete every track no other user still linked, plus its
+    audio file, which permanently erased the caller's listening history
+    (append-only, the source of truth) and the track's GPU-computed
+    embeddings. Orphan catalogue rows, if they ever need cleaning, are an
+    offline admin job, not a side effect of a user action.
+
+    `tracks_pruned` and `audio_files_removed` are always 0 and kept only so
+    existing clients that parse the body keep working.
+    """
     conn = get_conn()
     try:
         n = conn.execute(
             "SELECT COUNT(*) FROM user_tracks WHERE user_id = ?", (sess["user_id"],)
         ).fetchone()[0]
-        my_track_ids = [r[0] for r in conn.execute(
-            "SELECT track_id FROM user_tracks WHERE user_id = ?",
-            (sess["user_id"],),
-        ).fetchall()]
         conn.execute("DELETE FROM user_tracks WHERE user_id = ?", (sess["user_id"],))
-        conn.commit()
-
-        removed_tracks = 0
-        removed_files = 0
-        for tid in my_track_ids:
-            still = conn.execute(
-                "SELECT 1 FROM user_tracks WHERE track_id = ? LIMIT 1", (tid,),
-            ).fetchone()
-            if still:
-                continue
-            row = conn.execute(
-                "SELECT audio_path FROM tracks WHERE id = ?", (tid,),
-            ).fetchone()
-            audio = row["audio_path"] if row else None
-            conn.execute("DELETE FROM tracks WHERE id = ?", (tid,))
-            removed_tracks += 1
-            if not audio:
-                continue
-            resolved = _resolve_audio_path(audio)
-            if resolved and resolved.exists() and resolved.is_file():
-                try:
-                    resolved.unlink()
-                    removed_files += 1
-                except OSError as e:
-                    log.warning("failed to unlink %s: %s", resolved, e)
         conn.commit()
     finally:
         conn.close()
 
-    log.info("ingest/clear user=%s removed %d user_tracks, pruned %d orphan tracks, %d audio files",
-             sess["user_id"], n, removed_tracks, removed_files)
-    return {"cleared": int(n), "tracks_pruned": removed_tracks, "audio_files_removed": removed_files}
+    log.info("ingest/clear user=%s removed %d user_tracks", sess["user_id"], n)
+    return {"cleared": int(n), "tracks_pruned": 0, "audio_files_removed": 0}
 
 
 class IngestSources(BaseModel):
