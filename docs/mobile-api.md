@@ -125,7 +125,7 @@ Two independent auth surfaces the mobile client must handle:
 | GET | `/api/tracks/{track_key}/similar` | `limit=8` (1–25) | `{anchor:{spotify_id,apple_id,mood}, tracks: TrackRow[]}` — L1-distance similarity across ML features + mood match bonus. |
 | GET | `/api/tracks/{track_key}/features` | — | Full librosa feature blob + axes for one track. |
 | GET | `/api/track/{apple_id}/spotify` | — | `{spotify_id, uri}` — resolve legacy apple_id → Spotify URI. |
-| POST | `/api/recompute-scores` | — | `{updated, activation_stats, mood_distribution}` — re-run scoring across the library (cheap; no audio re-analysis). |
+| POST | `/api/recompute-scores` | — | `{updated, written, unchanged, activation_stats, mood_distribution}` — **admin only** (403 `admin_only` otherwise). Re-runs scoring across the **global** catalogue, not the caller's library; no audio re-analysis, unchanged rows are not written. The offline pipeline runs the same thing after it scores tracks, so clients have no reason to call it. |
 
 `TrackRow` (columns are fixed and returned for every `list_tracks` /
 `search_tracks` / `similar_tracks` etc. response — see

@@ -46,6 +46,7 @@ with fakes; no test needs a network.
 | Spotify refresh | `backend/test_spotify_refresh.py` | session required, secret sent only server-side, rotation passed through, refusal is a 400 |
 | Library search | `backend/test_library_search.py` | typos and partial words, language by name, every word required across fields, own songs above features, phrase above scattered words, only the caller's analysed tracks |
 | Spotify rate-limit guard | `backend/test_spotify_guard.py` | one 429 holds every later call with no request, counts down and lifts, never shortens, library/matcher/importer fail fast instead of sleeping, `/api/spotify/status` |
+| Score recompute | `backend/test_recompute_scores.py`, `ingest/test_runner_recompute.py` | same values as the function it replaced, unchanged rows are not rewritten, the endpoint is admin-only and global, an import job leaves catalogue scores alone, the runner recomputes only after librosa or classify finished a row, `--recompute-only` |
 | iTunes preview matcher | `ingest/test_preview_matcher.py` | an album neighbour is never the song, accents and ` - ` / `(From ...)` suffixes, a shared film name is not a match, 8D / slowed / reprise are different recordings, artist overlap, length tolerance |
 | Schema | `database/test_schema.py` | applies and re-applies, no `;` in comments breaks the Turso scripts' split (commit 322c7c1), fresh bootstrap survives many connections and keeps the production shape, old telemetry tables are widened in place |
 | Cache = rebuild | `database/test_rollup_rebuild.py` | randomised sessions: the inline `user_track_stats` equals `scripts/rebuild_user_track_stats.py` |
@@ -66,7 +67,7 @@ fails (2026-10-10).
 
 React components beyond `SyncJobProvider`, the Turso transport
 (`db_client` over Hrana), the offline ingest pipeline apart from the preview
-matcher, and the Flutter app.
+matcher and the runner's recompute trigger, and the Flutter app.
 
 ## Writing a test
 

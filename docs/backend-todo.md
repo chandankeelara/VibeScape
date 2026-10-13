@@ -33,34 +33,44 @@ Audit date: 2026-10-02. No automated tests exist anywhere in the repo
 
 ## 1. Broken now
 
-### 1.1 `/api/recompute-scores` rewrites every track in the database, for every user
-`backend/app.py:1901` (`del user_id`), called from `backend/app.py:1959`,
-`backend/app.py:3000`, `backend/app.py:3311`
+### 1.1 ~~`/api/recompute-scores` rewrites every track in the database, for every user~~ — DONE (2026-10-13), batching left to 2.2
+`ingest/score_recompute.py`, `scripts/run_ingest_v2.py`, `backend/app.py` `api_recompute_scores`
 
-**verified.** `_recompute_axes_and_zscores` takes a `user_id`, discards it on
-line 1901, then issues `SELECT … FROM tracks` with no `WHERE` and one
-`UPDATE tracks SET activation, valence, activation_relative, vibe_score,
-mood WHERE id = ?` per scored row. Any signed-in user POSTing
-`/api/recompute-scores` rewrites the mood and vibe score of every track in
-the shared catalogue, for everyone. The local DB has 3,783 scored rows; on
-Turso each `UPDATE` is a separate HTTPS round trip, so that is ~3,800
-sequential requests per call — and the same call runs at the end of *every*
-ingest job. Two fixes are needed and they are separable: scope the write, and
-batch the round trips.
+**verified by running the tests; covered by
+`tests/backend/test_recompute_scores.py` and
+`tests/ingest/test_runner_recompute.py`.** The recompute is global by nature
+(one z-score baseline over the shared catalogue), so the fix is about who
+runs it and how often, not a per-user scope:
 
-**[frontend contract]** The docstring at `backend/app.py:1964` states
-"Per-user scoped: only touches rows belonging to the caller." That is false
-and has been since `del user_id` was added. Anything that calls this
-endpoint believing it is cheap and local is wrong on both counts.
+- The three import jobs no longer run it. They only add metadata-only
+  `pending` rows, so the baseline could not move until the offline pipeline
+  scored them; each sync paid ~3,800 Turso round trips for nothing.
+- It moved out of `app.py` into `ingest/score_recompute.py` (no FastAPI
+  import) and the dead `user_id` parameter is gone. `run_ingest_v2.py` runs
+  it after any pass where `librosa` or `classify` finished a row, and
+  `--recompute-only` runs it by hand.
+- Rows whose stored activation, valence, activation_relative, vibe_score and
+  mood already match (1e-6 tolerance) are not written, so a re-run over an
+  unchanged catalogue costs one SELECT.
+- `POST /api/recompute-scores` is `require_admin`, and its docstring says
+  global. No caller in `frontend-next/`; `mobile/` has an unused wrapper
+  (see 4.9). The response gained `written` and `unchanged`.
+
+**What remains:** a pass that scores N new tracks shifts the mean, so most
+rows still get one UPDATE each, one HTTPS round trip apiece on Turso. That
+needs Hrana batch requests in `db_client` (2.2).
 
 ### 1.2 `vibe_score` has two writers that disagree on what it means
-`ingest_pipeline/stage_classify.py:123` vs `backend/app.py:1941`
+`ingest_pipeline/stage_classify.py:123` vs `ingest/score_recompute.py`
 
 **verified.** ClassifyStage writes `vibe_score = activation` (the raw 0–100
-axis). `_recompute_axes_and_zscores` writes `vibe_score = rel`, the z-scored
-`activation_relative`. Since 1.1 runs after every sync, a freshly classified
-track's `vibe_score` means "raw activation" for as long as it takes the next
-sync to finish, then silently means "relative to library mean". Any UI or
+axis). `score_recompute` writes `vibe_score = rel`, the z-scored
+`activation_relative`, from the librosa features rather than MERT. Since
+2026-10-13 the runner recomputes at the end of any pass that classified
+something, so a classified track's ML-derived `activation` / `vibe_score`
+survive only until the end of that pass (previously: until the next sync).
+In practice this matters less than it looks: the vibe filter and the UI
+badge prefer `vibe_score_ml`. Any UI or
 query that compares `vibe_score` across tracks ingested at different times is
 comparing two different quantities. **[frontend contract]** — whichever
 definition wins is the one the client has been rendering.
@@ -241,7 +251,7 @@ against no transaction and swallows the error. Concretely, on Turso:
   then the track as two separate commits.
 
 Fix is either Hrana batch requests (several statements in one pipeline POST,
-which also fixes the round-trip cost in 1.1) or baton reuse. Either way,
+which also fixes the round-trip cost left over from 1.1) or baton reuse. Either way,
 correct the docstring first.
 
 ### 2.3 Every `except sqlite3.IntegrityError` in the codebase is dead on Turso
@@ -495,6 +505,24 @@ has been reaped", but nothing reaps: `JOBS` only loses entries via the two
 `JOBS.pop` calls in `/api/ingest/single` (`backend/app.py:3140`,
 `backend/app.py:3144`). Every completed sync job leaks its dict for the life
 of the process. Add a TTL sweep, or delete the claim.
+
+### 4.8 `run_ingest_v2.py --help` crashes on a Windows console
+`scripts/run_ingest_v2.py:28`
+
+**verified** (2026-10-13, on `dj-replay` before and after 1.1). The parser's
+description is the module docstring, which contains `→`; on a cp1252 console
+argparse raises `UnicodeEncodeError` printing help. Real runs are unaffected.
+`PYTHONIOENCODING=utf-8` works around it; the fix is replacing the arrow with
+`->`.
+
+### 4.9 [frontend contract] The mobile `RecomputeSummary` reads fields the backend never sent
+`mobile/lib/core/models/recompute.dart`
+
+**verified by reading the code.** It parses `tracks_touched` and
+`tracks_skipped`; the endpoint has only ever returned `updated`,
+`activation_stats`, `mood_distribution` (now also `written`, `unchanged`).
+Nothing in `mobile/lib` calls `recomputeScores()`, and the endpoint is now
+admin-only, so the cheapest fix is deleting the wrapper and model.
 
 ---
 
@@ -933,8 +961,7 @@ knowing that:
 - Apple playlists over 100 songs and user `pl.u-` playlists are untested.
 - None of the supported services give ISRCs, so matching is by title +
   artist + duration; misses are listed (`unmatched`), never guessed.
-- Same thread + JOBS-dict machinery as the other imports (backlog 1.5), and
-  the same post-import `_recompute_axes_and_zscores` (backlog 1.1).
+- Same thread + JOBS-dict machinery as the other imports (backlog 1.5).
 
 ## Checked and clean
 

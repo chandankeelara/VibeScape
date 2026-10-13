@@ -333,7 +333,23 @@ python scripts/run_ingest_v2.py --stages preview,download
 
 # local GPU instead of Modal
 VIBESCAPE_ML_MODE=local python scripts/run_ingest_v2.py --batch 50
+
+# only the library-wide score recompute, no stages
+python scripts/run_ingest_v2.py --recompute-only
 ```
+
+### The score recompute runs here, not in the app
+
+`activation_relative`, `vibe_score`, `activation`, `valence` and `mood` are
+recomputed for the **whole catalogue** by `ingest/score_recompute.py`:
+activation z-scored across every featured track (mean 50, one std = 15). The
+runner does it after any pass in which `librosa` or `classify` finished at
+least one row (librosa adds rows to the baseline, classify overwrites the
+columns the recompute owns), and once per such pass under `--loop`, never on
+an idle interval. Rows whose stored values already match are not written.
+Import jobs ran it on every sync until 2026-10-13; a sync only adds
+unanalysed `pending` rows, so the baseline cannot move until this pipeline
+has scored them. `POST /api/recompute-scores` still exists, admin-only.
 
 Batch size sets the **commit granularity** — `run_batch` commits once per
 stage per batch. A large batch means a kill loses everything uncommitted;
