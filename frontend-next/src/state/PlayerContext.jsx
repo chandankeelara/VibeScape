@@ -71,8 +71,20 @@ export function PlayerProvider({ children }) {
   // 'idle' | 'loading' | 'ready' | 'unavailable' — drives the video stage UI.
   const [videoState, setVideoState] = useState('idle');
 
-  // Guards against a slow request for an old vibe clobbering a newer one.
-  const fetchToken = useRef(0);
+  /*
+   * Load generation. Bumped by EVERY track load (loadTrack) and by the start
+   * of every async pick (fetchForVibe, next()'s DJ branch). An async pick
+   * captures it before its await and drops its result if it moved, so a slow
+   * /random or /similar can never replace a track the user chose in the
+   * meantime. Until 2026-10-13 only fetchForVibe bumped a token, so a DJ pick
+   * still in flight when the user picked a search result, jumped the queue or
+   * pressed prev landed afterwards and clobbered it.
+   *
+   * Overlay ownership follows the same counter: whoever bumped it last either
+   * cleared `loadingTrack` (loadTrack does, synchronously) or set it and will
+   * clear it when it settles. A superseded pick therefore never touches it.
+   */
+  const loadGen = useRef(0);
 
   /*
    * Who last moved the vibe slider — 'user' | 'system' | null.
@@ -91,7 +103,15 @@ export function PlayerProvider({ children }) {
   const vibeSourceRef = useRef(null);
 
   /* Live mirrors for the telemetry context provider. Refs so sampling them
-     costs no render; they are written from effects, never read during one. */
+     costs no render; never read during one.
+
+     vibeRef is ALSO written synchronously by every vibe setter, not only by
+     the effect below, because shiftVibe() reads it to compute the new value
+     it returns. Before 2026-10-13 the arrow keys called shiftVibe() then
+     fetchForVibe(), whose default argument is the render-time `vibe`, so
+     every press fetched for the vibe it had just left. Reading this ref
+     after setVibeState would have been just as stale: the effect that syncs
+     it runs after the render that has not happened yet. */
   const vibeRef = useRef(50);
   /** Last vibe a vibe_change event reported, so a burst knows where it began. */
   const vibeLoggedRef = useRef(50);
@@ -241,12 +261,24 @@ export function PlayerProvider({ children }) {
     // StrictMode invokes them twice; writing provenance inside one is the same
     // impurity that made prev() load every track twice (see prev() below).
     vibeSourceRef.current = 'user';
-    setVibeState(Math.max(0, Math.min(100, Math.round(v))));
+    const next = Math.max(0, Math.min(100, Math.round(v)));
+    vibeRef.current = next;
+    setVibeState(next);
   }, []);
 
+  /**
+   * Nudge the vibe and RETURN the new, clamped value, so a caller that wants
+   * to fetch for it can pass it explicitly: `fetchForVibe(shiftVibe(5))`.
+   * Computed from vibeRef (kept current by every setter) rather than in an
+   * updater, because the value has to be known now, not at the next render;
+   * two presses before a render still compound.
+   */
   const shiftVibe = useCallback((delta) => {
     vibeSourceRef.current = 'user';
-    setVibeState((v) => Math.max(0, Math.min(100, v + delta)));
+    const next = Math.max(0, Math.min(100, vibeRef.current + delta));
+    vibeRef.current = next;
+    setVibeState(next);
+    return next;
   }, []);
 
   /* --------------------------------------------------------------- tracks */
@@ -275,6 +307,7 @@ export function PlayerProvider({ children }) {
     // its provenance — exactly as the last real writer left it.
     if (v == null) return;
     vibeSourceRef.current = 'system';
+    vibeRef.current = v;
     setVibeState(v);
   }, []);
 
@@ -291,6 +324,10 @@ export function PlayerProvider({ children }) {
   const loadTrack = useCallback(
     (t, { syncVibe = true, source = 'pick', endReason, trigger, reason } = {}) => {
       if (!t) return;
+      // Supersedes any pick still in flight, and ends its loading overlay:
+      // that pick will now drop its result instead of loading it.
+      loadGen.current += 1;
+      setLoadingTrack(false);
       const ended = endedRef.current;
       endedRef.current = false;
       setStartInfo({
@@ -317,7 +354,7 @@ export function PlayerProvider({ children }) {
    */
   const fetchForVibe = useCallback(
     async (v = vibe, { endReason = 'skipped', trigger = 'vibe_change' } = {}) => {
-      const token = ++fetchToken.current;
+      const gen = ++loadGen.current;
       setLoadingTrack(true);
       try {
         const exclude = recent.map((r) => r.id).filter(Boolean);
@@ -326,10 +363,10 @@ export function PlayerProvider({ children }) {
           tolerance: 12,
           exclude_ids: exclude.length ? exclude.join(',') : undefined,
         });
-        if (token !== fetchToken.current) return;
+        if (gen !== loadGen.current) return;
         loadTrack(t, { syncVibe: false, source: 'autoplay', endReason, trigger });
       } catch (e) {
-        if (token !== fetchToken.current) return;
+        if (gen !== loadGen.current) return;
         if (e.status === 404) {
           setCurrent(null);
           player.stop();
@@ -337,7 +374,10 @@ export function PlayerProvider({ children }) {
           toast('Could not load track. Check the backend.', 'error');
         }
       } finally {
-        if (token === fetchToken.current) setLoadingTrack(false);
+        // After a successful load the generation has moved (loadTrack bumped
+        // it and cleared the flag itself); after a superseded one, the newer
+        // load owns the flag.
+        if (gen === loadGen.current) setLoadingTrack(false);
       }
     },
     [vibe, recent, loadTrack, toast]
@@ -495,14 +535,26 @@ export function PlayerProvider({ children }) {
       // path where "next" can take a visible moment with nothing on screen
       // to say so. fetchForVibe() raises this flag itself; this branch never
       // did, which left the hero card sitting on the previous track's art.
+      //
+      // The round trip can lose a race. If anything loads a track (a search
+      // pick, a queue jump, prev) or starts another pick while /similar is in
+      // flight, the generation moves and this result is dropped whole: no
+      // load, no fallback to fetchForVibe, and so no play_start / play_end
+      // either, since those are only emitted from player.loadTrack().
+      const gen = ++loadGen.current;
+      const stale = () => gen !== loadGen.current;
       setLoadingTrack(true);
       Promise.resolve(fallback())
-        .then((t) => (t ? loadTrack(t, { source: 'dj', trigger }) : fetchForVibe(undefined, { trigger })))
-        .catch(() => fetchForVibe(undefined, { trigger }))
-        // fetchForVibe() owns the flag once it takes over, and clears it in
-        // its own finally — but it may also have bailed early on a stale
-        // token, so clearing here too is what guarantees the overlay dies.
-        .finally(() => setLoadingTrack(false));
+        .then((t) => {
+          if (stale()) return;
+          if (t) loadTrack(t, { source: 'dj', trigger });
+          else fetchForVibe(undefined, { trigger });
+        })
+        .catch(() => { if (!stale()) fetchForVibe(undefined, { trigger }); })
+        // Normally stale by now: loadTrack cleared the flag, or fetchForVibe
+        // took it over, or a newer load superseded this one. Still current
+        // only if something threw before either ran, and then it is ours.
+        .finally(() => { if (!stale()) setLoadingTrack(false); });
       return;
     }
     fetchForVibe(undefined, { trigger });

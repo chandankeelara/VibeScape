@@ -193,6 +193,26 @@ function streamUrl(track) {
 }
 
 /**
+ * The one armed preview -> /api/stream fallback, or null.
+ *
+ * `{ once: true }` only removes a listener after it FIRES. A preview that
+ * loaded fine never fired its own, so before 2026-10-13 the element kept one
+ * stale handler per track played, and the first real error ran all of them:
+ * each set src to its OWN old track's stream URL and called play(), one
+ * aborted load per stale track. When the current track had no handler of its
+ * own (no preview_url, or its fallback already spent), the last stale one won
+ * and an old song played. Holding the reference is what lets every new src,
+ * and every teardown, disarm it.
+ */
+let previewFallback = null;
+
+function disarmPreviewFallback() {
+  if (!previewFallback) return;
+  state.audioEl?.removeEventListener('error', previewFallback);
+  previewFallback = null;
+}
+
+/**
  * Prefer the CDN preview_url so we don't burn backend egress proxying audio we
  * already have upstream. Fall back ONCE to /api/stream on error (link rot,
  * CORS, network) so the locally-downloaded MP3 keeps the track playable.
@@ -200,14 +220,19 @@ function streamUrl(track) {
 function setPreviewSource(track) {
   const el = state.audioEl;
   const backendSrc = streamUrl(track);
+  // Both branches: a track with no preview_url must not inherit the previous
+  // track's fallback either.
+  disarmPreviewFallback();
   if (!track.preview_url) {
     el.src = backendSrc;
     return;
   }
   const onError = () => {
+    previewFallback = null; // { once: true } has already removed it
     console.warn('[VibeScape] preview_url load failed; falling back to /api/stream');
     try { el.src = backendSrc; el.play().catch(() => {}); } catch {}
   };
+  previewFallback = onError;
   el.addEventListener('error', onError, { once: true });
   el.src = track.preview_url;
 }
@@ -498,6 +523,10 @@ function reassertSession() {
 function quietAudio() {
   const el = state.audioEl;
   if (!el) return;
+  // Every path that hands playback elsewhere (video, Spotify, a
+  // metadata-only track, stop) comes through here; a preview fallback left
+  // armed would revive the old track's stream on the element's next error.
+  disarmPreviewFallback();
   try { el.pause(); } catch {}
   el.removeAttribute('src');
   el.load();
