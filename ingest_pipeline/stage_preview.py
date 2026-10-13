@@ -93,6 +93,9 @@ class PreviewStage(Stage):
             "artist":      row["artist"],
             "isrc":        row["isrc"],
             "preview_url": row["preview_url"],
+            # Lets the matcher reject a same-titled result of a different
+            # length (a different recording).
+            "duration_ms": row["duration_ms"],
         }
         hit = self._chain.resolve(track)
         if not hit:

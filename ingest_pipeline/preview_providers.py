@@ -10,8 +10,11 @@ Add a new provider = write a new subclass + prepend/append to DEFAULT_CHAIN.
 """
 from __future__ import annotations
 
+import difflib
 import os
 import random
+import re
+import unicodedata
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -30,6 +33,102 @@ class PreviewHit:
     artwork_url: str | None = None
     album: str | None = None
     duration_ms: int | None = None
+
+
+# ---------------------------------------------------------------------------
+# Identity checks for a search result. Strict on purpose: see
+# ItunesPreview._pick_best for what loose matching did.
+# ---------------------------------------------------------------------------
+
+# A result with one of these and a track without it (or the reverse) is a
+# different recording — an 8D or slowed upload under the original's audio
+# was the second kind of collision found on 2026-10-11. Radio edits and
+# remasters are deliberately absent: they sound the same.
+_VERSION_MARKERS = (
+    "remix", "8d", "slowed", "reverb", "sped up", "nightcore", "acoustic",
+    "unplugged", "live", "reprise", "instrumental", "karaoke", "lofi",
+    "lo fi", "mashup", "cover", "background score", "bgm",
+)
+_BRACKETS = re.compile(r"[\(\[\{][^\)\]\}]*[\)\]\}]")
+_FEAT = re.compile(r"\s(?:feat|ft|featuring)\.?\s.*$", re.IGNORECASE)
+_ARTIST_SPLIT = re.compile(r"\s*(?:,|&|/|;|\bfeat\.?|\bft\.?|\bfeaturing\b|\bwith\b|\band\b|\bx\b)\s*",
+                           re.IGNORECASE)
+
+
+def _fold(s: str) -> str:
+    """Lowercase, strip accents (CLúB == CLUB), keep letters/digits of any
+    script, collapse whitespace."""
+    s = unicodedata.normalize("NFKD", s or "")
+    s = "".join(ch for ch in s if not unicodedata.combining(ch)).casefold()
+    s = re.sub(r"[^\w\s]", " ", s)
+    return re.sub(r"\s+", " ", s.replace("_", " ")).strip()
+
+
+def _markers(title: str) -> frozenset:
+    t = f" {_fold(title)} "
+    return frozenset(m for m in _VERSION_MARKERS if f" {m} " in t)
+
+
+def _title_keys(title: str) -> tuple[str, list[str]]:
+    """(whole title, its ' - ' segments), brackets and feat. removed."""
+    t = _FEAT.sub("", _BRACKETS.sub(" ", title or ""))
+    segs = [_fold(p) for p in re.split(r"\s+[-–—]\s+", t)]
+    segs = [p for p in segs if p]
+    return " ".join(segs), segs
+
+
+def _same_text(a: str, b: str) -> bool:
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    # Spelling drift ("Secret Of Succes"), never on short titles, where one
+    # letter is a different song.
+    return min(len(a), len(b)) >= 8 and difflib.SequenceMatcher(None, a, b).ratio() >= 0.9
+
+
+def titles_match(want: str, got: str) -> bool:
+    """True when `got` names the same recording as `want`.
+
+    'Hukum - Thalaivar Alappara' matches 'Hukum (From "Jailer")': when only
+    one side carries ' - ' segments, any segment may equal the other side.
+    When both do, the whole titles must agree — otherwise a shared film
+    name ('Dhurandhar The Revenge - Aari Aari' vs '... - Phir Se') would
+    match two different songs.
+    """
+    if _markers(want) != _markers(got):
+        return False
+    w_all, w_segs = _title_keys(want)
+    g_all, g_segs = _title_keys(got)
+    if _same_text(w_all, g_all):
+        return True
+    if len(w_segs) > 1 and len(g_segs) == 1:
+        return any(_same_text(s, g_all) for s in w_segs)
+    if len(g_segs) > 1 and len(w_segs) == 1:
+        return any(_same_text(s, w_all) for s in g_segs)
+    return False
+
+
+def _artist_set(s: str) -> set:
+    return {_fold(p).replace(" ", "") for p in _ARTIST_SPLIT.split(s or "") if _fold(p)}
+
+
+def artists_match(want: str, got: str) -> bool:
+    """At least one credited artist in common. Spaces and dots are dropped
+    so 'A.R. Rahman' == 'A. R. Rahman'."""
+    w, g = _artist_set(want), _artist_set(got)
+    return bool(w & g)
+
+
+def durations_match(want_ms, got_ms) -> bool:
+    """Unknown on either side passes. Otherwise within max(15 s, 10 %)."""
+    try:
+        w, g = int(want_ms), int(got_ms)
+    except (TypeError, ValueError):
+        return True
+    if w <= 0 or g <= 0:
+        return True
+    return abs(w - g) <= max(15_000, 0.10 * w)
 
 
 class PreviewProvider(ABC):
@@ -96,7 +195,9 @@ class ItunesPreview(PreviewProvider):
         for attempt in range(ItunesPreview._MAX_RETRIES + 1):
             self._throttle()
             try:
-                return self._client.search(term, limit=5, raise_on_rate_limit=True)
+                # 10, not 5: with no "closest result" fallback any more, the
+                # real track has to be in the page. Same single request.
+                return self._client.search(term, limit=10, raise_on_rate_limit=True)
             except Exception as e:
                 # Apple signals a rolling rate limit with either 403 or 429
                 # depending on which edge/endpoint answers. Both are transient
@@ -124,7 +225,7 @@ class ItunesPreview(PreviewProvider):
         results = self._search_with_retry(term)
         if results is None:
             return None
-        r = self._pick_best(results, title, artist)
+        r = self._pick_best(results, title, artist, track.get("duration_ms"))
         if not r:
             return None
         return PreviewHit(
@@ -139,29 +240,33 @@ class ItunesPreview(PreviewProvider):
         )
 
     @staticmethod
-    def _pick_best(results, title: str, artist: str) -> dict | None:
+    def _pick_best(results, title: str, artist: str,
+                   duration_ms: int | None = None) -> dict | None:
+        """The result that IS this track, or None. Never "the closest one".
+
+        There used to be a third tier, "first result with a previewUrl".
+        Searching "FINA Bad Bunny" returns the album, so that tier handed one
+        song's preview to every track on it: 50 groups / 111 tracks with
+        byte-identical MERT vectors under different titles (EoO / FINA /
+        EL CLúB / Después de la Playa; four Frank Ocean songs; ...), found
+        2026-10-11 in the local DB and the 2026-10-10 prod snapshot. The DJ
+        served them to each other as cosine 1.000. A wrong preview is worse
+        than none: no_preview is visible, a wrong vector is not.
+        """
         if not results:
             return None
-        title_l, artist_l = title.lower(), artist.lower()
-        # 1: exact title AND artist match
-        for r in results:
-            if not isinstance(r, dict) or not r.get("previewUrl"):
-                continue
-            if (r.get("trackName") or "").lower() == title_l and \
-               (r.get("artistName") or "").lower() == artist_l:
-                return r
-        # 2: substring match on both
-        for r in results:
-            if not isinstance(r, dict) or not r.get("previewUrl"):
-                continue
-            if title_l in (r.get("trackName") or "").lower() and \
-               artist_l in (r.get("artistName") or "").lower():
-                return r
-        # 3: first with a previewUrl
-        for r in results:
-            if isinstance(r, dict) and r.get("previewUrl"):
-                return r
-        return None
+        cands = [r for r in results if isinstance(r, dict) and r.get("previewUrl")]
+        ok = [r for r in cands
+              if titles_match(title, r.get("trackName") or "")
+              and artists_match(artist, r.get("artistName") or "")
+              and durations_match(duration_ms, r.get("trackTimeMillis"))]
+        if not ok:
+            return None
+        # Prefer the literal title when several pass (e.g. a song and its
+        # "(From ...)" release are both in the results).
+        exact = [r for r in ok if (r.get("trackName") or "").strip().lower()
+                 == title.strip().lower()]
+        return (exact or ok)[0]
 
 
 class DeezerIsrcPreview(PreviewProvider):

@@ -24,6 +24,13 @@ THE ORDERING IS THE SAFETY ARGUMENT.
   listening history is folded into the survivor's row (play_count summed,
   latest last_played, earliest added_at) and the loser row is dropped.
 
+  track_events and user_track_stats ALSO reference tracks(id) ON DELETE
+  CASCADE (added after this script was written). Their rows are handled the
+  same way: events moved onto the survivor before any delete, the stats
+  cache rebuilt from them afterwards — see scripts/_dedupe_history.py. On
+  the 2026-10-12 backup the old version would have deleted 12 events and 6
+  stats rows, invisibly to its own checks.
+
 Survivor: ingestion_status='done' > has an embedding > lowest id.
 
 Never touches users or sessions. Never writes tracks.id. Never DROPs.
@@ -39,8 +46,8 @@ import os
 import re
 import sqlite3
 import sys
-import time
 from collections import defaultdict
+import subprocess
 from pathlib import Path
 
 try:
@@ -50,6 +57,8 @@ except Exception:
 
 _REPO = Path(__file__).resolve().parents[1]
 _PS1 = _REPO / "scripts" / "_load_gcp_secrets.ps1"
+sys.path.insert(0, str(_REPO / "scripts"))
+import _dedupe_history as hist  # noqa: E402
 
 
 def _turso():
@@ -60,29 +69,6 @@ def _turso():
     sys.path.insert(0, str(_REPO / "backend"))
     import db_client
     return db_client.create_connection()
-
-
-def _backup(tconn, path: Path) -> None:
-    """Snapshot tracks + user_tracks locally before mutating prod.
-
-    track_embeddings is excluded on purpose: ~24MB of blobs, and fully
-    reproducible from the local DB via _sync_local_to_turso.py. user_tracks
-    is the one thing that cannot be reconstructed from anywhere.
-    """
-    if path.exists():
-        path.unlink()
-    b = sqlite3.connect(str(path))
-    for table in ("tracks", "user_tracks"):
-        cols = [r[1] for r in tconn.execute(f"PRAGMA table_info({table})")]
-        b.execute(f"CREATE TABLE {table} ({', '.join(c + ' TEXT' for c in cols)})")
-        rows = tconn.execute(f"SELECT {', '.join(cols)} FROM {table}").fetchall()
-        b.executemany(
-            f"INSERT INTO {table} VALUES ({','.join('?' * len(cols))})",
-            [[r[c] for c in cols] for r in rows])
-        print(f"  backed up {len(rows)} rows from {table}")
-    b.commit()
-    b.close()
-    print(f"  -> {path.name}")
 
 
 def snapshot_user_isrcs(conn) -> dict:
@@ -169,6 +155,12 @@ def main() -> int:
     print(f"  merged into existing     : {merges}")
     print(f"  re-pointed               : {repoints}")
     print(f"user_tracks : {n_ut} -> {n_ut - merges}")
+    users = hist.affected_users(conn, plan)
+    print(f"track_events rows on losers     : {hist.count_on(conn, 'track_events', losers)}"
+          f"  (moved to the survivor)")
+    print(f"user_track_stats rows on losers : {hist.count_on(conn, 'user_track_stats', losers)}"
+          f"  (rebuilt from events)")
+    print(f"users whose stats are rebuilt   : {users}")
     print("\nsample:")
     for sid, ls, isrc, title in plan[:5]:
         print(f"  keep id={sid:5} drop {ls}  isrc={isrc}  {str(title)[:34]}")
@@ -177,11 +169,15 @@ def main() -> int:
         print("\ndry-run — pass --apply to execute. Nothing was modified.")
         return 0
 
-    ts = time.strftime("%Y%m%dT%H%M%S")
-    print("\nbacking up prod ...")
-    _backup(conn, _REPO / "data" / f"_turso_pre_dedupe_{ts}.db")
+    # The full backup (every table, blobs verified), not _backup(): that one
+    # predates track_events and copies tracks + user_tracks only.
+    print("\nbacking up prod (scripts/backup_prod_db.py) ...")
+    if subprocess.run([sys.executable, str(_REPO / "scripts" / "backup_prod_db.py")]).returncode:
+        print("backup failed — nothing was modified.")
+        return 1
 
     before = snapshot_user_isrcs(conn)
+    hist_before = hist.history_snapshot(conn)
 
     print("\nre-pointing user_tracks (BEFORE any delete) ...")
     n_merge = n_move = 0
@@ -212,6 +208,10 @@ def main() -> int:
                     print(f"  ... {n_merge + n_move}")
     print(f"  merged {n_merge}   re-pointed {n_move}")
 
+    print("\nmoving listening history (BEFORE any delete) ...")
+    print(f"  track_events moved {hist.repoint_events(conn, plan)}")
+    print(f"  user_track_stats loser rows dropped {hist.drop_loser_stats(conn, losers)}")
+
     print("\nremoving duplicate rows ...")
     n_del = 0
     for lid in losers:
@@ -224,6 +224,9 @@ def main() -> int:
         if n_del and n_del % 50 == 0:
             print(f"  ... {n_del}/{len(losers)}")
     print(f"  removed {n_del}")
+
+    print("\nrebuilding user_track_stats from track_events ...")
+    hist.rebuild_stats(users, turso=True)
 
     print("\nverifying ...")
     after = snapshot_user_isrcs(conn)
@@ -242,7 +245,8 @@ def main() -> int:
     print(f"  users who LOST a recording (MUST be empty): {lost or 'none'}")
     for r in conn.execute("SELECT user_id, COUNT(*) n FROM user_tracks GROUP BY 1 ORDER BY n DESC"):
         print(f"    user {r[0]}: {r[1]} tracks")
-    return 0
+    ok = hist.verify_history(conn, hist_before, users, turso=True)
+    return 0 if ok and not lost and not dupes_left else 2
 
 
 if __name__ == "__main__":

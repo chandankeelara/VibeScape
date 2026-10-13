@@ -6,6 +6,7 @@ One test tree for the whole repo.
 tests/
   conftest.py        shared fixtures: a fresh SQLite DB per test, users, tracks, embeddings
   backend/           FastAPI endpoints and pure backend modules (pytest)
+  ingest/            pure ingest_pipeline modules (pytest)
   database/          schema.sql, migrations, the stats cache vs its rebuild (pytest)
   frontend/          frontend-next modules (vitest, config in frontend-next/vitest.config.js)
   run_all.py         runs everything, non-zero exit on any failure
@@ -41,11 +42,14 @@ with fakes; no test needs a network.
 | Listening events | `backend/test_events.py` | 202 for everything but auth, routing to `track_events` / `user_events`, `data` validation, only plays feed the stats, `listened_ms` and its fallback, the 90 s rule, skips by any trigger, `abandoned`, u_/s_ split |
 | Stats | `backend/test_me_stats.py` | totals, rates, top lists, local hours by timezone, windows, isolation between users |
 | Playlist import | `backend/test_playlist_import.py`, `backend/test_playlist_url_endpoint.py`, `frontend/playlistLink.test.js` | link detection for every service, each reader, YouTube title cleaning, matching, the Spotify budget (0 calls for Spotify links and catalogue hits, one search per song, pacing, stop on a long rate limit), the Amazon reader and its failure handling, Deezer refused, the job end to end |
+| YouTube pin | `backend/test_track_youtube_auth.py` | `POST /api/tracks/{id}/youtube` writes the global `tracks.youtube_id`: admin only, a user or a guest session is a 403 and writes nothing, no session is a 401 |
 | Spotify refresh | `backend/test_spotify_refresh.py` | session required, secret sent only server-side, rotation passed through, refusal is a 400 |
 | Library search | `backend/test_library_search.py` | typos and partial words, language by name, every word required across fields, own songs above features, phrase above scattered words, only the caller's analysed tracks |
 | Spotify rate-limit guard | `backend/test_spotify_guard.py` | one 429 holds every later call with no request, counts down and lifts, never shortens, library/matcher/importer fail fast instead of sleeping, `/api/spotify/status` |
+| iTunes preview matcher | `ingest/test_preview_matcher.py` | an album neighbour is never the song, accents and ` - ` / `(From ...)` suffixes, a shared film name is not a match, 8D / slowed / reprise are different recordings, artist overlap, length tolerance |
 | Schema | `database/test_schema.py` | applies and re-applies, no `;` in comments breaks the Turso scripts' split (commit 322c7c1), fresh bootstrap survives many connections and keeps the production shape, old telemetry tables are widened in place |
 | Cache = rebuild | `database/test_rollup_rebuild.py` | randomised sessions: the inline `user_track_stats` equals `scripts/rebuild_user_track_stats.py` |
+| Sync job | `frontend/syncJobProvider.test.jsx` | a job `note` becomes a toast instead of crashing the poll effect (the real `ToastProvider`, only the API and the player mocked), once per job |
 | DJ event log | `frontend/dj.test.js` | append-only log, cap, v3 migration, request body |
 | Listening log | `frontend/listenLog.test.js` | audible time excludes pauses and seeks, envelope, triggers, killed-tab recovery, a live tab is never recovered, sessions |
 | Spotify tokens | `frontend/spotifyTokens.test.js` | refresh near expiry, PKCE vs server, single flight, refusal vs network failure, another tab's rotation |
@@ -60,8 +64,9 @@ fails (2026-10-10).
 
 ## Not covered yet
 
-React components (no DOM test environment is set up), the Turso transport
-(`db_client` over Hrana), the offline ingest pipeline, and the Flutter app.
+React components beyond `SyncJobProvider`, the Turso transport
+(`db_client` over Hrana), the offline ingest pipeline apart from the preview
+matcher, and the Flutter app.
 
 ## Writing a test
 
@@ -72,3 +77,9 @@ embedding groups). Frontend: no bare `import ... from 'vitest'` (files here sit
 outside the package) — `describe` / `it` / `expect` / `vi` are globals, and
 `tests/frontend/setup.js` gives each test a fresh `localStorage`, `window`
 and `document`.
+
+A component test is a `.test.jsx` file that starts with
+`// @vitest-environment jsdom`; it then gets a real DOM (`setup.js` leaves
+it alone) and `@testing-library/react`. Bare imports of `react`,
+`react-dom`, `@tanstack/react-query` and `@testing-library/react` resolve
+through aliases in `vitest.config.js`; add any other package there.

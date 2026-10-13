@@ -24,6 +24,9 @@ function target() {
 }
 
 beforeEach(() => {
+  // A jsdom test (`// @vitest-environment jsdom`) already has a real window,
+  // document and storage; replacing them with these stubs would break React.
+  if (typeof globalThis.document?.createElement === 'function') return;
   globalThis.localStorage = new MemoryStorage();
   globalThis.sessionStorage = new MemoryStorage();
   globalThis.window = Object.assign(target(), {
