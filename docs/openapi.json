@@ -951,7 +951,7 @@
     "/api/recompute-scores": {
       "post": {
         "summary": "Api Recompute Scores",
-        "description": "Re-run scoring.compute_axes on the caller's tracks using persisted\nfeatures, then z-score-normalize activation into activation_relative\nand mirror into vibe_score. Cheap: no audio re-analysis. Per-user\nscoped: only touches rows belonging to the caller.",
+        "description": "Re-run scoring.compute_axes over the WHOLE catalogue from persisted\nfeatures, z-score activation into activation_relative and mirror it into\nvibe_score (ingest/score_recompute.py). GLOBAL, not per-user: tracks are\nshared, so this rewrites rows every user sees — hence admin-only.\nNo audio re-analysis; rows whose scores are unchanged are not written.\nThe offline runner does the same after a pass that scored tracks.",
         "operationId": "api_recompute_scores_api_recompute_scores_post",
         "parameters": [
           {
@@ -1371,7 +1371,7 @@
     "/api/ingest/clear": {
       "post": {
         "summary": "Ingest Clear",
-        "description": "Clear only the caller's library membership. Global tracks that no\nother user still references are pruned in a second pass along with\ntheir on-disk audio files.",
+        "description": "Remove the caller's library links (`user_tracks`) and nothing else. Catalogue tracks, listening history and embeddings are kept; `tracks_pruned` and `audio_files_removed` are always 0.",
         "operationId": "ingest_clear_api_ingest_clear_post",
         "parameters": [
           {

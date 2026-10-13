@@ -44,7 +44,7 @@ const ZERO = {
 
 export function SyncJobProvider({ children }) {
   const { fetchForVibe } = usePlayer();
-  const { toast } = useToast();
+  const toast = useToast();
   const queryClient = useQueryClient();
 
   const [jobId, setJobId] = useState(null);

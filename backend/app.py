@@ -53,6 +53,7 @@ except Exception:
     app_config = None
 
 import scoring  # noqa: E402
+import score_recompute  # noqa: E402
 import spotify_guard  # noqa: E402  — every api.spotify.com call goes through it
 import spotify_library as splib  # noqa: E402
 import spotify_matcher  # noqa: E402
@@ -264,6 +265,22 @@ def require_user(request: Request, authorization: Optional[str] = Header(None)) 
         raise HTTPException(status_code=401, detail={"error": "invalid_session"})
     request.state.user_id = sess["user_id"]
     request.state.session_token = token
+    return sess
+
+
+# Defined next to require_user because a Depends() default is evaluated at
+# def time: an endpoint above the old home of this function (the admin
+# section, ~line 5340) would NameError on import.
+#
+# The user_id of the single admin is stored in an env var so it's
+# configurable per environment. Default = 1 (chandan on prod as of
+# 2026-08-23; verified against the downloaded prod DB).
+ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "1"))
+
+
+def require_admin(sess: dict = Depends(require_user)) -> dict:
+    if int(sess["user_id"]) != ADMIN_USER_ID:
+        raise HTTPException(status_code=403, detail={"error": "admin_only"})
     return sess
 
 
@@ -2672,140 +2689,19 @@ def stream_track(track_key: str, request: Request, sess: dict = Depends(require_
     return _stream_audio_row(row, request)
 
 
-# ---------------- Feature reconstitution + scoring helpers ----------------
-
-
-_FEATURE_SCALARS = [
-    "tempo",
-    "tempo_stability",
-    "onset_rate",
-    "energy_mean",
-    "energy_std",
-    "brightness",
-    "bandwidth",
-    "rolloff",
-    "spectral_contrast",
-    "flatness",
-    "zcr",
-    "timbre_variability",
-    "valence_mode",
-    "tonnetz_std",
-    "acousticness",
-]
-
-
-def _row_features(row) -> dict:
-    """Rebuild a feature-dict shape from a DB row (for scoring / API responses)."""
-    f: dict = {}
-    for k in _FEATURE_SCALARS:
-        try:
-            f[k] = row[k]
-        except (IndexError, KeyError):
-            f[k] = None
-    # Legacy alias support
-    try:
-        if f.get("energy_mean") is None:
-            f["energy_mean"] = row["energy"]
-    except (IndexError, KeyError):
-        pass
-    try:
-        mfcc_json = row["mfcc_json"]
-        f["mfcc_mean"] = json.loads(mfcc_json) if mfcc_json else []
-    except (IndexError, KeyError, ValueError, TypeError):
-        f["mfcc_mean"] = []
-    try:
-        chroma_json = row["chroma_mean_json"]
-        f["chroma_mean"] = json.loads(chroma_json) if chroma_json else []
-    except (IndexError, KeyError, ValueError, TypeError):
-        f["chroma_mean"] = []
-    return f
-
-
-def _clamp(v: float, lo: float, hi: float) -> float:
-    if v < lo:
-        return lo
-    if v > hi:
-        return hi
-    return v
-
-
-def _recompute_axes_and_zscores(conn, user_id: Optional[int] = None) -> dict:
-    """
-    Recompute activation/valence from stored features for every track,
-    then z-score-normalize activation across the global library and mirror
-    into vibe_score. Since tracks are now global (song-level truth), the
-    z-score baseline is shared across users; the user_id parameter is
-    accepted for backward-compat but ignored.
-    """
-    del user_id
-    base_select = ("SELECT id, tempo, energy, energy_mean, energy_std, brightness, "
-                   "tempo_stability, onset_rate, bandwidth, rolloff, "
-                   "spectral_contrast, flatness, zcr, timbre_variability, "
-                   "valence_mode, tonnetz_std, acousticness, mfcc_json, "
-                   "chroma_mean_json FROM tracks")
-    rows = conn.execute(base_select).fetchall()
-
-    activations: list[float] = []
-    per_row: list[tuple[int, float, float]] = []
-    for row in rows:
-        f = _row_features(row)
-        # If no scalars at all, skip (leaves existing values intact).
-        if all((f.get(k) is None) for k in _FEATURE_SCALARS):
-            continue
-        axes = scoring.compute_axes(f)
-        activation = axes["activation"]
-        valence = axes["valence"]
-        activations.append(activation)
-        per_row.append((row["id"], activation, valence))
-
-    if not per_row:
-        return {"updated": 0, "activation_stats": None, "mood_distribution": {}}
-
-    import statistics as _stats
-    mean = float(_stats.fmean(activations))
-    std = float(_stats.pstdev(activations)) if len(activations) > 1 else 0.0
-    mn = float(min(activations))
-    mx = float(max(activations))
-
-    mood_counts: dict[str, int] = {}
-    for row_id, activation, valence in per_row:
-        if std > 1e-9:
-            rel = 50.0 + ((activation - mean) / std) * 15.0
-        else:
-            rel = 50.0
-        rel = _clamp(rel, 0.0, 100.0)
-        mood = scoring.mood_label(activation, valence)
-        mood_counts[mood] = mood_counts.get(mood, 0) + 1
-        conn.execute(
-            "UPDATE tracks SET activation = ?, valence = ?, activation_relative = ?, "
-            "vibe_score = ?, mood = ? WHERE id = ?",
-            (activation, valence, rel, rel, mood, row_id),
-        )
-    conn.commit()
-
-    return {
-        "updated": len(per_row),
-        "activation_stats": {
-            "mean": mean,
-            "std": std,
-            "min": mn,
-            "max": mx,
-        },
-        "mood_distribution": mood_counts,
-    }
-
-
 @app.post("/api/recompute-scores")
-def api_recompute_scores(sess: dict = Depends(require_user)):
+def api_recompute_scores(sess: dict = Depends(require_admin)):
     """
-    Re-run scoring.compute_axes on the caller's tracks using persisted
-    features, then z-score-normalize activation into activation_relative
-    and mirror into vibe_score. Cheap: no audio re-analysis. Per-user
-    scoped: only touches rows belonging to the caller.
+    Re-run scoring.compute_axes over the WHOLE catalogue from persisted
+    features, z-score activation into activation_relative and mirror it into
+    vibe_score (ingest/score_recompute.py). GLOBAL, not per-user: tracks are
+    shared, so this rewrites rows every user sees — hence admin-only.
+    No audio re-analysis; rows whose scores are unchanged are not written.
+    The offline runner does the same after a pass that scored tracks.
     """
     conn = get_conn()
     try:
-        summary = _recompute_axes_and_zscores(conn, user_id=sess["user_id"])
+        summary = score_recompute.recompute_axes_and_zscores(conn)
     finally:
         conn.close()
     return summary
@@ -3120,8 +3016,16 @@ async def search_track_youtube(
 async def set_track_youtube(
     track_id: int,
     request: Request,
-    sess: dict = Depends(require_user),
+    sess: dict = Depends(require_admin),
 ):
+    """
+    Pin the YouTube video a track plays. Admin only: this writes the GLOBAL
+    tracks.youtube_id, which every user (and the shared guest) streams from,
+    so a per-user guard is not enough. Until 2026-10-13 it took require_user,
+    meaning a guest minted by POST /api/auth/guest (no credentials) could
+    repoint any track in the catalogue. Nothing in frontend-next calls this
+    (lib/api.js:setTrackYoutube has no caller); it is a tooling endpoint.
+    """
     try:
         body = await request.json()
     except Exception:
@@ -3403,51 +3307,33 @@ def spotify_search(
 
 @app.post("/api/ingest/clear")
 def ingest_clear(sess: dict = Depends(require_user)):
-    """Clear only the caller's library membership. Global tracks that no
-    other user still references are pruned in a second pass along with
-    their on-disk audio files."""
+    """Remove the caller's library links (`user_tracks`) and nothing else.
+
+    Catalogue rows are kept on purpose (2026-10-13). `tracks` is a global,
+    song-level catalogue shared by every user, and on Turso, where foreign
+    keys are enforced, `track_events`, `user_track_stats` and
+    `track_embeddings` all reference `tracks(id) ON DELETE CASCADE`. This
+    endpoint used to delete every track no other user still linked, plus its
+    audio file, which permanently erased the caller's listening history
+    (append-only, the source of truth) and the track's GPU-computed
+    embeddings. Orphan catalogue rows, if they ever need cleaning, are an
+    offline admin job, not a side effect of a user action.
+
+    `tracks_pruned` and `audio_files_removed` are always 0 and kept only so
+    existing clients that parse the body keep working.
+    """
     conn = get_conn()
     try:
         n = conn.execute(
             "SELECT COUNT(*) FROM user_tracks WHERE user_id = ?", (sess["user_id"],)
         ).fetchone()[0]
-        my_track_ids = [r[0] for r in conn.execute(
-            "SELECT track_id FROM user_tracks WHERE user_id = ?",
-            (sess["user_id"],),
-        ).fetchall()]
         conn.execute("DELETE FROM user_tracks WHERE user_id = ?", (sess["user_id"],))
-        conn.commit()
-
-        removed_tracks = 0
-        removed_files = 0
-        for tid in my_track_ids:
-            still = conn.execute(
-                "SELECT 1 FROM user_tracks WHERE track_id = ? LIMIT 1", (tid,),
-            ).fetchone()
-            if still:
-                continue
-            row = conn.execute(
-                "SELECT audio_path FROM tracks WHERE id = ?", (tid,),
-            ).fetchone()
-            audio = row["audio_path"] if row else None
-            conn.execute("DELETE FROM tracks WHERE id = ?", (tid,))
-            removed_tracks += 1
-            if not audio:
-                continue
-            resolved = _resolve_audio_path(audio)
-            if resolved and resolved.exists() and resolved.is_file():
-                try:
-                    resolved.unlink()
-                    removed_files += 1
-                except OSError as e:
-                    log.warning("failed to unlink %s: %s", resolved, e)
         conn.commit()
     finally:
         conn.close()
 
-    log.info("ingest/clear user=%s removed %d user_tracks, pruned %d orphan tracks, %d audio files",
-             sess["user_id"], n, removed_tracks, removed_files)
-    return {"cleared": int(n), "tracks_pruned": removed_tracks, "audio_files_removed": removed_files}
+    log.info("ingest/clear user=%s removed %d user_tracks", sess["user_id"], n)
+    return {"cleared": int(n), "tracks_pruned": 0, "audio_files_removed": 0}
 
 
 class IngestSources(BaseModel):
@@ -3832,19 +3718,6 @@ def _run_ingest_job(job_id: str, token: str, sources: IngestSources, user_id: in
         finally:
             conn.close()
 
-        # Library-wide z-score recompute (per-user). Only rebalances rows
-        # that actually have a score, so newly queued 'pending' rows are
-        # naturally excluded — they'll fold in on the next sync after the
-        # worker finishes them.
-        try:
-            conn2 = get_conn()
-            try:
-                _recompute_axes_and_zscores(conn2, user_id=user_id)
-            finally:
-                conn2.close()
-        except Exception as e:
-            log.exception("post-ingest recompute failed: %s", e)
-
         if cancelled:
             _update_job(job_id, status="cancelled", current_track=None,
                         note="Cancelled by user")
@@ -4152,17 +4025,6 @@ def _run_public_playlist_job(job_id: str, playlist_id: str, user_id: int,
                 _bump(job_id, "processed", 1)
         finally:
             conn.close()
-
-        # Per-user z-score refresh after growing the library. Runs even on
-        # cancel so activation_relative reflects what did land.
-        try:
-            conn2 = get_conn()
-            try:
-                _recompute_axes_and_zscores(conn2, user_id=user_id)
-            finally:
-                conn2.close()
-        except Exception as e:
-            log.exception("post-ingest recompute (public playlist) failed: %s", e)
 
         if cancelled:
             # Preserve any existing followed_note; add a cancelled note only
@@ -4485,14 +4347,6 @@ def _run_playlist_url_job(job_id: str, src, user_id: int, user_token: Optional[s
         finally:
             conn.close()
 
-        try:  # same post-ingest refresh as the other import paths
-            conn2 = get_conn()
-            try:
-                _recompute_axes_and_zscores(conn2, user_id=user_id)
-            finally:
-                conn2.close()
-        except Exception as e:
-            log.exception("post-ingest recompute (playlist-url) failed: %s", e)
         if rate_limited is not None:
             hours = rate_limited.retry_after_s / 3600
             _update_job(job_id, status="error", current_track=None,
@@ -5332,18 +5186,6 @@ def my_listening_stats(days: int = Query(30, ge=1, le=_STATS_WINDOW_DAYS_MAX),
 
 
 # ---------------- Admin (chandan-only) ----------------
-# The user_id of the single admin is stored in an env var so it's
-# configurable per environment. Default = 1 (chandan on prod as of
-# 2026-08-23; verified against the downloaded prod DB).
-ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "1"))
-
-
-def require_admin(sess: dict = Depends(require_user)) -> dict:
-    if int(sess["user_id"]) != ADMIN_USER_ID:
-        raise HTTPException(status_code=403, detail={"error": "admin_only"})
-    return sess
-
-
 @app.get("/api/admin/users")
 def admin_list_users(sess: dict = Depends(require_admin)):
     conn = get_conn()

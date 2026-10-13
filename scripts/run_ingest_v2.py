@@ -43,6 +43,28 @@ Usage:
 
     # Restrict to a subset of stages (comma-separated):
     python scripts/run_ingest_v2.py --stages preview,youtube
+
+    # Only re-run the library-wide score recompute, no stages:
+    python scripts/run_ingest_v2.py --recompute-only
+
+The runner re-runs the library-wide score recompute
+(ingest/score_recompute.py): activation/valence from the librosa features,
+activation z-scored across the catalogue into activation_relative and
+vibe_score, and mood. Only librosa and classify move it — librosa writes its
+inputs and adds rows to the baseline, classify overwrites the columns it
+owns — so it runs only if one of them finished a track:
+
+  * a single pass: once at the end of the pass;
+  * --loop: ONCE WHEN THE LOOP DRAINS (the first pass that processes
+    nothing), not after every scoring pass. Every newly scored track shifts
+    the catalogue mean and std, so nearly every row's activation_relative
+    moves and the skip-unchanged check saves nothing: draining 1,000 tracks
+    at --batch 50 would cost 20 full ~3,800-UPDATE recomputes, about 76,000
+    Turso round trips, instead of one. A failed recompute keeps its pending
+    count and is retried at the next idle point.
+
+Imports used to run it after every sync; a sync only adds unanalysed rows,
+so it moved here (2026-10-13).
 """
 from __future__ import annotations
 
@@ -56,6 +78,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "backend"))
+# Appended, not inserted: ingest/db.py must not shadow backend/db.py.
+sys.path.append(str(PROJECT_ROOT / "ingest"))
 
 try:
     from dotenv import load_dotenv
@@ -71,9 +95,15 @@ from ingest_pipeline.stage_youtube import YoutubeStage  # noqa: E402
 from ingest_pipeline.stage_language import LanguageStage  # noqa: E402
 from ingest_pipeline.stage_librosa import LibrosaStage  # noqa: E402
 from ingest_pipeline.stage_fuse import FuseStage  # noqa: E402
+from ingest_pipeline.base import STATUS_DONE  # noqa: E402
+import score_recompute  # noqa: E402
 
 
 log = logging.getLogger("vibescape.ingest.orch")
+
+# Stages whose 'done' rows change what the score recompute produces. See the
+# module docstring; fuse, youtube etc. touch none of its inputs or outputs.
+SCORING_STAGES = ("librosa", "classify")
 
 
 def build_stages(names: list[str]) -> list:
@@ -107,7 +137,7 @@ def pending_snapshot(conn) -> dict[str, int]:
     return out
 
 
-def select_cohort(conn, batch: int) -> list[int]:
+def select_cohort(conn, batch: int, only_ids=None) -> list[int]:
     """
     Pick the tracks this pass will advance, oldest first.
 
@@ -136,17 +166,23 @@ def select_cohort(conn, batch: int) -> list[int]:
     # to re-fuse them. One term keeps them reachable.
     armed += " OR language_status = 'whisper_done'"
 
+    # --only-ids pins the run to a hand-picked set (a re-ingest of suspect
+    # rows) so it does not also drain whatever else happens to be pending.
+    scope = ""
+    if only_ids is not None:
+        scope = f"AND id IN ({','.join(str(int(i)) for i in only_ids) or 'NULL'}) "
     rows = conn.execute(
         "SELECT id FROM tracks "
-        "WHERE ingestion_status = 'pending' OR ingestion_status IS NULL "
-        f"   OR {armed} "
+        "WHERE (ingestion_status = 'pending' OR ingestion_status IS NULL "
+        f"   OR {armed}) "
+        f"{scope}"
         "ORDER BY id ASC LIMIT ?",
         (batch,),
     ).fetchall()
     return [int(r[0]) for r in rows]
 
 
-def run_pass(stages: list, batch: int) -> int:
+def run_pass(stages: list, batch: int, only_ids=None) -> tuple[int, int]:
     """One orchestrator pass.
 
     Selects ONE cohort of tracks and walks it through every stage in
@@ -163,22 +199,60 @@ def run_pass(stages: list, batch: int) -> int:
 
     Each stage settles ingestion_status itself; there is no promote pass.
 
-    Returns total rows processed across all stages.
+    Returns (rows processed across all stages, rows a SCORING_STAGES stage
+    finished as 'done'). The second says whether a recompute is owed: at the
+    end of a single pass, or — accumulated across passes — once the loop
+    drains (see the module docstring for why not per pass).
     """
     conn = get_conn()
     total_processed = 0
+    scored = 0
     try:
-        cohort = select_cohort(conn, batch)
+        cohort = select_cohort(conn, batch, only_ids)
         if not cohort:
-            return 0
+            return 0, 0
         log.info("pass cohort: %d tracks (ids %d..%d)",
                  len(cohort), cohort[0], cohort[-1])
         for stage in stages:
             counts = stage.run_batch(conn, batch, log, only_ids=cohort)
             total_processed += sum(counts.values())
+            if stage.name in SCORING_STAGES:
+                scored += int(counts.get(STATUS_DONE, 0))
     finally:
         conn.close()
-    return total_processed
+    return total_processed, scored
+
+
+def recompute_scores() -> bool:
+    """Run the library-wide score recompute once and log its summary.
+
+    Returns False (after logging the traceback) if it failed, so a --loop
+    run keeps draining the pipeline instead of dying on a scoring error.
+    """
+    conn = get_conn()
+    try:
+        summary = score_recompute.recompute_axes_and_zscores(conn)
+    except Exception:
+        log.exception("score recompute failed")
+        return False
+    finally:
+        conn.close()
+    stats = summary.get("activation_stats") or {}
+    log.info("score recompute: scored=%d written=%d unchanged=%d "
+             "activation mean=%.2f std=%.2f moods=%s",
+             summary["updated"], summary["written"], summary["unchanged"],
+             stats.get("mean", float("nan")), stats.get("std", float("nan")),
+             summary["mood_distribution"])
+    return True
+
+
+def after_pass(scored: int) -> bool:
+    """Single-pass mode: recompute iff the pass finished something that
+    moves scores. --loop does not use this; it recomputes once on draining."""
+    if scored <= 0:
+        return True
+    log.info("pass scored %d rows; recomputing library scores", scored)
+    return recompute_scores()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -192,6 +266,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="keep running; sleep --interval when nothing to do")
     parser.add_argument("--interval", type=int, default=30,
                         help="seconds to sleep between empty passes (default 30)")
+    parser.add_argument("--only-ids", type=str, default=None,
+                        help="file of tracks.id, one per line: advance only these "
+                             "rows; with --loop, exit once they are idle")
+    parser.add_argument("--recompute-only", action="store_true",
+                        help="run only the library-wide score recompute "
+                             "(activation_relative / vibe_score / mood), no stages")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -201,6 +281,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     ensure_db()
+    if args.recompute_only:
+        return 0 if recompute_scores() else 1
+
     stages = build_stages([s.strip() for s in args.stages.split(",") if s.strip()])
 
     conn = get_conn()
@@ -210,16 +293,38 @@ def main(argv: list[str] | None = None) -> int:
         conn.close()
     log.info("startup pending: %s", snap)
 
-    if not args.loop:
-        processed = run_pass(stages, args.batch)
-        log.info("pass done: processed=%d", processed)
-        return 0
+    only_ids = None
+    if args.only_ids:
+        only_ids = [int(x) for x in Path(args.only_ids).read_text().split() if x.strip()]
+        log.info("scoped to %d ids from %s", len(only_ids), args.only_ids)
 
+    if not args.loop:
+        processed, scored = run_pass(stages, args.batch, only_ids)
+        log.info("pass done: processed=%d scored=%d", processed, scored)
+        return 0 if after_pass(scored) else 1
+
+    # Scored rows not yet folded into a recompute. Recomputing per pass
+    # would rewrite ~every row each time (the mean moves), so it waits for
+    # the loop to drain; see the module docstring.
+    owed = 0
     while True:
-        processed = run_pass(stages, args.batch)
-        if processed == 0:
-            log.info("all stages idle; sleeping %ds", args.interval)
-            time.sleep(args.interval)
+        processed, scored = run_pass(stages, args.batch, only_ids)
+        owed += scored
+        if processed != 0:
+            continue
+        if owed > 0:
+            log.info("loop drained; %d rows scored since the last recompute, "
+                     "recomputing library scores", owed)
+            if recompute_scores():
+                owed = 0
+            else:
+                log.warning("score recompute owed for %d rows; retrying at the "
+                            "next idle point", owed)
+        if only_ids is not None:
+            log.info("scoped ids idle; done")
+            return 0 if owed == 0 else 1
+        log.info("all stages idle; sleeping %ds", args.interval)
+        time.sleep(args.interval)
 
 
 if __name__ == "__main__":

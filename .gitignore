@@ -15,6 +15,8 @@ data/recompute_progress.json
 # written per run by scripts/_llm_verify_export.py and _llm_verify_apply.py.
 data/_*.json
 data/_*.jsonl
+# Track-id lists written by scripts/reset_shared_previews.py
+data/_*.txt
 # YouTube session cookies — treat as secrets
 data/yt_cookies*.txt
 data/yt_*.txt

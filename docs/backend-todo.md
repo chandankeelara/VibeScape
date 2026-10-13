@@ -33,34 +33,48 @@ Audit date: 2026-10-02. No automated tests exist anywhere in the repo
 
 ## 1. Broken now
 
-### 1.1 `/api/recompute-scores` rewrites every track in the database, for every user
-`backend/app.py:1901` (`del user_id`), called from `backend/app.py:1959`,
-`backend/app.py:3000`, `backend/app.py:3311`
+### 1.1 ~~`/api/recompute-scores` rewrites every track in the database, for every user~~ — DONE (2026-10-13), batching left to 2.2
+`ingest/score_recompute.py`, `scripts/run_ingest_v2.py`, `backend/app.py` `api_recompute_scores`
 
-**verified.** `_recompute_axes_and_zscores` takes a `user_id`, discards it on
-line 1901, then issues `SELECT … FROM tracks` with no `WHERE` and one
-`UPDATE tracks SET activation, valence, activation_relative, vibe_score,
-mood WHERE id = ?` per scored row. Any signed-in user POSTing
-`/api/recompute-scores` rewrites the mood and vibe score of every track in
-the shared catalogue, for everyone. The local DB has 3,783 scored rows; on
-Turso each `UPDATE` is a separate HTTPS round trip, so that is ~3,800
-sequential requests per call — and the same call runs at the end of *every*
-ingest job. Two fixes are needed and they are separable: scope the write, and
-batch the round trips.
+**verified by running the tests; covered by
+`tests/backend/test_recompute_scores.py` and
+`tests/ingest/test_runner_recompute.py`.** The recompute is global by nature
+(one z-score baseline over the shared catalogue), so the fix is about who
+runs it and how often, not a per-user scope:
 
-**[frontend contract]** The docstring at `backend/app.py:1964` states
-"Per-user scoped: only touches rows belonging to the caller." That is false
-and has been since `del user_id` was added. Anything that calls this
-endpoint believing it is cheap and local is wrong on both counts.
+- The three import jobs no longer run it. They only add metadata-only
+  `pending` rows, so the baseline could not move until the offline pipeline
+  scored them; each sync paid ~3,800 Turso round trips for nothing.
+- It moved out of `app.py` into `ingest/score_recompute.py` (no FastAPI
+  import) and the dead `user_id` parameter is gone. `run_ingest_v2.py` runs
+  it when `librosa` or `classify` finished a row: at the end of a single
+  pass, and under `--loop` **once when the loop drains**, not per pass.
+  Each scored track shifts the mean and std, so a per-pass recompute
+  rewrites ~every row every pass (~76,000 round trips to drain 1,000 tracks
+  at `--batch 50`). A failed one is retried at the next idle point.
+  `--recompute-only` runs it by hand.
+- Rows whose stored activation, valence, activation_relative, vibe_score and
+  mood already match (1e-6 tolerance) are not written, so a re-run over an
+  unchanged catalogue costs one SELECT.
+- `POST /api/recompute-scores` is `require_admin`, and its docstring says
+  global. No caller in `frontend-next/`; `mobile/` has an unused wrapper
+  (see 4.9). The response gained `written` and `unchanged`.
+
+**What remains:** a recompute after new tracks were scored shifts the mean,
+so most rows still get one UPDATE each, one HTTPS round trip apiece on Turso. That
+needs Hrana batch requests in `db_client` (2.2).
 
 ### 1.2 `vibe_score` has two writers that disagree on what it means
-`ingest_pipeline/stage_classify.py:123` vs `backend/app.py:1941`
+`ingest_pipeline/stage_classify.py:123` vs `ingest/score_recompute.py`
 
 **verified.** ClassifyStage writes `vibe_score = activation` (the raw 0–100
-axis). `_recompute_axes_and_zscores` writes `vibe_score = rel`, the z-scored
-`activation_relative`. Since 1.1 runs after every sync, a freshly classified
-track's `vibe_score` means "raw activation" for as long as it takes the next
-sync to finish, then silently means "relative to library mean". Any UI or
+axis). `score_recompute` writes `vibe_score = rel`, the z-scored
+`activation_relative`, from the librosa features rather than MERT. Since
+2026-10-13 the runner recomputes at the end of any pass that classified
+something, so a classified track's ML-derived `activation` / `vibe_score`
+survive only until the end of that pass (previously: until the next sync).
+In practice this matters less than it looks: the vibe filter and the UI
+badge prefer `vibe_score_ml`. Any UI or
 query that compares `vibe_score` across tracks ingested at different times is
 comparing two different quantities. **[frontend contract]** — whichever
 definition wins is the one the client has been rendering.
@@ -150,6 +164,53 @@ schema.sql's language index then failed. That ALTER is gone (production has no
 shape — so **local dev DBs still differ from production** (`vibe_score NOT
 NULL`, `user_id` on tracks). Regression tests: `tests/database/test_schema.py`.
 
+### 1.8 ~~The iTunes matcher gave tracks another song's audio~~ — DONE (2026-10-12)
+`ingest_pipeline/preview_providers.py` `ItunesPreview._pick_best`
+
+**verified by querying the DB and iTunes.** The third tier returned "the first
+result with a preview", and a search for one song usually returns its album,
+so 183 prod tracks (124 local) carried a neighbour's preview — 82 groups of
+different songs with byte-identical MERT vectors, served to each other by the
+DJ at cosine 1.000 (EoO / FINA / EL CLúB / Después de la Playa; four *Blonde*
+tracks; Icey / Memo). The matcher now accepts only the same recording
+(title, a shared artist, length within max(15 s, 10 %), matching version
+markers) or nothing. Tests: `tests/ingest/test_preview_matcher.py`.
+
+All 183 were reset in prod on 2026-10-12 (`scripts/_turso_reset_shared_previews.py`,
+backup `data/backups/prod_20261012T080039Z.db`): `ingestion_status='pending'`,
+preview, audio-derived columns and embeddings cleared, `language_status`
+kept `'done'` so they fuse without re-tagging. They are out of `/similar` and
+the vibe queues until the offline runners re-ingest them. **Runners must
+have this matcher and must not hold a cached `data/audio/<spotify_id>.*` for
+them** — the download stage reuses any cached file.
+
+### 1.9 ~~The ISRC dedupe scripts delete listening history~~ — DONE (2026-10-12), prod run pending
+`scripts/_dedupe_local_by_isrc.py`, `scripts/_dedupe_turso_by_isrc.py`
+
+**verified by running both versions on a copy of the 2026-10-12 prod
+backup.** They re-pointed `user_tracks` only, but `track_events` and
+`user_track_stats` also reference `tracks(id) ON DELETE CASCADE`; the old
+version passed all its own checks while orphaning 12 events and 6 stats rows
+(deleted outright on prod, where the cascade is live). Now events move to the
+survivor first and stats are rebuilt from them (`scripts/_dedupe_history.py`);
+on the copy: 288 duplicates removed, events 3998 → 3998, stats equal a fresh
+rebuild. **Not yet run against Turso, not even dry** — its connection and the
+`--turso` rebuild path are untested.
+
+### 1.10 ~~Clearing a library deleted the caller's listening history~~ — DONE (2026-10-13)
+`backend/app.py` `ingest_clear`
+
+**verified by reading the code and schema.sql; covered by
+`tests/backend/test_ingest_clear.py`.** `POST /api/ingest/clear` deleted the
+caller's `user_tracks`, then every track no other user still linked, then its
+audio file. On Turso (foreign keys on) `track_events`, `user_track_stats` and
+`track_embeddings` cascade from `tracks(id)`, so a clear erased the caller's
+history and the track's MERT/fused vectors. The endpoint now removes
+`user_tracks` only; `tracks_pruned` and `audio_files_removed` stay in the
+body, always 0. Catalogue rows nobody links now accumulate; if they ever need
+pruning, that is an offline admin script that keeps history, not this
+endpoint.
+
 ---
 
 ## 2. Will break
@@ -190,13 +251,11 @@ against no transaction and swallows the error. Concretely, on Turso:
   between them leaves a catalogue row no user references and the user without
   the track — permanently, since `_process_track` short-circuits on
   `SELECT … FROM tracks WHERE spotify_id = ?` on the next attempt.
-- `ingest_clear` (`backend/app.py:2563`) deletes `user_tracks` then loops
-  deleting `tracks` row by row with no way to roll back a partial run.
 - `scripts/_dedupe_turso_by_isrc.py:219-220` deletes a track's embeddings and
   then the track as two separate commits.
 
 Fix is either Hrana batch requests (several statements in one pipeline POST,
-which also fixes the round-trip cost in 1.1) or baton reuse. Either way,
+which also fixes the round-trip cost left over from 1.1) or baton reuse. Either way,
 correct the docstring first.
 
 ### 2.3 Every `except sqlite3.IntegrityError` in the codebase is dead on Turso
@@ -341,6 +400,36 @@ with `/api/`. **[frontend contract]** — error handling changes shape.
 
 ---
 
+### 3.8 ~70 tracks have no iTunes preview at all and will park at `no_preview`
+`ingest_pipeline/preview_providers.py` `default_chain`
+
+**verified against iTunes** (2026-10-12). After 1.8, 71 of the 124 local
+re-ingests found no match, and they are genuine: iTunes does not sell
+*Blonde* or the recent Bad Bunny albums, and neither `title artist`, a
+`songTerm` search, nor an ISRC lookup returns them (Nights, STATS, Icey,
+Ladders, EoO, FINA, The Box checked by hand). These songs are unplayable by
+the DJ until a second source exists. The chain is iTunes-only on purpose —
+Deezer audio shifts MERT embeddings — so the choice (Deezer, or a 30 s clip
+from the `youtube_id` already on the row) is a design decision, not a fix.
+
+### 3.9 The same song stored twice under different ISRCs is recommended twice
+`backend/app.py` `_similar_dj`
+
+**verified by querying the 2026-10-12 prod backup.** 78 groups share a
+preview and name the same recording (Starboy ×2, Save Your Tears ×2, Veera
+Raja Veera ×2); only 43 share an ISRC, so the dedupe scripts (1.9) cannot
+merge the other 35 — a single vs its `(From "…")` release, typically. The DJ
+returns both: Levitating's top neighbour is "Levitating (feat. DaBaby)".
+Collapse versions in the result list (normalised title + shared artist, the
+same test as `titles_match` / `artists_match`) rather than in the catalogue.
+
+### 3.10 17 junk rows titled `?` share one embedding
+`tracks` where `title = '?' AND artist = '?'`
+
+**verified by querying the prod backup.** 16 have `preview_source='itunes'`.
+They are excluded from `reset_shared_previews.py` on purpose. Check
+`user_tracks` for references before deleting them.
+
 ## 4. Cleanup
 
 ### 4.1 Stale file references
@@ -420,6 +509,24 @@ has been reaped", but nothing reaps: `JOBS` only loses entries via the two
 `JOBS.pop` calls in `/api/ingest/single` (`backend/app.py:3140`,
 `backend/app.py:3144`). Every completed sync job leaks its dict for the life
 of the process. Add a TTL sweep, or delete the claim.
+
+### 4.8 `run_ingest_v2.py --help` crashes on a Windows console
+`scripts/run_ingest_v2.py:28`
+
+**verified** (2026-10-13, on `dj-replay` before and after 1.1). The parser's
+description is the module docstring, which contains `→`; on a cp1252 console
+argparse raises `UnicodeEncodeError` printing help. Real runs are unaffected.
+`PYTHONIOENCODING=utf-8` works around it; the fix is replacing the arrow with
+`->`.
+
+### 4.9 [frontend contract] The mobile `RecomputeSummary` reads fields the backend never sent
+`mobile/lib/core/models/recompute.dart`
+
+**verified by reading the code.** It parses `tracks_touched` and
+`tracks_skipped`; the endpoint has only ever returned `updated`,
+`activation_stats`, `mood_distribution` (now also `written`, `unchanged`).
+Nothing in `mobile/lib` calls `recomputeScores()`, and the endpoint is now
+admin-only, so the cheapest fix is deleting the wrapper and model.
 
 ---
 
@@ -858,8 +965,7 @@ knowing that:
 - Apple playlists over 100 songs and user `pl.u-` playlists are untested.
 - None of the supported services give ISRCs, so matching is by title +
   artist + duration; misses are listed (`unmatched`), never guessed.
-- Same thread + JOBS-dict machinery as the other imports (backlog 1.5), and
-  the same post-import `_recompute_axes_and_zscores` (backlog 1.1).
+- Same thread + JOBS-dict machinery as the other imports (backlog 1.5).
 
 ## Checked and clean
 

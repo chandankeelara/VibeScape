@@ -125,7 +125,7 @@ Two independent auth surfaces the mobile client must handle:
 | GET | `/api/tracks/{track_key}/similar` | `limit=8` (1–25) | `{anchor:{spotify_id,apple_id,mood}, tracks: TrackRow[]}` — L1-distance similarity across ML features + mood match bonus. |
 | GET | `/api/tracks/{track_key}/features` | — | Full librosa feature blob + axes for one track. |
 | GET | `/api/track/{apple_id}/spotify` | — | `{spotify_id, uri}` — resolve legacy apple_id → Spotify URI. |
-| POST | `/api/recompute-scores` | — | `{updated, activation_stats, mood_distribution}` — re-run scoring across the library (cheap; no audio re-analysis). |
+| POST | `/api/recompute-scores` | — | `{updated, written, unchanged, activation_stats, mood_distribution}` — **admin only** (403 `admin_only` otherwise). Re-runs scoring across the **global** catalogue, not the caller's library; no audio re-analysis, unchanged rows are not written. The offline pipeline runs the same thing after it scores tracks, so clients have no reason to call it. |
 
 `TrackRow` (columns are fixed and returned for every `list_tracks` /
 `search_tracks` / `similar_tracks` etc. response — see
@@ -195,7 +195,7 @@ if the instance recycles.
 | POST | `/api/ingest/spotify` | `{access_token, sources:{liked, top_tracks, playlist_ids[]}}` | `202 {job_id}` — ingest the caller's own Spotify sources. `access_token` is the Spotify OAuth token. |
 | POST | `/api/ingest/spotify-public` | `{playlist_url? or playlist_id?, access_token?}` | `202 {job_id, playlist_id, note}` — ingest an arbitrary public playlist. Passing the user's Spotify token dramatically improves success rate; without it Spotify's Nov 2024 lockdown 403's most playlists. |
 | POST | `/api/ingest/single` | `{spotify_id, access_token?}` | `200 {status, result, track}` — synchronous single-track ingest. Idempotent. |
-| POST | `/api/ingest/clear` | — | `{cleared, tracks_pruned, audio_files_removed}` — remove the caller's library. Global orphaned tracks are pruned. |
+| POST | `/api/ingest/clear` | — | `{cleared, tracks_pruned, audio_files_removed}` — remove the caller's library links. Catalogue tracks, history and embeddings are kept; the last two keys are always 0. |
 | GET | `/api/ingest/status/{job_id}` | — | Full job state (see below). Only visible to the owner. |
 | DELETE | `/api/ingest/status/{job_id}` | — | `204` — request cancellation. Idempotent. |
 

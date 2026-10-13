@@ -333,7 +333,28 @@ python scripts/run_ingest_v2.py --stages preview,download
 
 # local GPU instead of Modal
 VIBESCAPE_ML_MODE=local python scripts/run_ingest_v2.py --batch 50
+
+# only the library-wide score recompute, no stages
+python scripts/run_ingest_v2.py --recompute-only
 ```
+
+### The score recompute runs here, not in the app
+
+`activation_relative`, `vibe_score`, `activation`, `valence` and `mood` are
+recomputed for the **whole catalogue** by `ingest/score_recompute.py`:
+activation z-scored across every featured track (mean 50, one std = 15). It
+is owed only when `librosa` or `classify` finished a row (librosa adds rows to
+the baseline, classify overwrites the columns the recompute owns). A single
+pass recomputes at its end. **`--loop` recomputes once, when the loop drains**
+(the first pass that processes nothing, including the `--only-ids` exit),
+never per pass: every newly scored track shifts the mean and std, so nearly
+every row moves and the skip below saves nothing. Per pass, draining 1,000
+tracks at `--batch 50` would cost ~76,000 Turso round trips instead of
+~3,800. A failed recompute stays owed and is retried at the next idle point.
+Rows whose stored values already match are not written.
+Import jobs ran it on every sync until 2026-10-13; a sync only adds
+unanalysed `pending` rows, so the baseline cannot move until this pipeline
+has scored them. `POST /api/recompute-scores` still exists, admin-only.
 
 Batch size sets the **commit granularity** — `run_batch` commits once per
 stage per batch. A large batch means a kill loses everything uncommitted;
@@ -355,6 +376,27 @@ VIBESCAPE_ITUNES_MIN_GAP=2 VIBESCAPE_ITUNES_RETRIES=7 VIBESCAPE_ITUNES_BACKOFF=5
 Distinguish the two failure modes in the logs: `search failed ... 403` is
 throttling (retry it), while a plain `no_match` with no 403 means iTunes
 answered and had nothing (genuine).
+
+### The preview matcher returns the track or nothing
+
+`ItunesPreview._pick_best` accepts a result only when the title names the
+same recording (brackets, `feat.` and ` - ` suffixes aside; version markers
+like 8D / slowed / remix / reprise must agree), at least one credited artist
+is shared, and the length is within max(15 s, 10 %). There is **no "closest
+result" fallback**. It had one until 2026-10-11, and since a search for one
+song often returns its album, 124 tracks ended up carrying another song's
+audio — identical vectors under different titles, which the DJ served to
+each other at cosine 1.000. A miss is `no_preview`, which is visible; a
+wrong match is not.
+
+`scripts/reset_shared_previews.py` finds rows that share a `preview_url` or a
+byte-identical MERT vector under different titles, clears everything derived
+from the audio (including the cached file — re-runs short-circuit on it) and
+re-arms them. `run_ingest_v2.py --only-ids FILE` then advances just those rows
+and exits when they are idle, rather than also draining whatever else is
+pending.
+
+The matcher's tests are `tests/ingest/test_preview_matcher.py`.
 
 ## Prod
 
