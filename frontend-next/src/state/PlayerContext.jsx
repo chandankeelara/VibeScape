@@ -71,8 +71,20 @@ export function PlayerProvider({ children }) {
   // 'idle' | 'loading' | 'ready' | 'unavailable' — drives the video stage UI.
   const [videoState, setVideoState] = useState('idle');
 
-  // Guards against a slow request for an old vibe clobbering a newer one.
-  const fetchToken = useRef(0);
+  /*
+   * Load generation. Bumped by EVERY track load (loadTrack) and by the start
+   * of every async pick (fetchForVibe, next()'s DJ branch). An async pick
+   * captures it before its await and drops its result if it moved, so a slow
+   * /random or /similar can never replace a track the user chose in the
+   * meantime. Until 2026-10-13 only fetchForVibe bumped a token, so a DJ pick
+   * still in flight when the user picked a search result, jumped the queue or
+   * pressed prev landed afterwards and clobbered it.
+   *
+   * Overlay ownership follows the same counter: whoever bumped it last either
+   * cleared `loadingTrack` (loadTrack does, synchronously) or set it and will
+   * clear it when it settles. A superseded pick therefore never touches it.
+   */
+  const loadGen = useRef(0);
 
   /*
    * Who last moved the vibe slider — 'user' | 'system' | null.
@@ -312,6 +324,10 @@ export function PlayerProvider({ children }) {
   const loadTrack = useCallback(
     (t, { syncVibe = true, source = 'pick', endReason, trigger, reason } = {}) => {
       if (!t) return;
+      // Supersedes any pick still in flight, and ends its loading overlay:
+      // that pick will now drop its result instead of loading it.
+      loadGen.current += 1;
+      setLoadingTrack(false);
       const ended = endedRef.current;
       endedRef.current = false;
       setStartInfo({
@@ -338,7 +354,7 @@ export function PlayerProvider({ children }) {
    */
   const fetchForVibe = useCallback(
     async (v = vibe, { endReason = 'skipped', trigger = 'vibe_change' } = {}) => {
-      const token = ++fetchToken.current;
+      const gen = ++loadGen.current;
       setLoadingTrack(true);
       try {
         const exclude = recent.map((r) => r.id).filter(Boolean);
@@ -347,10 +363,10 @@ export function PlayerProvider({ children }) {
           tolerance: 12,
           exclude_ids: exclude.length ? exclude.join(',') : undefined,
         });
-        if (token !== fetchToken.current) return;
+        if (gen !== loadGen.current) return;
         loadTrack(t, { syncVibe: false, source: 'autoplay', endReason, trigger });
       } catch (e) {
-        if (token !== fetchToken.current) return;
+        if (gen !== loadGen.current) return;
         if (e.status === 404) {
           setCurrent(null);
           player.stop();
@@ -358,7 +374,10 @@ export function PlayerProvider({ children }) {
           toast('Could not load track. Check the backend.', 'error');
         }
       } finally {
-        if (token === fetchToken.current) setLoadingTrack(false);
+        // After a successful load the generation has moved (loadTrack bumped
+        // it and cleared the flag itself); after a superseded one, the newer
+        // load owns the flag.
+        if (gen === loadGen.current) setLoadingTrack(false);
       }
     },
     [vibe, recent, loadTrack, toast]
@@ -516,14 +535,26 @@ export function PlayerProvider({ children }) {
       // path where "next" can take a visible moment with nothing on screen
       // to say so. fetchForVibe() raises this flag itself; this branch never
       // did, which left the hero card sitting on the previous track's art.
+      //
+      // The round trip can lose a race. If anything loads a track (a search
+      // pick, a queue jump, prev) or starts another pick while /similar is in
+      // flight, the generation moves and this result is dropped whole: no
+      // load, no fallback to fetchForVibe, and so no play_start / play_end
+      // either, since those are only emitted from player.loadTrack().
+      const gen = ++loadGen.current;
+      const stale = () => gen !== loadGen.current;
       setLoadingTrack(true);
       Promise.resolve(fallback())
-        .then((t) => (t ? loadTrack(t, { source: 'dj', trigger }) : fetchForVibe(undefined, { trigger })))
-        .catch(() => fetchForVibe(undefined, { trigger }))
-        // fetchForVibe() owns the flag once it takes over, and clears it in
-        // its own finally — but it may also have bailed early on a stale
-        // token, so clearing here too is what guarantees the overlay dies.
-        .finally(() => setLoadingTrack(false));
+        .then((t) => {
+          if (stale()) return;
+          if (t) loadTrack(t, { source: 'dj', trigger });
+          else fetchForVibe(undefined, { trigger });
+        })
+        .catch(() => { if (!stale()) fetchForVibe(undefined, { trigger }); })
+        // Normally stale by now: loadTrack cleared the flag, or fetchForVibe
+        // took it over, or a newer load superseded this one. Still current
+        // only if something threw before either ran, and then it is ours.
+        .finally(() => { if (!stale()) setLoadingTrack(false); });
       return;
     }
     fetchForVibe(undefined, { trigger });

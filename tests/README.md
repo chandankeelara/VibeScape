@@ -60,6 +60,7 @@ with fakes; no test needs a network.
 | Volume | `frontend/volume.test.js` | clamping, persistence, mute, subscribers, effective volume 0 while muted |
 | DJ line | `frontend/startReason.test.js` | a finish vs a skip vs a slider move, a stale "ended" flag never relabels a search or pick |
 | Vibe arrow keys | `frontend/vibeArrowKeys.test.jsx` | up / down fetch for the vibe they move to, clamped at 0 and 100, two presses before a render compound (the real `PlayerProvider` and shortcut hook) |
+| Stale DJ pick | `frontend/djStalePick.test.jsx` | a DJ pick that lands after a user pick, or after a newer next, is dropped with no play_start / play_end and no random fallback; the pick ends the overlay; an unraced pick still plays (real `PlayerProvider`, `media/player.js` and listening log) |
 
 Each fix above was checked by breaking it on purpose and confirming a test
 fails (2026-10-10).
