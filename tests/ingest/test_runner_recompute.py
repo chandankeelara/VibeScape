@@ -44,3 +44,72 @@ def test_recompute_only_writes_scores_and_builds_no_stage(sql, monkeypatch):
     assert runner.main(["--recompute-only"]) == 0
     row = sql.execute("SELECT activation_relative, mood FROM tracks WHERE spotify_id='S1'").fetchone()
     assert row[0] == 50.0 and row[1] is not None   # a lone track sits at the mean
+
+
+# ------------------------------------------------------------------ --loop
+#
+# A loop recomputes ONCE when it drains, not after every scoring pass: each
+# newly scored track moves the catalogue mean, so a per-pass recompute would
+# rewrite ~every row every pass (~76,000 Turso round trips to drain 1,000
+# tracks at --batch 50).
+
+class Idle(Exception):
+    """Raised by the fake sleep to stop an otherwise endless --loop."""
+
+
+def drive_loop(monkeypatch, passes, recompute_results=(), argv=("--loop",), sleeps_before_stop=1):
+    """Run main() in --loop over scripted (processed, scored) passes.
+
+    Returns (recompute call count, main's return value or 'stopped')."""
+    passes = list(passes)
+    results = list(recompute_results)
+    calls = []
+
+    def fake_run_pass(stages, batch, only_ids=None):
+        return passes.pop(0) if passes else (0, 0)
+
+    def fake_recompute():
+        calls.append(1)
+        return results.pop(0) if results else True
+
+    slept = []
+
+    def fake_sleep(seconds):
+        slept.append(seconds)
+        if len(slept) >= sleeps_before_stop:
+            raise Idle
+
+    monkeypatch.setattr(runner, "build_stages", lambda names: [])
+    monkeypatch.setattr(runner, "run_pass", fake_run_pass)
+    monkeypatch.setattr(runner, "recompute_scores", fake_recompute)
+    monkeypatch.setattr(runner.time, "sleep", fake_sleep)
+    try:
+        rc = runner.main(list(argv))
+    except Idle:
+        rc = "stopped"
+    return len(calls), rc
+
+
+def test_a_loop_recomputes_once_when_it_drains(db, monkeypatch):
+    passes = [(50, 50), (50, 40), (50, 0), (30, 25), (0, 0)]
+    assert drive_loop(monkeypatch, passes) == (1, "stopped")
+
+
+def test_an_idle_loop_with_nothing_scored_never_recomputes(db, monkeypatch):
+    assert drive_loop(monkeypatch, [(20, 0), (0, 0)], sleeps_before_stop=3) == (0, "stopped")
+
+
+def test_an_only_ids_loop_recomputes_before_exiting(db, monkeypatch, tmp_path):
+    ids = tmp_path / "ids.txt"
+    ids.write_text("1\n2\n")
+    n, rc = drive_loop(monkeypatch, [(10, 2), (10, 1), (0, 0)],
+                       argv=("--loop", "--only-ids", str(ids)))
+    assert (n, rc) == (1, 0)
+
+
+def test_a_failed_recompute_is_retried_at_the_next_idle_point(db, monkeypatch):
+    # scores, drains (recompute fails), idles again (retry succeeds), idles a
+    # third time with nothing owed.
+    n, rc = drive_loop(monkeypatch, [(50, 50), (0, 0), (0, 0), (0, 0)],
+                       recompute_results=(False, True), sleeps_before_stop=3)
+    assert (n, rc) == (2, "stopped")

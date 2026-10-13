@@ -47,7 +47,11 @@ runs it and how often, not a per-user scope:
   scored them; each sync paid ~3,800 Turso round trips for nothing.
 - It moved out of `app.py` into `ingest/score_recompute.py` (no FastAPI
   import) and the dead `user_id` parameter is gone. `run_ingest_v2.py` runs
-  it after any pass where `librosa` or `classify` finished a row, and
+  it when `librosa` or `classify` finished a row: at the end of a single
+  pass, and under `--loop` **once when the loop drains**, not per pass.
+  Each scored track shifts the mean and std, so a per-pass recompute
+  rewrites ~every row every pass (~76,000 round trips to drain 1,000 tracks
+  at `--batch 50`). A failed one is retried at the next idle point.
   `--recompute-only` runs it by hand.
 - Rows whose stored activation, valence, activation_relative, vibe_score and
   mood already match (1e-6 tolerance) are not written, so a re-run over an
@@ -56,8 +60,8 @@ runs it and how often, not a per-user scope:
   global. No caller in `frontend-next/`; `mobile/` has an unused wrapper
   (see 4.9). The response gained `written` and `unchanged`.
 
-**What remains:** a pass that scores N new tracks shifts the mean, so most
-rows still get one UPDATE each, one HTTPS round trip apiece on Turso. That
+**What remains:** a recompute after new tracks were scored shifts the mean,
+so most rows still get one UPDATE each, one HTTPS round trip apiece on Turso. That
 needs Hrana batch requests in `db_client` (2.2).
 
 ### 1.2 `vibe_score` has two writers that disagree on what it means

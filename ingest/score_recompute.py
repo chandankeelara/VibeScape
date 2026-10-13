@@ -10,8 +10,10 @@ The baseline is the GLOBAL catalogue — tracks are song-level truth shared by
 every user — so there is no per-user variant. One call rewrites rows other
 users see, which is why the HTTP endpoint is admin-only.
 
-Where it runs: at the end of an offline pipeline pass that scored something
-(`scripts/run_ingest_v2.py`; `--recompute-only` runs it by hand), and from
+Where it runs: in `scripts/run_ingest_v2.py` after a single pass that scored
+something, or once when a `--loop` run drains (never per pass: the mean moves
+with every scored track, so each run rewrites ~every row);
+`--recompute-only` runs it by hand. Also from
 `POST /api/recompute-scores` for the admin. It used to run at the end of every
 import job too; that added nothing, because an import only writes
 metadata-only 'pending' rows with no features, so the baseline cannot move

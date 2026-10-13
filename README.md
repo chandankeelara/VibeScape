@@ -387,7 +387,7 @@ python scripts/run_ingest_v2.py --loop --batch 30 --interval 30
 # Restrict to a subset of stages:
 python scripts/run_ingest_v2.py --stages preview,download,classify
 
-# Only the library-wide score recompute (runs on its own after any pass that scored tracks):
+# Only the library-wide score recompute (runs on its own after a scoring pass, or once when --loop drains):
 python scripts/run_ingest_v2.py --recompute-only
 ```
 

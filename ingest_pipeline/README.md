@@ -342,11 +342,16 @@ python scripts/run_ingest_v2.py --recompute-only
 
 `activation_relative`, `vibe_score`, `activation`, `valence` and `mood` are
 recomputed for the **whole catalogue** by `ingest/score_recompute.py`:
-activation z-scored across every featured track (mean 50, one std = 15). The
-runner does it after any pass in which `librosa` or `classify` finished at
-least one row (librosa adds rows to the baseline, classify overwrites the
-columns the recompute owns), and once per such pass under `--loop`, never on
-an idle interval. Rows whose stored values already match are not written.
+activation z-scored across every featured track (mean 50, one std = 15). It
+is owed only when `librosa` or `classify` finished a row (librosa adds rows to
+the baseline, classify overwrites the columns the recompute owns). A single
+pass recomputes at its end. **`--loop` recomputes once, when the loop drains**
+(the first pass that processes nothing, including the `--only-ids` exit),
+never per pass: every newly scored track shifts the mean and std, so nearly
+every row moves and the skip below saves nothing. Per pass, draining 1,000
+tracks at `--batch 50` would cost ~76,000 Turso round trips instead of
+~3,800. A failed recompute stays owed and is retried at the next idle point.
+Rows whose stored values already match are not written.
 Import jobs ran it on every sync until 2026-10-13; a sync only adds
 unanalysed `pending` rows, so the baseline cannot move until this pipeline
 has scored them. `POST /api/recompute-scores` still exists, admin-only.

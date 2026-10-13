@@ -47,14 +47,24 @@ Usage:
     # Only re-run the library-wide score recompute, no stages:
     python scripts/run_ingest_v2.py --recompute-only
 
-After any pass in which librosa or classify finished at least one track, the
-runner re-runs the library-wide score recompute (ingest/score_recompute.py):
-activation/valence from the librosa features, activation z-scored across the
-catalogue into activation_relative and vibe_score, and mood. Those are the
-only two stages that move it — librosa writes its inputs and adds rows to the
-baseline, classify overwrites the columns it owns. Imports used to run it
-after every sync; a sync only adds unanalysed rows, so it moved here
-(2026-10-13).
+The runner re-runs the library-wide score recompute
+(ingest/score_recompute.py): activation/valence from the librosa features,
+activation z-scored across the catalogue into activation_relative and
+vibe_score, and mood. Only librosa and classify move it — librosa writes its
+inputs and adds rows to the baseline, classify overwrites the columns it
+owns — so it runs only if one of them finished a track:
+
+  * a single pass: once at the end of the pass;
+  * --loop: ONCE WHEN THE LOOP DRAINS (the first pass that processes
+    nothing), not after every scoring pass. Every newly scored track shifts
+    the catalogue mean and std, so nearly every row's activation_relative
+    moves and the skip-unchanged check saves nothing: draining 1,000 tracks
+    at --batch 50 would cost 20 full ~3,800-UPDATE recomputes, about 76,000
+    Turso round trips, instead of one. A failed recompute keeps its pending
+    count and is retried at the next idle point.
+
+Imports used to run it after every sync; a sync only adds unanalysed rows,
+so it moved here (2026-10-13).
 """
 from __future__ import annotations
 
@@ -190,7 +200,9 @@ def run_pass(stages: list, batch: int, only_ids=None) -> tuple[int, int]:
     Each stage settles ingestion_status itself; there is no promote pass.
 
     Returns (rows processed across all stages, rows a SCORING_STAGES stage
-    finished as 'done') — the second says whether to recompute scores.
+    finished as 'done'). The second says whether a recompute is owed: at the
+    end of a single pass, or — accumulated across passes — once the loop
+    drains (see the module docstring for why not per pass).
     """
     conn = get_conn()
     total_processed = 0
@@ -235,7 +247,8 @@ def recompute_scores() -> bool:
 
 
 def after_pass(scored: int) -> bool:
-    """Recompute scores iff this pass finished something that moves them."""
+    """Single-pass mode: recompute iff the pass finished something that
+    moves scores. --loop does not use this; it recomputes once on draining."""
     if scored <= 0:
         return True
     log.info("pass scored %d rows; recomputing library scores", scored)
@@ -290,15 +303,28 @@ def main(argv: list[str] | None = None) -> int:
         log.info("pass done: processed=%d scored=%d", processed, scored)
         return 0 if after_pass(scored) else 1
 
+    # Scored rows not yet folded into a recompute. Recomputing per pass
+    # would rewrite ~every row each time (the mean moves), so it waits for
+    # the loop to drain; see the module docstring.
+    owed = 0
     while True:
         processed, scored = run_pass(stages, args.batch, only_ids)
-        after_pass(scored)
-        if processed == 0 and only_ids is not None:
+        owed += scored
+        if processed != 0:
+            continue
+        if owed > 0:
+            log.info("loop drained; %d rows scored since the last recompute, "
+                     "recomputing library scores", owed)
+            if recompute_scores():
+                owed = 0
+            else:
+                log.warning("score recompute owed for %d rows; retrying at the "
+                            "next idle point", owed)
+        if only_ids is not None:
             log.info("scoped ids idle; done")
-            return 0
-        if processed == 0:
-            log.info("all stages idle; sleeping %ds", args.interval)
-            time.sleep(args.interval)
+            return 0 if owed == 0 else 1
+        log.info("all stages idle; sleeping %ds", args.interval)
+        time.sleep(args.interval)
 
 
 if __name__ == "__main__":
