@@ -267,6 +267,22 @@ def require_user(request: Request, authorization: Optional[str] = Header(None)) 
     return sess
 
 
+# Defined next to require_user because a Depends() default is evaluated at
+# def time: an endpoint above the old home of this function (the admin
+# section, ~line 5340) would NameError on import.
+#
+# The user_id of the single admin is stored in an env var so it's
+# configurable per environment. Default = 1 (chandan on prod as of
+# 2026-08-23; verified against the downloaded prod DB).
+ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "1"))
+
+
+def require_admin(sess: dict = Depends(require_user)) -> dict:
+    if int(sess["user_id"]) != ADMIN_USER_ID:
+        raise HTTPException(status_code=403, detail={"error": "admin_only"})
+    return sess
+
+
 def require_user_stream(request: Request, authorization: Optional[str] = Header(None)) -> dict:
     """
     Stream-only variant of require_user. Accepts EITHER:
@@ -3120,8 +3136,16 @@ async def search_track_youtube(
 async def set_track_youtube(
     track_id: int,
     request: Request,
-    sess: dict = Depends(require_user),
+    sess: dict = Depends(require_admin),
 ):
+    """
+    Pin the YouTube video a track plays. Admin only: this writes the GLOBAL
+    tracks.youtube_id, which every user (and the shared guest) streams from,
+    so a per-user guard is not enough. Until 2026-10-13 it took require_user,
+    meaning a guest minted by POST /api/auth/guest (no credentials) could
+    repoint any track in the catalogue. Nothing in frontend-next calls this
+    (lib/api.js:setTrackYoutube has no caller); it is a tooling endpoint.
+    """
     try:
         body = await request.json()
     except Exception:
@@ -5332,18 +5356,6 @@ def my_listening_stats(days: int = Query(30, ge=1, le=_STATS_WINDOW_DAYS_MAX),
 
 
 # ---------------- Admin (chandan-only) ----------------
-# The user_id of the single admin is stored in an env var so it's
-# configurable per environment. Default = 1 (chandan on prod as of
-# 2026-08-23; verified against the downloaded prod DB).
-ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "1"))
-
-
-def require_admin(sess: dict = Depends(require_user)) -> dict:
-    if int(sess["user_id"]) != ADMIN_USER_ID:
-        raise HTTPException(status_code=403, detail={"error": "admin_only"})
-    return sess
-
-
 @app.get("/api/admin/users")
 def admin_list_users(sess: dict = Depends(require_admin)):
     conn = get_conn()
