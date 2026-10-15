@@ -50,12 +50,16 @@ When that transaction fails, the kind of error decides what happens
 (Stage._write_results). Only a constraint violation can be one row's fault:
 a constraint judges a row's data, and nothing else a write can hit does.
 
+  - A transient error (_is_transient: anything that is not a sqlite3.Error,
+    or a busy or locked database) is first tried again, up to three times,
+    2, 4 and 8 s apart, each retry logged (Stage._execute_batch). Only if
+    it persists does one of the rules below apply.
   - A transport error, anything that is not a sqlite3.Error (the network,
     an HTTP status, a timeout), is raised with nothing parked. Its outcome
     is unknown: the server may have run and committed the batch after the
     client gave up. That is safe because every statement is an UPDATE or
     an upsert of absolute values: the next pass sees whatever landed and
-    redoes whatever did not.
+    redoes whatever did not. The same makes the retries above safe.
   - A constraint violation (sqlite3.IntegrityError) names its statement
     (execute_batch sets `step`), and so its row. Nothing in the batch
     landed. The row is set aside and the rest written again without it;
@@ -66,8 +70,9 @@ a constraint judges a row's data, and nothing else a write can hit does.
     `run_ingest_v2.py --retry-failed` re-arms it.
   - Any other database error is raised with nothing parked and nothing
     landed: a column or table production lacks, a read-only token, a busy
-    or locked database, a failed COMMIT. None of those is a row's fault,
-    so the stage stops and the rows stay pending until the cause is fixed.
+    or locked database that stayed so through its retries, a failed
+    COMMIT. None of those is a row's fault, so the stage stops and the
+    rows stay pending until the cause is fixed.
 
 A finished track is never parked. Stages do run on ingestion_status='done'
 rows (fuse after a language correction, youtube when re-armed), every DJ,
@@ -101,6 +106,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -113,6 +119,23 @@ from typing import Any, NamedTuple
 # fields backfilled from external providers — the row's own status +
 # preview_url still lands.
 _RETRY_DROPPABLE_FIELDS = ("apple_id", "track_view_url", "genre")
+
+# A write that fails transiently (_is_transient) is tried again after each
+# of these pauses, and then the error is raised: 14 s of waiting at most.
+# Tests stub _sleep.
+_RETRY_SLEEPS_S = (2, 4, 8)
+_sleep = time.sleep
+
+
+def _is_transient(e: BaseException) -> bool:
+    """A write error that says nothing about the rows written: the network
+    or the HTTP layer (anything that is not a sqlite3.Error), or a busy or
+    locked database. The same write can succeed a few seconds later."""
+    if not isinstance(e, sqlite3.Error):
+        return True
+    text = (getattr(e, "detail", None) or str(e)).lower()
+    return isinstance(e, sqlite3.OperationalError) and any(
+        word in text for word in ("locked", "busy", "timeout"))
 
 
 STATUS_PENDING = "pending"
@@ -351,7 +374,7 @@ class Stage(ABC):
                     stmts.append(stmt)
                     owner.append(i)
             try:
-                cursors = conn.execute_batch(stmts)
+                cursors = self._execute_batch(conn, stmts, log)
             except Exception as e:
                 if not isinstance(e, sqlite3.Error):
                     log.warning("[%s] transport error writing %d rows (%s): outcome "
@@ -382,6 +405,23 @@ class Stage(ABC):
                 instead[w.track_id] = settled
         return instead
 
+    def _execute_batch(self, conn, stmts: list, log) -> list:
+        """conn.execute_batch(stmts), tried again after each pause in
+        _RETRY_SLEEPS_S while it fails transiently (_is_transient); then the
+        error is raised. Safe even when a failed attempt did commit (the
+        client gave up on a request the server finished): every statement a
+        stage writes is an UPDATE or an upsert of absolute values, and a
+        park matches the same row again, so a second run lands the same."""
+        for n, pause in enumerate((*_RETRY_SLEEPS_S, None), start=1):
+            try:
+                return conn.execute_batch(stmts)
+            except Exception as e:
+                if pause is None or not _is_transient(e):
+                    raise
+                log.warning("[%s] writing %d statements failed (%s); retry %d of %d in %ds",
+                            self.name, len(stmts), e, n, len(_RETRY_SLEEPS_S), pause)
+                _sleep(pause)
+
     @staticmethod
     def _statements(w: RowWrite) -> list:
         return [update_stmt(w.track_id, w.fields, unless_done=w.park), *w.extra]
@@ -410,24 +450,24 @@ class Stage(ABC):
         (the park's WHERE skips 'done' rows; a rowcount of 0 says so, and
         would also say so for a row deleted meanwhile, which is equally
         fine to leave alone). Any other error on the way, the park write's
-        included, propagates: it is not this row's fault (see "Writing a
-        batch") and the stage should stop.
+        included, propagates (a transient one after its retries): it is not
+        this row's fault (see "Writing a batch") and the stage should stop.
         """
         dropped = [k for k in _RETRY_DROPPABLE_FIELDS if k in w.fields]
         if dropped:
             reduced = {k: v for k, v in w.fields.items() if k not in dropped}
             try:
-                conn.execute_batch(self._statements(w._replace(fields=reduced)))
+                self._execute_batch(conn, self._statements(w._replace(fields=reduced)), log)
                 log.warning("row %d retried without %s due to unique-constraint "
                             "collision", w.track_id, dropped)
                 return None
             except sqlite3.IntegrityError as e:
                 error = e
-        parked = conn.execute_batch([update_stmt(w.track_id, {
+        parked = self._execute_batch(conn, [update_stmt(w.track_id, {
             self.status_column: STATUS_FAILED,
             "ingestion_status": stage_error_status(self.name),
             "ingestion_error": f"[{self.name}] write failed: {error}"[:500],
-        }, unless_done=True)])[0]
+        }, unless_done=True)], log)[0]
         if parked.rowcount == 0:
             return self._leave_armed(w.track_id, f"write failed: {error}", log)
         log.warning("[%s] row %d could not be written, marked it failed: %s",

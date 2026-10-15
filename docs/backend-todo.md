@@ -362,8 +362,10 @@ It never raises `IntegrityError`. So:
 `ingest_pipeline/base.py` `Stage._write_results`
 
 A stage's batch is one `execute_batch`. If it fails, the error's kind
-decides: a transport error is raised with nothing parked (outcome unknown;
-every statement is idempotent); a constraint violation's row (`step`) is
+decides: a transport error, or a busy or locked database, is tried again
+three times (2, 4, 8 s) and then raised with nothing parked (a transport
+error's outcome is unknown; every statement is idempotent, which also makes
+the retries safe); a constraint violation's row (`step`) is
 set aside, the rest written again, and that row alone gets the
 droppable-fields retry or is parked at `<stage>_stage_error` (a finished
 track never is: it is left armed, see 3.12); any other

@@ -96,10 +96,12 @@ round trip on Turso). When that fails, the kind of error decides
 (`base.py`, "Writing a batch"); only a constraint violation can be one
 row's fault:
 
-- **Transport** — the network, an HTTP status, a timeout: raised, nothing
-  parked. The outcome is unknown (the server may have committed after the
-  client gave up), which is safe because every statement is an UPDATE or
-  upsert of absolute values: the next pass sees whatever landed.
+- **Transport** — the network, an HTTP status, a timeout: tried again up
+  to three times, 2, 4 and 8 s apart (each retry logged), then raised,
+  nothing parked. The outcome is unknown (the server may have committed
+  after the client gave up), which is safe because every statement is an
+  UPDATE or upsert of absolute values: a retry writes the same, and the
+  next pass sees whatever landed.
 - **A constraint violation** — it names its statement, so its row is set
   aside and the rest written again without it. Then that row alone: a
   UNIQUE collision on the legacy `apple_id` constraint is retried without
@@ -107,8 +109,9 @@ row's fault:
   like a failure above, with `ingestion_error='[<stage>] write failed: …'`
   (or, if it is finished, left armed).
 - **Any other database error** — a column or table production lacks, a
-  read-only token, a busy or locked database, a failed COMMIT: raised,
-  nothing landed, nothing parked. The stage stops until the cause is fixed.
+  read-only token, a busy or locked database (retried like transport
+  first), a failed COMMIT: raised, nothing landed, nothing parked. The
+  stage stops until the cause is fixed.
 
 Before 2026-10-15 one bad row cost the batch: the GPU work was done, the
 loop aborted, SQLite rolled everything back and the next pass repeated it.
@@ -463,8 +466,8 @@ Turso one request. A large batch means a kill loses everything unwritten;
 request: a classify row is ~5.7 KB of JSON and a fuse row ~4.9 KB (the
 vectors), so `--batch 50` sends ~280 KB (measured 2026-10-15). No Turso
 size limit has been hit or measured. A request the server refuses at the
-HTTP level is a transport error, so it is raised with nothing parked
-(§ Failure); a smaller `--batch` is the fix.
+HTTP level is a transport error, so it is tried three more times and then
+raised with nothing parked (§ Failure); a smaller `--batch` is the fix.
 
 ### Draining a backlog
 

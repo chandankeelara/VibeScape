@@ -15,6 +15,7 @@ import pytest
 import requests
 
 import run_ingest_v2 as runner
+from ingest_pipeline import base
 from ingest_pipeline.base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, id_filter
 from ingest_pipeline.fused_vector import FUSED_DIM, MERT_DIM
 from ingest_pipeline.stage_classify import ClassifyStage
@@ -89,19 +90,35 @@ def conn(app_module, db):
     c.close()
 
 
-class Flaky:
-    """A connection whose first `fails` execute_batch calls raise `error`
-    without reaching the database."""
+@pytest.fixture(autouse=True)
+def sleeps(monkeypatch):
+    """The pauses between write retries, recorded instead of slept."""
+    pauses = []
+    monkeypatch.setattr(base, "_sleep", pauses.append)
+    return pauses
 
-    def __init__(self, conn, error, fails):
-        self._conn, self._error, self._fails = conn, error, fails
+
+class Flaky:
+    """A connection whose execute_batch calls after the first `after` raise
+    `error`: `fails` of them, or all of them if `fails` is None. They do not
+    reach the database, unless `commits`: then each lands and commits
+    before it raises, like a request the server finished after the client
+    gave up. `calls` counts them all."""
+
+    def __init__(self, conn, error, fails=None, after=0, commits=False):
+        self._conn, self._error, self._fails, self._after = conn, error, fails, after
+        self._commits = commits
+        self.calls = 0
 
     def execute(self, *args):
         return self._conn.execute(*args)
 
     def execute_batch(self, stmts):
-        if self._fails:
-            self._fails -= 1
+        self.calls += 1
+        n = self.calls - self._after
+        if n > 0 and (self._fails is None or n <= self._fails):
+            if self._commits:
+                self._conn.execute_batch(stmts)
             raise self._error
         return self._conn.execute_batch(stmts)
 
@@ -134,7 +151,7 @@ def test_a_row_that_violates_a_constraint_is_parked_and_the_rest_land(sql, conn)
     assert "write failed" in bad["ingestion_error"] and "UNIQUE" in bad["ingestion_error"]
 
 
-def test_a_schema_error_on_one_row_stops_the_stage_and_parks_nothing(sql, conn):
+def test_a_schema_error_on_one_row_stops_the_stage_and_parks_nothing(sql, conn, sleeps):
     # Only b writes the missing column, so the rest would write fine; but a
     # column the database lacks is never a row's fault. Parking b would hide
     # a schema gap behind one 'failed' row per batch.
@@ -145,6 +162,7 @@ def test_a_schema_error_on_one_row_stops_the_stage_and_parks_nothing(sql, conn):
     with pytest.raises(sqlite3.OperationalError, match="no_such_column"):
         stage.run_batch(conn, 10, log)
     assert states(sql) == [(None, "pending", "pending")] * 3
+    assert sleeps == []                                  # and not worth a retry
 
 
 def test_a_unique_collision_is_retried_without_the_droppable_fields(sql, conn):
@@ -171,23 +189,56 @@ def test_a_bad_row_costs_one_more_batch_not_a_rewrite_of_every_row(sql, conn, ba
     assert [params[-1] for _, params in batches[1]] == [a, c]
 
 
-@pytest.mark.parametrize("error", [
-    requests.exceptions.ConnectionError("connection reset"),   # the network
-    TimeoutError("read timed out"),                            # a timeout
-    sqlite3.OperationalError("database is locked"),            # busy database
-    sqlite3.OperationalError("cannot commit"),                 # no statement owns it
-], ids=["connection", "timeout", "locked", "no-step"])
-def test_an_error_that_is_not_about_a_row_parks_nothing(sql, conn, error, caplog):
-    # It fails twice: the first version retried row by row after a failed
-    # batch, and parked any row whose own rewrite then failed.
+TRANSIENT = {
+    "connection": requests.exceptions.ConnectionError("connection reset"),   # the network
+    "timeout": TimeoutError("read timed out"),                               # a timeout
+    "locked": sqlite3.OperationalError("database is locked"),                # busy database
+}
+
+
+@pytest.mark.parametrize("error", list(TRANSIENT.values()), ids=list(TRANSIENT))
+def test_a_transient_failure_is_retried_and_the_batch_lands(sql, conn, error, sleeps, caplog):
+    # Every statement is an UPDATE or upsert of absolute values, so a retry
+    # is safe even if the failed request did commit.
     ids = add_rows(sql, 3)
     stage = Scripted({i: {"album": "X"} for i in ids})
+    flaky = Flaky(conn, error, fails=2)
+    assert stage.run_batch(flaky, 10, log) == {"done": 3, "no_match": 0, "failed": 0}
+    assert (flaky.calls, sleeps) == (3, [2, 4])
+    assert states(sql) == [("X", "done", "pending")] * 3
+    assert "retry 1 of 3 in 2s" in caplog.text and "retry 2 of 3 in 4s" in caplog.text
+
+
+@pytest.mark.parametrize("error,calls,pauses", [
+    *((e, 4, [2, 4, 8]) for e in TRANSIENT.values()),
+    (sqlite3.OperationalError("cannot commit"), 1, []),        # no statement owns it
+], ids=[*TRANSIENT.keys(), "no-step"])
+def test_an_error_that_is_not_about_a_row_parks_nothing(sql, conn, error, calls, pauses,
+                                                        sleeps, caplog):
+    # It never stops failing: the first version retried row by row after a
+    # failed batch, and parked any row whose own rewrite then failed.
+    ids = add_rows(sql, 3)
+    stage = Scripted({i: {"album": "X"} for i in ids})
+    flaky = Flaky(conn, error)
     with pytest.raises(type(error)):
-        stage.run_batch(Flaky(conn, error, fails=2), 10, log)
+        stage.run_batch(flaky, 10, log)
+    assert (flaky.calls, sleeps) == (calls, pauses)
     assert states(sql) == [(None, "pending", "pending")] * 3
     if not isinstance(error, sqlite3.Error):
         # the server may have committed it after the client gave up
         assert "outcome unknown, rows left for the next pass" in caplog.text
+
+
+def test_a_set_aside_rows_own_write_is_retried_too(sql, conn, sleeps):
+    a, b = add_rows(sql, 2)
+    stage = Scripted({a: {"album": "A"}, b: {"album": "B", "spotify_id": "S0"}})  # a's
+    # the batch (b breaks it), the batch without b, then b's park, which
+    # the network fails once
+    flaky = Flaky(conn, requests.exceptions.ConnectionError("connection reset"),
+                  fails=1, after=2)
+    assert stage.run_batch(flaky, 10, log) == {"done": 1, "no_match": 0, "failed": 1}
+    assert (flaky.calls, sleeps) == (4, [2])
+    assert states(sql) == [("A", "done", "pending"), (None, "failed", "scripted_stage_error")]
 
 
 def test_the_same_error_on_every_row_stops_the_stage_and_parks_nothing(sql, conn):
@@ -270,6 +321,23 @@ def test_a_stage_that_fails_on_a_finished_track_leaves_it_armed(sql, conn, caplo
     assert fuse_state(sql, flight) == (
         "fuse_stage_error", "failed", None, "[fuse] unexpected MERT dim 0")
     assert f"row {done} is finished; left armed for the next pass" in caplog.text
+
+
+def test_a_retry_after_a_write_that_did_commit_lands_the_same(sql, conn, sleeps):
+    # The first attempt committed and then timed out on the client. The
+    # retry runs the same statements: the in-flight row's park matches it
+    # again (it is no longer 'pending', but it is not 'done' either), and
+    # the finished row's still matches nothing.
+    done, flight = finished_and_in_flight(sql)
+    stage = Refuse({done: (STATUS_FAILED, {}, "boom"), flight: (STATUS_FAILED, {}, "boom")})
+    flaky = Flaky(conn, TimeoutError("read timed out"), fails=1, commits=True)
+
+    counts = stage.run_batch(flaky, 10, log)
+
+    assert counts == {"done": 0, "no_match": 0, "failed": 1, "left_armed": 1}
+    assert (flaky.calls, sleeps) == (2, [2])
+    assert fuse_state(sql, done) == ("done", "pending", None, None)
+    assert fuse_state(sql, flight) == ("fuse_stage_error", "failed", None, "[fuse] boom")
 
 
 def test_a_pass_that_only_left_finished_tracks_armed_is_not_progress(sql):
