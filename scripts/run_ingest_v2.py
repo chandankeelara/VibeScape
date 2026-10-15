@@ -110,7 +110,7 @@ from ingest_pipeline.stage_youtube import YoutubeStage  # noqa: E402
 from ingest_pipeline.stage_language import LanguageStage  # noqa: E402
 from ingest_pipeline.stage_librosa import LibrosaStage  # noqa: E402
 from ingest_pipeline.stage_fuse import FuseStage  # noqa: E402
-from ingest_pipeline.base import STATUS_DONE, stage_error_status  # noqa: E402
+from ingest_pipeline.base import STATUS_DONE, id_filter, stage_error_status  # noqa: E402
 import score_recompute  # noqa: E402
 import _target  # noqa: E402  (scripts/, next to this file)
 
@@ -164,19 +164,27 @@ def rearm_failed(conn, which: str) -> dict[str, int]:
     return {n: max(c.rowcount, 0) for n, c in zip(names, cursors)}
 
 
-def pending_snapshot(conn) -> dict[str, int]:
-    out: dict[str, int] = {}
-    for col in ("preview_status", "download_status", "librosa_status",
-                "ml_status", "language_status", "fuse_status",
-                "youtube_status"):
-        try:
-            n = conn.execute(
-                f"SELECT COUNT(*) FROM tracks WHERE {col} = 'pending'"
-            ).fetchone()[0]
-            out[col] = int(n)
-        except Exception:
-            out[col] = -1
-    return out
+def _gated(stages: list) -> list:
+    """The stages that declare a gate (all real ones; test doubles may only
+    implement fetch_pending)."""
+    return [s for s in stages if getattr(s, "gate_sql", None)]
+
+
+def pending_snapshot(conn, stages: list) -> dict[str, int]:
+    """How many rows each stage's gate accepts now: one query, one scan.
+
+    It used to count `<column> = 'pending'` per status column, which is not
+    what any stage acts on: rows waiting for a language tag showed as
+    language_status 28 / fuse_status 28 and the next pass said drained.
+    Counting by gate makes the startup line and the cohort agree.
+    """
+    gated = _gated(stages)
+    if not gated:
+        return {}
+    cols = ", ".join(f"SUM(CASE WHEN ({s.gate_sql}) THEN 1 ELSE 0 END)" for s in gated)
+    row = conn.execute(f"SELECT {cols} FROM tracks t",
+                       [p for s in gated for p in s.gate_params]).fetchone()
+    return {s.name: int(row[i] or 0) for i, s in enumerate(gated)}
 
 
 def select_cohort(conn, stages: list, batch: int, only_ids=None) -> list[int]:
@@ -184,14 +192,20 @@ def select_cohort(conn, stages: list, batch: int, only_ids=None) -> list[int]:
     Pick the tracks this pass will advance: the lowest `batch` ids that at
     least one of `stages` can act on now.
 
-    "Can act on" is each stage's own fetch_pending, whose WHERE clause
-    already spells out that stage's real preconditions, so the cohort is
-    the union of those ids, lowest first. That covers a track still moving
-    through the chain, a finished one with a stage re-armed (a corrected
-    language tag sets fuse_status='pending'), and a leftover
-    language_status='whisper_done' row (LanguageStage's gate), and nothing
-    else. Only the stages being run count: with --stages language,fuse a
-    row waiting for preview is not this pass's work.
+    "Can act on" is each stage's own gate (Stage.gate_sql), which already
+    spells out that stage's real preconditions, so the cohort is the union
+    of what the gates accept, lowest first: ONE ids-only query over tracks
+    that ORs them. That covers a track still moving through the chain, a
+    finished one with a stage re-armed (a corrected language tag sets
+    fuse_status='pending'), and a leftover language_status='whisper_done'
+    row (LanguageStage's gate), and nothing else. Only the stages being run
+    count: with --stages language,fuse a row waiting for preview is not this
+    pass's work.
+
+    One query because an idle --loop runs this every pass: the first
+    version of the union asked each stage's fetch_pending in turn, seven
+    queries of which six scanned tracks and fuse's read a 3 KB MERT blob
+    per row, and Turso bills rows read. Idle now costs one scan of ids.
 
     It used to be a predicate of its own: ingestion_status 'pending' or
     NULL, or any stage column 'pending'. Since 2026-10-10 language never
@@ -208,14 +222,21 @@ def select_cohort(conn, stages: list, batch: int, only_ids=None) -> list[int]:
     came from some stage's gate, and only an earlier stage acting on the
     row (which counts) can move it out of that gate.
 
-    `only_ids` (--only-ids) restricts every gate, and so the union.
+    `only_ids` (--only-ids) restricts every gate, and so the union; an
+    empty list selects nothing.
     """
-    if only_ids is not None and not only_ids:
-        # id_filter reads an empty list as "no restriction".
-        return []
     ids: set[int] = set()
+    gated = _gated(stages)
+    if gated:
+        where = " OR ".join(f"({s.gate_sql})" for s in gated)
+        idf, idp = id_filter(only_ids, "t.")
+        ids.update(int(r[0]) for r in conn.execute(
+            f"SELECT t.id FROM tracks t WHERE ({where}) {idf}ORDER BY t.id ASC LIMIT ?",
+            (*[p for s in gated for p in s.gate_params], *idp, batch),
+        ).fetchall())
     for stage in stages:
-        ids.update(int(r["id"]) for r in stage.fetch_pending(conn, batch, only_ids))
+        if stage not in gated:
+            ids.update(int(r["id"]) for r in stage.fetch_pending(conn, batch, only_ids))
     return sorted(ids)[:batch]
 
 
@@ -341,10 +362,10 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = get_conn()
     try:
-        snap = pending_snapshot(conn)
+        snap = pending_snapshot(conn, stages)
     finally:
         conn.close()
-    log.info("startup pending: %s", snap)
+    log.info("startup, rows each stage can act on: %s", snap)
 
     only_ids = None
     if args.only_ids:

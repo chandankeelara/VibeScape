@@ -58,7 +58,7 @@ pipeline idled on a full backlog while looking perfectly healthy.
 **Arming is not proof the upstream ran.** A column also reaches `'pending'`
 from a migration default or any manual UPDATE. So every gate additionally
 spells out its real preconditions rather than trusting that it was armed —
-see `stage_fuse.fetch_pending`, which checks the embedding's
+see `FuseStage.gate_sql`, which checks the embedding's
 `model_version` and that language actually finished. Skipping that let fuse
 run before language once, silently bucketing tracks as `'other'`.
 
@@ -305,9 +305,18 @@ batch internally. Without this each stage ran its own SELECT, so a pass
 could classify one set of tracks and fuse a completely different set.
 
 The cohort is the lowest `--batch` ids that **some selected stage's own
-gate** (`fetch_pending`) accepts: the union of what each stage could act on
-right now. A pass on a non-empty cohort therefore always processes
-something, and `--loop` only reports "drained" when no stage has work.
+gate** accepts: the union of what each stage could act on right now. A pass
+on a non-empty cohort therefore always processes something, and a loop only
+reports "drained" when no stage has work.
+
+Each stage spells its gate once, as `gate_sql` (a condition over `tracks t`;
+fuse reaches `track_embeddings` through `EXISTS`). `fetch_pending` selects
+with it, the cohort is **one ids-only query** that ORs the selected stages'
+gates, and the startup line counts rows per gate in one more. An idle pass
+therefore costs one scan of ids and no blobs. (The first version asked each
+stage's `fetch_pending` in turn: seven queries a pass, six scanning
+`tracks` and fuse's reading a MERT blob per row, and Turso bills rows
+read.)
 
 It used to be a predicate of its own (`ingestion_status` pending or NULL, or
 any stage column `'pending'`), and since language stopped writing `'done'`

@@ -27,18 +27,13 @@ import logging
 
 import numpy as np
 
-from .base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, id_filter, iso_now
+from .base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, iso_now
 from .fused_vector import FUSED_DIM, MERT_DIM, SCALAR_COLS, _build_fused
 
 log = logging.getLogger("vibescape.ingest.fuse")
 
 # Must match what ClassifyStage stamps on track_embeddings.model_version.
 CURRENT_MERT_VERSION = "mert_v1_ft_768_30s"
-
-# Qualified with the table alias because this stage joins track_embeddings.
-_FETCH_COLS = ", ".join(
-    ["t.id", "t.spotify_id", "t.language"] + [f"t.{c}" for c in SCALAR_COLS]
-)
 
 
 class FuseStage(Stage):
@@ -49,52 +44,53 @@ class FuseStage(Stage):
     # Pure numpy on data already in hand — no audio, no GPU, no network.
     max_workers = 4
 
-    def fetch_pending(self, conn, limit: int, only_ids=None) -> list:
-        # Needs the raw MERT vector to fuse, so it joins rather than
-        # trusting embedding_status alone: a row whose track_embeddings
-        # write was rolled back would otherwise fail per-row every pass.
-        _idf, _idp = id_filter(only_ids, "t.")
-        rows = conn.execute(
-            f"SELECT {_FETCH_COLS}, te.mert_embedding AS mert_blob "
-            f"FROM tracks t "
-            f"JOIN track_embeddings te ON te.track_id = t.id "
-            f"WHERE t.fuse_status = 'pending' "
-            # ClassifyStage writes mert_embedding now, so ml_status is the
-            # gate. embedding_status is retired.
-            f"AND t.ml_status = 'done' "
-            f"AND te.mert_embedding IS NOT NULL "
-            # Only fuse vectors from the CURRENT encoder. Without this,
-            # fusing a leftover base-checkpoint mert_embedding would mint
-            # a brand-new fused vector in the old space and quietly
-            # re-poison the pool the migration is trying to clean. A row
-            # whose mert vector is stale simply waits for classify to
-            # re-encode it.
-            f"AND te.model_version = ? "
-            # Language must have a real verdict. STRICT 'done', decided
-            # 2026-10-10: fusing without one is not a loss of precision,
-            # it puts the track in the wrong region of the similarity
-            # space (20% of this vector is the language one-hot) and
-            # nothing downstream knows the vector is provisional.
-            #
-            # The tuple used to also admit 'whisper_done' and 'no_match'.
-            # Neither has a producer any more — Whisper is gone, and the
-            # queue flow's equivalent of "no language" is an explicit
-            # clear, which writes language=NULL with language_status
-            # ='done' and so passes this gate on its own merits. Leaving
-            # them in would be dead tolerance that silently let an
-            # untagged row through.
-            #
-            # The cost of strictness is real and accepted: a track
-            # still waiting for a tag never fuses, so it never reaches the
-            # DJ pool. That makes the tagging step load-bearing, not
-            # housekeeping — `python scripts/language_tags.py --status`
-            # is how you find out how many are waiting and for how long.
-            f"AND t.language_status = 'done' "
-            f"{_idf}"
-            f"ORDER BY t.id ASC LIMIT ?",
-            (CURRENT_MERT_VERSION, *_idp, limit),
-        ).fetchall()
-        return list(rows)
+    # Needs the raw MERT vector to fuse, so the gate checks the vector
+    # itself rather than trusting embedding_status alone: a row whose
+    # track_embeddings write was rolled back would otherwise fail per-row
+    # every pass. Through EXISTS, so the runner can OR this gate with the
+    # others in one query over `tracks`; fetch_pending JOINs the same row
+    # to read the blob.
+    gate_sql = (
+        "t.fuse_status = 'pending' "
+        # ClassifyStage writes mert_embedding now, so ml_status is the
+        # gate. embedding_status is retired.
+        "AND t.ml_status = 'done' "
+        # Language must have a real verdict. STRICT 'done', decided
+        # 2026-10-10: fusing without one is not a loss of precision,
+        # it puts the track in the wrong region of the similarity
+        # space (20% of this vector is the language one-hot) and
+        # nothing downstream knows the vector is provisional.
+        #
+        # The tuple used to also admit 'whisper_done' and 'no_match'.
+        # Neither has a producer any more — Whisper is gone, and the
+        # queue flow's equivalent of "no language" is an explicit
+        # clear, which writes language=NULL with language_status
+        # ='done' and so passes this gate on its own merits. Leaving
+        # them in would be dead tolerance that silently let an
+        # untagged row through.
+        #
+        # The cost of strictness is real and accepted: a track
+        # still waiting for a tag never fuses, so it never reaches the
+        # DJ pool. That makes the tagging step load-bearing, not
+        # housekeeping — `python scripts/language_tags.py --status`
+        # is how you find out how many are waiting and for how long.
+        "AND t.language_status = 'done' "
+        "AND EXISTS (SELECT 1 FROM track_embeddings e "
+        "            WHERE e.track_id = t.id AND e.mert_embedding IS NOT NULL "
+        # Only fuse vectors from the CURRENT encoder. Without this,
+        # fusing a leftover base-checkpoint mert_embedding would mint
+        # a brand-new fused vector in the old space and quietly
+        # re-poison the pool the migration is trying to clean. A row
+        # whose mert vector is stale simply waits for classify to
+        # re-encode it.
+        "            AND e.model_version = ?)"
+    )
+    gate_params = (CURRENT_MERT_VERSION,)
+    # Qualified with the table alias because of the join.
+    fetch_cols = ", ".join(["t.id", "t.spotify_id", "t.language"]
+                           + [f"t.{c}" for c in SCALAR_COLS]
+                           + ["te.mert_embedding AS mert_blob"])
+    fetch_join = "JOIN track_embeddings te ON te.track_id = t.id "
 
     def process_row(self, row) -> RowResult:
         blob = row["mert_blob"]

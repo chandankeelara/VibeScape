@@ -25,7 +25,7 @@ import urllib.request
 from pathlib import Path
 
 from .base import (RowResult, Stage, STATUS_DONE, STATUS_FAILED,
-                   STATUS_NO_MATCH, id_filter, iso_now)
+                   STATUS_NO_MATCH, iso_now)
 
 
 log = logging.getLogger("vibescape.ingest.download")
@@ -68,22 +68,16 @@ class DownloadStage(Stage):
     # CDN doesn't rate-limit downloads the way the Search API does.
     max_workers = 8
 
+    gate_sql = (
+        "download_status = 'pending' "
+        "AND preview_status = 'done' "
+        "AND preview_url IS NOT NULL AND preview_url != '' "
+        "AND spotify_id IS NOT NULL AND spotify_id != ''"
+    )
+    fetch_cols = "id, spotify_id, preview_url, audio_path"
+
     def __init__(self):
         _AUDIO_DIR.mkdir(parents=True, exist_ok=True)
-
-    def fetch_pending(self, conn, limit: int, only_ids=None) -> list:
-        rows = conn.execute(
-            "SELECT id, spotify_id, preview_url, audio_path "
-            "FROM tracks "
-            "WHERE download_status = 'pending' "
-            "AND preview_status = 'done' "
-            "AND preview_url IS NOT NULL AND preview_url != '' "
-            "AND spotify_id IS NOT NULL AND spotify_id != '' "
-            f"{id_filter(only_ids)[0]}"
-            "ORDER BY id ASC LIMIT ?",
-            (*id_filter(only_ids)[1], limit),
-        ).fetchall()
-        return list(rows)
 
     def process_row(self, row) -> RowResult:
         spotify_id = row["spotify_id"]

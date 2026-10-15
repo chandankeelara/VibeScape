@@ -20,16 +20,10 @@ import logging
 import sys
 from pathlib import Path
 
-from .base import (RowResult, Stage, STATUS_DONE, STATUS_FAILED,
-                   id_filter, iso_now)
+from .base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, iso_now
 
 
 log = logging.getLogger("vibescape.ingest.classify")
-
-
-_FETCH_COLS = (
-    "id, spotify_id, title, artist, preview_url, audio_path"
-)
 
 
 def _ml_backend():
@@ -65,26 +59,21 @@ class ClassifyStage(Stage):
     # never runs on Modal, see the module docstring.)
     max_workers = 1
 
+    # Strict gate on DownloadStage — audio must be cached locally.
+    # No URL fallback here: if download didn't succeed it never armed
+    # ml_status, so this stage simply never sees the row.
+    gate_sql = (
+        "ml_status = 'pending' "
+        "AND download_status = 'done' "
+        "AND audio_path IS NOT NULL AND audio_path != ''"
+    )
+    fetch_cols = "id, spotify_id, title, artist, preview_url, audio_path"
+
     def __init__(self):
         self._ml, self._scoring = _ml_backend()
         if not self._ml.is_available():
             log.warning("ml_backend not available (mode=%s); classify stage "
                         "will mark every row failed", self._ml.current_mode())
-
-    def fetch_pending(self, conn, limit: int, only_ids=None) -> list:
-        # Strict gate on DownloadStage — audio must be cached locally.
-        # No URL fallback here: if download didn't succeed it never armed
-        # ml_status, so this stage simply never sees the row.
-        rows = conn.execute(
-            f"SELECT {_FETCH_COLS} FROM tracks "
-            f"WHERE ml_status = 'pending' "
-            f"AND download_status = 'done' "
-            f"AND audio_path IS NOT NULL AND audio_path != '' "
-            f"{id_filter(only_ids)[0]}"
-            f"ORDER BY id ASC LIMIT ?",
-            (*id_filter(only_ids)[1], limit),
-        ).fetchall()
-        return list(rows)
 
     def process_row(self, row) -> RowResult:
         from .stage_download import resolve_audio_path

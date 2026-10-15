@@ -14,17 +14,11 @@ from __future__ import annotations
 
 import logging
 
-from .base import RowResult, Stage, STATUS_DONE, STATUS_NO_MATCH, id_filter, iso_now
+from .base import RowResult, Stage, STATUS_DONE, STATUS_NO_MATCH, iso_now
 from .preview_providers import PreviewChain, default_chain
 
 
 log = logging.getLogger("vibescape.ingest.preview")
-
-
-_FETCH_COLS = (
-    "id, spotify_id, apple_id, isrc, title, artist, album, "
-    "artwork_url, preview_url, track_view_url, genre, duration_ms"
-)
 
 
 class PreviewStage(Stage):
@@ -44,26 +38,22 @@ class PreviewStage(Stage):
     # lock without any throughput gain.
     max_workers = 2
 
+    gate_sql = (
+        # Entry condition: the app queued this track and no terminal
+        # verdict has been reached for it yet.
+        "ingestion_status = 'pending' "
+        # Not-yet-attempted guard. NULL is the prod-Turso spelling of
+        # 'pending' (no column default there); 'pending' is the local
+        # one. Without this, a row whose preview is already 'done'
+        # would be re-picked every pass until ml_status catches up and
+        # promote() finally flips ingestion_status off 'pending'.
+        "AND (preview_status IS NULL OR preview_status = 'pending')"
+    )
+    fetch_cols = ("id, spotify_id, apple_id, isrc, title, artist, album, "
+                  "artwork_url, preview_url, track_view_url, genre, duration_ms")
+
     def __init__(self, chain: PreviewChain | None = None):
         self._chain = chain or default_chain(log=log)
-
-    def fetch_pending(self, conn, limit: int, only_ids=None) -> list:
-        rows = conn.execute(
-            f"SELECT {_FETCH_COLS} FROM tracks "
-            # Entry condition: the app queued this track and no terminal
-            # verdict has been reached for it yet.
-            f"WHERE ingestion_status = 'pending' "
-            # Not-yet-attempted guard. NULL is the prod-Turso spelling of
-            # 'pending' (no column default there); 'pending' is the local
-            # one. Without this, a row whose preview is already 'done'
-            # would be re-picked every pass until ml_status catches up and
-            # promote() finally flips ingestion_status off 'pending'.
-            f"AND (preview_status IS NULL OR preview_status = 'pending') "
-            f"{id_filter(only_ids)[0]}"
-            f"ORDER BY id ASC LIMIT ?",
-            (*id_filter(only_ids)[1], limit),
-        ).fetchall()
-        return list(rows)
 
     def process_row(self, row) -> RowResult:
         # Already resolved — do not touch the network, and do not touch

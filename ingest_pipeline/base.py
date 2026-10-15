@@ -128,11 +128,16 @@ def id_filter(only_ids, alias: str = "") -> tuple[str, list]:
     different set — which is exactly what happened once fuse_status was
     'pending' library-wide after a migration.
 
-    `alias` is the table prefix the stage's SQL uses ("t." for the stages
-    that join, "" for the ones that don't).
+    `alias` is the table prefix the SQL uses ("t." in fetch_pending and the
+    runner's cohort query).
+
+    None means no restriction. An empty cohort matches nothing: it used to
+    mean "no restriction" too, which every caller had to guard against.
     """
-    if not only_ids:
+    if only_ids is None:
         return "", []
+    if not only_ids:
+        return f"AND {alias}id IN (NULL) ", []
     marks = ",".join("?" for _ in only_ids)
     return f"AND {alias}id IN ({marks}) ", [int(x) for x in only_ids]
 
@@ -188,9 +193,8 @@ class Stage(ABC):
     Base class for all pipeline stages. Subclasses implement:
       - name (class attr): short identifier used in logs.
       - status_column (class attr): the tracks column this stage owns.
-      - fetch_pending(conn, limit, only_ids): the rows this stage can act
-        on right now. Its WHERE clause is the stage's whole gate, and the
-        orchestrator builds each pass's cohort from it.
+      - gate_sql / gate_params, and fetch_cols (class attrs): which rows
+        the stage can act on now, and what it reads from them. See below.
       - process_row(row): the work for one track. Runs in a worker thread.
         Return RowResult; do NOT touch the DB from here (run_batch writes
         results on the main thread).
@@ -201,6 +205,19 @@ class Stage(ABC):
     name: str = "stage"
     status_column: str = "status"
     max_workers: int = 8
+
+    # THE GATE: a condition over `tracks` (aliased t) that holds for exactly
+    # the rows this stage can act on now, and its parameters. It is the
+    # stage's whole eligibility rule, spelled once: fetch_pending selects
+    # with it, and scripts/run_ingest_v2.py ORs the selected stages' gates
+    # into ONE ids-only query to pick a pass's cohort and another to count
+    # what is pending at startup. A gate may reach other tables only
+    # through EXISTS, so that it ORs cleanly with the rest.
+    gate_sql: str | None = None
+    gate_params: tuple = ()
+    # What fetch_pending reads for process_row, and a join it needs for that.
+    fetch_cols: str = "t.id"
+    fetch_join: str = ""
 
     # Status columns to set to 'pending' when THIS stage returns 'done',
     # making the next stage eligible. Only on 'done': a 'no_match' or
@@ -230,13 +247,21 @@ class Stage(ABC):
     # actually knows the outcome can do itself, in the same UPDATE.
     finalizes: dict[str, str] = {}
 
-    @abstractmethod
     def fetch_pending(self, conn, limit: int, only_ids=None) -> list:
-        """Return rows to process this pass.
+        """Return rows to process this pass: the gate's rows, lowest id
+        first, at most `limit` of them.
 
         `only_ids` restricts the stage to a cohort so a pass advances the
         same tracks through every stage. See id_filter().
         """
+        if not self.gate_sql:
+            raise NotImplementedError(f"{type(self).__name__} declares no gate_sql")
+        idf, idp = id_filter(only_ids, "t.")
+        return list(conn.execute(
+            f"SELECT {self.fetch_cols} FROM tracks t {self.fetch_join}"
+            f"WHERE ({self.gate_sql}) {idf}ORDER BY t.id ASC LIMIT ?",
+            (*self.gate_params, *idp, limit),
+        ).fetchall())
 
     @abstractmethod
     def process_row(self, row) -> RowResult:

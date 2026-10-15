@@ -245,8 +245,10 @@ them, processed nothing, and `--loop` slept while every higher id waited.
 **Live on production:** a read-only probe from the owner's session on
 2026-10-15 found 827 pending rows, 28 of them blocked like this at the head
 of the id order and 799 that had never entered the pipeline. The cohort is
-now the union of the selected stages' own `fetch_pending` gates, lowest
-`--batch` ids, so a non-empty cohort always has work.
+now the union of the selected stages' own gates (`Stage.gate_sql`), lowest
+`--batch` ids, so a non-empty cohort always has work: one ids-only query
+that ORs the gates, so an idle pass costs one scan of ids
+(`tests/ingest/test_gates.py`).
 
 ### 1.12 ~~The offline pipeline had two sources of truth~~ — DONE (2026-10-15)
 `scripts/_sync_local_to_turso.py` (deleted), `scripts/_target.py`
