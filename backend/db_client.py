@@ -6,11 +6,21 @@ The returned connection object exposes the same surface that
 `backend/app.py` and `backend/db.py` rely on today:
 
     conn.execute(sql, params) -> Cursor        # positional params only
+    conn.execute_batch([(sql, params), ...])   # one transaction, see below
     conn.executescript(sql)
     conn.commit()
     conn.rollback()
     conn.close()
     conn.row_factory  (readable/writable; sqlite3.Row semantics)
+
+execute_batch() is the only way to make several writes atomic on Turso,
+where every execute() is its own stream and autocommits. On SQLite it is
+the same statements in one transaction. On Turso it is also ONE HTTPS
+round trip for the whole list instead of one per statement.
+
+Turso errors are raised as the sqlite3 exceptions sqlite3 itself would
+raise: a constraint violation is sqlite3.IntegrityError, anything else
+sqlite3.OperationalError.
 
 Rows returned by fetchone()/fetchall()/iteration are sqlite3.Row for the
 sqlite backend and a lookalike shim for the Turso backend that supports:
@@ -37,6 +47,7 @@ Env vars:
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import os
 import sqlite3
@@ -63,6 +74,54 @@ def _hrana_arg(v):
     return {"type": "text", "value": str(v)}
 
 
+_URLSAFE_TO_STANDARD = str.maketrans("-_", "+/")
+
+
+def _decode_blob(text) -> bytes:
+    """Decode the base64 of a Hrana blob Value, padded or not.
+
+    libsql's server encodes blobs as standard-alphabet base64 WITHOUT
+    padding (STANDARD_NO_PAD in libsql-hrana/src/proto.rs, bytes_as_base64,
+    read 2026-10-15); the Hrana spec names neither padding nor alphabet.
+    base64.b64decode insists on padding, and until 2026-10-15 a bare
+    `except` turned its "Incorrect padding" into b"". Padding is needed
+    whenever the length is not a multiple of 3: a 768-float MERT vector
+    (3072 bytes) needs none and always decoded, a 788-float fused vector
+    (3152 bytes) does, which is the empty read backend/app.py works around
+    with vector_extract().
+
+    Restores the padding, accepts both alphabets, and raises on anything
+    else: an undecodable blob must not read as an empty one.
+    """
+    if not isinstance(text, str):
+        raise sqlite3.DataError(f"Turso blob without base64 text: {text!r:.80}")
+    s = text.translate(_URLSAFE_TO_STANDARD)
+    try:
+        return base64.b64decode(s + "=" * (-len(s) % 4), validate=True)
+    except binascii.Error as e:
+        raise sqlite3.DataError(
+            f"Turso blob is not base64 ({len(text)} chars): {e}"
+        ) from e
+
+
+def _hrana_error(err, where: str = "") -> sqlite3.Error:
+    """The sqlite3 exception sqlite3 itself would raise for a Hrana Error.
+
+    libsql's server reports every constraint violation with the code
+    "SQLITE_CONSTRAINT" (sqlite_error_code in libsql-server/src/hrana/stmt.rs,
+    read 2026-10-15). The prefix match also takes extended codes such as
+    SQLITE_CONSTRAINT_UNIQUE, should a server send them. Before this every
+    Turso error was an OperationalError, so each `except
+    sqlite3.IntegrityError` in the codebase was dead in production.
+    """
+    err = err or {}
+    code = str(err.get("code") or "UNKNOWN")
+    msg = f"Turso error [{code}]{where}: {err.get('message', '?')}"
+    if code.startswith("SQLITE_CONSTRAINT"):
+        return sqlite3.IntegrityError(msg)
+    return sqlite3.OperationalError(msg)
+
+
 def _unwrap_cell(cell):
     """Decode a Hrana v2 Value back into a Python primitive."""
     if not isinstance(cell, dict):
@@ -84,10 +143,7 @@ def _unwrap_cell(cell):
         except (TypeError, ValueError):
             return 0.0
     if t == "blob":
-        try:
-            return base64.b64decode(cell.get("base64") or "")
-        except Exception:
-            return b""
+        return _decode_blob(cell.get("base64"))
     return v  # text
 
 
@@ -136,8 +192,10 @@ class _HttpCursor:
             except ValueError:
                 rid = None
         self.lastrowid = rid
+        # -1 only when the server sent no count. It used to be `... or -1`,
+        # which also turned a real 0 ("matched nothing") into -1.
         try:
-            self.rowcount = int(response.get("affected_row_count", -1) or -1)
+            self.rowcount = int(response.get("affected_row_count"))
         except (TypeError, ValueError):
             self.rowcount = -1
 
@@ -191,31 +249,92 @@ class _HttpConnection:
         r.raise_for_status()
         return r.json()
 
-    def execute(self, sql: str, params=()):
-        if params is None:
-            params = ()
+    @staticmethod
+    def _stmt(sql: str, params) -> dict:
         stmt = {"sql": sql}
         args = list(params) if params else []
         if args:
             stmt["args"] = [_hrana_arg(p) for p in args]
-        # DiskANN index builds on CREATE INDEX ... libsql_vector_idx() can
-        # take several minutes on large tables — bump timeout for that path.
-        _timeout = 300.0 if "libsql_vector_idx" in sql else 30.0
-        payload = self._post([
-            {"type": "execute", "stmt": stmt},
-            {"type": "close"},
-        ], timeout=_timeout)
+        return stmt
+
+    @staticmethod
+    def _first_result(payload) -> dict:
         results = payload.get("results") or []
         if not results:
             raise sqlite3.OperationalError("Turso pipeline returned no results")
         result = results[0]
         if result.get("type") == "error":
-            err = result.get("error") or {}
+            raise _hrana_error(result.get("error"))
+        return ((result.get("response") or {}).get("result")) or {}
+
+    def execute(self, sql: str, params=()):
+        # DiskANN index builds on CREATE INDEX ... libsql_vector_idx() can
+        # take several minutes on large tables — bump timeout for that path.
+        _timeout = 300.0 if "libsql_vector_idx" in sql else 30.0
+        payload = self._post([
+            {"type": "execute", "stmt": self._stmt(sql, params)},
+            {"type": "close"},
+        ], timeout=_timeout)
+        return _HttpCursor(self._first_result(payload))
+
+    def execute_batch(self, stmts):
+        """Run [(sql, params), ...] as ONE transaction in ONE request.
+
+        One pipeline POST carrying a Hrana `batch`, then `close`:
+
+            step 0        BEGIN
+            steps 1..n    statement i, only if step i-1 was ok
+            step n+1      COMMIT, only if step n was ok
+            step n+2      ROLLBACK, only if COMMIT was not ok
+
+        The conditions are what make it atomic. A server "always executes
+        all requests, even if some of them return errors" (Hrana 3 spec,
+        HTTP pipeline), and a batch step whose condition is false is
+        skipped, so the first failure skips everything after it, COMMIT
+        included, and the ROLLBACK runs. It is the shape @libsql/client
+        builds for a transactional batch (executeHranaBatch,
+        libsql-client-ts/packages/libsql-client/src/hrana.ts, read
+        2026-10-15), minus its Hrana-3-only `is_autocommit` guard: this
+        adapter speaks /v2/pipeline.
+
+        Raises the first failing step's error, mapped like execute()'s and
+        naming the step, after which nothing in the batch has been written.
+        Returns one cursor per statement.
+        """
+        stmts = list(stmts)
+        if not stmts:
+            return []
+        n = len(stmts)
+        commit_step = n + 1
+        steps = [{"stmt": {"sql": "BEGIN"}}]
+        for i, (sql, params) in enumerate(stmts):
+            steps.append({"condition": {"type": "ok", "step": i},
+                          "stmt": self._stmt(sql, params)})
+        steps.append({"condition": {"type": "ok", "step": n},
+                      "stmt": {"sql": "COMMIT"}})
+        steps.append({"condition": {"type": "not",
+                                    "cond": {"type": "ok", "step": commit_step}},
+                      "stmt": {"sql": "ROLLBACK"}})
+        payload = self._post([
+            {"type": "batch", "batch": {"steps": steps}},
+            {"type": "close"},
+        ])
+        result = self._first_result(payload)
+        step_results = result.get("step_results") or []
+        step_errors = result.get("step_errors") or []
+        # The first error is the cause: every later step was skipped or is
+        # the ROLLBACK cleaning up after it.
+        for i, err in enumerate(step_errors):
+            if err:
+                if 1 <= i <= n:
+                    where = f" in batch step {i} (statement {i} of {n})"
+                else:
+                    where = f" in batch step {i} ({steps[i]['stmt']['sql']})"
+                raise _hrana_error(err, where)
+        if len(step_results) <= commit_step or step_results[commit_step] is None:
             raise sqlite3.OperationalError(
-                f"Turso error [{err.get('code', 'UNKNOWN')}]: {err.get('message', '?')}"
-            )
-        response = ((result.get("response") or {}).get("result")) or {}
-        return _HttpCursor(response)
+                "Turso batch did not commit, and no step reported an error")
+        return [_HttpCursor(step_results[i] or {}) for i in range(1, n + 1)]
 
     def executescript(self, script: str):
         # Turso rejects multi-statement bodies in a single execute — split
@@ -228,21 +347,57 @@ class _HttpConnection:
         return None
 
     def commit(self):
-        # Turso HTTP pipeline autocommits each request; explicit
-        # BEGIN/COMMIT/ROLLBACK travels through .execute() already.
+        """Nothing to commit: every execute() is its own Hrana stream.
+
+        execute() opens a stream (baton None) and closes it in the same
+        request, so each statement autocommits. BEGIN/COMMIT sent through
+        execute() cannot group statements either: the BEGIN's stream is gone
+        before the next statement arrives. Atomic multi-statement writes go
+        through execute_batch().
+        """
         return None
 
     def rollback(self):
-        try:
-            self.execute("ROLLBACK")
-        except Exception:
-            pass
+        """Nothing to roll back, for the reason commit() gives.
+
+        This used to send ROLLBACK through execute(): a fresh stream with no
+        transaction, an error every time, swallowed. Same outcome, minus the
+        round trip.
+        """
+        return None
 
     def close(self):
         try:
             self._session.close()
         except Exception:
             pass
+
+
+# ---------------- SQLite ----------------
+
+class _SqliteConnection(sqlite3.Connection):
+    """sqlite3.Connection plus execute_batch(), so callers can use one
+    atomic-write call whichever backend they were handed."""
+
+    def execute_batch(self, stmts):
+        """Run [(sql, params), ...] in one transaction and commit it.
+
+        On any failure everything in the batch is rolled back and the error
+        re-raised. The explicit BEGIN fails if the connection already holds
+        uncommitted writes, rather than committing or discarding them along
+        with the batch. Returns one cursor per statement.
+        """
+        stmts = list(stmts)
+        if not stmts:
+            return []
+        self.execute("BEGIN")
+        try:
+            cursors = [self.execute(sql, params) for sql, params in stmts]
+        except BaseException:
+            self.rollback()
+            raise
+        self.commit()
+        return cursors
 
 
 # ---------------- factory ----------------
@@ -273,7 +428,8 @@ def create_connection():
     if backend in ("", "sqlite", "sqlite3"):
         db_path = _resolve_db_path()
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        conn = sqlite3.connect(str(db_path), check_same_thread=False,
+                               factory=_SqliteConnection)
         conn.row_factory = sqlite3.Row
         return conn
 
