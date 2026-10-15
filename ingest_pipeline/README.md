@@ -72,6 +72,16 @@ with no log parsing. The row also stops re-entering at `preview`, whose
 gate only matches `'pending'`, while its own column keeps `'failed'` so a
 retry pass knows where to resume.
 
+A row whose result could not be **written** is parked the same way, with
+`ingestion_error='[<stage>] write failed: …'`. A stage writes its whole
+batch in one transaction (`execute_batch`, one round trip on Turso); if
+that fails, nothing in it landed and the rows are written one transaction
+each, so one bad row costs only itself. Before 2026-10-15 it cost the
+batch: the GPU work was done, the loop aborted on the bad row, SQLite rolled
+everything back and the next pass repeated it. A UNIQUE collision on the
+legacy `apple_id` constraint is first retried without `apple_id`,
+`track_view_url` and `genre`.
+
 `no_match` is different — the stage ran fine and found nothing. For
 `preview`/`download` that is terminal for the track (`'no_preview'`); for
 `language`/`youtube` it is a finished outcome the chain continues past.
@@ -135,9 +145,10 @@ guess. Treat `prior_language` as a weak hint and nothing more — mistrusting
 it is the entire reason this flow exists.
 
 Rows parked at `ingestion_status='no_preview'` are deliberately **not**
-normalised: they can never be analysed, so asking about them buys nothing,
-and promoting them would make them permanently cohort-eligible and jam the
-head of every pass (`docs/backend-todo.md` 3.1).
+normalised: they can never be analysed, so asking about them buys nothing.
+(This used to add that a `'pending'` row would jam the head of every pass.
+Since 2026-10-15 a pass only takes rows some stage can act on; see
+§ Cohorts.)
 
 ### 2. Decide
 
@@ -244,10 +255,9 @@ python scripts/language_tags.py --status
 ### Leftover states
 
 - **`whisper_done`** — no producer. `LanguageStage` normalises it to
-  `'pending'`, and `select_cohort` carries a legacy term for it so those rows
-  (usually `ingestion_status='done'` with nothing else armed) can still enter
-  a cohort and be seen. The local DB has zero of them; production was not
-  checked.
+  `'pending'`, and its gate admits those rows (usually
+  `ingestion_status='done'` with nothing else armed), which is what puts them
+  in a cohort. The local DB has zero of them; production was not checked.
 - **`no_match`** — no producer either (27 rows locally, all already fused and
   `ingestion_status='done'`). Left alone on purpose: they have a vector and
   are in the DJ pool, so re-asking them is an improvement, not an unblock.
@@ -271,6 +281,20 @@ skip only because `SpotifyPreview` happened to sit first in the chain.
 passing `only_ids` so each gate is restricted to those rows. Stages still
 batch internally. Without this each stage ran its own SELECT, so a pass
 could classify one set of tracks and fuse a completely different set.
+
+The cohort is the lowest `--batch` ids that **some selected stage's own
+gate** (`fetch_pending`) accepts: the union of what each stage could act on
+right now. A pass on a non-empty cohort therefore always processes
+something, and `--loop` only reports "drained" when no stage has work.
+
+It used to be a predicate of its own (`ingestion_status` pending or NULL, or
+any stage column `'pending'`), and since language stopped writing `'done'`
+that stalled for good: rows through classify sit at
+`language_status='pending'` + `fuse_status='pending'` with
+`ingestion_status='pending'`, which matched, were the lowest ids, and could
+be moved by no stage. Every pass re-selected them, processed nothing, and
+the loop slept while every higher id waited. Production's head was 28 such
+rows (reported 2026-10-15). `tests/ingest/test_cohort.py` reproduces it.
 
 ## One MERT pass, two outputs
 
@@ -331,12 +355,25 @@ python scripts/run_ingest_v2.py --batch 50 --loop --interval 30
 # a subset, in order
 python scripts/run_ingest_v2.py --stages preview,download
 
-# local GPU instead of Modal
-VIBESCAPE_ML_MODE=local python scripts/run_ingest_v2.py --batch 50
-
 # only the library-wide score recompute, no stages
 python scripts/run_ingest_v2.py --recompute-only
+
+# which database: local (default) or production Turso -- see § Prod
+python scripts/run_ingest_v2.py --target prod --batch 10
 ```
+
+`--target local` is the SQLite file `db_client` opens (`VIBESCAPE_DB_PATH`,
+else `data/vibescape.db`), whatever `DB_BACKEND` says. `--target prod` reads
+the credentials from a gitignored `.env.prod` (§ Prod). Every log line
+carries `target=…`, and the first one names the file or the host.
+
+`classify` always runs MERT in this process, on the local GPU. There is no
+Modal mode for it: `predict_and_embed_from_path` (`ingest/ml_backend.py`)
+loads the local checkpoint whatever `VIBESCAPE_ML_MODE` says, and Modal's
+`predict_from_url` returns no embedding, so it could not serve this stage.
+The mode only decides whether classify warns at startup that no backend is
+available. This used to list `VIBESCAPE_ML_MODE=local` as "local GPU instead
+of Modal", but the stage had already ignored the mode.
 
 ### The score recompute runs here, not in the app
 
@@ -349,16 +386,23 @@ pass recomputes at its end. **`--loop` recomputes once, when the loop drains**
 (the first pass that processes nothing, including the `--only-ids` exit),
 never per pass: every newly scored track shifts the mean and std, so nearly
 every row moves and the skip below saves nothing. Per pass, draining 1,000
-tracks at `--batch 50` would cost ~76,000 Turso round trips instead of
-~3,800. A failed recompute stays owed and is retried at the next idle point.
-Rows whose stored values already match are not written.
+tracks at `--batch 50` would mean 20 full recomputes of ~3,800 UPDATEs each
+instead of one. A failed recompute stays owed and is retried at the next
+idle point. Rows whose stored values already match are not written, and the
+rest go out through `execute_batch` 200 at a time: one Turso round trip per
+200 rows, where it used to be one per row (until 2026-10-15).
 Import jobs ran it on every sync until 2026-10-13; a sync only adds
 unanalysed `pending` rows, so the baseline cannot move until this pipeline
 has scored them. `POST /api/recompute-scores` still exists, admin-only.
 
-Batch size sets the **commit granularity** — `run_batch` commits once per
-stage per batch. A large batch means a kill loses everything uncommitted;
-`--batch 2500` once lost 42 minutes of preview work.
+Batch size sets the **commit granularity** — `run_batch` writes once per
+stage per batch, after every row is processed: one transaction, and on
+Turso one request. A large batch means a kill loses everything unwritten;
+`--batch 2500` once lost 42 minutes of preview work. It also sizes that
+request: a classify row is ~5.7 KB of JSON and a fuse row ~4.9 KB (the
+vectors), so `--batch 50` sends ~280 KB (measured 2026-10-15). No Turso
+size limit has been hit or measured; a batch the server refuses is written
+row by row instead.
 
 ### Draining a backlog
 
@@ -400,16 +444,50 @@ The matcher's tests are `tests/ingest/test_preview_matcher.py`.
 
 ## Prod
 
-The pipeline runs locally against `data/vibescape.db`; prod is Turso.
+Production is Turso, and the pipeline runs **against it directly**, from
+the machine with the GPU (decided 2026-10-15):
 
 ```bash
-python scripts/_turso_pull_to_local.py          # prod -> local
-python scripts/_sync_local_to_turso.py --apply  # local -> prod
+python scripts/backup_prod_db.py                                 # 1. a dated snapshot, always first
+python scripts/run_ingest_v2.py --target prod --batch 10         # 2. one small pass; read the log
+python scripts/run_ingest_v2.py --target prod --batch 50 --loop  # 3. then drain
+python scripts/language_tags.py --target prod --status           # 4. tag what waits, on prod
+python scripts/language_tags.py --target prod --set <spotify_id>=kn --apply
+python scripts/run_ingest_v2.py --target prod --loop             # 5. fuse + youtube the tagged rows
+python scripts/run_ingest_v2.py --target prod --recompute-only   # 6. scores, if a run stopped short
 ```
 
-The sync matches on `spotify_id` and UPDATEs in place. It never DROPs,
-never INSERTs and never writes `tracks.id`, because **local and prod ids
-have diverged** — the pull discards `id` and lets SQLite re-autonumber, so
-~58% of tracks carry a different id locally. Writing local ids into prod
-would re-point `user_tracks` at the wrong songs, and dropping `tracks`
-would cascade `user_tracks` to nothing.
+`--target prod` reads a gitignored `.env.prod` at the repo root that sets
+`DB_BACKEND=turso`, `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`, all three
+in that file, into that process only (`scripts/_target.py`). Never put them
+in `.env`: uvicorn reads it, and the dev app must not be able to reach
+production by accident. Every log line says `target=prod`, the first one
+the host; the token is never printed.
+
+Until 2026-10-15 the pipeline ran on a local copy and
+`scripts/_sync_local_to_turso.py --apply` pushed the results. That made two
+sources of truth: measured against the 2026-10-12 backup for the decision,
+a push would have nulled `preview_url` on 209 prod tracks in users'
+libraries, regressed 74 language tags that existed only on prod and nulled
+74 `youtube_id`s. The sync is gone; nothing writes a local result into prod
+any more.
+
+**The dev copy of prod is the backup file.** Copy it and point
+`VIBESCAPE_DB_PATH` at the copy (the snapshot itself stays a restore
+point). It keeps prod's track ids. A DB built by
+`scripts/_turso_pull_to_local.py` does not: the pull discards `id` and lets
+SQLite re-autonumber, so ~58% of tracks carry a different id there, which
+is why tags are keyed on `spotify_id`. Never write such ids into prod (they
+would re-point `user_tracks` at the wrong songs), and never drop `tracks`
+(Turso enforces foreign keys, so `user_tracks` would cascade to nothing).
+
+Against Turso a stage's batch is one transaction in one request, and the
+score recompute writes 200 rows a request (§ Operating it). With every
+stage selected (the default) each status column is read by some gate at the
+start of each pass, so one missing on prod stops the pass with `no such
+column` before anything is written. The retired sync used to add
+`librosa_status` and `fuse_status` when prod lacked them;
+`PRAGMA table_info(tracks)` on the backup says whether it has them. A
+missing *domain* column (one a stage writes, like `tonnetz_std`) is caught
+per row instead: each affected row is parked at `<stage>_stage_error` with
+the error text, so the first small pass is where to find out.

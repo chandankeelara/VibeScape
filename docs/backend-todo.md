@@ -33,7 +33,7 @@ Audit date: 2026-10-02. No automated tests exist anywhere in the repo
 
 ## 1. Broken now
 
-### 1.1 ~~`/api/recompute-scores` rewrites every track in the database, for every user~~ — DONE (2026-10-13), batching left to 2.2
+### 1.1 ~~`/api/recompute-scores` rewrites every track in the database, for every user~~ — DONE (2026-10-13), writes batched 2026-10-15
 `ingest/score_recompute.py`, `scripts/run_ingest_v2.py`, `backend/app.py` `api_recompute_scores`
 
 **verified by running the tests; covered by
@@ -60,9 +60,10 @@ runs it and how often, not a per-user scope:
   global. No caller in `frontend-next/`; `mobile/` has an unused wrapper
   (see 4.9). The response gained `written` and `unchanged`.
 
-**What remains:** a recompute after new tracks were scored shifts the mean,
-so most rows still get one UPDATE each, one HTTPS round trip apiece on Turso. That
-needs Hrana batch requests in `db_client` (2.2).
+~~**What remains:** a recompute after new tracks were scored shifts the mean,
+so most rows still get one UPDATE each, one HTTPS round trip apiece on Turso.~~
+DONE (2026-10-15): the UPDATEs go out through `execute_batch` 200 at a time,
+one round trip per chunk (`tests/backend/test_recompute_scores.py`).
 
 ### 1.2 `vibe_score` has two writers that disagree on what it means
 `ingest_pipeline/stage_classify.py:123` vs `ingest/score_recompute.py`
@@ -78,6 +79,16 @@ badge prefer `vibe_score_ml`. Any UI or
 query that compares `vibe_score` across tracks ingested at different times is
 comparing two different quantities. **[frontend contract]** — whichever
 definition wins is the one the client has been rendering.
+
+It reaches the DJ too. **verified by running it on a copy of the local DB
+(2026-10-15):** `vibe_score`, `activation` and `valence` are three of the
+fused vector's nine scalar inputs (`fused_vector.SCALAR_COLS`), and the
+recompute rewrites them without re-arming fuse. Re-fusing 20 finished tracks
+changed only the scalar block (MERT and language blocks bit-identical; cosine
+to the stored vector 0.988 to 0.9998), so stored vectors carry scalars the
+row no longer has, and a re-fuse after a language correction also moves the
+track by that drift. Whoever settles the definition should decide whether
+the recompute re-arms fuse.
 
 ### 1.3 ~~The sync picker still truncates at 200 playlists~~ — DONE (2da72af)
 `backend/app.py:2386` vs `ingest/spotify_library.py:181`
@@ -125,8 +136,13 @@ endpoint while `status` was `running`. Any real fix moves job state out of
 process (a `jobs` table) — **[frontend contract]**, since the status endpoint
 gains durability semantics it does not have today.
 
-### 1.6 `FuseStage` cannot run against Turso: it reads the MERT blob raw
+### 1.6 ~~`FuseStage` cannot run against Turso: it reads the MERT blob raw~~ — NOT REAL, and moot since 2.1 (2026-10-15)
 `ingest_pipeline/stage_fuse.py:86`
+
+A 768-float MERT blob is 3072 bytes, a multiple of 3, so its unpadded base64
+needs no padding and the old decoder read it fine; only blobs like the
+3152-byte fused vector came back `b''`. The analysis below assumed every
+blob did. Kept for the record:
 
 **verified by reading** (not run against Turso). `process_row` does
 `blob = row["mert_blob"]` from a plain `SELECT te.mert_embedding`. On the
@@ -211,12 +227,48 @@ body, always 0. Catalogue rows nobody links now accumulate; if they ever need
 pruning, that is an offline admin script that keeps history, not this
 endpoint.
 
+### 1.11 ~~The runner re-selected rows no stage could act on, and called itself drained~~ — DONE (2026-10-15)
+`scripts/run_ingest_v2.py` `select_cohort`
+
+**verified by a test that fails on the old code**
+(`tests/ingest/test_cohort.py`: 100 pending rows, two passes at `--batch
+50`, the second processed 0). The cohort was the lowest ids with
+`ingestion_status` pending/NULL or any stage column `'pending'`. Since
+2026-10-10 language never writes `'done'` and fuse waits for it, so rows
+through classify sit at `language_status='pending'` + `fuse_status='pending'`
++ `ingestion_status='pending'`: matched, lowest, unmovable. Every pass took
+them, processed nothing, and `--loop` slept while every higher id waited
+(prod's head: 28 such rows, reported 2026-10-15). The cohort is now the
+union of the selected stages' own `fetch_pending` gates, lowest `--batch`
+ids, so a non-empty cohort always has work.
+
+### 1.12 ~~The offline pipeline had two sources of truth~~ — DONE (2026-10-15)
+`scripts/_sync_local_to_turso.py` (deleted), `scripts/_target.py`
+
+The pipeline ran on a local copy and the sync pushed it to prod; measured
+against the 2026-10-12 backup, a push would have nulled 209 prod
+`preview_url`s in users' libraries, regressed 74 prod-only language tags and
+nulled 74 `youtube_id`s (numbers from the 2026-10-15 decision, not
+re-measured here). The runner and `language_tags.py` now take `--target
+prod` (credentials from a gitignored `.env.prod`) and the sync is gone.
+**Never run against production yet**; see `ingest_pipeline/README.md` § Prod
+for the first run.
+
 ---
 
 ## 2. Will break
 
-### 2.1 The Hrana BLOB read bug is a one-line base64 padding failure — CONFIRMED
-`backend/db_client.py:86-90`
+### 2.1 ~~The Hrana BLOB read bug is a one-line base64 padding failure~~ — DONE (2026-10-15)
+`backend/db_client.py` `_decode_blob`
+
+Fixed: padding restored, both alphabets accepted, an undecodable blob raises
+`sqlite3.DataError` instead of reading `b''` (`tests/database/test_turso_adapter.py`).
+One correction to the text below: the server sends the **standard** alphabet
+without padding (`STANDARD_NO_PAD` in libsql's `libsql-hrana/src/proto.rs`,
+read 2026-10-15), not base64url. Not verified against production (nothing
+here may touch it), and `backend/app.py`'s `vector_extract()` reads were
+deliberately left in place; they can go once a prod read confirms the fix.
+Original analysis:
 
 **suspected**, high confidence, and worth settling because it is the root of
 every `vector_extract()` workaround in the codebase. The decoder is
@@ -236,8 +288,16 @@ items 1.6 and the `_is_turso()` branches at `backend/app.py:1003` and
 bare `except Exception: return b""` should log — it is the reason this cost a
 confident, wrong "production embeddings are empty" report.
 
-### 2.2 Turso has no transactions at all, and `commit()`'s docstring says otherwise
-`backend/db_client.py:230`, mechanism at `backend/db_client.py:196-203`
+### 2.2 ~~Turso has no transactions at all, and `commit()`'s docstring says otherwise~~ — CHANGED (2026-10-15)
+`backend/db_client.py` `execute_batch`
+
+`conn.execute_batch([(sql, params), ...])` is now one transaction on both
+backends, and on Turso one request (a Hrana `batch`: BEGIN, each statement
+conditioned on the one before, COMMIT, ROLLBACK unless COMMIT succeeded).
+`commit()` / `rollback()` say what they do (nothing; `rollback()` no longer
+sends a ROLLBACK that always failed). The pipeline stages and the score
+recompute use it. **Still open:** the two call sites below still write
+separately; each is now a one-line `execute_batch` change. Original:
 
 **verified.** Every `execute()` posts `[{"type":"execute"}, {"type":"close"}]`
 with `baton: None` — a fresh Hrana stream per statement, closed immediately.
@@ -258,8 +318,16 @@ Fix is either Hrana batch requests (several statements in one pipeline POST,
 which also fixes the round-trip cost left over from 1.1) or baton reuse. Either way,
 correct the docstring first.
 
-### 2.3 Every `except sqlite3.IntegrityError` in the codebase is dead on Turso
-`backend/app.py:338`, `ingest_pipeline/base.py:253`, `ingest_pipeline/base.py:264`
+### 2.3 ~~Every `except sqlite3.IntegrityError` in the codebase is dead on Turso~~ — DONE (2026-10-15)
+`backend/db_client.py` `_hrana_error`
+
+A Hrana error code starting `SQLITE_CONSTRAINT` (libsql-server sends exactly
+that for every constraint violation) is now `sqlite3.IntegrityError`, so the
+signup race (now `backend/app.py:362`) and the pipeline's droppable-fields
+retry work on Turso. **[frontend contract]** a signup that loses the race
+past the email pre-check now gets 409 `email_taken` from prod instead of a
+500, as it already did locally. Covered by
+`tests/database/test_turso_adapter.py`. Original:
 
 **verified.** `db_client` raises exactly two exception types:
 `sqlite3.OperationalError` for any Turso-reported error
@@ -273,9 +341,15 @@ It never raises `IntegrityError`. So:
   for legacy `UNIQUE (user_id, apple_id)` collisions never fires in
   production; the exception escapes `_commit_row_update`.
 
-### 2.4 One bad row discards an entire pipeline batch, including GPU work
-`ingest_pipeline/base.py:197-201`, same shape at
-`ingest_pipeline/stage_classify.py:160-181` and `ingest_pipeline/stage_fuse.py:130-143`
+### 2.4 ~~One bad row discards an entire pipeline batch, including GPU work~~ — DONE (2026-10-15)
+`ingest_pipeline/base.py` `Stage._write_results`
+
+A stage's batch is one `execute_batch`; if it fails, rows are written one
+transaction each and a row that still fails is parked at
+`<stage>_stage_error` with the error, after the droppable-fields retry.
+Classify and fuse lost their copies of the loop (a `row_writes` hook carries
+their `track_embeddings` statement into the row's transaction). Covered by
+`tests/ingest/test_stage_writes.py`. Original:
 
 **verified.** `run_batch` loops `_commit_row_update` over every result and
 calls `conn.commit()` *after* the loop. If any row raises (see 2.3 — on Turso
@@ -314,8 +388,14 @@ process-level "already ensured" flag.
 
 ## 3. Correctness risks
 
-### 3.1 A track with `ingestion_status IS NULL` jams the head of the cohort queue
-`scripts/run_ingest_v2.py:108-116` vs `ingest_pipeline/stage_preview.py:52-58`
+### 3.1 A track with `ingestion_status IS NULL` ~~jams the head of the cohort queue~~ never enters preview
+`ingest_pipeline/stage_preview.py` `fetch_pending`
+
+**CHANGED (2026-10-15):** the jam is gone with 1.11, since a cohort now only
+holds rows some stage's gate accepts. What remains is smaller: such a row
+gets its language normalised and then nothing, because preview's gate wants
+`ingestion_status='pending'` exactly. Same cheap check on prod; if it
+returns rows, set them to `'pending'`. Original:
 
 **suspected.** `select_cohort` admits rows where `ingestion_status = 'pending'
 **OR ingestion_status IS NULL**`, ordered `id ASC LIMIT batch`. `PreviewStage`
@@ -363,8 +443,13 @@ nothing ever tested, enforced in code. One request with `limit=25` settles it;
 whichever way it lands, write the probe and the date into the docstring the
 way `get_top_tracks_count` now does. **[frontend contract]** if the cap moves.
 
-### 3.5 `FuseStage` writes the fused vector with a blind `UPDATE`
-`ingest_pipeline/stage_fuse.py:137-141`
+### 3.5 ~~`FuseStage` writes the fused vector with a blind `UPDATE`~~ — DONE (2026-10-15)
+`ingest_pipeline/stage_fuse.py` `row_writes`
+
+Now an upsert in the row's transaction, so `fuse_status='done'` always comes
+with a vector. Not "fail the row": the one way to lose the row mid-pass is a
+reset deleting embeddings, and failing would park a track the reset just
+requeued. Covered by `tests/ingest/test_stage_writes.py`. Original:
 
 **verified.** `UPDATE track_embeddings SET fused_embedding = ? WHERE
 track_id = ?` affects zero rows if no `track_embeddings` row exists, yet
@@ -430,6 +515,18 @@ same test as `titles_match` / `artists_match`) rather than in the catalogue.
 They are excluded from `reset_shared_previews.py` on purpose. Check
 `user_tracks` for references before deleting them.
 
+### 3.11 App-inserted prod tracks have `created_at` NULL
+`backend/app.py` `_process_track` (fixed for new rows 2026-10-15)
+
+**suspected size, verified mechanism.** Prod's `tracks` has no column
+defaults, and the INSERT relied on `DEFAULT CURRENT_TIMESTAMP` until
+2026-10-15; 626 pending prod rows were reported NULL that day. New rows are
+stamped now; the old ones still blind `language_tags.py --status` wait ages.
+Candidate backfill: the earliest `user_tracks.added_at` per track, if prod's
+`user_tracks` kept its default (not checked). Check first:
+`SELECT COUNT(*) FROM tracks WHERE created_at IS NULL` and the same count of
+those with a non-NULL `MIN(added_at)`.
+
 ## 4. Cleanup
 
 ### 4.1 Stale file references
@@ -443,8 +540,8 @@ They are excluded from `reset_shared_previews.py` on purpose. Check
   `scripts/migrate_to_turso_http.py`. That file does not exist, so the
   comment names no actual owner for the prod schema.
 - `ingest_pipeline/base.py:19` — cites `scripts/_push_local_to_turso.py` as
-  the thing that built prod's `tracks` table. Also gone; the surviving script
-  is `scripts/_sync_local_to_turso.py`.
+  the thing that built prod's `tracks` table. Also gone, and so is its
+  successor `scripts/_sync_local_to_turso.py` (retired 2026-10-15, 1.12).
 
 ### 4.2 Stale docstrings that describe a pipeline that no longer exists
 **verified:**
@@ -453,10 +550,9 @@ They are excluded from `reset_shared_previews.py` on purpose. Check
   `_process_track` pipeline (Modal ML → librosa fallback → iTunes preview
   lookup) so features/audio path are populated". `_process_track` has written
   metadata only since `1be1c59`.
-- `scripts/run_ingest_v2.py:9-17` — the module docstring lists four "wired
-  stages" and says "youtube is independent". There are seven, and youtube is
-  armed by fuse at the end of a strictly sequential chain
-  (preview → download → librosa → classify → language → fuse → youtube).
+- ~~`scripts/run_ingest_v2.py:9-17` — the module docstring lists four "wired
+  stages" and says "youtube is independent".~~ Fixed before 2026-10-15 (it
+  lists all seven); the last "all four stages" in its usage went 2026-10-15.
 
 ### 4.3 The production image ships a 42 MB copy of the developer's SQLite database
 `Dockerfile:35`, `.gcloudignore:2` and `.gcloudignore:56` (`data/vibescape.db.*` is excluded, the file
@@ -510,8 +606,11 @@ has been reaped", but nothing reaps: `JOBS` only loses entries via the two
 `backend/app.py:3144`). Every completed sync job leaks its dict for the life
 of the process. Add a TTL sweep, or delete the claim.
 
-### 4.8 `run_ingest_v2.py --help` crashes on a Windows console
+### 4.8 ~~`run_ingest_v2.py --help` crashes on a Windows console~~ — DONE (2026-10-15)
 `scripts/run_ingest_v2.py:28`
+
+The arrow was the docstring's only character outside cp1252; it is `->` now,
+and `PYTHONIOENCODING=cp1252 python scripts/run_ingest_v2.py --help` exits 0.
 
 **verified** (2026-10-13, on `dj-replay` before and after 1.1). The parser's
 description is the module docstring, which contains `→`; on a cp1252 console
@@ -980,10 +1079,11 @@ Recorded so the next audit does not redo them.
   `pl.LightningModule` attributes in `ml/src/model.py`). **`1be1c59` was the
   only instance** of the `_update_job` / `_bump` / `_is_cancelled` failure
   mode, and it is repaired at `backend/app.py:2332-2354`.
-- **Operational scripts default to dry-run.** `_sync_local_to_turso.py`,
+- **Operational scripts default to dry-run.**
   `_dedupe_turso_by_isrc.py`, `_fix_language_tags.py`, `_llm_verify_apply.py`
   and `language_tags.py` all require an explicit `--apply` and print
-  "dry-run — nothing was modified" otherwise.
+  "dry-run — nothing was modified" otherwise. (`run_ingest_v2.py` is not a
+  dry-run script; `--target local` is its default.)
 - **Secret hygiene.** `scripts/_load_gcp_secrets.ps1` is excluded from the
   deploy upload by `.gcloudignore`'s `scripts/_*.ps1`, and from the image by
   `.dockerignore`'s `scripts/`. It is tracked in git, which remains the real

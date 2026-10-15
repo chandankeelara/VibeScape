@@ -7,15 +7,17 @@ Writes data/backups/prod_YYYYMMDDTHHMMSS.db — gitignored, never committed.
 
 WHY hex() AND NOT A PLAIN SELECT
 --------------------------------
-db_client's Hrana read path returns b"" for every BLOB: Hrana sends base64
-WITHOUT padding, plain base64.b64decode raises "Incorrect padding", and a
-bare except swallows it (see backend/CLAUDE.md). A naive backup would
-therefore look complete while containing no embeddings at all -- the worst
-possible failure for a backup, because nothing announces it.
+Until 2026-10-15 db_client's Hrana read path returned b"" for any BLOB whose
+length is not a multiple of 3, every fused vector included: Hrana sends
+base64 WITHOUT padding, plain base64.b64decode raised "Incorrect padding",
+and a bare except swallowed it. A naive backup would have looked complete
+while missing embeddings -- the worst possible failure for a backup, because
+nothing announces it. db_client now decodes them and raises on a blob it
+cannot.
 
-So BLOB columns are read as hex(col), which the DATABASE evaluates, and
-decoded here. Same reason backend/CLAUDE.md says to verify blobs with
-LENGTH()/hex() server-side rather than measuring bytes in Python.
+BLOB columns are still read as hex(col), which the DATABASE evaluates, and
+decoded here: the copy then does not depend on the client's decoder at all,
+and the blob check at the end compares sizes the database reports.
 
 Read-only against production. It opens one connection and only SELECTs.
 """
