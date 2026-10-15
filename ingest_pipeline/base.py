@@ -32,8 +32,9 @@ Status vocabulary (per stage):
     done     — finished successfully
     no_match — stage completed but produced no result (e.g. no preview
                provider found a URL, no YouTube hit). Terminal.
-    failed   — an unexpected exception. Terminal for this pass; the
-               orchestrator can be re-run with --retry-failed later.
+    failed   — an unexpected exception, or a write the stage could not
+               make. Parks the row until
+               `run_ingest_v2.py --retry-failed <stage>|all` re-arms it.
 
 Writing a batch
 ---------------
@@ -61,7 +62,7 @@ depends on what failed (Stage._write_results):
     UNIQUE collision is retried without _RETRY_DROPPABLE_FIELDS, and a row
     that still cannot be written is marked 'failed' with its
     '<stage>_stage_error' and the error text, like an exception in
-    process_row.
+    process_row; `run_ingest_v2.py --retry-failed` re-arms it.
 
 Until 2026-10-15 one failing row aborted the stage's write loop after the
 batch's work was done: SQLite rolled the whole batch back (the next pass
@@ -103,8 +104,9 @@ STATUS_FAILED = "failed"
 #
 # It also parks the row: preview's entry gate only matches
 # ingestion_status='pending', so a broken row stops re-entering the
-# pipeline every pass. The stage's own column keeps 'failed', so
-# --retry-failed still knows where to resume.
+# pipeline every pass. `run_ingest_v2.py --retry-failed <stage>` finds the
+# row by this value and sets it and the stage's own column (which reads
+# 'failed') back to 'pending'.
 def stage_error_status(stage_name: str) -> str:
     return f"{stage_name}_stage_error"
 # RETIRED 2026-10-10 with the Whisper language stage. It meant "Whisper

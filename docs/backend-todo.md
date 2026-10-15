@@ -374,9 +374,14 @@ pass re-selects the same cohort, re-runs the same MERT forward passes and
 fails on the same row — a loop that burns GPU time indefinitely. Commit
 per row, or catch per row.
 
-### 2.5 `--retry-failed` does not exist
-`ingest_pipeline/base.py:36` and `ingest_pipeline/base.py:72` vs
-`scripts/run_ingest_v2.py:154-166`
+### 2.5 ~~`--retry-failed` does not exist~~ — DONE (2026-10-15)
+`scripts/run_ingest_v2.py` `rearm_failed`
+
+`--retry-failed STAGE|all` sets the rows at `<stage>_stage_error` back to
+`ingestion_status='pending'` with the stage's own column `'pending'` and
+`ingestion_error` cleared (one transaction), logs the count, then runs as
+usual. base.py's two promises are true now. Covered by
+`tests/ingest/test_retry_failed.py`. Original:
 
 **verified.** `base.py` twice tells the reader that a `failed` row can be
 resumed by re-running "the orchestrator with `--retry-failed`". The

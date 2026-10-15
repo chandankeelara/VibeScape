@@ -69,8 +69,9 @@ On `failed`, a stage arms nothing and writes
 `classify_stage_error`, …) plus the exception in `ingestion_error`. One
 `GROUP BY ingestion_status` tells you which stage is failing and how often,
 with no log parsing. The row also stops re-entering at `preview`, whose
-gate only matches `'pending'`, while its own column keeps `'failed'` so a
-retry pass knows where to resume.
+gate only matches `'pending'`, while its own column keeps `'failed'`. Once
+the cause is fixed, `run_ingest_v2.py --retry-failed <stage>` (or `all`)
+sets both back to `'pending'`, clears the error, and runs.
 
 A stage writes its whole batch in one transaction (`execute_batch`, one
 round trip on Turso). When that fails nothing in it landed, and what
@@ -380,6 +381,9 @@ python scripts/run_ingest_v2.py --stages preview,download
 
 # only the library-wide score recompute, no stages
 python scripts/run_ingest_v2.py --recompute-only
+
+# re-arm rows parked at <stage>_stage_error (or all of them), then run
+python scripts/run_ingest_v2.py --retry-failed classify
 
 # which database: local (default) or production Turso -- see § Prod
 python scripts/run_ingest_v2.py --target prod --batch 10

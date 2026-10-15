@@ -47,6 +47,9 @@ Usage:
     # Only re-run the library-wide score recompute, no stages:
     python scripts/run_ingest_v2.py --recompute-only
 
+    # Re-arm rows parked at <stage>_stage_error (one stage, or all), then run:
+    python scripts/run_ingest_v2.py --retry-failed classify
+
     # Production Turso instead of the local SQLite file (the default,
     # --target local). Credentials come from the gitignored .env.prod, see
     # scripts/_target.py. Back up first: python scripts/backup_prod_db.py
@@ -107,7 +110,7 @@ from ingest_pipeline.stage_youtube import YoutubeStage  # noqa: E402
 from ingest_pipeline.stage_language import LanguageStage  # noqa: E402
 from ingest_pipeline.stage_librosa import LibrosaStage  # noqa: E402
 from ingest_pipeline.stage_fuse import FuseStage  # noqa: E402
-from ingest_pipeline.base import STATUS_DONE  # noqa: E402
+from ingest_pipeline.base import STATUS_DONE, stage_error_status  # noqa: E402
 import score_recompute  # noqa: E402
 import _target  # noqa: E402  (scripts/, next to this file)
 
@@ -118,21 +121,47 @@ log = logging.getLogger("vibescape.ingest.orch")
 # module docstring; fuse, youtube etc. touch none of its inputs or outputs.
 SCORING_STAGES = ("librosa", "classify")
 
+# Every stage, by name, in chain order.
+STAGE_CLASSES: dict[str, type] = {
+    "preview":   PreviewStage,
+    "download":  DownloadStage,
+    "librosa":   LibrosaStage,
+    "classify":  ClassifyStage,
+    "language":  LanguageStage,
+    "fuse":      FuseStage,
+    "youtube":   YoutubeStage,
+}
+
 
 def build_stages(names: list[str]) -> list:
-    all_stages: dict[str, callable] = {
-        "preview":   PreviewStage,
-        "download":  DownloadStage,
-        "librosa":   LibrosaStage,
-        "classify":  ClassifyStage,
-        "language":  LanguageStage,
-        "fuse":      FuseStage,
-        "youtube":   YoutubeStage,
-    }
-    unknown = [n for n in names if n not in all_stages]
+    unknown = [n for n in names if n not in STAGE_CLASSES]
     if unknown:
-        raise SystemExit(f"unknown stages: {unknown}. known: {list(all_stages)}")
-    return [all_stages[n]() for n in names]
+        raise SystemExit(f"unknown stages: {unknown}. known: {list(STAGE_CLASSES)}")
+    return [STAGE_CLASSES[n]() for n in names]
+
+
+def rearm_failed(conn, which: str) -> dict[str, int]:
+    """Send rows parked at <stage>_stage_error back into the pipeline.
+
+    A row that failed a stage (an exception in process_row, or a write the
+    stage could not make) is parked: ingestion_status='<stage>_stage_error',
+    the stage's own column 'failed', the error in ingestion_error. That
+    keeps it out of every gate until somebody decides the cause is fixed.
+    This undoes exactly that, for one stage or `all`: ingestion_status and
+    the stage's column back to 'pending', ingestion_error cleared, in one
+    transaction. Returns {stage: rows re-armed}.
+    """
+    names = list(STAGE_CLASSES) if which == "all" else [which]
+    unknown = [n for n in names if n not in STAGE_CLASSES]
+    if unknown:
+        raise SystemExit(f"--retry-failed: unknown stage {which!r}; "
+                         f"expected all or one of {list(STAGE_CLASSES)}")
+    cursors = conn.execute_batch([
+        (f"UPDATE tracks SET ingestion_status = 'pending', "
+         f"{STAGE_CLASSES[n].status_column} = 'pending', ingestion_error = NULL "
+         "WHERE ingestion_status = ?", (stage_error_status(STAGE_CLASSES[n].name),))
+        for n in names])
+    return {n: max(c.rowcount, 0) for n, c in zip(names, cursors)}
 
 
 def pending_snapshot(conn) -> dict[str, int]:
@@ -281,6 +310,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--recompute-only", action="store_true",
                         help="run only the library-wide score recompute "
                              "(activation_relative / vibe_score / mood), no stages")
+    parser.add_argument("--retry-failed", choices=[*STAGE_CLASSES, "all"], default=None,
+                        metavar="STAGE|all",
+                        help="first re-arm the rows parked at <STAGE>_stage_error "
+                             "(or at any stage's), then run as usual")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -293,6 +326,14 @@ def main(argv: list[str] | None = None) -> int:
     log.info("%s", where)
 
     ensure_db()
+    if args.retry_failed:
+        conn = get_conn()
+        try:
+            rearmed = rearm_failed(conn, args.retry_failed)
+        finally:
+            conn.close()
+        log.info("--retry-failed %s: re-armed %d row(s) %s",
+                 args.retry_failed, sum(rearmed.values()), rearmed)
     if args.recompute_only:
         return 0 if recompute_scores() else 1
 
