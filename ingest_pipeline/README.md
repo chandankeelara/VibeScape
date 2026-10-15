@@ -567,6 +567,7 @@ column` before anything is written. The retired sync used to add
 `librosa_status` and `fuse_status` when prod lacked them; the 2026-10-15
 probe read every stage column, so they were there then, and
 `PRAGMA table_info(tracks)` on a fresh backup says whether they still are. A
-missing *domain* column (one a stage writes, like `tonnetz_std`) is caught
-per row instead: each affected row is parked at `<stage>_stage_error` with
-the error text, so the first small pass is where to find out.
+missing *domain* column (one a stage writes, like `tonnetz_std`) stops the
+run at that stage's write instead, after the batch's work, with nothing
+landed and nothing parked (§ Failure), so the first small pass is where to
+find out.
