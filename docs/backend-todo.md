@@ -361,12 +361,18 @@ It never raises `IntegrityError`. So:
 ### 2.4 ~~One bad row discards an entire pipeline batch, including GPU work~~ — DONE (2026-10-15)
 `ingest_pipeline/base.py` `Stage._write_results`
 
-A stage's batch is one `execute_batch`; if it fails, rows are written one
-transaction each and a row that still fails is parked at
-`<stage>_stage_error` with the error, after the droppable-fields retry.
-Classify and fuse lost their copies of the loop (a `row_writes` hook carries
-their `track_embeddings` statement into the row's transaction). Covered by
-`tests/ingest/test_stage_writes.py`. Original:
+A stage's batch is one `execute_batch`. If it fails: an error not about
+any row (network, timeout, lock, no owning statement) is raised with
+nothing parked; otherwise the failing statement's row (`step`) is set aside
+and the rest written again, and that row alone gets the droppable-fields
+retry or is parked at `<stage>_stage_error`; the same error at the retry's
+first statement is systematic and raised with nothing parked. (The first
+version rewrote every row alone and parked on any error, so a timeout
+parked good rows; fixed after review the same day.) `--retry-failed`
+re-arms parked rows (2.5). Classify and fuse lost their copies of the loop
+(a `row_writes` hook carries their `track_embeddings` statement into the
+row's transaction). Covered by `tests/ingest/test_stage_writes.py`.
+Original:
 
 **verified.** `run_batch` loops `_commit_row_update` over every result and
 calls `conn.commit()` *after* the loop. If any row raises (see 2.3 — on Turso

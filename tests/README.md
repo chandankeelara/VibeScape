@@ -30,9 +30,17 @@ Every Python test runs against its own empty SQLite file in pytest's temp
 directory, bootstrapped by the app's real `ensure_db()`. `conftest.py` forces
 `DB_BACKEND=sqlite`, removes the Turso variables before the backend is
 imported, points `--target prod`'s `.env.prod` at a file that does not
-exist, and asserts the app opened the test file. **Nothing here can reach
-`data/vibescape.db` or production.** External calls (Spotify) are replaced
-with fakes; no test needs a network.
+exist, makes `db_client`'s only way out to Turso (`_HttpConnection._post`)
+raise unless a test gave its connection a fake one, and asserts the app
+opened the test file. **Nothing here can reach `data/vibescape.db` or
+production.** External calls (Spotify) are replaced with fakes; no test
+needs a network.
+
+Do not run a new test against old code when the test calls a script that
+can reach production: the old code may get credentials some way the guards
+do not cover. On 2026-10-15 a check of the backup test against the previous
+commit ran the old `backup_prod_db.main()`, which read the token from
+`scripts/_load_gcp_secrets.ps1`, before the `_post` guard existed.
 
 ## What is covered
 
@@ -47,12 +55,14 @@ with fakes; no test needs a network.
 | Spotify refresh | `backend/test_spotify_refresh.py` | session required, secret sent only server-side, rotation passed through, refusal is a 400 |
 | Library search | `backend/test_library_search.py` | typos and partial words, language by name, every word required across fields, own songs above features, phrase above scattered words, only the caller's analysed tracks |
 | Spotify rate-limit guard | `backend/test_spotify_guard.py` | one 429 holds every later call with no request, counts down and lifts, never shortens, library/matcher/importer fail fast instead of sleeping, `/api/spotify/status` |
-| Score recompute | `backend/test_recompute_scores.py`, `ingest/test_runner_recompute.py` | same values as the function it replaced, unchanged rows are not rewritten, writes go out in `execute_batch` chunks, the endpoint is admin-only and global, an import job leaves catalogue scores alone, the runner recomputes only after librosa or classify finished a row, `--loop` recomputes once when it drains (also before an `--only-ids` exit) and retries a failed one at the next idle, `--recompute-only` |
+| Score recompute | `backend/test_recompute_scores.py`, `ingest/test_runner_recompute.py` | same values as the function it replaced, unchanged rows are not rewritten, writes go out in `execute_batch` chunks, the endpoint is admin-only and global, an import job leaves catalogue scores alone, the runner recomputes only after librosa or classify finished a row, `--loop` recomputes once when it drains (also before an `--only-ids` exit) and retries a failed one at the next idle, `--until-drained` recomputes once and exits (1 if that failed) without sleeping, an idle `--loop` backs off 30 s to 10 min and work resets it, `--recompute-only` |
 | iTunes preview matcher | `ingest/test_preview_matcher.py` | an album neighbour is never the song, accents and ` - ` / `(From ...)` suffixes, a shared film name is not a match, 8D / slowed / reprise are different recordings, artist overlap, length tolerance |
 | Runner cohort | `ingest/test_cohort.py` | with the real language and fuse stages: a second pass advances the next ids instead of re-selecting rows waiting for a tag, the loop drains only when no stage has work, a tagged row fuses while lower ids still wait, only the selected stages count, `--only-ids` |
-| Stage writes | `ingest/test_stage_writes.py` | a clean batch is one `execute_batch`; a row whose write fails is parked at `<stage>_stage_error` and the rest land (on a `db_client` and a bare sqlite3 connection); the UNIQUE retry drops the droppable fields; classify writes its vector in the row's transaction; fuse never marks a row done without its vector |
-| `--target` | `ingest/test_target.py` | local forces SQLite whatever `DB_BACKEND` says; prod loads `.env.prod` over `.env`, needs all three keys in that file and `DB_BACKEND=turso`, never prints the token; both scripts exit before connecting without the file. Every test points `.env.prod` at a missing file (`conftest.py`) |
-| Turso adapter | `database/test_turso_adapter.py` | against a fake Hrana server running on in-memory SQLite: blobs padded / unpadded / url-safe, a 788-float vector round trip, an undecodable blob raises, `SQLITE_CONSTRAINT*` is `IntegrityError`, a batch is one request with the BEGIN / conditional / COMMIT / ROLLBACK steps, a failing statement lands nothing and names its step, `rowcount` 0 is 0, `commit()` / `rollback()` send nothing; the SQLite `execute_batch` is all-or-nothing |
+| Gates | `ingest/test_gates.py` | each of the seven real stages' gates accepts exactly its row; the cohort is one ids-only query ORing them; the startup counts are per gate (a row waiting for its tag counts nowhere); an empty cohort matches nothing |
+| Stage writes | `ingest/test_stage_writes.py` | a clean batch is one `execute_batch`; a bad row is set aside and costs one more batch, then is parked at `<stage>_stage_error` while the rest land; a timeout, a lock or an unowned error raises with nothing parked; the same error on every row raises with nothing parked; the UNIQUE retry drops the droppable fields, also for two collisions side by side; classify writes its vector in the row's transaction; fuse never marks a row done without its vector |
+| `--retry-failed` | `ingest/test_retry_failed.py` | one stage's parked rows are re-armed (its own column, ingestion_status, error cleared) and nothing else; `all`; the flag logs the count, then runs; an unknown stage is refused |
+| `--target` | `ingest/test_target.py` | local forces SQLite whatever `DB_BACKEND` says; prod loads `.env.prod` over `.env`, needs all three keys in that file and `DB_BACKEND=turso`, never prints the token; the runner, `language_tags.py` and `backup_prod_db.py` exit before connecting without the file; both CLIs start under `python -P`. Every test points `.env.prod` at a missing file (`conftest.py`) |
+| Turso adapter | `database/test_turso_adapter.py` | against a fake Hrana server running on in-memory SQLite: blobs padded / unpadded / url-safe and the two shapes production sends, a 788-float vector round trip, an undecodable blob raises, `SQLITE_CONSTRAINT*` is `IntegrityError`, a batch is one request with the BEGIN / conditional / COMMIT / ROLLBACK steps, a failing statement lands nothing and names its step (`step`, `detail`), `rowcount` 0 is 0, `commit()` / `rollback()` send nothing, no test can reach a real database; the SQLite `execute_batch` is all-or-nothing and names its step |
 | Schema | `database/test_schema.py` | applies and re-applies, no `;` in comments breaks the Turso scripts' split (commit 322c7c1), fresh bootstrap survives many connections and keeps the production shape, old telemetry tables are widened in place |
 | Cache = rebuild | `database/test_rollup_rebuild.py` | randomised sessions: the inline `user_track_stats` equals `scripts/rebuild_user_track_stats.py` |
 | Sync job | `frontend/syncJobProvider.test.jsx` | a job `note` becomes a toast instead of crashing the poll effect (the real `ToastProvider`, only the API and the player mocked), once per job |
@@ -70,9 +80,10 @@ with fakes; no test needs a network.
 | Preview fallback | `frontend/previewFallback.test.js` | after several previews load, one error falls back once to the current track's stream; never twice; a no-preview track and `stop()` leave nothing armed |
 
 Each fix above was checked by breaking it on purpose and confirming a test
-fails (2026-10-10). The cohort, stage-write, Turso-adapter, recompute-batch
-and `created_at` tests were run against the code before their fix and fail
-there (2026-10-15).
+fails (2026-10-10). The cohort, stage-write, Turso-adapter, recompute-batch,
+`created_at`, gate, `--retry-failed`, loop and `python -P` tests were run
+against the code before their fix and fail there (2026-10-15). The
+backup-refusal test was not, and must not be (see above).
 
 ## Not covered yet
 
