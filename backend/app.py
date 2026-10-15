@@ -3472,13 +3472,19 @@ def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "
     # vibe_score is NOT NULL in the current schema (legacy from the
     # pre-split-ingest era). Insert 0.0 as a placeholder; the offline
     # pipeline's classify stage overwrites it with the real score.
+    # created_at is written, not left to DEFAULT CURRENT_TIMESTAMP:
+    # production's tracks table has no column defaults, so rows this INSERT
+    # made there have created_at NULL (626 pending rows, reported
+    # 2026-10-15), which blinds the wait ages in language_tags.py --status.
+    # Same 'YYYY-MM-DD HH:MM:SS' UTC text the default writes locally.
     cur = conn.execute(
         "INSERT INTO tracks "
         "(spotify_id, isrc, title, artist, album, artwork_url, preview_url, "
-        " duration_ms, vibe_score, ingestion_status) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0, 'pending')",
+        " duration_ms, vibe_score, ingestion_status, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0, 'pending', ?)",
         (spotify_id, isrc, name, artist_name, album_name,
-         artwork_url, preview_url, duration_ms),
+         artwork_url, preview_url, duration_ms,
+         datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")),
     )
     track_id = int(cur.lastrowid)
     conn.execute(
