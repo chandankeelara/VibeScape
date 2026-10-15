@@ -18,7 +18,7 @@ pass. Two reasons:
    fuse_status='pending' and the vector is rebuilt in milliseconds from
    the stored mert_embedding.
 
-Reads mert_embedding from track_embeddings (written by EmbeddingStage),
+Reads mert_embedding from track_embeddings (written by ClassifyStage),
 the scalar columns from tracks, and writes back fused_embedding.
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ import logging
 
 import numpy as np
 
-from .base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, id_filter, iso_now, id_filter
+from .base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, id_filter, iso_now
 from .fused_vector import FUSED_DIM, MERT_DIM, SCALAR_COLS, _build_fused
 
 log = logging.getLogger("vibescape.ingest.fuse")
@@ -122,37 +122,28 @@ class FuseStage(Stage):
             },
         )
 
-    def run_batch(self, conn, limit: int, log_, only_ids=None):
-        """Override: the fused blob goes to track_embeddings, not tracks."""
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+    def row_writes(self, res: RowResult) -> tuple[dict, list]:
+        """The fused vector goes to track_embeddings, in the same
+        transaction as the UPDATE that marks the row done.
 
-        rows = self.fetch_pending(conn, limit, only_ids)
-        counts = {STATUS_DONE: 0, STATUS_FAILED: 0}
-        if not rows:
-            log_.info("[%s] no pending rows", self.name)
-            return counts
-        log_.info("[%s] processing %d rows (max_workers=%d)",
-                  self.name, len(rows), self.max_workers)
-
-        results: list[RowResult] = []
-        with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
-            futs = {ex.submit(self._safe_process, r): r for r in rows}
-            for fut in as_completed(futs):
-                results.append(fut.result())
-
-        for res in results:
-            fields = dict(res.fields or {})
-            fused_blob = fields.pop("__fused_blob__", None)
-            # Shared with the base run_batch: status + arming + failure.
-            fields = self._finalize_fields(fields, res)
-            self._commit_row_update(conn, int(res.track_id), fields, log_)
-            if res.status == STATUS_DONE and fused_blob:
-                conn.execute(
-                    "UPDATE track_embeddings SET fused_embedding = ?, "
-                    "  updated_at = ? WHERE track_id = ?",
-                    (fused_blob, iso_now(), int(res.track_id)),
-                )
-            counts[res.status] = counts.get(res.status, 0) + 1
-        conn.commit()
-        log_.info("[%s] batch done: %s", self.name, counts)
-        return counts
+        An upsert, like ClassifyStage's. It was a plain UPDATE, which
+        matches nothing when the track_embeddings row is gone (a reset
+        deletes it; fetch_pending's JOIN only proves it existed when the
+        batch was read) while fuse_status still went to 'done': the track
+        would finish with no vector and silently leave the DJ pool.
+        Failing the row instead was ruled out: in that race the reset has
+        just requeued the track, and parking it at fuse_stage_error would
+        override that.
+        """
+        fields = dict(res.fields or {})
+        fused_blob = fields.pop("__fused_blob__", None)
+        if res.status != STATUS_DONE or not fused_blob:
+            return fields, []
+        return fields, [(
+            "INSERT INTO track_embeddings (track_id, fused_embedding, updated_at) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(track_id) DO UPDATE SET "
+            "  fused_embedding = excluded.fused_embedding, "
+            "  updated_at      = excluded.updated_at",
+            (int(res.track_id), fused_blob, iso_now()),
+        )]

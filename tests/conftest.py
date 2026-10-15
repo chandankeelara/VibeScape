@@ -42,6 +42,22 @@ def _fresh_spotify_guard():
     yield
     spotify_guard._reset_for_tests()
 
+
+@pytest.fixture
+def batches(monkeypatch):
+    """Every execute_batch() on a db_client SQLite connection (what get_conn()
+    returns), recorded as its list of (sql, params) before it runs."""
+    import db_client
+    calls = []
+    real = db_client._SqliteConnection.execute_batch
+
+    def recording(self, stmts):
+        stmts = list(stmts)
+        calls.append(stmts)
+        return real(self, stmts)
+    monkeypatch.setattr(db_client._SqliteConnection, "execute_batch", recording)
+    return calls
+
 FUSED_DIM = 788
 
 

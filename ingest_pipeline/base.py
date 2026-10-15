@@ -35,6 +35,24 @@ Status vocabulary (per stage):
     failed   — an unexpected exception. Terminal for this pass; the
                orchestrator can be re-run with --retry-failed later.
 
+Writing a batch
+---------------
+A stage's results are written in ONE transaction: conn.execute_batch(),
+which on Turso is also one HTTPS round trip for the whole batch rather than
+one per statement. A row's own statements (its tracks UPDATE and, for
+classify and fuse, its track_embeddings write) always land together.
+
+If that transaction fails, nothing in it was written, and the rows are
+written again one transaction each, so one bad row cannot cost the batch.
+That used to happen: the loop UPDATEd row by row and committed at the end,
+so one failing row aborted it after the GPU work was done, rolled the whole
+batch back on SQLite (the next pass re-ran the same MERT passes and failed
+on the same row) and left a partial batch on Turso.
+
+A row whose own write fails is marked 'failed' with its
+'<stage>_stage_error', like an exception in process_row; a
+UNIQUE-constraint failure first retries without _RETRY_DROPPABLE_FIELDS.
+
 Note: no row-level locking. If two workers ever race on the same row,
 the last UPDATE wins and both stage writes are idempotent for their own
 columns. Cheap and correct enough for the current volume.
@@ -47,7 +65,7 @@ from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, NamedTuple
 
 
 # Fields we're willing to drop and retry with when a legacy uniqueness
@@ -104,6 +122,31 @@ def iso_now() -> str:
     return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
 
 
+def update_stmt(track_id: int, fields: dict) -> tuple[str, list]:
+    """(sql, params) for `UPDATE tracks SET <fields> WHERE id = track_id`."""
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    return f"UPDATE tracks SET {set_clause} WHERE id = ?", [*fields.values(), int(track_id)]
+
+
+def write_atomically(conn, stmts: list) -> None:
+    """Run (sql, params) pairs as one transaction: all land or none do.
+
+    Every db_client connection (SQLite and Turso) has execute_batch(). A
+    plain sqlite3.Connection does not, and gets the same thing by hand.
+    """
+    batch = getattr(conn, "execute_batch", None)
+    if batch is not None:
+        batch(stmts)
+        return
+    try:
+        for sql, params in stmts:
+            conn.execute(sql, params)
+    except BaseException:
+        conn.rollback()
+        raise
+    conn.commit()
+
+
 @dataclass
 class RowResult:
     """Per-row outcome returned by a Stage's process_row()."""
@@ -113,20 +156,27 @@ class RowResult:
     error: str | None = None           # populated when status == STATUS_FAILED
 
 
+class RowWrite(NamedTuple):
+    """Everything one result writes: its tracks columns, plus statements
+    that must land in the same transaction (see Stage.row_writes)."""
+    track_id: int
+    fields: dict
+    extra: list
+
+
 class Stage(ABC):
     """
     Base class for all pipeline stages. Subclasses implement:
       - name (class attr): short identifier used in logs.
       - status_column (class attr): the tracks column this stage owns.
-      - fetch_sql: SELECT that pulls all rows currently 'pending' for this
-        stage. Returns full sqlite Row objects.
+      - fetch_pending(conn, limit, only_ids): the rows this stage can act
+        on right now. Its WHERE clause is the stage's whole gate, and the
+        orchestrator builds each pass's cohort from it.
       - process_row(row): the work for one track. Runs in a worker thread.
-        Return RowResult; do NOT touch the DB from here (the orchestrator
-        commits results on the main thread).
-      - update_sql(fields): return (sql, params_prefix) for updating one
-        row given a dict of field-name -> value. The 'WHERE id = ?' + status
-        column update are appended automatically. Default: builds a generic
-        UPDATE from `fields`.
+        Return RowResult; do NOT touch the DB from here (run_batch writes
+        results on the main thread).
+      - row_writes(res), optionally: statements that must land with the
+        row's tracks UPDATE (classify and fuse write track_embeddings).
     """
 
     name: str = "stage"
@@ -173,11 +223,22 @@ class Stage(ABC):
     def process_row(self, row) -> RowResult:
         """Do the per-row work. Called from worker threads. No DB access."""
 
+    def row_writes(self, res: RowResult) -> tuple[dict, list]:
+        """Split a result into (tracks columns, extra statements).
+
+        The extra (sql, params) run after the row's tracks UPDATE, in the
+        same transaction, so a row can never be marked done here without
+        them. ClassifyStage and FuseStage put their vectors in
+        track_embeddings this way; the other stages have none.
+        """
+        return dict(res.fields or {}), []
+
     def run_batch(self, conn, limit: int, log, only_ids=None) -> dict[str, int]:
         """
         Fetch a batch of pending rows, dispatch process_row across a thread
-        pool, commit results (one row per UPDATE), and return per-status
-        counts. Called by the orchestrator once per pass.
+        pool, write the results (see "Writing a batch" in the module
+        docstring), and return per-status counts. A row whose write failed
+        counts as 'failed'. Called by the orchestrator once per pass.
         """
         rows = self.fetch_pending(conn, limit, only_ids)
         counts = {STATUS_DONE: 0, STATUS_NO_MATCH: 0, STATUS_FAILED: 0}
@@ -194,27 +255,86 @@ class Stage(ABC):
             for fut in as_completed(future_to_row):
                 results.append(fut.result())
 
-        # Commit sequentially on the main thread — sqlite doesn't love
-        # concurrent writers, and this is fast enough.
-        now = iso_now()
+        # Written on the main thread, after every row is processed.
+        writes = []
         for res in results:
-            fields = self._finalize_fields(dict(res.fields or {}), res)
-            self._commit_row_update(conn, int(res.track_id), fields, log)
-            counts[res.status] = counts.get(res.status, 0) + 1
-        conn.commit()
+            fields, extra = self.row_writes(res)
+            writes.append(RowWrite(int(res.track_id),
+                                   self._finalize_fields(fields, res), extra))
+        unwritten = self._write_results(conn, writes, log)
+        for res in results:
+            status = STATUS_FAILED if int(res.track_id) in unwritten else res.status
+            counts[status] = counts.get(status, 0) + 1
 
         log.info("[%s] batch done: %s", self.name, counts)
         return counts
+
+    def _write_results(self, conn, writes: list[RowWrite], log) -> set[int]:
+        """Write the batch in one transaction, else row by row. Returns the
+        track ids whose write failed; those rows are marked failed."""
+        try:
+            write_atomically(conn, [s for w in writes for s in self._statements(w)])
+            return set()
+        except Exception as e:
+            log.warning("[%s] writing %d rows in one transaction failed (%s); "
+                        "nothing in it landed, writing them one by one",
+                        self.name, len(writes), e)
+        return {w.track_id for w in writes if not self._write_row(conn, w, log)}
+
+    @staticmethod
+    def _statements(w: RowWrite) -> list:
+        return [update_stmt(w.track_id, w.fields), *w.extra]
+
+    def _write_row(self, conn, w: RowWrite, log) -> bool:
+        """Write one row in its own transaction. False if it could not be
+        written, after marking it failed.
+
+        If a legacy UNIQUE constraint fires (typically `UNIQUE (user_id,
+        apple_id)` from the pre-split-tracks era), the write is retried
+        with the collision-prone metadata fields stripped out, so the row's
+        own status still lands and the pipeline does not loop on it. Since
+        db_client maps Turso's SQLITE_CONSTRAINT to IntegrityError
+        (2026-10-15) this retry also works in production.
+
+        If marking the row failed fails too, that error propagates: the
+        database is refusing even a status write, and the pass should stop
+        rather than carry on past rows it cannot record.
+        """
+        try:
+            write_atomically(conn, self._statements(w))
+            return True
+        except sqlite3.IntegrityError as e:
+            error = e
+            dropped = [k for k in _RETRY_DROPPABLE_FIELDS if k in w.fields]
+            if dropped:
+                reduced = {k: v for k, v in w.fields.items() if k not in dropped}
+                try:
+                    write_atomically(conn, self._statements(w._replace(fields=reduced)))
+                    log.warning("row %d retried without %s due to unique-constraint "
+                                "collision", w.track_id, dropped)
+                    return True
+                except Exception as e2:
+                    error = e2
+        except Exception as e:
+            error = e
+        log.warning("[%s] row %d could not be written, marking it failed: %s",
+                    self.name, w.track_id, error)
+        write_atomically(conn, [update_stmt(w.track_id, {
+            self.status_column: STATUS_FAILED,
+            "ingestion_status": stage_error_status(self.name),
+            "ingestion_error": f"[{self.name}] write failed: {error}"[:500],
+        })])
+        return False
 
     def _finalize_fields(self, fields: dict, res: "RowResult") -> dict:
         """
         Stamp a result's own status column, arm the next stage(s), and
         record a failure on the row.
 
-        Shared by run_batch and by EmbeddingStage's override — which has
-        its own commit loop for the embedding blobs, and silently skipped
-        arming until this was factored out. Any future override must call
-        this rather than re-implementing it.
+        Called by run_batch for every result, including ClassifyStage's
+        and FuseStage's. Those used to override run_batch with their own
+        commit loops, and the embedding stage they replaced silently
+        skipped arming until this was factored out.
         """
         fields[self.status_column] = res.status
         if res.status in self.arms_on:
@@ -235,39 +355,6 @@ class Stage(ABC):
         if settled and res.status != STATUS_FAILED:
             fields["ingestion_status"] = settled
         return fields
-
-    @staticmethod
-    def _commit_row_update(conn, track_id: int, fields: dict, log) -> None:
-        """
-        UPDATE one row with `fields`. If a legacy UNIQUE constraint fires
-        (typically `UNIQUE (user_id, apple_id)` from the pre-split-tracks
-        era), retry the UPDATE with the collision-prone metadata fields
-        stripped out. The row's own status column always survives so the
-        pipeline never loops on the same row.
-        """
-        def _do(fields_):
-            set_clause = ", ".join(f"{k} = ?" for k in fields_.keys())
-            params = list(fields_.values()) + [track_id]
-            conn.execute(f"UPDATE tracks SET {set_clause} WHERE id = ?", params)
-
-        try:
-            _do(fields)
-            return
-        except sqlite3.IntegrityError as e:
-            dropped = [k for k in _RETRY_DROPPABLE_FIELDS if k in fields]
-            if not dropped:
-                log.warning("row %d IntegrityError with no droppable fields to retry: %s",
-                            track_id, e)
-                raise
-            reduced = {k: v for k, v in fields.items() if k not in dropped}
-            try:
-                _do(reduced)
-                log.warning("row %d retried without %s due to unique-constraint collision",
-                            track_id, dropped)
-            except sqlite3.IntegrityError as e2:
-                log.warning("row %d retry still failed after dropping %s: %s",
-                            track_id, dropped, e2)
-                raise
 
     def _safe_process(self, row) -> RowResult:
         """Wrap process_row so an exception in one row doesn't kill the batch."""

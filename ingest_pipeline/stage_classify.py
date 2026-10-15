@@ -1,16 +1,18 @@
 """
-Classification stage — vibe/mood/ML scalar scores.
+Classification stage — vibe/mood/ML scalar scores and the MERT vector.
 
-Streams the preview URL through ml_backend.predict_from_url (which does
-its own in-memory download/decode → MERT + scalar prediction) and writes
-back all the ML-derived columns. No local audio file is created.
+One MERT forward pass over the file DownloadStage cached
+(ml_backend.predict_and_embed_from_path) gives both the ML-derived tracks
+columns and the 768-d embedding, which goes to track_embeddings in the
+same transaction as the row's UPDATE.
 
-Blocks on preview_status='done' (needs a URL). Skips rows where the
-preview stage marked 'no_match' — those go to ingestion_status='no_preview'
-via PreviewStage's own terminal verdict, without ever running ML.
+Always in-process: predict_and_embed_from_path loads the local checkpoint
+whatever VIBESCAPE_ML_MODE says, and Modal's predict_from_url returns no
+embedding, so Modal cannot serve this stage. The mode only decides the
+availability warning in __init__.
 
-Does NOT write embeddings — that's EmbeddingStage's job (separate GPU
-pass using the raw MERT-v1-95M encoder rather than the trained head).
+Gated on download_status='done' with an audio_path, so a track with no
+preview never reaches it.
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ import sys
 from pathlib import Path
 
 from .base import (RowResult, Stage, STATUS_DONE, STATUS_FAILED,
-                   STATUS_NO_MATCH, id_filter, iso_now)
+                   id_filter, iso_now)
 
 
 log = logging.getLogger("vibescape.ingest.classify")
@@ -58,10 +60,9 @@ class ClassifyStage(Stage):
     # Writing 'pending' twice is harmless, which is what makes the two
     # arming paths safe in either order.
     arms = ("fuse_status",)
-    # Local GPU mode: MERT weights are ~4 GB, so concurrent loads on an
-    # 8 GB card OOM. Sequentialize by default. If running against Modal
-    # (VIBESCAPE_ML_MODE=modal), bump this back up (Modal runs each call
-    # on its own container, no local memory pressure).
+    # MERT weights are ~4 GB, so concurrent loads on an 8 GB card OOM.
+    # Sequential. (This used to suggest raising it under Modal; the stage
+    # never runs on Modal, see the module docstring.)
     max_workers = 1
 
     def __init__(self):
@@ -140,7 +141,7 @@ class ClassifyStage(Stage):
                 "ml_predicted_at":    iso_now(),
                 "ingestion_attempted_at": iso_now(),
                 "ingestion_error":    None,
-                # Consumed by run_batch below, not a tracks column.
+                # Split off by row_writes below, not a tracks column.
                 "__mert_blob__": (
                     mert_vec.astype("float32", copy=False).tobytes()
                     if mert_vec is not None else None
@@ -148,45 +149,24 @@ class ClassifyStage(Stage):
             },
         )
 
-    def run_batch(self, conn, limit: int, log_, only_ids=None):
-        """Override: the MERT vector goes to track_embeddings, not tracks."""
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        rows = self.fetch_pending(conn, limit, only_ids)
-        counts = {STATUS_DONE: 0, STATUS_FAILED: 0}
-        if not rows:
-            log_.info("[%s] no pending rows", self.name)
-            return counts
-        log_.info("[%s] processing %d rows (max_workers=%d)",
-                  self.name, len(rows), self.max_workers)
-
-        results = []
-        with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
-            futs = {ex.submit(self._safe_process, r): r for r in rows}
-            for fut in as_completed(futs):
-                results.append(fut.result())
-
-        now = iso_now()
-        for res in results:
-            fields = dict(res.fields or {})
-            mert_blob = fields.pop("__mert_blob__", None)
-            # Shared with the base run_batch: status + arming + failure.
-            fields = self._finalize_fields(fields, res)
-            self._commit_row_update(conn, int(res.track_id), fields, log_)
-            if res.status == STATUS_DONE and mert_blob:
-                # fused_embedding is FuseStage's and is left untouched.
-                conn.execute(
-                    "INSERT INTO track_embeddings "
-                    "  (track_id, mert_embedding, model_version, updated_at) "
-                    "VALUES (?, ?, ?, ?) "
-                    "ON CONFLICT(track_id) DO UPDATE SET "
-                    "  mert_embedding = excluded.mert_embedding, "
-                    "  model_version  = excluded.model_version, "
-                    "  updated_at     = excluded.updated_at",
-                    (int(res.track_id), mert_blob,
-                     fields.get("model_version") or "mert_v1_ft_768_30s", now),
-                )
-            counts[res.status] = counts.get(res.status, 0) + 1
-        conn.commit()
-        log_.info("[%s] batch done: %s", self.name, counts)
-        return counts
+    def row_writes(self, res: RowResult) -> tuple[dict, list]:
+        """The MERT vector goes to track_embeddings, in the same transaction
+        as the UPDATE that marks the row done and arms fuse. Written apart,
+        on Turso a failed vector write left a row armed for fuse whose gate
+        (it joins track_embeddings) would never select it."""
+        fields = dict(res.fields or {})
+        mert_blob = fields.pop("__mert_blob__", None)
+        if res.status != STATUS_DONE or not mert_blob:
+            return fields, []
+        # fused_embedding is FuseStage's and is left untouched.
+        return fields, [(
+            "INSERT INTO track_embeddings "
+            "  (track_id, mert_embedding, model_version, updated_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(track_id) DO UPDATE SET "
+            "  mert_embedding = excluded.mert_embedding, "
+            "  model_version  = excluded.model_version, "
+            "  updated_at     = excluded.updated_at",
+            (int(res.track_id), mert_blob,
+             fields.get("model_version") or "mert_v1_ft_768_30s", iso_now()),
+        )]
