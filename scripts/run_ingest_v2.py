@@ -25,7 +25,7 @@ normalises every live row into one unambiguous waiting state,
 `language_status='pending'`. A Claude Code session then queries the
 database for those rows, reads title/artist/album, and writes the tag plus
 the `fuse_status='pending'` cascade (ingest_pipeline/language_tagging.py).
-The next run sees 'done' and proceeds to fuse → youtube.
+The next run sees 'done' and proceeds to fuse -> youtube.
 
 `fuse` gates strictly on language_status='done' — 20% of the fused vector
 is a language one-hot, so fusing early puts a track in the wrong region of
@@ -35,7 +35,7 @@ tagging step load-bearing: untagged tracks never reach the DJ pool.
 for how long.
 
 Usage:
-    # One pass across all four stages, up to 50 rows per stage:
+    # One pass across every stage, up to 50 rows per stage:
     python scripts/run_ingest_v2.py --batch 50
 
     # Loop with 30 s idle sleep between empty passes:
@@ -46,6 +46,18 @@ Usage:
 
     # Only re-run the library-wide score recompute, no stages:
     python scripts/run_ingest_v2.py --recompute-only
+
+    # Production Turso instead of the local SQLite file (the default,
+    # --target local). Credentials come from the gitignored .env.prod, see
+    # scripts/_target.py. Back up first: python scripts/backup_prod_db.py
+    python scripts/run_ingest_v2.py --target prod --batch 10
+    python scripts/run_ingest_v2.py --target prod --batch 50 --loop
+
+Every log line names the target, so a prod run cannot be mistaken for a
+local one.
+
+Each pass carries one cohort: the lowest --batch ids that at least one of
+the selected stages can act on, by that stage's own gate (select_cohort).
 
 The runner re-runs the library-wide score recompute
 (ingest/score_recompute.py): activation/valence from the librosa features,
@@ -97,6 +109,7 @@ from ingest_pipeline.stage_librosa import LibrosaStage  # noqa: E402
 from ingest_pipeline.stage_fuse import FuseStage  # noqa: E402
 from ingest_pipeline.base import STATUS_DONE  # noqa: E402
 import score_recompute  # noqa: E402
+import _target  # noqa: E402  (scripts/, next to this file)
 
 
 log = logging.getLogger("vibescape.ingest.orch")
@@ -251,11 +264,12 @@ def after_pass(scored: int) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    _target.add_argument(parser)
     parser.add_argument("--batch", type=int, default=50,
                         help="max rows per stage per pass (default 50)")
     parser.add_argument("--stages", type=str,
                         default="preview,download,librosa,classify,language,fuse,youtube",
-                        help="comma-separated stage names (default: all six in order)")
+                        help="comma-separated stage names (default: all seven in order)")
     parser.add_argument("--loop", action="store_true",
                         help="keep running; sleep --interval when nothing to do")
     parser.add_argument("--interval", type=int, default=30,
@@ -269,10 +283,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
+    # Before anything connects; exits here if --target prod is not set up.
+    where = _target.apply(args.target)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        format=f"%(asctime)s %(levelname)s target={args.target} %(name)s: %(message)s",
     )
+    log.info("%s", where)
 
     ensure_db()
     if args.recompute_only:

@@ -19,10 +19,15 @@ forgetting the cascade leaves a stale 788-d vector that nothing flags.
     python scripts/language_tags.py --set 4u1aBcD=kn --set 2Uyj6K6=hi --apply
     python scripts/language_tags.py --clear 49d0AMz --apply
 
-Writes are off by default, like the rest of scripts/. It talks to whatever
-backend/db.get_conn() points at -- local sqlite unless DB_BACKEND=turso is
-set in the environment. It does not read scripts/_load_gcp_secrets.ps1 and
-will not touch production unless you deliberately configure it to.
+    # The same against production Turso, where the pipeline now runs
+    python scripts/language_tags.py --target prod --status
+    python scripts/language_tags.py --target prod --set 4u1aBcD=kn --apply
+
+Writes are off by default, like the rest of scripts/. --target local (the
+default) is the local SQLite file whatever DB_BACKEND says; --target prod
+reads production credentials from the gitignored .env.prod
+(scripts/_target.py). The target goes to stderr first, so --waiting's JSON
+lines on stdout stay clean. It does not read scripts/_load_gcp_secrets.ps1.
 
 --status exits 1 when anything is waiting, so it works as a cron check.
 """
@@ -51,6 +56,7 @@ except ImportError:
 
 from db import get_conn  # noqa: E402
 from ingest_pipeline import language_tagging as lt  # noqa: E402
+import _target  # noqa: E402  (scripts/, next to this file)
 
 
 def _key(s: str) -> dict:
@@ -61,6 +67,7 @@ def _key(s: str) -> dict:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    _target.add_argument(ap)
     ap.add_argument("--status", action="store_true",
                     help="counts and wait ages (default)")
     ap.add_argument("--waiting", action="store_true",
@@ -74,6 +81,7 @@ def main(argv=None) -> int:
     ap.add_argument("--json", action="store_true", help="--status as JSON")
     args = ap.parse_args(argv)
 
+    print(_target.apply(args.target), file=sys.stderr)
     writes = bool(args.set or args.clear)
     conn = get_conn()
     try:

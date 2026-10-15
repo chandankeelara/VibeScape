@@ -8,6 +8,8 @@ developer's data/vibescape.db or production Turso:
     BEFORE the backend is imported.
   * VIBESCAPE_DB_PATH (the only thing db_client reads, see backend/CLAUDE.md)
     is pointed at the per-test file, and `db` asserts the app really opened it.
+  * `--target prod` (scripts/_target.py) reads .env.prod; every test points
+    that at a file that does not exist, so a real one is never loaded.
 """
 from __future__ import annotations
 
@@ -41,6 +43,14 @@ def _fresh_spotify_guard():
     spotify_guard._reset_for_tests()
     yield
     spotify_guard._reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _no_prod_credentials(monkeypatch):
+    """A developer's real .env.prod holds the production token. No test may
+    load it, even through runner.main(['--target', 'prod'])."""
+    import _target
+    monkeypatch.setattr(_target, "ENV_PROD", REPO / "tests" / ".never-used.env.prod")
 
 
 @pytest.fixture
