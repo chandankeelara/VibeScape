@@ -118,6 +118,14 @@ def names(server):
     return [r[0] for r in server.db.execute("SELECT name FROM t ORDER BY id")]
 
 
+def test_no_test_can_reach_a_real_database():
+    # conftest's guard: a connection without a fake _post of its own
+    # cannot send anything (.invalid would not resolve either).
+    conn = db_client._HttpConnection("https://db.example.invalid", "test-token")
+    with pytest.raises(AssertionError, match="tried to reach Turso"):
+        conn.execute("SELECT 1")
+
+
 # -------------------------------------------------------------- blob reads
 
 @pytest.mark.parametrize("n", [0, 1, 2, 3, 3072, 3152])
