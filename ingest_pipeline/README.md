@@ -74,20 +74,22 @@ the cause is fixed, `run_ingest_v2.py --retry-failed <stage>` (or `all`)
 sets both back to `'pending'`, clears the error, and runs.
 
 A stage writes its whole batch in one transaction (`execute_batch`, one
-round trip on Turso). When that fails nothing in it landed, and what
-happens next depends on the error (`base.py`, "Writing a batch"):
+round trip on Turso). When that fails, the kind of error decides
+(`base.py`, "Writing a batch"); only a constraint violation can be one
+row's fault:
 
-- **Not about a row** — the network, a timeout, a busy or locked database,
-  or a failure no statement owns: raised. Nothing is parked; the rows stay
-  pending for the next pass.
-- **About one row** — the error names its statement, so its row is set
-  aside and the batch written again without it. Then that row alone: a
+- **Transport** — the network, an HTTP status, a timeout: raised, nothing
+  parked. The outcome is unknown (the server may have committed after the
+  client gave up), which is safe because every statement is an UPDATE or
+  upsert of absolute values: the next pass sees whatever landed.
+- **A constraint violation** — it names its statement, so its row is set
+  aside and the rest written again without it. Then that row alone: a
   UNIQUE collision on the legacy `apple_id` constraint is retried without
-  `apple_id`, `track_view_url` and `genre`; otherwise it is parked like a
-  failure above, with `ingestion_error='[<stage>] write failed: …'`.
-- **About every row** — the retry fails at its first statement with the
-  same error (a column production lacks, a read-only token): raised, the
-  stage stops, nothing is parked.
+  `apple_id`, `track_view_url` and `genre`; if it still fails it is parked
+  like a failure above, with `ingestion_error='[<stage>] write failed: …'`.
+- **Any other database error** — a column or table production lacks, a
+  read-only token, a busy or locked database, a failed COMMIT: raised,
+  nothing landed, nothing parked. The stage stops until the cause is fixed.
 
 Before 2026-10-15 one bad row cost the batch: the GPU work was done, the
 loop aborted, SQLite rolled everything back and the next pass repeated it.
@@ -442,8 +444,8 @@ Turso one request. A large batch means a kill loses everything unwritten;
 request: a classify row is ~5.7 KB of JSON and a fuse row ~4.9 KB (the
 vectors), so `--batch 50` sends ~280 KB (measured 2026-10-15). No Turso
 size limit has been hit or measured. A request the server refuses at the
-HTTP level is an error that is not about any row, so it is raised with
-nothing written (§ Failure); a smaller `--batch` is the fix.
+HTTP level is a transport error, so it is raised with nothing parked
+(§ Failure); a smaller `--batch` is the fix.
 
 ### Draining a backlog
 

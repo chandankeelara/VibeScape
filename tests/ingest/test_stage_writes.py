@@ -12,6 +12,7 @@ import sqlite3
 
 import numpy as np
 import pytest
+import requests
 
 from ingest_pipeline.base import RowResult, Stage, STATUS_DONE, id_filter
 from ingest_pipeline.fused_vector import FUSED_DIM, MERT_DIM
@@ -80,10 +81,12 @@ def states(sql):
         "SELECT album, preview_status, ingestion_status FROM tracks ORDER BY id")]
 
 
-def test_a_row_whose_write_fails_does_not_cost_the_batch(sql, conn):
+def test_a_row_that_violates_a_constraint_is_parked_and_the_rest_land(sql, conn):
     a, b, c = add_rows(sql, 3)
     stage = Scripted({a: {"album": "A"},
-                      b: {"album": "B", "no_such_column": 1},   # this UPDATE raises
+                      # spotify_id is unique and S0 is a's; apple_id is
+                      # droppable, so the retry without it fails again
+                      b: {"album": "B", "spotify_id": "S0", "apple_id": 901},
                       c: {"album": "C"}})
 
     counts = stage.run_batch(conn, 10, log)
@@ -98,7 +101,20 @@ def test_a_row_whose_write_fails_does_not_cost_the_batch(sql, conn):
     bad = rows[b]
     assert (bad["album"], bad["preview_status"], bad["ingestion_status"]) == (
         None, "failed", "scripted_stage_error")
-    assert "write failed" in bad["ingestion_error"] and "no_such_column" in bad["ingestion_error"]
+    assert "write failed" in bad["ingestion_error"] and "UNIQUE" in bad["ingestion_error"]
+
+
+def test_a_schema_error_on_one_row_stops_the_stage_and_parks_nothing(sql, conn):
+    # Only b writes the missing column, so the rest would write fine; but a
+    # column the database lacks is never a row's fault. Parking b would hide
+    # a schema gap behind one 'failed' row per batch.
+    a, b, c = add_rows(sql, 3)
+    stage = Scripted({a: {"album": "A"},
+                      b: {"album": "B", "no_such_column": 1},
+                      c: {"album": "C"}})
+    with pytest.raises(sqlite3.OperationalError, match="no_such_column"):
+        stage.run_batch(conn, 10, log)
+    assert states(sql) == [(None, "pending", "pending")] * 3
 
 
 def test_a_unique_collision_is_retried_without_the_droppable_fields(sql, conn):
@@ -117,7 +133,7 @@ def test_a_unique_collision_is_retried_without_the_droppable_fields(sql, conn):
 def test_a_bad_row_costs_one_more_batch_not_a_rewrite_of_every_row(sql, conn, batches):
     a, b, c = add_rows(sql, 3)
     stage = Scripted({a: {"album": "A"},
-                      b: {"album": "B", "no_such_column": 1},
+                      b: {"album": "B", "spotify_id": "S0"},     # a's: UNIQUE
                       c: {"album": "C"}})
     stage.run_batch(conn, 10, log)
     # the batch, the batch without b, then b's 'failed' status
@@ -126,11 +142,12 @@ def test_a_bad_row_costs_one_more_batch_not_a_rewrite_of_every_row(sql, conn, ba
 
 
 @pytest.mark.parametrize("error", [
-    TimeoutError("read timed out"),                        # requests / HTTP layer
-    sqlite3.OperationalError("database is locked"),        # busy database
-    sqlite3.OperationalError("cannot commit"),             # no statement owns it
-], ids=["timeout", "locked", "no-step"])
-def test_an_error_that_is_not_about_a_row_parks_nothing(sql, conn, error):
+    requests.exceptions.ConnectionError("connection reset"),   # the network
+    TimeoutError("read timed out"),                            # a timeout
+    sqlite3.OperationalError("database is locked"),            # busy database
+    sqlite3.OperationalError("cannot commit"),                 # no statement owns it
+], ids=["connection", "timeout", "locked", "no-step"])
+def test_an_error_that_is_not_about_a_row_parks_nothing(sql, conn, error, caplog):
     # It fails twice: the first version retried row by row after a failed
     # batch, and parked any row whose own rewrite then failed.
     ids = add_rows(sql, 3)
@@ -138,6 +155,9 @@ def test_an_error_that_is_not_about_a_row_parks_nothing(sql, conn, error):
     with pytest.raises(type(error)):
         stage.run_batch(Flaky(conn, error, fails=2), 10, log)
     assert states(sql) == [(None, "pending", "pending")] * 3
+    if not isinstance(error, sqlite3.Error):
+        # the server may have committed it after the client gave up
+        assert "outcome unknown, rows left for the next pass" in caplog.text
 
 
 def test_the_same_error_on_every_row_stops_the_stage_and_parks_nothing(sql, conn):

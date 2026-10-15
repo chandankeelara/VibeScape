@@ -309,11 +309,14 @@ class _HttpConnection:
         adapter speaks /v2/pipeline.
 
         Raises the first failing step's error, mapped like execute()'s and
-        naming the step, after which nothing in the batch has been written.
-        The error's `step` is the 0-based index into `stmts` of the
-        statement that failed, or None when the failure is not one of them
-        (BEGIN, COMMIT), so a caller can tell which row broke the batch.
-        Returns one cursor per statement.
+        naming the step. The error's `step` is the 0-based index into
+        `stmts` of the statement that failed, or None when the failure is
+        not one of them (BEGIN, COMMIT), so a caller can tell which row
+        broke the batch. After a step error, or an error result for the
+        whole stream, nothing in the batch has been written. After a
+        transport error (a requests timeout, an HTTP status) the outcome is
+        UNKNOWN: the server may have run and committed the batch after the
+        client gave up. Returns one cursor per statement.
         """
         stmts = list(stmts)
         if not stmts:

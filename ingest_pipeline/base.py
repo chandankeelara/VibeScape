@@ -44,32 +44,36 @@ one per statement. A row's own statements (its tracks UPDATE and, for
 classify and fuse, its track_embeddings write) always land together, and
 rows go in id order.
 
-When that transaction fails nothing in it landed, and what happens next
-depends on what failed (Stage._write_results):
+When that transaction fails, the kind of error decides what happens
+(Stage._write_results). Only a constraint violation can be one row's fault:
+a constraint judges a row's data, and nothing else a write can hit does.
 
-  - An error that says nothing about the rows is raised: the network or
-    the HTTP layer (anything that is not a sqlite3.Error), a busy or
-    locked database, or a failure no statement owns. Nothing is parked,
-    the rows stay pending, and the next pass tries them again.
-  - Otherwise the error names its statement (execute_batch sets `step`),
-    and so one row. That row is set aside and the batch is written again
-    without it. If the retry fails at its own first statement with the
-    same error, the failure is not about any one row (a column production
-    lacks, a read-only token): it is raised, the stage stops, and nothing
-    is parked. A constraint violation is never read that way, since two
-    neighbouring rows can share one (two legacy apple_id collisions).
-  - Once the rest has landed, each row set aside is settled alone: a
-    UNIQUE collision is retried without _RETRY_DROPPABLE_FIELDS, and a row
-    that still cannot be written is marked 'failed' with its
-    '<stage>_stage_error' and the error text, like an exception in
-    process_row; `run_ingest_v2.py --retry-failed` re-arms it.
+  - A transport error, anything that is not a sqlite3.Error (the network,
+    an HTTP status, a timeout), is raised with nothing parked. Its outcome
+    is unknown: the server may have run and committed the batch after the
+    client gave up. That is safe because every statement is an UPDATE or
+    an upsert of absolute values: the next pass sees whatever landed and
+    redoes whatever did not.
+  - A constraint violation (sqlite3.IntegrityError) names its statement
+    (execute_batch sets `step`), and so its row. Nothing in the batch
+    landed. The row is set aside and the rest written again without it;
+    once they have landed, the row alone is retried without
+    _RETRY_DROPPABLE_FIELDS, and if that still fails it is parked: its own
+    column 'failed', '<stage>_stage_error', the error text, like an
+    exception in process_row. `run_ingest_v2.py --retry-failed` re-arms it.
+  - Any other database error is raised with nothing parked and nothing
+    landed: a column or table production lacks, a read-only token, a busy
+    or locked database, a failed COMMIT. None of those is a row's fault,
+    so the stage stops and the rows stay pending until the cause is fixed.
 
 Until 2026-10-15 one failing row aborted the stage's write loop after the
 batch's work was done: SQLite rolled the whole batch back (the next pass
 re-ran the same MERT passes and failed on the same row) and Turso kept a
-partial batch. The first version of this file then parked a row on ANY
-error during a row-by-row rewrite, so a timeout parked rows whose work was
-fine and a schema gap parked every row of every batch.
+partial batch. The first rework then parked a row on ANY error during a
+row-by-row rewrite, so a timeout parked rows whose work was fine and a
+schema gap parked every row of every batch. The second judged by position
+(a retry failing the same way at its first statement was systematic),
+which still parked a row that alone wrote a column production lacks.
 
 Note: no row-level locking. If two workers ever race on the same row,
 the last UPDATE wins and both stage writes are idempotent for their own
@@ -150,25 +154,6 @@ def update_stmt(track_id: int, fields: dict) -> tuple[str, list]:
     """(sql, params) for `UPDATE tracks SET <fields> WHERE id = track_id`."""
     set_clause = ", ".join(f"{k} = ?" for k in fields)
     return f"UPDATE tracks SET {set_clause} WHERE id = ?", [*fields.values(), int(track_id)]
-
-
-def _is_transient(e: BaseException) -> bool:
-    """A write error that says nothing about the rows written: the network
-    or the HTTP layer (anything that is not a sqlite3.Error), or a busy or
-    locked database. Trying again later is the fix, so nothing is parked."""
-    if not isinstance(e, sqlite3.Error):
-        return True
-    text = (getattr(e, "detail", None) or str(e)).lower()
-    return isinstance(e, sqlite3.OperationalError) and any(
-        word in text for word in ("locked", "busy", "timeout"))
-
-
-def _same_failure(a: BaseException, b: BaseException) -> bool:
-    """The same error wherever it happened: its type and its text without
-    the position (db_client puts that in `detail` for Turso errors)."""
-    def key(e):
-        return type(e), getattr(e, "detail", None) or str(e)
-    return key(a) == key(b)
 
 
 @dataclass
@@ -331,15 +316,16 @@ class Stage(ABC):
                 conn.execute_batch(stmts)
                 break
             except Exception as e:
-                step = getattr(e, "step", None)
-                if _is_transient(e) or step is None:
+                if not isinstance(e, sqlite3.Error):
+                    log.warning("[%s] transport error writing %d rows (%s): outcome "
+                                "unknown, rows left for the next pass",
+                                self.name, len(batch), e)
                     raise
-                if (set_aside and step == 0
-                        and not isinstance(e, sqlite3.IntegrityError)
-                        and _same_failure(e, set_aside[-1][1])):
-                    log.error("[%s] the batch fails the same way without row %d (%s): "
-                              "not a problem with one row, stopping with nothing parked",
-                              self.name, set_aside[-1][0].track_id, e)
+                step = getattr(e, "step", None)
+                if not isinstance(e, sqlite3.IntegrityError) or step is None:
+                    log.error("[%s] writing %d rows failed (%s): not one row's fault, "
+                              "nothing landed, stopping with nothing parked",
+                              self.name, len(batch), e)
                     raise
                 bad = batch.pop(owner[step])
                 log.warning("[%s] row %d broke the batch write (%s); writing the "
@@ -351,9 +337,9 @@ class Stage(ABC):
     def _statements(w: RowWrite) -> list:
         return [update_stmt(w.track_id, w.fields), *w.extra]
 
-    def _settle(self, conn, w: RowWrite, error: Exception, log) -> bool:
-        """Deal with a row the batch could not write, alone. True if it
-        landed after all.
+    def _settle(self, conn, w: RowWrite, error: sqlite3.IntegrityError, log) -> bool:
+        """Deal with a row whose constraint violation broke the batch,
+        alone. True if it landed after all.
 
         A UNIQUE collision (typically the legacy `UNIQUE (user_id,
         apple_id)` from the pre-split-tracks era) is retried without the
@@ -363,23 +349,21 @@ class Stage(ABC):
         this should hold in production too; unverified there as of
         2026-10-15, since nothing in this pipeline has run against it.
 
-        Otherwise the row is parked: 'failed', '<stage>_stage_error' and the
-        error text. If even that write fails, its error propagates: the
-        database is refusing a status write and the stage should stop.
+        If the row still violates a constraint it is parked: 'failed',
+        '<stage>_stage_error' and the error text. Any other error on the
+        way, the park write's included, propagates: it is not this row's
+        fault (see "Writing a batch") and the stage should stop.
         """
-        if isinstance(error, sqlite3.IntegrityError):
-            dropped = [k for k in _RETRY_DROPPABLE_FIELDS if k in w.fields]
-            if dropped:
-                reduced = {k: v for k, v in w.fields.items() if k not in dropped}
-                try:
-                    conn.execute_batch(self._statements(w._replace(fields=reduced)))
-                    log.warning("row %d retried without %s due to unique-constraint "
-                                "collision", w.track_id, dropped)
-                    return True
-                except Exception as e:
-                    if _is_transient(e):
-                        raise
-                    error = e
+        dropped = [k for k in _RETRY_DROPPABLE_FIELDS if k in w.fields]
+        if dropped:
+            reduced = {k: v for k, v in w.fields.items() if k not in dropped}
+            try:
+                conn.execute_batch(self._statements(w._replace(fields=reduced)))
+                log.warning("row %d retried without %s due to unique-constraint "
+                            "collision", w.track_id, dropped)
+                return True
+            except sqlite3.IntegrityError as e:
+                error = e
         log.warning("[%s] row %d could not be written, marking it failed: %s",
                     self.name, w.track_id, error)
         conn.execute_batch([update_stmt(w.track_id, {
