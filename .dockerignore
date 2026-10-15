@@ -2,6 +2,9 @@
 .gitignore
 .venv
 venv
+# Production Turso read-write token for `--target prod` (scripts/_target.py).
+# No COPY ever takes it into the image; it should not travel as context either.
+.env.prod
 __pycache__
 **/__pycache__
 *.pyc
