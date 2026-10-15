@@ -56,6 +56,18 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_DB_PATH = _ROOT / "data" / "vibescape.db"
 
+# The client timeout for one execute_batch, i.e. a whole stage batch: up to
+# --batch tracks UPDATEs and, for classify and fuse, as many
+# track_embeddings upserts. On prod each fused upsert also maintains the
+# DiskANN index track_embeddings_fused_ann (created by
+# scripts/_turso_create_vector_index.py; present there per the 2026-10-15
+# review). A client timeout does not stop the server: the batch can still
+# commit after the client gave up, and the pipeline then sees a transport
+# error whose outcome is unknown. execute()'s 30 s per statement made that
+# likelier for the one request carrying the most work; 120 s is headroom,
+# not a measurement (2026-10-15).
+_BATCH_TIMEOUT_S = 120.0
+
 
 # ---------------- Turso HTTP adapter ----------------
 
@@ -335,7 +347,7 @@ class _HttpConnection:
         payload = self._post([
             {"type": "batch", "batch": {"steps": steps}},
             {"type": "close"},
-        ])
+        ], timeout=_BATCH_TIMEOUT_S)
         result = self._first_result(payload)
         step_results = result.get("step_results") or []
         step_errors = result.get("step_errors") or []

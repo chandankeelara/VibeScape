@@ -46,9 +46,11 @@ class FakeHrana:
     def __init__(self):
         self.db = sqlite3.connect(":memory:", isolation_level=None)
         self.requests = []          # one entry per POST: its `requests` list
+        self.timeouts = []          # and the client timeout it was sent with
 
     def post(self, requests_list, timeout=30.0):
         self.requests.append(requests_list)
+        self.timeouts.append(timeout)
         results = []
         for req in requests_list:
             if req["type"] == "close":
@@ -111,6 +113,7 @@ def turso():
     conn._post = server.post
     conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT UNIQUE, v BLOB)")
     server.requests.clear()
+    server.timeouts.clear()
     return conn, server
 
 
@@ -212,6 +215,15 @@ def test_a_batch_is_one_request_wrapped_in_a_conditional_transaction(turso):
     assert steps[4]["condition"] == {"type": "not", "cond": {"type": "ok", "step": 3}}
     assert steps[1]["stmt"]["args"] == [{"type": "text", "value": "a"}]
     assert names(server) == ["a", "b"]
+
+
+def test_a_batch_gets_a_longer_client_timeout_than_a_statement(turso):
+    # A client timeout does not stop the server, so a batch it gives up on
+    # may still commit: the request carrying a whole stage batch waits longer.
+    conn, server = turso
+    conn.execute("INSERT INTO t (name) VALUES ('a')")
+    conn.execute_batch([("UPDATE t SET name = 'b'", ())])
+    assert server.timeouts == [30.0, 120.0]
 
 
 def test_a_batch_returns_a_cursor_per_statement(turso):
