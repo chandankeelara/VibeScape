@@ -299,3 +299,30 @@ def test_sqlite_execute_batch_refuses_to_swallow_uncommitted_writes(local):
     local.execute("INSERT INTO t (name) VALUES ('pending')")
     with pytest.raises(sqlite3.OperationalError, match="within a transaction"):
         local.execute_batch([("INSERT INTO t (name) VALUES ('b')", ())])
+
+
+def test_sqlite_a_commit_that_fails_rolls_back(tmp_path, monkeypatch):
+    # In rollback-journal mode COMMIT needs the exclusive lock, so a reader
+    # holding a shared one makes it fail with "database is locked". The
+    # transaction used to stay open on the connection after that, and the
+    # next execute_batch died at BEGIN.
+    path = tmp_path / "locked.db"
+    monkeypatch.setenv("VIBESCAPE_DB_PATH", str(path))
+    conn = db_client.create_connection()
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+    conn.commit()
+    conn.execute("PRAGMA busy_timeout = 0")
+    reader = sqlite3.connect(path, isolation_level=None)
+    reader.execute("BEGIN")
+    reader.execute("SELECT * FROM t").fetchall()
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            conn.execute_batch([("INSERT INTO t (name) VALUES ('a')", ())])
+        assert not conn.in_transaction
+    finally:
+        reader.execute("COMMIT")
+        reader.close()
+    conn.execute_batch([("INSERT INTO t (name) VALUES ('b')", ())])
+    assert [r[0] for r in conn.execute("SELECT name FROM t")] == ["b"]
+    conn.close()

@@ -407,6 +407,13 @@ class _SqliteConnection(sqlite3.Connection):
         already holds uncommitted writes, rather than committing or
         discarding them along with the batch. Returns one cursor per
         statement.
+
+        The COMMIT is inside the rollback too. In rollback-journal mode it
+        takes the exclusive lock, and fails with "database is locked" while
+        another connection reads (a dev uvicorn serving requests during a
+        local run). It used to sit after the try, and a failed COMMIT left
+        the transaction open on this connection, so the next execute_batch
+        died at BEGIN ("cannot start a transaction within a transaction").
         """
         stmts = list(stmts)
         if not stmts:
@@ -420,10 +427,10 @@ class _SqliteConnection(sqlite3.Connection):
                 except sqlite3.Error as e:
                     e.step = step
                     raise
+            self.commit()
         except BaseException:
             self.rollback()
             raise
-        self.commit()
         return cursors
 
 
