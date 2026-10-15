@@ -10,17 +10,19 @@ Takes the report a --db dry-run wrote against a prod backup, so the
 selection is made on prod's own data — prod holds tracks the local DB does
 not, and a collision can pair a local track with a prod-only one.
 
-The connection is _sync_local_to_turso._turso(), deliberately: this script
-must not become another reader of the secrets file (root CLAUDE.md).
+Credentials come from .env.prod through scripts/_target.py, like
+run_ingest_v2.py --target prod: this script must not become another reader
+of the secrets file (root CLAUDE.md). It used to borrow the connection of
+_sync_local_to_turso.py, retired 2026-10-15.
 
-Matches on spotify_id, never tracks.id (local and prod ids diverged; see
-_sync_local_to_turso.py). Never touches user_tracks. Turso has no
-transactions, so it is two statements — UPDATE tracks, then DELETE the
-embeddings — and a re-run converges on the same state.
+Matches on spotify_id, never tracks.id (the local DB's ids diverged from
+prod's). Never touches user_tracks. Two statements, each committed on its
+own (UPDATE tracks, then DELETE the embeddings), and a re-run converges on
+the same state.
 
 After this the rows read ingestion_status='pending' in prod and drop out of
-/similar and the vibe queues (both require 'done') until the local pipeline
-re-ingests them and _sync_local_to_turso.py pushes the result.
+/similar and the vibe queues (both require 'done') until the pipeline
+re-ingests them: run_ingest_v2.py --target prod.
 """
 from __future__ import annotations
 
@@ -36,7 +38,9 @@ except Exception:
 
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO / "scripts"))
-from _sync_local_to_turso import _turso  # noqa: E402
+sys.path.insert(0, str(_REPO / "backend"))
+import _target  # noqa: E402
+import db_client  # noqa: E402
 from reset_shared_previews import _DERIVED, _PREVIEW, _STAGES  # noqa: E402
 
 
@@ -53,7 +57,8 @@ def main() -> int:
         return 1
     ph = ",".join("?" * len(sids))
 
-    t = _turso()
+    print(_target.apply("prod"))
+    t = db_client.create_connection()
 
     def state():
         tr = t.execute(f"SELECT ingestion_status, COUNT(*) FROM tracks WHERE spotify_id IN ({ph}) "

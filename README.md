@@ -389,9 +389,12 @@ python scripts/run_ingest_v2.py --stages preview,download,classify
 
 # Only the library-wide score recompute (runs on its own after a scoring pass, or once when --loop drains):
 python scripts/run_ingest_v2.py --recompute-only
+
+# Against production Turso instead of the local SQLite file (credentials in .env.prod):
+python scripts/run_ingest_v2.py --target prod --batch 50
 ```
 
-The orchestrator is a thin loop over `Stage.run_batch()` calls followed by `promote()`. Stages are stateless — swap in Modal-backed classify/language stages later by changing `ml_backend` mode without touching orchestration.
+The orchestrator is a thin loop over `Stage.run_batch()` calls: each pass picks one cohort (the lowest ids some stage's own gate accepts) and walks it through every stage, and each stage writes its batch in one transaction. Classify always runs MERT in-process on the local GPU; no stage uses Modal.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -592,12 +595,12 @@ turso db tokens create vibescape   # → TURSO_AUTH_TOKEN
 
 With `DB_BACKEND=turso` the app talks to remote libSQL and `docker-entrypoint.sh` skips local SQLite seed. Left unset, it defaults to `sqlite` and seeds `data/vibescape.db` from the image on first boot — still used for local dev and VM hosts with persistent volumes.
 
-**Data sync.** `scripts/_turso_pull_to_local.py` and `scripts/_sync_local_to_turso.py` are the reproducible workflow: build the catalog locally against `sqlite` (GPU work runs on a machine that has a GPU), then push metadata + embeddings to Turso when ready to ship.
+**Data.** The offline pipeline runs on a machine with a GPU and writes straight to production: `python scripts/run_ingest_v2.py --target prod`, with credentials in a gitignored `.env.prod` (see `ingest_pipeline/README.md` § Prod). Until 2026-10-15 it ran against a local copy and `scripts/_sync_local_to_turso.py` pushed the results, which made two sources of truth: a push would have overwritten state only prod had (preview URLs, language tags, YouTube ids, measured against the 2026-10-12 backup), so the sync is gone. `scripts/backup_prod_db.py` takes a dated snapshot before a run, and that file is the dev copy of prod.
 
-The push matches on `spotify_id` and `UPDATE`s in place. It never `DROP`s, never `INSERT`s and never writes `tracks.id` — two reasons, both easy to get wrong:
+Any script that writes to prod has two ways to go badly wrong:
 
 - `user_tracks.track_id REFERENCES tracks(id) ON DELETE CASCADE`, and Turso runs with `foreign_keys=1`. Dropping `tracks` deletes every user's library, and a backup covering only `tracks` + `track_embeddings` cannot restore it.
-- Local and prod ids have **diverged**: the pull discards `id` and lets SQLite re-autonumber, so ~58% of tracks carry a different id locally. Writing local ids into prod would silently re-point `user_tracks` at the wrong songs — worse than deletion, because nothing errors.
+- A local DB built by `scripts/_turso_pull_to_local.py` has **diverged** ids: the pull discards `id` and lets SQLite re-autonumber, so ~58% of tracks carry a different id there (a `backup_prod_db.py` snapshot keeps prod's). Writing such ids into prod would silently re-point `user_tracks` at the wrong songs — worse than deletion, because nothing errors.
 
 ### ML → Modal
 
@@ -705,11 +708,12 @@ VibeScape/
 │
 ├── scripts/
 │   ├── run_ingest_v2.py                    # orchestrator: one cohort, all 7 stages
+│   ├── _target.py                          # --target local|prod (prod: .env.prod)
+│   ├── backup_prod_db.py                   # dated prod snapshot, before any prod run
 │   ├── predict_ml.py                       # standalone predict wrapper
 │   ├── prewarm_youtube.py                  # bulk-resolve YouTube IDs
 │   ├── build_cookies_file.py               # yt-dlp cookies helper
 │   ├── _turso_pull_to_local.py             # prod Turso → local sqlite
-│   ├── _sync_local_to_turso.py             # local → prod; UPDATE on spotify_id, no DROP
 │   ├── _dedupe_local_by_isrc.py            # merge same-recording duplicates (local)
 │   ├── _dedupe_turso_by_isrc.py            # ...and on prod; re-points user_tracks first
 │   ├── language_tags.py                    # what is waiting for a language tag; write tags

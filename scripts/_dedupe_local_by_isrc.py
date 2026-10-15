@@ -1,9 +1,10 @@
 """
 Deduplicate LOCAL tracks that are the same recording — matched on ISRC.
 
-Local only. Never connects to Turso. Once the result is verified here,
-the same end state reaches prod through _sync_local_to_turso.py, which is
-non-destructive (UPDATE matched on spotify_id, no DROP, no DELETE).
+Local only. Never connects to Turso. Production has its own script,
+_dedupe_turso_by_isrc.py. (This used to say the result reaches prod through
+_sync_local_to_turso.py, retired 2026-10-15; that sync never deleted a row,
+so it could not have carried a dedupe there.)
 
 Why ISRC and not spotify_id: spotify_id is UNIQUE, so grouping on it
 finds nothing. The duplicates are one recording released under several
