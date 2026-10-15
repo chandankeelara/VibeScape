@@ -277,6 +277,41 @@ def test_classify_writes_its_vector_with_the_row(sql, app_module, batches, tmp_p
     assert np.array_equal(np.frombuffer(row[3], dtype=np.float32), vec)
 
 
+@pytest.mark.parametrize("preds,vec,field", [
+    ({"energy": float("nan"), "danceability": 0.5, "valence": 0.5}, "ok", "energy"),
+    ({"energy": 0.5, "danceability": 0.5, "valence": float("inf")}, "ok", "valence"),
+    ({"energy": 0.5, "danceability": 0.5, "valence": 0.5}, "nan", "mert_embedding"),
+], ids=["nan-energy", "inf-valence", "nan-vector"])
+def test_classify_fails_a_row_whose_model_output_is_not_finite(sql, app_module, tmp_path,
+                                                                monkeypatch, preds, vec, field):
+    # A NaN score is a failed classification, not a value to store: SQLite
+    # keeps NaN as NULL, and Turso refuses the whole batch request over it.
+    (tid,) = add_rows(sql, 1)
+    audio = tmp_path / "a.m4a"
+    audio.write_bytes(b"\0" * 2048)
+    sql.execute("UPDATE tracks SET ml_status = 'pending', download_status = 'done', "
+                "audio_path = ? WHERE id = ?", (str(audio), tid))
+    sql.commit()
+    vector = np.linspace(-1, 1, MERT_DIM, dtype=np.float32)
+    if vec == "nan":
+        vector[7] = np.nan
+    stage = ClassifyStage()
+    monkeypatch.setattr(stage._ml, "predict_and_embed_from_path",
+                        lambda path: ({**preds, "model_version": CURRENT_MERT_VERSION}, vector))
+
+    conn = app_module.get_conn()
+    try:
+        assert stage.run_batch(conn, 10, log)["failed"] == 1
+    finally:
+        conn.close()
+
+    ml, status, error = sql.execute("SELECT ml_status, ingestion_status, ingestion_error "
+                                    "FROM tracks WHERE id = ?", (tid,)).fetchone()
+    assert (ml, status) == ("failed", "classify_stage_error")
+    assert f"model emitted non-finite {field}" in error
+    assert sql.execute("SELECT COUNT(*) FROM track_embeddings").fetchone()[0] == 0
+
+
 # ---------------------------------------------------------------------- fuse
 
 def ready_to_fuse(sql, tid):

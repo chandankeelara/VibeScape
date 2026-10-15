@@ -8,6 +8,8 @@ WITHOUT padding, like libsql's server (libsql-hrana/src/proto.rs,
 bytes_as_base64).
 """
 import base64
+import json
+import logging
 import sqlite3
 
 import numpy as np
@@ -51,6 +53,9 @@ class FakeHrana:
     def post(self, requests_list, timeout=30.0):
         self.requests.append(requests_list)
         self.timeouts.append(timeout)
+        # What the real server gets is JSON; a bare NaN or Infinity is not,
+        # and it refuses the whole request.
+        json.dumps(requests_list, allow_nan=False)
         results = []
         for req in requests_list:
             if req["type"] == "close":
@@ -170,6 +175,20 @@ def test_an_undecodable_blob_raises_instead_of_reading_empty():
         db_client._unwrap_cell({"type": "blob", "base64": "not*base64"})
     with pytest.raises(sqlite3.DataError):
         db_client._unwrap_cell({"type": "blob"})
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_float_is_sent_as_null(value, caplog):
+    with caplog.at_level(logging.WARNING, logger="vibescape.db_client"):
+        assert db_client._hrana_arg(value) == {"type": "null"}
+    assert "non-finite float" in caplog.text
+
+
+def test_a_nan_cannot_take_a_batch_request_down(turso):
+    # json.dumps would have written a bare NaN, which is not JSON.
+    conn, server = turso
+    conn.execute_batch([("INSERT INTO t (name, v) VALUES (?, ?)", ("a", float("nan")))])
+    assert server.db.execute("SELECT name, v FROM t").fetchall() == [("a", None)]
 
 
 # ---------------------------------------------------------- error mapping

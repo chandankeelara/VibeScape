@@ -17,8 +17,11 @@ preview never reaches it.
 from __future__ import annotations
 
 import logging
+import math
 import sys
 from pathlib import Path
+
+import numpy as np
 
 from .base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, iso_now
 
@@ -107,6 +110,20 @@ class ClassifyStage(Stage):
         dance = float(preds.get("danceability", 0.0))
         valence = float(preds.get("valence", 0.0))
         vibe_ml = float(preds.get("vibe_score", 0.55 * energy + 0.45 * dance))
+        # A NaN or infinite output is a failed classification, not a value
+        # to store. SQLite would keep NaN as NULL, and Turso refuses the
+        # whole batch request over it (json.dumps writes a bare NaN, which
+        # is not JSON). A NaN in the vector would fuse into a NaN vector.
+        for field, value in (("energy", energy), ("danceability", dance),
+                             ("valence", valence), ("vibe_score", vibe_ml)):
+            if not math.isfinite(value):
+                return RowResult(int(row["id"]), STATUS_FAILED,
+                                 {"ingestion_attempted_at": iso_now()},
+                                 error=f"model emitted non-finite {field}")
+        if mert_vec is not None and not np.isfinite(mert_vec).all():
+            return RowResult(int(row["id"]), STATUS_FAILED,
+                             {"ingestion_attempted_at": iso_now()},
+                             error="model emitted non-finite mert_embedding")
         model_version = str(preds.get("model_version") or "mert_v1")
         activation = (0.55 * energy + 0.45 * dance) * 100.0
         valence_pct = valence * 100.0

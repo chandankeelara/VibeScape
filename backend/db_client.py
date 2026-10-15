@@ -49,9 +49,13 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import logging
+import math
 import os
 import sqlite3
 from pathlib import Path
+
+log = logging.getLogger("vibescape.db_client")
 
 _ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_DB_PATH = _ROOT / "data" / "vibescape.db"
@@ -80,6 +84,15 @@ def _hrana_arg(v):
     if isinstance(v, int):
         return {"type": "integer", "value": str(v)}
     if isinstance(v, float):
+        # json.dumps writes NaN and +/-Infinity as bare tokens, which are
+        # not JSON, and the server then refuses the WHOLE request (HTTP 400,
+        # per the 2026-10-15 review): one bad value would take down a batch.
+        # sqlite3 binds NaN as NULL, so NULL matches it there; it stores an
+        # infinity as itself, which JSON cannot carry, so for infinities the
+        # two backends still differ (both verified 2026-10-15).
+        if not math.isfinite(v):
+            log.warning("non-finite float %r sent to Turso as NULL", v)
+            return {"type": "null"}
         return {"type": "float", "value": float(v)}
     if isinstance(v, (bytes, bytearray)):
         return {"type": "blob", "base64": base64.b64encode(bytes(v)).decode()}
