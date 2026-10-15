@@ -7,6 +7,11 @@ class FakeStage:
     def __init__(self, name, done):
         self.name, self.done = name, done
 
+    def fetch_pending(self, conn, limit, only_ids=None):
+        # The pass's cohort is built from the stages' own gates.
+        return conn.execute("SELECT id FROM tracks WHERE ingestion_status = 'pending' "
+                            "LIMIT ?", (limit,)).fetchall()
+
     def run_batch(self, conn, batch, log, only_ids=None):
         return {"done": self.done, "no_match": 0, "failed": 1}
 

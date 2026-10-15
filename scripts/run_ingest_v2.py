@@ -137,49 +137,43 @@ def pending_snapshot(conn) -> dict[str, int]:
     return out
 
 
-def select_cohort(conn, batch: int, only_ids=None) -> list[int]:
+def select_cohort(conn, stages: list, batch: int, only_ids=None) -> list[int]:
     """
-    Pick the tracks this pass will advance, oldest first.
+    Pick the tracks this pass will advance: the lowest `batch` ids that at
+    least one of `stages` can act on now.
 
-    Two kinds of work qualify:
+    "Can act on" is each stage's own fetch_pending, whose WHERE clause
+    already spells out that stage's real preconditions, so the cohort is
+    the union of those ids, lowest first. That covers a track still moving
+    through the chain, a finished one with a stage re-armed (a corrected
+    language tag sets fuse_status='pending'), and a leftover
+    language_status='whisper_done' row (LanguageStage's gate), and nothing
+    else. Only the stages being run count: with --stages language,fuse a
+    row waiting for preview is not this pass's work.
 
-      1. Tracks still moving through the chain — ingestion_status 'pending'
-         or NULL.
-      2. Tracks that are already 'done' but have had a stage RE-ARMED.
-         Correcting a language tag sets fuse_status='pending' on a finished
-         row; without this clause the orchestrator could not see it and the
-         pass reported processed=0 while the corrections sat unapplied.
+    It used to be a predicate of its own: ingestion_status 'pending' or
+    NULL, or any stage column 'pending'. Since 2026-10-10 language never
+    writes 'done' (a tagging session does) and fuse waits for it, so every
+    row that had been through classify sat at language_status='pending' +
+    fuse_status='pending' with ingestion_status still 'pending'. Those were
+    the lowest ids, every pass selected them again, no stage could touch
+    them, the pass processed nothing, and the loop declared itself drained
+    while every higher id waited. Production's cohort head was 28 such rows
+    on 2026-10-15.
 
-    Terminal rows with nothing armed are excluded, so a pass never
-    re-touches genuinely finished or parked tracks.
+    A pass on a non-empty cohort always processes something: its lowest id
+    came from some stage's gate, and only an earlier stage acting on the
+    row (which counts) can move it out of that gate.
+
+    `only_ids` (--only-ids) restricts every gate, and so the union.
     """
-    stage_cols = ("preview_status", "download_status", "librosa_status",
-                  "ml_status", "language_status", "fuse_status",
-                  "youtube_status")
-    armed = " OR ".join(f"{c} = 'pending'" for c in stage_cols)
-    # Legacy term: 'whisper_done' was the retired Whisper stage's terminal
-    # state (no producer since 2026-10-10). Those rows are usually
-    # ingestion_status='done' with nothing else armed, so without this they
-    # could never enter a cohort, LanguageStage could never normalise them
-    # to 'pending', and no tagging session would ever see them — while
-    # fuse, which now requires language_status='done' exactly, would refuse
-    # to re-fuse them. One term keeps them reachable.
-    armed += " OR language_status = 'whisper_done'"
-
-    # --only-ids pins the run to a hand-picked set (a re-ingest of suspect
-    # rows) so it does not also drain whatever else happens to be pending.
-    scope = ""
-    if only_ids is not None:
-        scope = f"AND id IN ({','.join(str(int(i)) for i in only_ids) or 'NULL'}) "
-    rows = conn.execute(
-        "SELECT id FROM tracks "
-        "WHERE (ingestion_status = 'pending' OR ingestion_status IS NULL "
-        f"   OR {armed}) "
-        f"{scope}"
-        "ORDER BY id ASC LIMIT ?",
-        (batch,),
-    ).fetchall()
-    return [int(r[0]) for r in rows]
+    if only_ids is not None and not only_ids:
+        # id_filter reads an empty list as "no restriction".
+        return []
+    ids: set[int] = set()
+    for stage in stages:
+        ids.update(int(r["id"]) for r in stage.fetch_pending(conn, batch, only_ids))
+    return sorted(ids)[:batch]
 
 
 def run_pass(stages: list, batch: int, only_ids=None) -> tuple[int, int]:
@@ -208,7 +202,7 @@ def run_pass(stages: list, batch: int, only_ids=None) -> tuple[int, int]:
     total_processed = 0
     scored = 0
     try:
-        cohort = select_cohort(conn, batch, only_ids)
+        cohort = select_cohort(conn, stages, batch, only_ids)
         if not cohort:
             return 0, 0
         log.info("pass cohort: %d tracks (ids %d..%d)",

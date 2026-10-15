@@ -33,9 +33,10 @@ sees it as a weak prior rather than losing it.
 
 It is deliberately NOT normalising every NULL in the table. Rows parked at
 ingestion_status='no_preview' keep their NULL: they can never be analysed,
-so asking about them is work that buys nothing, and promoting them to
-'pending' would make them permanently cohort-eligible and jam the head of
-every pass (see docs/backend-todo.md 3.1).
+so asking about them is work that buys nothing. (It used to add that a
+'pending' row would jam the head of every pass. Since 2026-10-15 the
+runner's cohort only takes rows some stage's gate accepts, so a waiting row
+cannot.)
 
 Three consequences of classifying from metadata rather than audio:
 
