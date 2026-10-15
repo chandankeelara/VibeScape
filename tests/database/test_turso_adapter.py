@@ -219,12 +219,16 @@ def test_a_batch_returns_a_cursor_per_statement(turso):
 def test_a_failing_statement_lands_nothing_and_names_its_step(turso):
     conn, server = turso
     conn.execute("INSERT INTO t (name) VALUES ('taken')")
-    with pytest.raises(sqlite3.IntegrityError, match=r"batch step 2 \(statement 2 of 3\)"):
+    with pytest.raises(sqlite3.IntegrityError,
+                       match=r"batch step 2 \(statement 2 of 3\)") as raised:
         conn.execute_batch([("INSERT INTO t (name) VALUES ('first')", ()),
                             ("INSERT INTO t (name) VALUES ('taken')", ()),
                             ("INSERT INTO t (name) VALUES ('third')", ())])
     # 'first' ran and was rolled back; 'third' never ran.
     assert names(server) == ["taken"]
+    # The index the stages use to find the row, and the error without it.
+    assert raised.value.step == 1
+    assert raised.value.detail == "[SQLITE_CONSTRAINT] UNIQUE constraint failed: t.name"
 
 
 def test_a_failing_batch_raises_an_operational_error_for_other_codes(turso):
@@ -276,10 +280,11 @@ def test_sqlite_execute_batch_commits_everything(local):
 
 
 def test_sqlite_execute_batch_is_all_or_nothing(local):
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(sqlite3.IntegrityError) as raised:
         local.execute_batch([("INSERT INTO t (name) VALUES ('a')", ()),
                              ("INSERT INTO t (name) VALUES ('a')", ())])
     assert local.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 0
+    assert raised.value.step == 1
 
 
 def test_sqlite_execute_batch_refuses_to_swallow_uncommitted_writes(local):

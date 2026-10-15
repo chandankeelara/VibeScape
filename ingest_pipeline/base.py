@@ -37,21 +37,38 @@ Status vocabulary (per stage):
 
 Writing a batch
 ---------------
-A stage's results are written in ONE transaction: conn.execute_batch(),
-which on Turso is also one HTTPS round trip for the whole batch rather than
+A stage's results are written in ONE transaction, conn.execute_batch(),
+which on Turso is also one HTTPS request for the whole batch rather than
 one per statement. A row's own statements (its tracks UPDATE and, for
-classify and fuse, its track_embeddings write) always land together.
+classify and fuse, its track_embeddings write) always land together, and
+rows go in id order.
 
-If that transaction fails, nothing in it was written, and the rows are
-written again one transaction each, so one bad row cannot cost the batch.
-That used to happen: the loop UPDATEd row by row and committed at the end,
-so one failing row aborted it after the GPU work was done, rolled the whole
-batch back on SQLite (the next pass re-ran the same MERT passes and failed
-on the same row) and left a partial batch on Turso.
+When that transaction fails nothing in it landed, and what happens next
+depends on what failed (Stage._write_results):
 
-A row whose own write fails is marked 'failed' with its
-'<stage>_stage_error', like an exception in process_row; a
-UNIQUE-constraint failure first retries without _RETRY_DROPPABLE_FIELDS.
+  - An error that says nothing about the rows is raised: the network or
+    the HTTP layer (anything that is not a sqlite3.Error), a busy or
+    locked database, or a failure no statement owns. Nothing is parked,
+    the rows stay pending, and the next pass tries them again.
+  - Otherwise the error names its statement (execute_batch sets `step`),
+    and so one row. That row is set aside and the batch is written again
+    without it. If the retry fails at its own first statement with the
+    same error, the failure is not about any one row (a column production
+    lacks, a read-only token): it is raised, the stage stops, and nothing
+    is parked. A constraint violation is never read that way, since two
+    neighbouring rows can share one (two legacy apple_id collisions).
+  - Once the rest has landed, each row set aside is settled alone: a
+    UNIQUE collision is retried without _RETRY_DROPPABLE_FIELDS, and a row
+    that still cannot be written is marked 'failed' with its
+    '<stage>_stage_error' and the error text, like an exception in
+    process_row.
+
+Until 2026-10-15 one failing row aborted the stage's write loop after the
+batch's work was done: SQLite rolled the whole batch back (the next pass
+re-ran the same MERT passes and failed on the same row) and Turso kept a
+partial batch. The first version of this file then parked a row on ANY
+error during a row-by-row rewrite, so a timeout parked rows whose work was
+fine and a schema gap parked every row of every batch.
 
 Note: no row-level locking. If two workers ever race on the same row,
 the last UPDATE wins and both stage writes are idempotent for their own
@@ -128,23 +145,23 @@ def update_stmt(track_id: int, fields: dict) -> tuple[str, list]:
     return f"UPDATE tracks SET {set_clause} WHERE id = ?", [*fields.values(), int(track_id)]
 
 
-def write_atomically(conn, stmts: list) -> None:
-    """Run (sql, params) pairs as one transaction: all land or none do.
+def _is_transient(e: BaseException) -> bool:
+    """A write error that says nothing about the rows written: the network
+    or the HTTP layer (anything that is not a sqlite3.Error), or a busy or
+    locked database. Trying again later is the fix, so nothing is parked."""
+    if not isinstance(e, sqlite3.Error):
+        return True
+    text = (getattr(e, "detail", None) or str(e)).lower()
+    return isinstance(e, sqlite3.OperationalError) and any(
+        word in text for word in ("locked", "busy", "timeout"))
 
-    Every db_client connection (SQLite and Turso) has execute_batch(). A
-    plain sqlite3.Connection does not, and gets the same thing by hand.
-    """
-    batch = getattr(conn, "execute_batch", None)
-    if batch is not None:
-        batch(stmts)
-        return
-    try:
-        for sql, params in stmts:
-            conn.execute(sql, params)
-    except BaseException:
-        conn.rollback()
-        raise
-    conn.commit()
+
+def _same_failure(a: BaseException, b: BaseException) -> bool:
+    """The same error wherever it happened: its type and its text without
+    the position (db_client puts that in `detail` for Turso errors)."""
+    def key(e):
+        return type(e), getattr(e, "detail", None) or str(e)
+    return key(a) == key(b)
 
 
 @dataclass
@@ -254,6 +271,8 @@ class Stage(ABC):
             future_to_row = {ex.submit(self._safe_process, r): r for r in rows}
             for fut in as_completed(future_to_row):
                 results.append(fut.result())
+        # as_completed order is arbitrary; write in id order.
+        results.sort(key=lambda r: int(r.track_id))
 
         # Written on the main thread, after every row is processed.
         writes = []
@@ -270,56 +289,73 @@ class Stage(ABC):
         return counts
 
     def _write_results(self, conn, writes: list[RowWrite], log) -> set[int]:
-        """Write the batch in one transaction, else row by row. Returns the
-        track ids whose write failed; those rows are marked failed."""
-        try:
-            write_atomically(conn, [s for w in writes for s in self._statements(w)])
-            return set()
-        except Exception as e:
-            log.warning("[%s] writing %d rows in one transaction failed (%s); "
-                        "nothing in it landed, writing them one by one",
-                        self.name, len(writes), e)
-        return {w.track_id for w in writes if not self._write_row(conn, w, log)}
+        """Write the batch by the rules in "Writing a batch" (module
+        docstring). Returns the track ids that could not be written; those
+        rows are parked at <stage>_stage_error."""
+        batch = list(writes)
+        set_aside: list[tuple[RowWrite, Exception]] = []
+        while batch:
+            stmts, owner = [], []
+            for i, w in enumerate(batch):
+                for stmt in self._statements(w):
+                    stmts.append(stmt)
+                    owner.append(i)
+            try:
+                conn.execute_batch(stmts)
+                break
+            except Exception as e:
+                step = getattr(e, "step", None)
+                if _is_transient(e) or step is None:
+                    raise
+                if (set_aside and step == 0
+                        and not isinstance(e, sqlite3.IntegrityError)
+                        and _same_failure(e, set_aside[-1][1])):
+                    log.error("[%s] the batch fails the same way without row %d (%s): "
+                              "not a problem with one row, stopping with nothing parked",
+                              self.name, set_aside[-1][0].track_id, e)
+                    raise
+                bad = batch.pop(owner[step])
+                log.warning("[%s] row %d broke the batch write (%s); writing the "
+                            "other %d without it", self.name, bad.track_id, e, len(batch))
+                set_aside.append((bad, e))
+        return {w.track_id for w, e in set_aside if not self._settle(conn, w, e, log)}
 
     @staticmethod
     def _statements(w: RowWrite) -> list:
         return [update_stmt(w.track_id, w.fields), *w.extra]
 
-    def _write_row(self, conn, w: RowWrite, log) -> bool:
-        """Write one row in its own transaction. False if it could not be
-        written, after marking it failed.
+    def _settle(self, conn, w: RowWrite, error: Exception, log) -> bool:
+        """Deal with a row the batch could not write, alone. True if it
+        landed after all.
 
-        If a legacy UNIQUE constraint fires (typically `UNIQUE (user_id,
-        apple_id)` from the pre-split-tracks era), the write is retried
-        with the collision-prone metadata fields stripped out, so the row's
-        own status still lands and the pipeline does not loop on it. Since
-        db_client maps Turso's SQLITE_CONSTRAINT to IntegrityError
-        (2026-10-15) this retry also works in production.
+        A UNIQUE collision (typically the legacy `UNIQUE (user_id,
+        apple_id)` from the pre-split-tracks era) is retried without the
+        collision-prone metadata fields, so the row's own status still
+        lands and the pipeline does not loop on it. db_client has raised
+        IntegrityError for Turso's SQLITE_CONSTRAINT since 2026-10-15, so
+        this should hold in production too; unverified there as of
+        2026-10-15, since nothing in this pipeline has run against it.
 
-        If marking the row failed fails too, that error propagates: the
-        database is refusing even a status write, and the pass should stop
-        rather than carry on past rows it cannot record.
+        Otherwise the row is parked: 'failed', '<stage>_stage_error' and the
+        error text. If even that write fails, its error propagates: the
+        database is refusing a status write and the stage should stop.
         """
-        try:
-            write_atomically(conn, self._statements(w))
-            return True
-        except sqlite3.IntegrityError as e:
-            error = e
+        if isinstance(error, sqlite3.IntegrityError):
             dropped = [k for k in _RETRY_DROPPABLE_FIELDS if k in w.fields]
             if dropped:
                 reduced = {k: v for k, v in w.fields.items() if k not in dropped}
                 try:
-                    write_atomically(conn, self._statements(w._replace(fields=reduced)))
+                    conn.execute_batch(self._statements(w._replace(fields=reduced)))
                     log.warning("row %d retried without %s due to unique-constraint "
                                 "collision", w.track_id, dropped)
                     return True
-                except Exception as e2:
-                    error = e2
-        except Exception as e:
-            error = e
+                except Exception as e:
+                    if _is_transient(e):
+                        raise
+                    error = e
         log.warning("[%s] row %d could not be written, marking it failed: %s",
                     self.name, w.track_id, error)
-        write_atomically(conn, [update_stmt(w.track_id, {
+        conn.execute_batch([update_stmt(w.track_id, {
             self.status_column: STATUS_FAILED,
             "ingestion_status": stage_error_status(self.name),
             "ingestion_error": f"[{self.name}] write failed: {error}"[:500],

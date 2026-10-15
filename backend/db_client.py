@@ -122,10 +122,13 @@ def _hrana_error(err, where: str = "") -> sqlite3.Error:
     """
     err = err or {}
     code = str(err.get("code") or "UNKNOWN")
-    msg = f"Turso error [{code}]{where}: {err.get('message', '?')}"
-    if code.startswith("SQLITE_CONSTRAINT"):
-        return sqlite3.IntegrityError(msg)
-    return sqlite3.OperationalError(msg)
+    message = err.get("message", "?")
+    cls = (sqlite3.IntegrityError if code.startswith("SQLITE_CONSTRAINT")
+           else sqlite3.OperationalError)
+    exc = cls(f"Turso error [{code}]{where}: {message}")
+    # The error without its position, so two failures can be compared.
+    exc.detail = f"[{code}] {message}"
+    return exc
 
 
 def _unwrap_cell(cell):
@@ -307,6 +310,9 @@ class _HttpConnection:
 
         Raises the first failing step's error, mapped like execute()'s and
         naming the step, after which nothing in the batch has been written.
+        The error's `step` is the 0-based index into `stmts` of the
+        statement that failed, or None when the failure is not one of them
+        (BEGIN, COMMIT), so a caller can tell which row broke the batch.
         Returns one cursor per statement.
         """
         stmts = list(stmts)
@@ -335,10 +341,12 @@ class _HttpConnection:
         for i, err in enumerate(step_errors):
             if err:
                 if 1 <= i <= n:
-                    where = f" in batch step {i} (statement {i} of {n})"
+                    exc = _hrana_error(err, f" in batch step {i} (statement {i} of {n})")
+                    exc.step = i - 1
                 else:
-                    where = f" in batch step {i} ({steps[i]['stmt']['sql']})"
-                raise _hrana_error(err, where)
+                    exc = _hrana_error(err, f" in batch step {i} ({steps[i]['stmt']['sql']})")
+                    exc.step = None
+                raise exc
         if len(step_results) <= commit_step or step_results[commit_step] is None:
             raise sqlite3.OperationalError(
                 "Turso batch did not commit, and no step reported an error")
@@ -391,16 +399,24 @@ class _SqliteConnection(sqlite3.Connection):
         """Run [(sql, params), ...] in one transaction and commit it.
 
         On any failure everything in the batch is rolled back and the error
-        re-raised. The explicit BEGIN fails if the connection already holds
-        uncommitted writes, rather than committing or discarding them along
-        with the batch. Returns one cursor per statement.
+        re-raised, with `step` set to the failing statement's 0-based index
+        as the Turso path does. The explicit BEGIN fails if the connection
+        already holds uncommitted writes, rather than committing or
+        discarding them along with the batch. Returns one cursor per
+        statement.
         """
         stmts = list(stmts)
         if not stmts:
             return []
         self.execute("BEGIN")
         try:
-            cursors = [self.execute(sql, params) for sql, params in stmts]
+            cursors = []
+            for step, (sql, params) in enumerate(stmts):
+                try:
+                    cursors.append(self.execute(sql, params))
+                except sqlite3.Error as e:
+                    e.step = step
+                    raise
         except BaseException:
             self.rollback()
             raise

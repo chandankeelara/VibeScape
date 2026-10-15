@@ -3,7 +3,9 @@
 Until 2026-10-15 Stage.run_batch UPDATEd row by row and committed after the
 loop: one row that raised aborted it once the GPU work was done, SQLite
 rolled the whole batch back, and Turso, which commits per statement, kept
-whatever came before the bad row.
+whatever came before the bad row. The first fix then rewrote every row
+alone after a failed batch and parked any row whose rewrite failed, for any
+reason: a timeout parked good rows, and a schema gap parked them all.
 """
 import logging
 import sqlite3
@@ -48,14 +50,34 @@ class Scripted(Stage):
         return RowResult(int(row["id"]), STATUS_DONE, dict(self.fields[int(row["id"])]))
 
 
-@pytest.fixture(params=["db_client", "plain sqlite3"])
-def conn(request, app_module, db):
-    """Both kinds of connection a stage can be handed: get_conn()'s, which
-    has execute_batch, and a bare sqlite3 one, which does not."""
-    c = app_module.get_conn() if request.param == "db_client" else sqlite3.connect(db)
-    c.row_factory = sqlite3.Row
+@pytest.fixture
+def conn(app_module, db):
+    """What the runner hands a stage: get_conn()'s connection."""
+    c = app_module.get_conn()
     yield c
     c.close()
+
+
+class Flaky:
+    """A connection whose first `fails` execute_batch calls raise `error`
+    without reaching the database."""
+
+    def __init__(self, conn, error, fails):
+        self._conn, self._error, self._fails = conn, error, fails
+
+    def execute(self, *args):
+        return self._conn.execute(*args)
+
+    def execute_batch(self, stmts):
+        if self._fails:
+            self._fails -= 1
+            raise self._error
+        return self._conn.execute_batch(stmts)
+
+
+def states(sql):
+    return [tuple(r) for r in sql.execute(
+        "SELECT album, preview_status, ingestion_status FROM tracks ORDER BY id")]
 
 
 def test_a_row_whose_write_fails_does_not_cost_the_batch(sql, conn):
@@ -90,6 +112,57 @@ def test_a_unique_collision_is_retried_without_the_droppable_fields(sql, conn):
     row = sql.execute("SELECT album, apple_id, genre, preview_status FROM tracks WHERE id = ?",
                       (b,)).fetchone()
     assert tuple(row) == ("B", None, None, "done")
+
+
+def test_a_bad_row_costs_one_more_batch_not_a_rewrite_of_every_row(sql, conn, batches):
+    a, b, c = add_rows(sql, 3)
+    stage = Scripted({a: {"album": "A"},
+                      b: {"album": "B", "no_such_column": 1},
+                      c: {"album": "C"}})
+    stage.run_batch(conn, 10, log)
+    # the batch, the batch without b, then b's 'failed' status
+    assert [len(x) for x in batches] == [3, 2, 1]
+    assert [params[-1] for _, params in batches[1]] == [a, c]
+
+
+@pytest.mark.parametrize("error", [
+    TimeoutError("read timed out"),                        # requests / HTTP layer
+    sqlite3.OperationalError("database is locked"),        # busy database
+    sqlite3.OperationalError("cannot commit"),             # no statement owns it
+], ids=["timeout", "locked", "no-step"])
+def test_an_error_that_is_not_about_a_row_parks_nothing(sql, conn, error):
+    # It fails twice: the first version retried row by row after a failed
+    # batch, and parked any row whose own rewrite then failed.
+    ids = add_rows(sql, 3)
+    stage = Scripted({i: {"album": "X"} for i in ids})
+    with pytest.raises(type(error)):
+        stage.run_batch(Flaky(conn, error, fails=2), 10, log)
+    assert states(sql) == [(None, "pending", "pending")] * 3
+
+
+def test_the_same_error_on_every_row_stops_the_stage_and_parks_nothing(sql, conn):
+    # A column the stage writes and the database lacks (a schema gap on
+    # prod) fails every row the same way: no single row is the problem.
+    ids = add_rows(sql, 3)
+    stage = Scripted({i: {"album": "X", "no_such_column": 1} for i in ids})
+    with pytest.raises(sqlite3.OperationalError, match="no_such_column"):
+        stage.run_batch(conn, 10, log)
+    assert states(sql) == [(None, "pending", "pending")] * 3
+
+
+def test_two_unique_collisions_side_by_side_are_each_retried(sql, conn):
+    # Same error on neighbouring rows, but a constraint violation is about a
+    # row's data, so it is never read as a systematic failure.
+    a, b, c, d = add_rows(sql, 4)
+    sql.execute("UPDATE tracks SET apple_id = 701 WHERE id = ?", (c,))
+    sql.execute("UPDATE tracks SET apple_id = 702 WHERE id = ?", (d,))
+    sql.commit()
+    stage = Scripted({a: {"album": "A", "apple_id": 701}, b: {"album": "B", "apple_id": 702},
+                      c: {"album": "C"}, d: {"album": "D"}})
+    assert stage.run_batch(conn, 10, log)["done"] == 4
+    rows = sql.execute("SELECT id, album, apple_id FROM tracks ORDER BY id").fetchall()
+    assert [tuple(r) for r in rows] == [(a, "A", None), (b, "B", None),
+                                        (c, "C", 701), (d, "D", 702)]
 
 
 def test_a_clean_batch_is_one_execute_batch(sql, app_module, batches):

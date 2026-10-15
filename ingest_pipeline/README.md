@@ -72,15 +72,24 @@ with no log parsing. The row also stops re-entering at `preview`, whose
 gate only matches `'pending'`, while its own column keeps `'failed'` so a
 retry pass knows where to resume.
 
-A row whose result could not be **written** is parked the same way, with
-`ingestion_error='[<stage>] write failed: …'`. A stage writes its whole
-batch in one transaction (`execute_batch`, one round trip on Turso); if
-that fails, nothing in it landed and the rows are written one transaction
-each, so one bad row costs only itself. Before 2026-10-15 it cost the
-batch: the GPU work was done, the loop aborted on the bad row, SQLite rolled
-everything back and the next pass repeated it. A UNIQUE collision on the
-legacy `apple_id` constraint is first retried without `apple_id`,
-`track_view_url` and `genre`.
+A stage writes its whole batch in one transaction (`execute_batch`, one
+round trip on Turso). When that fails nothing in it landed, and what
+happens next depends on the error (`base.py`, "Writing a batch"):
+
+- **Not about a row** — the network, a timeout, a busy or locked database,
+  or a failure no statement owns: raised. Nothing is parked; the rows stay
+  pending for the next pass.
+- **About one row** — the error names its statement, so its row is set
+  aside and the batch written again without it. Then that row alone: a
+  UNIQUE collision on the legacy `apple_id` constraint is retried without
+  `apple_id`, `track_view_url` and `genre`; otherwise it is parked like a
+  failure above, with `ingestion_error='[<stage>] write failed: …'`.
+- **About every row** — the retry fails at its first statement with the
+  same error (a column production lacks, a read-only token): raised, the
+  stage stops, nothing is parked.
+
+Before 2026-10-15 one bad row cost the batch: the GPU work was done, the
+loop aborted, SQLite rolled everything back and the next pass repeated it.
 
 `no_match` is different — the stage ran fine and found nothing. For
 `preview`/`download` that is terminal for the track (`'no_preview'`); for
