@@ -118,18 +118,11 @@ def _write(conn, updates: list) -> None:
     """Issue the UPDATEs through execute_batch, WRITE_CHUNK at a time.
 
     Before 2026-10-15 every UPDATE was its own Turso round trip, and once
-    newly scored tracks move the mean nearly every featured row changes. A
-    connection without execute_batch (a plain sqlite3 one) gets the old
-    path: one transaction for everything.
+    newly scored tracks move the mean nearly every featured row changes.
+    Every connection db_client hands out has execute_batch.
     """
-    batch = getattr(conn, "execute_batch", None)
-    if batch is None:
-        for sql, params in updates:
-            conn.execute(sql, params)
-        conn.commit()
-        return
     for i in range(0, len(updates), WRITE_CHUNK):
-        batch(updates[i:i + WRITE_CHUNK])
+        conn.execute_batch(updates[i:i + WRITE_CHUNK])
 
 
 def recompute_axes_and_zscores(conn) -> dict:
