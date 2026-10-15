@@ -382,7 +382,11 @@ the shared client layer — `ml_backend`, `features`, `scoring`,
 # one pass, 50 tracks per stage
 python scripts/run_ingest_v2.py --batch 50
 
-# keep going until drained
+# pass after pass until nothing is left to do, then exit
+python scripts/run_ingest_v2.py --batch 50 --until-drained
+
+# run for good, watching a dev DB: idle sleeps start at --interval and
+# double up to 10 min; a pass that does work resets them
 python scripts/run_ingest_v2.py --batch 50 --loop --interval 30
 
 # a subset, in order
@@ -418,13 +422,13 @@ recomputed for the **whole catalogue** by `ingest/score_recompute.py`:
 activation z-scored across every featured track (mean 50, one std = 15). It
 is owed only when `librosa` or `classify` finished a row (librosa adds rows to
 the baseline, classify overwrites the columns the recompute owns). A single
-pass recomputes at its end. **`--loop` recomputes once, when the loop drains**
-(the first pass that processes nothing, including the `--only-ids` exit),
-never per pass: every newly scored track shifts the mean and std, so nearly
-every row moves and the skip below saves nothing. Per pass, draining 1,000
-tracks at `--batch 50` would mean 20 full recomputes of ~3,800 UPDATEs each
-instead of one. A failed recompute stays owed and is retried at the next
-idle point. Rows whose stored values already match are not written, and the
+pass recomputes at its end. **`--loop` and `--until-drained` recompute once,
+when the loop drains** (the first pass that processes nothing, including the
+`--only-ids` exit), never per pass: every newly scored track shifts the mean
+and std, so nearly every row moves and the skip below saves nothing. Per
+pass, draining 1,000 tracks at `--batch 50` would mean 20 full recomputes of
+~3,800 UPDATEs each instead of one. A failed recompute stays owed: `--loop`
+retries it at the next idle point, `--until-drained` exits 1. Rows whose stored values already match are not written, and the
 rest go out through `execute_batch` 200 at a time: one Turso round trip per
 200 rows, where it used to be one per row (until 2026-10-15).
 Import jobs ran it on every sync until 2026-10-13; a sync only adds
@@ -437,8 +441,9 @@ Turso one request. A large batch means a kill loses everything unwritten;
 `--batch 2500` once lost 42 minutes of preview work. It also sizes that
 request: a classify row is ~5.7 KB of JSON and a fuse row ~4.9 KB (the
 vectors), so `--batch 50` sends ~280 KB (measured 2026-10-15). No Turso
-size limit has been hit or measured; a batch the server refuses is written
-row by row instead.
+size limit has been hit or measured. A request the server refuses at the
+HTTP level is an error that is not about any row, so it is raised with
+nothing written (§ Failure); a smaller `--batch` is the fix.
 
 ### Draining a backlog
 
@@ -450,7 +455,7 @@ not the retry count: at 2s spacing the limiter never trips.
 
 ```bash
 VIBESCAPE_ITUNES_MIN_GAP=2 VIBESCAPE_ITUNES_RETRIES=7 VIBESCAPE_ITUNES_BACKOFF=5 \
-  python scripts/run_ingest_v2.py --batch 30 --loop
+  python scripts/run_ingest_v2.py --batch 30 --until-drained
 ```
 
 Distinguish the two failure modes in the logs: `search failed ... 403` is
@@ -484,14 +489,19 @@ Production is Turso, and the pipeline runs **against it directly**, from
 the machine with the GPU (decided 2026-10-15):
 
 ```bash
-python scripts/backup_prod_db.py                                 # 1. a dated snapshot, always first
-python scripts/run_ingest_v2.py --target prod --batch 10         # 2. one small pass; read the log
-python scripts/run_ingest_v2.py --target prod --batch 50 --loop  # 3. then drain
-python scripts/language_tags.py --target prod --status           # 4. tag what waits, on prod
+python scripts/backup_prod_db.py                                         # 1. a dated snapshot, always first
+python scripts/run_ingest_v2.py --target prod --batch 10                 # 2. one small pass; read the log
+python scripts/run_ingest_v2.py --target prod --batch 50 --until-drained # 3. then drain, and exit
+python scripts/language_tags.py --target prod --status                   # 4. tag what waits, on prod
 python scripts/language_tags.py --target prod --set <spotify_id>=kn --apply
-python scripts/run_ingest_v2.py --target prod --loop             # 5. fuse + youtube the tagged rows
-python scripts/run_ingest_v2.py --target prod --recompute-only   # 6. scores, if a run stopped short
+python scripts/run_ingest_v2.py --target prod --until-drained            # 5. fuse + youtube the tagged rows
+python scripts/run_ingest_v2.py --target prod --recompute-only           # 6. scores, if a run stopped short
 ```
+
+`--until-drained`, not `--loop`, against production: every idle pass scans
+`tracks`, Turso bills rows read, and a loop left running keeps paying
+(`--loop` backs off to one pass per 10 minutes, but never stops). A parked
+row comes back with `--retry-failed <stage>` once its cause is fixed.
 
 `--target prod` reads a gitignored `.env.prod` at the repo root that sets
 `DB_BACKEND=turso`, `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`, all three

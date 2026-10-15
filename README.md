@@ -381,13 +381,16 @@ The app never streams from `audio_path` — the frontend streams directly from `
 # One pass across all seven stages, up to 50 rows per stage per pass:
 python scripts/run_ingest_v2.py --batch 50
 
-# Loop forever with 30 s idle sleep between empty passes:
+# Pass after pass until nothing is left, then exit:
+python scripts/run_ingest_v2.py --until-drained --batch 30
+
+# Loop for good; idle sleeps double from 30 s up to 10 min:
 python scripts/run_ingest_v2.py --loop --batch 30 --interval 30
 
 # Restrict to a subset of stages:
 python scripts/run_ingest_v2.py --stages preview,download,classify
 
-# Only the library-wide score recompute (runs on its own after a scoring pass, or once when --loop drains):
+# Only the library-wide score recompute (runs on its own after a scoring pass, or once when a loop drains):
 python scripts/run_ingest_v2.py --recompute-only
 
 # Against production Turso instead of the local SQLite file (credentials in .env.prod):
@@ -784,10 +787,11 @@ uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 
 Open `http://127.0.0.1:8000/`, log in, paste a Spotify playlist URL, watch it ingest.
 
-To drain the offline pipeline in a separate terminal:
+To drain the offline pipeline in a separate terminal (`--loop` instead keeps
+watching for new imports):
 
 ```bash
-python scripts/run_ingest_v2.py --loop --batch 30 --interval 30
+python scripts/run_ingest_v2.py --until-drained --batch 30
 ```
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>

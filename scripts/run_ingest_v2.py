@@ -38,7 +38,11 @@ Usage:
     # One pass across every stage, up to 50 rows per stage:
     python scripts/run_ingest_v2.py --batch 50
 
-    # Loop with 30 s idle sleep between empty passes:
+    # Pass after pass until nothing is left to do, then exit:
+    python scripts/run_ingest_v2.py --until-drained
+
+    # Run for good (watching a dev DB). Idle sleeps start at --interval and
+    # double up to 10 min; work resets them:
     python scripts/run_ingest_v2.py --loop --interval 30
 
     # Restrict to a subset of stages (comma-separated):
@@ -54,7 +58,7 @@ Usage:
     # --target local). Credentials come from the gitignored .env.prod, see
     # scripts/_target.py. Back up first: python scripts/backup_prod_db.py
     python scripts/run_ingest_v2.py --target prod --batch 10
-    python scripts/run_ingest_v2.py --target prod --batch 50 --loop
+    python scripts/run_ingest_v2.py --target prod --batch 50 --until-drained
 
 Every log line names the target, so a prod run cannot be mistaken for a
 local one.
@@ -70,13 +74,14 @@ inputs and adds rows to the baseline, classify overwrites the columns it
 owns — so it runs only if one of them finished a track:
 
   * a single pass: once at the end of the pass;
-  * --loop: ONCE WHEN THE LOOP DRAINS (the first pass that processes
-    nothing), not after every scoring pass. Every newly scored track shifts
-    the catalogue mean and std, so nearly every row's activation_relative
-    moves and the skip-unchanged check saves nothing: draining 1,000 tracks
-    at --batch 50 would cost 20 full ~3,800-UPDATE recomputes, about 76,000
-    Turso round trips, instead of one. A failed recompute keeps its pending
-    count and is retried at the next idle point.
+  * --loop and --until-drained: ONCE WHEN THE LOOP DRAINS (the first pass
+    that processes nothing), not after every scoring pass. Every newly
+    scored track shifts the catalogue mean and std, so nearly every row's
+    activation_relative moves and the skip-unchanged check saves nothing:
+    draining 1,000 tracks at --batch 50 would cost 20 full recomputes of
+    ~3,800 UPDATEs each instead of one. A failed recompute keeps its
+    pending count; --loop retries it at the next idle point, and
+    --until-drained exits 1.
 
 Imports used to run it after every sync; a sync only adds unanalysed rows,
 so it moved here (2026-10-13).
@@ -120,6 +125,13 @@ log = logging.getLogger("vibescape.ingest.orch")
 # Stages whose 'done' rows change what the score recompute produces. See the
 # module docstring; fuse, youtube etc. touch none of its inputs or outputs.
 SCORING_STAGES = ("librosa", "classify")
+
+# An idle --loop sleeps --interval, doubling each idle pass up to this, and
+# drops back to --interval after a pass that did work. Every idle pass is
+# one scan of `tracks` (select_cohort), and Turso bills rows read: at a
+# fixed 30 s that is 2,880 scans a day for a loop nobody is watching; at
+# this cap, 144. --until-drained is what a run that should end uses.
+IDLE_SLEEP_MAX_S = 600
 
 # Every stage, by name, in chain order.
 STAGE_CLASSES: dict[str, type] = {
@@ -321,13 +333,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stages", type=str,
                         default="preview,download,librosa,classify,language,fuse,youtube",
                         help="comma-separated stage names (default: all seven in order)")
-    parser.add_argument("--loop", action="store_true",
-                        help="keep running; sleep --interval when nothing to do")
+    looping = parser.add_mutually_exclusive_group()
+    looping.add_argument("--until-drained", action="store_true",
+                         help="pass after pass until one finds nothing to do, run the "
+                              "owed score recompute, exit (1 if that failed)")
+    looping.add_argument("--loop", action="store_true",
+                         help="keep running for good (a dev DB); idle sleeps start at "
+                              "--interval and double up to 10 min, work resets them")
     parser.add_argument("--interval", type=int, default=30,
-                        help="seconds to sleep between empty passes (default 30)")
+                        help="--loop's first idle sleep, in seconds (default 30)")
     parser.add_argument("--only-ids", type=str, default=None,
                         help="file of tracks.id, one per line: advance only these "
-                             "rows; with --loop, exit once they are idle")
+                             "rows; a loop exits once they are idle")
     parser.add_argument("--recompute-only", action="store_true",
                         help="run only the library-wide score recompute "
                              "(activation_relative / vibe_score / mood), no stages")
@@ -372,7 +389,7 @@ def main(argv: list[str] | None = None) -> int:
         only_ids = [int(x) for x in Path(args.only_ids).read_text().split() if x.strip()]
         log.info("scoped to %d ids from %s", len(only_ids), args.only_ids)
 
-    if not args.loop:
+    if not (args.loop or args.until_drained):
         processed, scored = run_pass(stages, args.batch, only_ids)
         log.info("pass done: processed=%d scored=%d", processed, scored)
         return 0 if after_pass(scored) else 1
@@ -381,10 +398,12 @@ def main(argv: list[str] | None = None) -> int:
     # would rewrite ~every row each time (the mean moves), so it waits for
     # the loop to drain; see the module docstring.
     owed = 0
+    idle_sleep = args.interval
     while True:
         processed, scored = run_pass(stages, args.batch, only_ids)
         owed += scored
         if processed != 0:
+            idle_sleep = args.interval
             continue
         if owed > 0:
             log.info("loop drained; %d rows scored since the last recompute, "
@@ -394,11 +413,12 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 log.warning("score recompute owed for %d rows; retrying at the "
                             "next idle point", owed)
-        if only_ids is not None:
-            log.info("scoped ids idle; done")
+        if args.until_drained or only_ids is not None:
+            log.info("%s; done", "scoped ids idle" if only_ids is not None else "drained")
             return 0 if owed == 0 else 1
-        log.info("all stages idle; sleeping %ds", args.interval)
-        time.sleep(args.interval)
+        log.info("all stages idle; sleeping %ds", idle_sleep)
+        time.sleep(idle_sleep)
+        idle_sleep = min(idle_sleep * 2, max(IDLE_SLEEP_MAX_S, args.interval))
 
 
 if __name__ == "__main__":
