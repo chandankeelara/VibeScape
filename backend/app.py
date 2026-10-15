@@ -3472,23 +3472,16 @@ def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "
     # vibe_score is NOT NULL in the current schema (legacy from the
     # pre-split-ingest era). Insert 0.0 as a placeholder; the offline
     # pipeline's classify stage overwrites it with the real score.
-    # created_at is written, not left to DEFAULT CURRENT_TIMESTAMP:
-    # production's tracks table has no column defaults (PRAGMA table_info,
-    # read-only probe, 2026-10-15), so a row this INSERT made there got
-    # created_at NULL. That probe found it NULL on 4,844 of 6,238 prod rows
-    # (789 of the 827 pending), not only on app-inserted ones. This stamps
-    # rows created from now on; the wait ages in language_tags.py --status
-    # stay blind on the existing NULLs until they are backfilled
-    # (docs/backend-todo.md 3.11). Same 'YYYY-MM-DD HH:MM:SS' UTC text the
-    # default writes locally.
+    # created_at is written here because production's tracks table has no
+    # column defaults; rows made before 2026-10-15 are NULL there (4,844 of
+    # 6,238 that day, backlog 3.11).
     cur = conn.execute(
         "INSERT INTO tracks "
         "(spotify_id, isrc, title, artist, album, artwork_url, preview_url, "
         " duration_ms, vibe_score, ingestion_status, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0, 'pending', ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0, 'pending', CURRENT_TIMESTAMP)",
         (spotify_id, isrc, name, artist_name, album_name,
-         artwork_url, preview_url, duration_ms,
-         datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")),
+         artwork_url, preview_url, duration_ms),
     )
     track_id = int(cur.lastrowid)
     conn.execute(
