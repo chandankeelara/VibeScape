@@ -86,6 +86,22 @@ function emitTime(position, duration) {
   }
 }
 
+/**
+ * Push the REAL playhead to the OS now, outside the throttle.
+ *
+ * Called when the session anchor (re)starts or loops. The anchor is a real
+ * playing <audio> in our frame, and a UA is free to derive the session's
+ * position from the frame's playing media; each loop of the anchor is a seek
+ * back to 0 on that element. Re-asserting immediately means the last position
+ * the OS heard from us is always the song's, never the anchor's own timeline.
+ * Fires once per anchor loop, so it adds one push every ANCHOR_SECONDS.
+ */
+function pushSessionPositionNow() {
+  if (!state.track) return;
+  lastPositionPush = performance.now();
+  setSessionPosition(currentPosition(), currentDuration());
+}
+
 export function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 export function subscribeTime(fn) { timeListeners.add(fn); return () => timeListeners.delete(fn); }
 export const getState = () => ({ ...state });
@@ -453,7 +469,8 @@ export function restoreAfterVerify() {
 /* ------------------------------------------------ media-session anchor */
 
 /**
- * A silent, looping <audio> kept playing for as long as VIDEO mode is active,
+ * A silent, looping <audio> kept playing whenever the song itself is NOT in
+ * our frame — video mode (YouTube iframe) and Spotify (the SDK's iframe) —
  * purely so the page keeps owning the OS media session.
  *
  * The OS routes media keys to whichever browsing context most recently
@@ -470,10 +487,27 @@ export function restoreAfterVerify() {
  */
 let anchorEl = null;
 
-/** 8 kHz mono 8-bit PCM, 0.25s. Built here so no 2.7KB base64 blob lands in source. */
+/**
+ * Length of the anchor's loop. Was 0.25 s until 2026-10-15; raised for two
+ * reasons, neither verified on a device:
+ *
+ *  - Each loop is a seek to 0 on a playing element in our frame. At 0.25 s
+ *    that was four restarts a second against a once-a-second position push,
+ *    which is the suspected cause of the jumpy lock-screen scrubber.
+ *  - Chromium classifies short audio-only players (5 s or less) as transient
+ *    and does not give them the media notification on Android, so a 0.25 s
+ *    clip may never have held the session there at all.
+ *
+ * Cost is linear: 8 kHz mono 8-bit is 8,000 bytes a second, so 10 s is an
+ * 80,044-byte in-memory Blob (a Blob URL, not base64, so no 4/3 inflation and
+ * nothing in source). 0.25 s was 2,044 bytes.
+ */
+const ANCHOR_SECONDS = 10;
+
+/** 8 kHz mono 8-bit PCM silence, ANCHOR_SECONDS long, built at runtime. */
 function silentWavUrl() {
   const rate = 8000;
-  const frames = rate / 4;
+  const frames = rate * ANCHOR_SECONDS;
   const buf = new Uint8Array(44 + frames);
   const view = new DataView(buf.buffer);
   const tag = (off, s) => { for (let i = 0; i < s.length; i++) buf[off + i] = s.charCodeAt(i); };
@@ -499,6 +533,11 @@ function startSessionAnchor() {
     // for the Media Session API, which would defeat the entire purpose.
     anchorEl.volume = 1;
     anchorEl.src = silentWavUrl();
+    // A loop is specified as a seek to the start, so 'seeked' fires on every
+    // wrap; 'play' covers each (re)start. Either can make the UA re-read the
+    // frame's media position, so hand it the song's again straight away.
+    anchorEl.addEventListener('seeked', pushSessionPositionNow);
+    anchorEl.addEventListener('play', pushSessionPositionNow);
     document.body.appendChild(anchorEl);
   }
   anchorEl.play().catch(() => { /* blocked without a gesture; video mode has one */ });
@@ -586,8 +625,11 @@ function applySessionHandlers() {
     const d = currentDuration();
     if (d > 0 && Number.isFinite(details?.seekTime)) seek(details.seekTime / d);
   });
-  set('seekbackward', (details) => seekBy(-(details?.seekOffset || 10)));
-  set('seekforward', (details) => seekBy(details?.seekOffset || 10));
+  // NO seekbackward / seekforward, on purpose (removed 2026-10-15). iOS and
+  // Android lock screens have room for one pair of side buttons, and with
+  // both registered the seek pair won: users got -10 s / +10 s, and a
+  // lock-screen "next" never reached hooks.onNext, so the DJ never picked and
+  // telemetry never logged the media_key skip. Do not add them back.
 
   // Chrome fires this with activation when the tab is occluded (and when the
   // user hits a browser-provided PiP control), which is the only way to open
@@ -600,24 +642,18 @@ function currentDuration() {
   if (state.mode === 'video') return youtube.getDuration();
   // The <audio> element is detached during Spotify playback, so its duration
   // is meaningless there — this made telemetry's duration_ms empty for every
-  // Spotify play and the lock-screen +/-10 s keys dead (2026-10-10).
+  // Spotify play and lock-screen scrubbing dead (2026-10-10).
   if (state.source === 'spotify') return spotify.getDuration();
   const el = state.audioEl;
   return el && Number.isFinite(el.duration) ? el.duration : 0;
 }
 
-function seekBy(deltaSeconds) {
-  const d = currentDuration();
-  if (d <= 0) return;
-  seek((currentPosition() + deltaSeconds) / d);
-}
-
 /**
  * Live playhead for the active source.
  *
- * Video used to be hardcoded to 0 here, so every relative seek — the ±10s
- * media keys, a car head unit's skip — measured from the START of the video
- * instead of the playhead. Skipping forward from 2:30 landed you at 0:10.
+ * Video used to be hardcoded to 0 here, so every relative seek measured from
+ * the START of the video instead of the playhead, and telemetry's seek
+ * positions and the OS scrubber read 0 throughout a video.
  */
 function currentPosition() {
   if (state.mode === 'video') return youtube.getCurrentTime();
