@@ -98,6 +98,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "backend"))
+# For _target. Explicit, not left to the script directory being
+# sys.path[0]: that entry is missing under `python -P` / PYTHONSAFEPATH.
+sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 # Appended, not inserted: ingest/db.py must not shadow backend/db.py.
 sys.path.append(str(PROJECT_ROOT / "ingest"))
 
@@ -117,7 +120,7 @@ from ingest_pipeline.stage_librosa import LibrosaStage  # noqa: E402
 from ingest_pipeline.stage_fuse import FuseStage  # noqa: E402
 from ingest_pipeline.base import STATUS_DONE, id_filter, stage_error_status  # noqa: E402
 import score_recompute  # noqa: E402
-import _target  # noqa: E402  (scripts/, next to this file)
+import _target  # noqa: E402
 
 
 log = logging.getLogger("vibescape.ingest.orch")

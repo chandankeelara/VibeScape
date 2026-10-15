@@ -20,11 +20,15 @@ decoded here: the copy then does not depend on the client's decoder at all,
 and the blob check at the end compares sizes the database reports.
 
 Read-only against production. It opens one connection and only SELECTs.
+
+Credentials come from .env.prod through scripts/_target.py, the same file
+run_ingest_v2.py --target prod writes with, so the snapshot is of the
+database a run is about to change. Until 2026-10-15 this script regex-read
+them from scripts/_load_gcp_secrets.ps1 instead, and nothing checked that
+the two named the same database. The token is never printed.
 """
 from __future__ import annotations
 
-import os
-import re
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -32,26 +36,22 @@ from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO / "backend"))
+# Explicit, not left to the script directory being sys.path[0]: that entry
+# is missing under `python -P` / PYTHONSAFEPATH.
+sys.path.insert(0, str(_REPO / "scripts"))
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
 
-
-def _load_prod_env() -> None:
-    """Credentials come from the same place every other ops script reads them.
-    Never printed -- see the secrets rule in CLAUDE.md."""
-    ps1 = _REPO / "scripts" / "_load_gcp_secrets.ps1"
-    text = ps1.read_text(encoding="utf-8")
-    os.environ["TURSO_DATABASE_URL"] = re.search(r'\$turso_url\s*=\s*"([^"]+)"', text).group(1)
-    os.environ["TURSO_AUTH_TOKEN"] = re.search(r'\$turso_token\s*=\s*"([^"]+)"', text).group(1)
-    os.environ["DB_BACKEND"] = "turso"
+import _target  # noqa: E402
 
 
 def main() -> int:
-    _load_prod_env()
-    import db_client  # imported after the env is set
+    # Exits here, before anything connects, if .env.prod is not set up.
+    print(_target.apply("prod"))
+    import db_client
 
     src = db_client.create_connection()
 

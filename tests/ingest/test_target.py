@@ -1,12 +1,20 @@
-"""--target local|prod (scripts/_target.py), shared by run_ingest_v2.py and
-language_tags.py. Nothing here connects anywhere: prod is only ever pointed
-at a temporary .env.prod naming a host that does not exist.
+"""--target local|prod (scripts/_target.py), shared by run_ingest_v2.py,
+language_tags.py and backup_prod_db.py. Nothing here connects anywhere:
+prod is only ever pointed at a temporary .env.prod naming a host that does
+not exist, or at none.
 """
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 import _target
+import backup_prod_db
 import language_tags
 import run_ingest_v2 as runner
+
+SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 
 TOKEN = "tok-never-printed-123"
 
@@ -63,9 +71,23 @@ def test_prod_must_actually_be_turso(env, tmp_path):
         _target.apply("prod", path)
 
 
-def test_both_scripts_refuse_prod_without_its_file(env):
+def test_every_prod_script_refuses_without_its_file(env):
     # conftest points _target.ENV_PROD at a file that does not exist.
     with pytest.raises(SystemExit, match="does not exist"):
         runner.main(["--target", "prod", "--recompute-only"])
     with pytest.raises(SystemExit, match="does not exist"):
         language_tags.main(["--target", "prod", "--status"])
+    # The restore point is taken with the same credentials the run writes
+    # with; it used to regex them out of scripts/_load_gcp_secrets.ps1.
+    with pytest.raises(SystemExit, match="does not exist"):
+        backup_prod_db.main()
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="python -P is 3.11+")
+@pytest.mark.parametrize("script", ["run_ingest_v2.py", "language_tags.py"])
+def test_the_scripts_find_target_without_their_directory_on_sys_path(script):
+    # -P (PYTHONSAFEPATH) drops the script's own directory from sys.path,
+    # which is the only reason `import _target` used to work.
+    run = subprocess.run([sys.executable, "-P", str(SCRIPTS / script), "--help"],
+                         capture_output=True, text=True, timeout=120)
+    assert run.returncode == 0, run.stderr

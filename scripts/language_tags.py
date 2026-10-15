@@ -42,6 +42,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "backend"))
+# For _target. Explicit, not left to the script directory being
+# sys.path[0]: that entry is missing under `python -P` / PYTHONSAFEPATH.
+sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -56,7 +59,7 @@ except ImportError:
 
 from db import get_conn  # noqa: E402
 from ingest_pipeline import language_tagging as lt  # noqa: E402
-import _target  # noqa: E402  (scripts/, next to this file)
+import _target  # noqa: E402
 
 
 def _key(s: str) -> dict:
