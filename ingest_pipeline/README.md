@@ -252,19 +252,31 @@ or all three at once, with a non-zero exit when anything is waiting:
 python scripts/language_tags.py --status
 ```
 
+**On production the wait ages cover only rows that have a `created_at`.** A
+read-only probe on 2026-10-15 found it NULL on 4,844 of 6,238 tracks (789
+of the 827 pending), not only on rows the app inserted: production's
+`tracks` has no column defaults. Rows created from 2026-10-15 on are stamped
+by `_process_track`; the existing ones are not, so `MIN(created_at)` and the
+oldest / median wait from `--status` (which skips NULLs) describe the
+stamped minority until a backfill (`docs/backend-todo.md` 3.11). The counts
+are unaffected.
+
 ### Leftover states
 
 - **`whisper_done`** — no producer. `LanguageStage` normalises it to
   `'pending'`, and its gate admits those rows (usually
   `ingestion_status='done'` with nothing else armed), which is what puts them
-  in a cohort. The local DB has zero of them; production was not checked.
+  in a cohort. The local DB has zero of them, and production had none on
+  2026-10-15 (read-only probe).
 - **`no_match`** — no producer either (27 rows locally, all already fused and
-  `ingestion_status='done'`). Left alone on purpose: they have a vector and
-  are in the DJ pool, so re-asking them is an improvement, not an unblock.
-  To re-ask: `UPDATE tracks SET language_status='pending' WHERE
-  language_status='no_match'`.
+  `ingestion_status='done'`; production also had 27 on 2026-10-15). Left
+  alone on purpose: they have a vector and are in the DJ pool, so re-asking
+  them is an improvement, not an unblock. To re-ask: `UPDATE tracks SET
+  language_status='pending' WHERE language_status='no_match'`.
 - **NULL** — normalised to `'pending'` for live rows; left NULL for the 210
-  local rows parked at `'no_preview'`.
+  local rows parked at `'no_preview'`. Production had 1,145 NULL rows on
+  2026-10-15, 799 of them pending rows that had never entered the pipeline,
+  which a pass normalises as its cohorts reach them.
 
 ## Re-runs are cheap
 
@@ -293,8 +305,10 @@ that stalled for good: rows through classify sit at
 `language_status='pending'` + `fuse_status='pending'` with
 `ingestion_status='pending'`, which matched, were the lowest ids, and could
 be moved by no stage. Every pass re-selected them, processed nothing, and
-the loop slept while every higher id waited. Production's head was 28 such
-rows (reported 2026-10-15). `tests/ingest/test_cohort.py` reproduces it.
+the loop slept while every higher id waited. It was live on production: a
+read-only probe on 2026-10-15 found 28 such rows at the head of the id
+order, ahead of 799 pending rows that had never entered the pipeline.
+`tests/ingest/test_cohort.py` reproduces it.
 
 ## One MERT pass, two outputs
 
@@ -472,6 +486,17 @@ libraries, regressed 74 language tags that existed only on prod and nulled
 74 `youtube_id`s. The sync is gone; nothing writes a local result into prod
 any more.
 
+**Production on 2026-10-15** (read-only probe, from the owner's session):
+6,238 tracks, `ingestion_status` done 4,882 / pending 827 / no_preview 529.
+Of the 827 pending, 799 had every stage column NULL (never entered the
+pipeline) and 28 were encoded but waiting at `language_status='pending'` +
+`fuse_status='pending'`, at the head of the id order (§ Cohorts).
+`language_status`: NULL 1,145 / done 5,038 / pending 28 / no_match 27.
+`tracks` has no column DEFAULTs, no row with `ingestion_status` NULL and none
+at `'whisper_done'`. `track_embeddings`: 4,910 rows, 4,882 with a fused
+vector. So the first runs work through those 799, and the 28 move as soon as
+they are tagged.
+
 **The dev copy of prod is the backup file.** Copy it and point
 `VIBESCAPE_DB_PATH` at the copy (the snapshot itself stays a restore
 point). It keeps prod's track ids. A DB built by
@@ -486,8 +511,9 @@ score recompute writes 200 rows a request (§ Operating it). With every
 stage selected (the default) each status column is read by some gate at the
 start of each pass, so one missing on prod stops the pass with `no such
 column` before anything is written. The retired sync used to add
-`librosa_status` and `fuse_status` when prod lacked them;
-`PRAGMA table_info(tracks)` on the backup says whether it has them. A
+`librosa_status` and `fuse_status` when prod lacked them; the 2026-10-15
+probe read every stage column, so they were there then, and
+`PRAGMA table_info(tracks)` on a fresh backup says whether they still are. A
 missing *domain* column (one a stage writes, like `tonnetz_std`) is caught
 per row instead: each affected row is parked at `<stage>_stage_error` with
 the error text, so the first small pass is where to find out.

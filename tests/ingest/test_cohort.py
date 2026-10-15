@@ -6,7 +6,9 @@ tagging session does) and fuse waits for it, so rows that had been through
 classify sat at language_status='pending' + fuse_status='pending' with
 ingestion_status still 'pending': selected by every pass, actionable by no
 stage. The pass processed nothing, --loop called itself drained, and every
-higher id waited. Production's cohort head was 28 such rows.
+higher id waited. On production (read-only probe, 2026-10-15) 28 such rows
+sat at the head of the id order, ahead of 799 that had never entered the
+pipeline: the shape add_pending() and the first pass build here.
 
 The language and fuse stages here are the real ones. `Audio` stands in for
 preview -> download -> librosa -> classify, which need the network and a

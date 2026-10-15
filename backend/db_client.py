@@ -80,18 +80,24 @@ _URLSAFE_TO_STANDARD = str.maketrans("-_", "+/")
 def _decode_blob(text) -> bytes:
     """Decode the base64 of a Hrana blob Value, padded or not.
 
-    libsql's server encodes blobs as standard-alphabet base64 WITHOUT
-    padding (STANDARD_NO_PAD in libsql-hrana/src/proto.rs, bytes_as_base64,
-    read 2026-10-15); the Hrana spec names neither padding nor alphabet.
-    base64.b64decode insists on padding, and until 2026-10-15 a bare
-    `except` turned its "Incorrect padding" into b"". Padding is needed
-    whenever the length is not a multiple of 3: a 768-float MERT vector
-    (3072 bytes) needs none and always decoded, a 788-float fused vector
-    (3152 bytes) does, which is the empty read backend/app.py works around
-    with vector_extract().
+    Measured on production by a read-only probe on 2026-10-15, one row of
+    each: a mert_embedding (LENGTH() 3072) arrives as 4096 base64 chars,
+    len % 4 == 0; a fused_embedding (LENGTH() 3152) as 4203 chars,
+    len % 4 == 3. Both use the standard alphabet ('+' and '/', no '-' or
+    '_') and carry no '='. Plain base64.b64decode returns the 3072 bytes but
+    raises "Incorrect padding" on the fused one, where
+    b64decode(s + "=" * (-len(s) % 4)) returns 3152 bytes (so does
+    urlsafe_b64decode with the same padding). The reader before this, a
+    bare `except` around plain b64decode, returned 3072 bytes and 0 bytes.
+    So only blobs whose length is not a multiple of 3 broke: every fused
+    vector, the empty read backend/app.py works around with
+    vector_extract(), and never the MERT vector. libsql's source agrees
+    (STANDARD_NO_PAD in libsql-hrana/src/proto.rs); the Hrana spec names
+    neither padding nor alphabet.
 
-    Restores the padding, accepts both alphabets, and raises on anything
-    else: an undecodable blob must not read as an empty one.
+    This is that padded standard decode. It also takes the url-safe
+    alphabet, and raises on anything else: an undecodable blob must not
+    read as an empty one.
     """
     if not isinstance(text, str):
         raise sqlite3.DataError(f"Turso blob without base64 text: {text!r:.80}")
@@ -143,6 +149,8 @@ def _unwrap_cell(cell):
         except (TypeError, ValueError):
             return 0.0
     if t == "blob":
+        # Unpadded standard base64 from libsql; _decode_blob has the
+        # production measurement (2026-10-15).
         return _decode_blob(cell.get("base64"))
     return v  # text
 

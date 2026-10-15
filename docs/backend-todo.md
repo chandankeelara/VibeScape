@@ -136,13 +136,17 @@ endpoint while `status` was `running`. Any real fix moves job state out of
 process (a `jobs` table) — **[frontend contract]**, since the status endpoint
 gains durability semantics it does not have today.
 
-### 1.6 ~~`FuseStage` cannot run against Turso: it reads the MERT blob raw~~ — NOT REAL, and moot since 2.1 (2026-10-15)
+### 1.6 ~~`FuseStage` cannot run against Turso: it reads the MERT blob raw~~ — FALSE: was never broken for mert (3072 bytes needs no padding); the decode fix is for fused (3152 bytes)
 `ingest_pipeline/stage_fuse.py:86`
 
-A 768-float MERT blob is 3072 bytes, a multiple of 3, so its unpadded base64
-needs no padding and the old decoder read it fine; only blobs like the
-3152-byte fused vector came back `b''`. The analysis below assumed every
-blob did. Kept for the record:
+**verified on production** by a read-only probe from the owner's session,
+2026-10-15: a `mert_embedding` (server `LENGTH()` 3072) arrives as 4096
+base64 chars with no padding, and both plain `base64.b64decode` and the old
+`db_client` reader return 3072 bytes, so fuse's raw read of the 768-d MERT
+blob works today. A `fused_embedding` (`LENGTH()` 3152) arrives as 4203
+chars, also unpadded, and the old reader returned 0 bytes; that is what 2.1
+fixes. The analysis below assumed every blob read empty. Kept for the
+record:
 
 **verified by reading** (not run against Turso). `process_row` does
 `blob = row["mert_blob"]` from a plain `SELECT te.mert_embedding`. On the
@@ -237,10 +241,12 @@ endpoint.
 2026-10-10 language never writes `'done'` and fuse waits for it, so rows
 through classify sit at `language_status='pending'` + `fuse_status='pending'`
 + `ingestion_status='pending'`: matched, lowest, unmovable. Every pass took
-them, processed nothing, and `--loop` slept while every higher id waited
-(prod's head: 28 such rows, reported 2026-10-15). The cohort is now the
-union of the selected stages' own `fetch_pending` gates, lowest `--batch`
-ids, so a non-empty cohort always has work.
+them, processed nothing, and `--loop` slept while every higher id waited.
+**Live on production:** a read-only probe from the owner's session on
+2026-10-15 found 827 pending rows, 28 of them blocked like this at the head
+of the id order and 799 that had never entered the pipeline. The cohort is
+now the union of the selected stages' own `fetch_pending` gates, lowest
+`--batch` ids, so a non-empty cohort always has work.
 
 ### 1.12 ~~The offline pipeline had two sources of truth~~ — DONE (2026-10-15)
 `scripts/_sync_local_to_turso.py` (deleted), `scripts/_target.py`
@@ -263,12 +269,21 @@ for the first run.
 
 Fixed: padding restored, both alphabets accepted, an undecodable blob raises
 `sqlite3.DataError` instead of reading `b''` (`tests/database/test_turso_adapter.py`).
-One correction to the text below: the server sends the **standard** alphabet
-without padding (`STANDARD_NO_PAD` in libsql's `libsql-hrana/src/proto.rs`,
-read 2026-10-15), not base64url. Not verified against production (nothing
-here may touch it), and `backend/app.py`'s `vector_extract()` reads were
-deliberately left in place; they can go once a prod read confirms the fix.
-Original analysis:
+
+**The payloads are measured on production** (read-only probe from the
+owner's session, 2026-10-15, one row each). `mert_embedding`, `LENGTH()`
+3072: 4096 base64 chars, `len % 4 == 0`. `fused_embedding`, `LENGTH()`
+3152: 4203 chars, `len % 4 == 3`. Both standard alphabet (`+` and `/`, no
+`-` or `_`), no `=`. On the fused one plain `b64decode` raises "Incorrect
+padding", `b64decode(s + "=" * (-len(s) % 4))` returns 3152 bytes (so does
+`urlsafe_b64decode` with the same padding), and the old `db_client`
+returned 0 bytes; on the MERT one everything returns 3072 (see 1.6). So
+the text below is right about padding and wrong about the alphabet: it is
+the standard one, not base64url (libsql's source agrees, `STANDARD_NO_PAD`
+in `libsql-hrana/src/proto.rs`). The fixed reader is that padded standard
+decode; the fixed `db_client` itself has not read from production.
+`backend/app.py`'s `vector_extract()` reads were deliberately left in place
+and can go in a follow-up. Original analysis:
 
 **suspected**, high confidence, and worth settling because it is the root of
 every `vector_extract()` workaround in the codebase. The decoder is
@@ -388,26 +403,13 @@ process-level "already ensured" flag.
 
 ## 3. Correctness risks
 
-### 3.1 A track with `ingestion_status IS NULL` ~~jams the head of the cohort queue~~ never enters preview
-`ingest_pipeline/stage_preview.py` `fetch_pending`
+### 3.1 ~~A track with `ingestion_status IS NULL` jams the head of the cohort queue~~ — NOT REAL (2026-10-15)
 
-**CHANGED (2026-10-15):** the jam is gone with 1.11, since a cohort now only
-holds rows some stage's gate accepts. What remains is smaller: such a row
-gets its language normalised and then nothing, because preview's gate wants
-`ingestion_status='pending'` exactly. Same cheap check on prod; if it
-returns rows, set them to `'pending'`. Original:
-
-**suspected.** `select_cohort` admits rows where `ingestion_status = 'pending'
-**OR ingestion_status IS NULL**`, ordered `id ASC LIMIT batch`. `PreviewStage`
-— the only entry stage — matches `ingestion_status = 'pending'` strictly. A
-row with NULL `ingestion_status` and NULL stage columns is therefore selected
-into every cohort and matched by no stage. Since the cohort is the lowest
-`batch` ids, enough such rows (default batch 50) permanently consume the
-whole cohort and the pipeline reports `processed=0` while real work sits
-behind them. `base.py:16-23` says prod Turso's `tracks` was rebuilt without
-column defaults, which is how NULLs get there. Local DB has zero such rows
-(checked). Check on prod:
-`SELECT COUNT(*) FROM tracks WHERE ingestion_status IS NULL`.
+The check it asked for, `SELECT COUNT(*) FROM tracks WHERE ingestion_status
+IS NULL`, returns 0 on production (read-only probe from the owner's session,
+2026-10-15) and 0 locally; the app's INSERT writes `'pending'` literally.
+And since 1.11 such a row could not jam a cohort anyway: the cohort only
+holds rows some stage's gate accepts.
 
 ### 3.2 `CORS allow_origins=["*"]` with `allow_credentials=True`, next to a token-in-query-string auth path
 `backend/app.py:109-113`, `backend/app.py:263`
@@ -515,17 +517,19 @@ same test as `titles_match` / `artists_match`) rather than in the catalogue.
 They are excluded from `reset_shared_previews.py` on purpose. Check
 `user_tracks` for references before deleting them.
 
-### 3.11 App-inserted prod tracks have `created_at` NULL
-`backend/app.py` `_process_track` (fixed for new rows 2026-10-15)
+### 3.11 Most prod tracks have `created_at` NULL
+`backend/app.py` `_process_track` (new rows stamped since 2026-10-15)
 
-**suspected size, verified mechanism.** Prod's `tracks` has no column
-defaults, and the INSERT relied on `DEFAULT CURRENT_TIMESTAMP` until
-2026-10-15; 626 pending prod rows were reported NULL that day. New rows are
-stamped now; the old ones still blind `language_tags.py --status` wait ages.
-Candidate backfill: the earliest `user_tracks.added_at` per track, if prod's
-`user_tracks` kept its default (not checked). Check first:
-`SELECT COUNT(*) FROM tracks WHERE created_at IS NULL` and the same count of
-those with a non-NULL `MIN(added_at)`.
+**verified on production** (read-only probe from the owner's session,
+2026-10-15): `created_at` is NULL on 4,844 of 6,238 tracks, 789 of the 827
+pending, so not only on rows the app inserted, and `tracks` has no column
+defaults. `_process_track` relied on `DEFAULT CURRENT_TIMESTAMP` until
+2026-10-15 and now writes the value, which fixes rows created from then on
+only. The existing NULLs keep `language_tags.py --status`'s oldest / median
+wait (it skips them) and the README's `MIN(created_at)` describing the
+stamped minority. Candidate backfill: the earliest `user_tracks.added_at` per
+track, if prod's `user_tracks` kept its default (not checked). Check first:
+how many NULL-`created_at` tracks have a non-NULL `MIN(added_at)`.
 
 ## 4. Cleanup
 
@@ -952,12 +956,14 @@ which no longer has a producer. They are a second writer of the same
 columns with the same cascade — exactly 1.2's failure mode if the two ever
 diverge. Delete them once nobody is mid-flight on a hand-driven batch.
 
-### 8.4 Not verified against production
-Nothing here was run against Turso. Two things to check before/after a prod
-run: `SELECT language_status, COUNT(*) FROM tracks GROUP BY 1` (prod rows
-land NULL, not `'pending'`, because its `tracks` has no column defaults —
-`LanguageStage` normalises them, but only for rows a cohort reaches), and
-whether any `'whisper_done'` rows exist there (local has none).
+### 8.4 Not run against production; its two checks are answered (2026-10-15)
+Nothing here was run against Turso. The two things this asked to check were
+measured by a read-only probe from the owner's session on 2026-10-15:
+`language_status` on prod is NULL 1,145 / done 5,038 / pending 28 /
+no_match 27 (its `tracks` has no column defaults, so app rows land NULL;
+799 of the NULLs are pending rows that never entered the pipeline, which
+`LanguageStage` normalises as cohorts reach them), and there are 0
+`'whisper_done'` rows (local has none either).
 
 ## 8. Telemetry v2 — landed 2026-10-10 (branch `dj-replay`), what is left
 

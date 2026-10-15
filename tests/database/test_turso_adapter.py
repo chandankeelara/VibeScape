@@ -132,6 +132,18 @@ def test_a_blob_decodes_with_or_without_padding(n, encode):
     assert db_client._unwrap_cell({"type": "blob", "base64": encode(data)}) == data
 
 
+def test_the_two_shapes_production_sends():
+    # Read-only probe of production, 2026-10-15: a 3072-byte mert_embedding
+    # arrived as 4096 chars and a 3152-byte fused_embedding as 4203,
+    # standard alphabet, no '='. The old reader returned 0 bytes for the
+    # second.
+    for n, chars in ((3072, 4096), (3152, 4203)):
+        data = np.linspace(-1, 1, n // 4, dtype=np.float32).tobytes()
+        text = base64.b64encode(data).decode().rstrip("=")
+        assert len(text) == chars and "=" not in text
+        assert db_client._unwrap_cell({"type": "blob", "base64": text}) == data
+
+
 def test_a_fused_vector_written_and_read_back_is_intact(turso):
     # 788 float32 = 3152 bytes, 2 short of a multiple of 3: unpadded base64
     # needs one '='. The old decoder raised on it and read b"".

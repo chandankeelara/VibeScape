@@ -171,8 +171,9 @@ def select_cohort(conn, stages: list, batch: int, only_ids=None) -> list[int]:
     fuse_status='pending' with ingestion_status still 'pending'. Those were
     the lowest ids, every pass selected them again, no stage could touch
     them, the pass processed nothing, and the loop declared itself drained
-    while every higher id waited. Production's cohort head was 28 such rows
-    on 2026-10-15.
+    while every higher id waited. Live on production: a read-only probe on
+    2026-10-15 found 28 such rows at the head of the id order, ahead of 799
+    pending rows that had never entered the pipeline.
 
     A pass on a non-empty cohort always processes something: its lowest id
     came from some stage's gate, and only an earlier stage acting on the
