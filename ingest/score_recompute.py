@@ -57,6 +57,17 @@ FEATURE_SCALARS = [
 # treated as equal, so a re-run over an unchanged catalogue writes nothing.
 FLOAT_TOLERANCE = 1e-6
 
+# UPDATEs per execute_batch: one transaction, and on Turso one HTTPS round
+# trip, each. 200 of them are ~85 KB of request JSON (434 bytes apiece,
+# measured 2026-10-15). No size limit was hit or measured; the chunk only
+# keeps each request small and a failure's blast radius one chunk.
+WRITE_CHUNK = 200
+
+_UPDATE = (
+    "UPDATE tracks SET activation = ?, valence = ?, activation_relative = ?, "
+    "vibe_score = ?, mood = ? WHERE id = ?"
+)
+
 _SELECT = (
     "SELECT id, tempo, energy, energy_mean, energy_std, brightness, "
     "tempo_stability, onset_rate, bandwidth, rolloff, "
@@ -103,15 +114,34 @@ def _same_float(stored, new: float) -> bool:
         return False
 
 
+def _write(conn, updates: list) -> None:
+    """Issue the UPDATEs through execute_batch, WRITE_CHUNK at a time.
+
+    Before 2026-10-15 every UPDATE was its own Turso round trip, and once
+    newly scored tracks move the mean nearly every featured row changes. A
+    connection without execute_batch (a plain sqlite3 one) gets the old
+    path: one transaction for everything.
+    """
+    batch = getattr(conn, "execute_batch", None)
+    if batch is None:
+        for sql, params in updates:
+            conn.execute(sql, params)
+        conn.commit()
+        return
+    for i in range(0, len(updates), WRITE_CHUNK):
+        batch(updates[i:i + WRITE_CHUNK])
+
+
 def recompute_axes_and_zscores(conn) -> dict:
     """
     Recompute and persist the score columns for the whole catalogue.
 
     Only rows whose stored activation, valence, activation_relative,
-    vibe_score or mood actually differ are UPDATEd — on Turso each UPDATE is
-    its own HTTPS round trip, and a re-run over an unchanged catalogue used to
-    cost ~3,800 of them. Batching the remaining writes needs Hrana batch
-    support in db_client (backlog 2.2).
+    vibe_score or mood actually differ are UPDATEd, so a re-run over an
+    unchanged catalogue costs one SELECT (it used to cost ~3,800 Turso round
+    trips). The rest go out in chunks of WRITE_CHUNK, each one transaction:
+    a failure raises, after which earlier chunks have landed and the next
+    run writes what is left.
 
     Returns {updated, written, unchanged, activation_stats, mood_distribution}:
     `updated` is the number of rows scored (its meaning before the skip
@@ -142,7 +172,7 @@ def recompute_axes_and_zscores(conn) -> dict:
     mx = float(max(activations))
 
     mood_counts: dict[str, int] = {}
-    written = 0
+    updates: list[tuple[str, tuple]] = []
     for row, activation, valence in per_row:
         if std > 1e-9:
             rel = 50.0 + ((activation - mean) / std) * 15.0
@@ -157,13 +187,9 @@ def recompute_axes_and_zscores(conn) -> dict:
                 and _same_float(row["vibe_score"], rel)
                 and row["mood"] == mood):
             continue
-        conn.execute(
-            "UPDATE tracks SET activation = ?, valence = ?, activation_relative = ?, "
-            "vibe_score = ?, mood = ? WHERE id = ?",
-            (activation, valence, rel, rel, mood, row["id"]),
-        )
-        written += 1
-    conn.commit()
+        updates.append((_UPDATE, (activation, valence, rel, rel, mood, row["id"])))
+    _write(conn, updates)
+    written = len(updates)
 
     return {
         "updated": len(per_row),
