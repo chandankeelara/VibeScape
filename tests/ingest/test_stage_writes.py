@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 import requests
 
-from ingest_pipeline.base import RowResult, Stage, STATUS_DONE, id_filter
+from ingest_pipeline.base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, id_filter
 from ingest_pipeline.fused_vector import FUSED_DIM, MERT_DIM
 from ingest_pipeline.stage_classify import ClassifyStage
 from ingest_pipeline.stage_fuse import CURRENT_MERT_VERSION, FuseStage
@@ -49,6 +49,35 @@ class Scripted(Stage):
 
     def process_row(self, row):
         return RowResult(int(row["id"]), STATUS_DONE, dict(self.fields[int(row["id"])]))
+
+
+class Refuse(Stage):
+    """A stage that runs on finished tracks, as fuse does after a language
+    correction: its gate is its own column, whatever ingestion_status says."""
+    name = "fuse"
+    status_column = "fuse_status"
+    arms = ("youtube_status",)
+    max_workers = 1
+
+    def __init__(self, results):
+        self.results = results                   # track id -> (status, fields, error)
+
+    def fetch_pending(self, conn, limit, only_ids=None):
+        return conn.execute("SELECT id FROM tracks WHERE fuse_status = 'pending' "
+                            "ORDER BY id LIMIT ?", (limit,)).fetchall()
+
+    def process_row(self, row):
+        status, fields, error = self.results[int(row["id"])]
+        return RowResult(int(row["id"]), status, dict(fields), error)
+
+
+def finished(sql, n):
+    """n finished tracks re-armed for fuse, as a language correction leaves them."""
+    ids = add_rows(sql, n)
+    sql.executemany("UPDATE tracks SET ingestion_status = 'done', fuse_status = 'pending' "
+                    "WHERE id = ?", [(i,) for i in ids])
+    sql.commit()
+    return ids
 
 
 @pytest.fixture
@@ -183,6 +212,29 @@ def test_two_unique_collisions_side_by_side_are_each_retried(sql, conn):
     rows = sql.execute("SELECT id, album, apple_id FROM tracks ORDER BY id").fetchall()
     assert [tuple(r) for r in rows] == [(a, "A", None), (b, "B", None),
                                         (c, "C", 701), (d, "D", 702)]
+
+
+# ------------------------------------------------------- finished tracks
+#
+# Every DJ, similar and vibe query requires ingestion_status='done'. A stage
+# that fails on a finished track must not demote it over one failed write.
+
+def test_parking_a_finished_track_leaves_it_done(sql, conn):
+    a, b = finished(sql, 2)
+    stage = Refuse({a: (STATUS_DONE, {"album": "A"}, None),
+                    b: (STATUS_DONE, {"album": "B", "spotify_id": "S0"}, None)})  # a's
+    assert stage.run_batch(conn, 10, log) == {"done": 1, "no_match": 0, "failed": 1}
+    status, fuse, error = sql.execute("SELECT ingestion_status, fuse_status, ingestion_error "
+                                      "FROM tracks WHERE id = ?", (b,)).fetchone()
+    assert (status, fuse) == ("done", "failed") and "write failed" in error
+
+
+def test_a_stage_that_fails_on_a_finished_track_leaves_it_done(sql, conn):
+    (a,) = finished(sql, 1)
+    Refuse({a: (STATUS_FAILED, {}, "unexpected MERT dim 0")}).run_batch(conn, 10, log)
+    status, fuse, error = sql.execute("SELECT ingestion_status, fuse_status, ingestion_error "
+                                      "FROM tracks WHERE id = ?", (a,)).fetchone()
+    assert (status, fuse) == ("done", "failed") and "unexpected MERT dim 0" in error
 
 
 def test_a_clean_batch_is_one_execute_batch(sql, app_module, batches):

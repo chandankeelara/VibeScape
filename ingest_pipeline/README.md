@@ -69,9 +69,21 @@ On `failed`, a stage arms nothing and writes
 `classify_stage_error`, …) plus the exception in `ingestion_error`. One
 `GROUP BY ingestion_status` tells you which stage is failing and how often,
 with no log parsing. The row also stops re-entering at `preview`, whose
-gate only matches `'pending'`, while its own column keeps `'failed'`. Once
-the cause is fixed, `run_ingest_v2.py --retry-failed <stage>` (or `all`)
-sets both back to `'pending'`, clears the error, and runs.
+gate only matches `'pending'`, while its own column keeps `'failed'`.
+
+**Except a finished track.** Stages do run on `ingestion_status='done'`
+rows (fuse after a language correction, youtube when re-armed), and every
+DJ, similar and vibe query requires `'done'`. So a failure there writes the
+stage's own column `'failed'` and `ingestion_error` only, and the track
+keeps `'done'` and stays in the pool on its old values. The `GROUP BY
+ingestion_status` above does not see such a row; count those with
+`WHERE ingestion_status = 'done' AND <status column> = 'failed'`
+(`fuse_status`, `youtube_status`; classify's is `ml_status`).
+
+Once the cause is fixed, `run_ingest_v2.py --retry-failed <stage>` (or
+`all`) re-arms both shapes: an in-flight row's `ingestion_status` and
+stage column back to `'pending'`, a finished row's stage column only. It
+clears the error, then runs.
 
 A stage writes its whole batch in one transaction (`execute_batch`, one
 round trip on Turso). When that fails, the kind of error decides

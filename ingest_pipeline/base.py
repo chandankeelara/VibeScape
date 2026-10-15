@@ -35,6 +35,10 @@ Status vocabulary (per stage):
     failed   — an unexpected exception, or a write the stage could not
                make. Parks the row until
                `run_ingest_v2.py --retry-failed <stage>|all` re-arms it.
+               A row still in flight also gets
+               ingestion_status='<stage>_stage_error'; a finished track
+               (ingestion_status='done', being re-fused or re-armed) keeps
+               'done', so one failed stage cannot take it out of the DJ.
 
 Writing a batch
 ---------------
@@ -65,6 +69,15 @@ a constraint judges a row's data, and nothing else a write can hit does.
     landed: a column or table production lacks, a read-only token, a busy
     or locked database, a failed COMMIT. None of those is a row's fault,
     so the stage stops and the rows stay pending until the cause is fixed.
+
+Parking never demotes a finished track. Every DJ, similar and vibe query
+requires ingestion_status='done', and stages do run on done tracks: fuse
+after a language correction, youtube when re-armed. Parking one of those
+sets its own column 'failed' and ingestion_error only, and leaves 'done'
+(UnlessDone, in the same UPDATE), so a failed re-fuse keeps the track in
+the pool on its old vector instead of dropping it. The asymmetry has a
+cost: a GROUP BY ingestion_status does not show such a row. Look for
+`<stage>_status = 'failed'` too; `--retry-failed` re-arms both shapes.
 
 Until 2026-10-15 one failing row aborted the stage's write loop after the
 batch's work was done: SQLite rolled the whole batch back (the next pass
@@ -110,7 +123,7 @@ STATUS_FAILED = "failed"
 # ingestion_status='pending', so a broken row stops re-entering the
 # pipeline every pass. `run_ingest_v2.py --retry-failed <stage>` finds the
 # row by this value and sets it and the stage's own column (which reads
-# 'failed') back to 'pending'.
+# 'failed') back to 'pending'. Never written over 'done' (UnlessDone).
 def stage_error_status(stage_name: str) -> str:
     return f"{stage_name}_stage_error"
 # RETIRED 2026-10-10 with the Whisper language stage. It meant "Whisper
@@ -150,10 +163,25 @@ def iso_now() -> str:
     return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
 
 
+class UnlessDone(str):
+    """A value written only where the column does not already read 'done'.
+
+    For ingestion_status when a stage parks a row: a finished track that a
+    stage runs on again (a re-fuse, a re-armed youtube) must keep 'done',
+    which every DJ, similar and vibe query requires. Decided in the same
+    UPDATE, so it costs no read and cannot race one.
+    """
+
+
 def update_stmt(track_id: int, fields: dict) -> tuple[str, list]:
-    """(sql, params) for `UPDATE tracks SET <fields> WHERE id = track_id`."""
-    set_clause = ", ".join(f"{k} = ?" for k in fields)
-    return f"UPDATE tracks SET {set_clause} WHERE id = ?", [*fields.values(), int(track_id)]
+    """(sql, params) for `UPDATE tracks SET <fields> WHERE id = track_id`.
+    An UnlessDone value is written only where its column is not 'done'."""
+    set_clause = ", ".join(
+        f"{k} = CASE WHEN {k} = 'done' THEN {k} ELSE ? END" if isinstance(v, UnlessDone)
+        else f"{k} = ?"
+        for k, v in fields.items())
+    params = [str(v) if isinstance(v, UnlessDone) else v for v in fields.values()]
+    return f"UPDATE tracks SET {set_clause} WHERE id = ?", [*params, int(track_id)]
 
 
 @dataclass
@@ -368,7 +396,7 @@ class Stage(ABC):
                     self.name, w.track_id, error)
         conn.execute_batch([update_stmt(w.track_id, {
             self.status_column: STATUS_FAILED,
-            "ingestion_status": stage_error_status(self.name),
+            "ingestion_status": UnlessDone(stage_error_status(self.name)),
             "ingestion_error": f"[{self.name}] write failed: {error}"[:500],
         })])
         return False
@@ -391,8 +419,9 @@ class Stage(ABC):
                 fields[col] = STATUS_PENDING
         elif res.status == STATUS_FAILED:
             # Surface the failure on the row, not only in the log, and
-            # stop it re-entering at preview.
-            fields["ingestion_status"] = stage_error_status(self.name)
+            # stop it re-entering at preview; a finished track keeps
+            # 'done' (see "Writing a batch").
+            fields["ingestion_status"] = UnlessDone(stage_error_status(self.name))
             if res.error:
                 fields["ingestion_error"] = f"[{self.name}] {res.error}"[:500]
         # A terminal verdict for the whole track, if this stage has one.

@@ -51,7 +51,7 @@ Usage:
     # Only re-run the library-wide score recompute, no stages:
     python scripts/run_ingest_v2.py --recompute-only
 
-    # Re-arm rows parked at <stage>_stage_error (one stage, or all), then run:
+    # Re-arm the rows a stage parked as failed (one stage, or all), then run:
     python scripts/run_ingest_v2.py --retry-failed classify
 
     # Production Turso instead of the local SQLite file (the default,
@@ -156,27 +156,36 @@ def build_stages(names: list[str]) -> list:
 
 
 def rearm_failed(conn, which: str) -> dict[str, int]:
-    """Send rows parked at <stage>_stage_error back into the pipeline.
+    """Send rows a stage parked back into the pipeline.
 
     A row that failed a stage (an exception in process_row, or a write the
-    stage could not make) is parked: ingestion_status='<stage>_stage_error',
-    the stage's own column 'failed', the error in ingestion_error. That
-    keeps it out of every gate until somebody decides the cause is fixed.
-    This undoes exactly that, for one stage or `all`: ingestion_status and
-    the stage's column back to 'pending', ingestion_error cleared, in one
-    transaction. Returns {stage: rows re-armed}.
+    stage could not make) is parked in one of two shapes, and this undoes
+    both, for one stage or `all`, in one transaction:
+
+      - in flight: ingestion_status='<stage>_stage_error' and the stage's
+        own column 'failed'. Both go back to 'pending'.
+      - finished: ingestion_status still 'done' (parking never demotes a
+        finished track, see ingest_pipeline/base.py) and the stage's
+        column 'failed'. Only the column goes back to 'pending'.
+
+    ingestion_error is cleared either way. Returns {stage: rows re-armed}.
     """
     names = list(STAGE_CLASSES) if which == "all" else [which]
     unknown = [n for n in names if n not in STAGE_CLASSES]
     if unknown:
         raise SystemExit(f"--retry-failed: unknown stage {which!r}; "
                          f"expected all or one of {list(STAGE_CLASSES)}")
-    cursors = conn.execute_batch([
-        (f"UPDATE tracks SET ingestion_status = 'pending', "
-         f"{STAGE_CLASSES[n].status_column} = 'pending', ingestion_error = NULL "
-         "WHERE ingestion_status = ?", (stage_error_status(STAGE_CLASSES[n].name),))
-        for n in names])
-    return {n: max(c.rowcount, 0) for n, c in zip(names, cursors)}
+    stmts = []
+    for n in names:
+        col = STAGE_CLASSES[n].status_column
+        stmts.append((f"UPDATE tracks SET ingestion_status = 'pending', {col} = 'pending', "
+                      "ingestion_error = NULL WHERE ingestion_status = ?",
+                      (stage_error_status(STAGE_CLASSES[n].name),)))
+        stmts.append((f"UPDATE tracks SET {col} = 'pending', ingestion_error = NULL "
+                      f"WHERE ingestion_status = 'done' AND {col} = 'failed'", ()))
+    cursors = conn.execute_batch(stmts)
+    return {n: max(cursors[2 * i].rowcount, 0) + max(cursors[2 * i + 1].rowcount, 0)
+            for i, n in enumerate(names)}
 
 
 def _gated(stages: list) -> list:
@@ -353,8 +362,8 @@ def main(argv: list[str] | None = None) -> int:
                              "(activation_relative / vibe_score / mood), no stages")
     parser.add_argument("--retry-failed", choices=[*STAGE_CLASSES, "all"], default=None,
                         metavar="STAGE|all",
-                        help="first re-arm the rows parked at <STAGE>_stage_error "
-                             "(or at any stage's), then run as usual")
+                        help="first re-arm the rows STAGE (or any stage) parked as "
+                             "failed, in flight or finished, then run as usual")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 

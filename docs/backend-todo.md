@@ -388,9 +388,11 @@ per row, or catch per row.
 `scripts/run_ingest_v2.py` `rearm_failed`
 
 `--retry-failed STAGE|all` sets the rows at `<stage>_stage_error` back to
-`ingestion_status='pending'` with the stage's own column `'pending'` and
-`ingestion_error` cleared (one transaction), logs the count, then runs as
-usual. base.py's two promises are true now. Covered by
+`ingestion_status='pending'` with the stage's own column `'pending'`, and
+a finished row that a stage parked (still `'done'`, its column
+`'failed'`: parking never demotes a finished track) back to its column
+`'pending'` only; `ingestion_error` cleared, one transaction. It logs the
+count, then runs as usual. base.py's two promises are true now. Covered by
 `tests/ingest/test_retry_failed.py`. Original:
 
 **verified.** `base.py` twice tells the reader that a `failed` row can be

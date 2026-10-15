@@ -1,6 +1,8 @@
-"""run_ingest_v2.py --retry-failed: rows parked at <stage>_stage_error go
-back into the pipeline. ingest_pipeline/base.py promised the flag long
-before it existed (backlog 2.5)."""
+"""run_ingest_v2.py --retry-failed: rows a stage parked go back into the
+pipeline, in both shapes: in flight (<stage>_stage_error) and finished
+(still 'done', the stage's column 'failed'; parking never demotes a finished
+track). ingest_pipeline/base.py promised the flag long before it existed
+(backlog 2.5)."""
 import logging
 
 import pytest
@@ -30,6 +32,9 @@ def parked(sql):
         "preview": add(sql, "preview_stage_error", preview_status="failed",
                        ingestion_error="[preview] write failed: x"),
         "done": add(sql, "done", ml_status="done"),
+        # a re-fuse that failed: the track stayed done
+        "finished": add(sql, "done", fuse_status="failed",
+                        ingestion_error="[fuse] write failed: y"),
     }
 
 
@@ -44,6 +49,17 @@ def test_one_stage_is_rearmed_and_nothing_else(sql, parked):
     assert state(sql, parked["preview"], "preview_status") == (
         "preview_stage_error", "failed", "[preview] write failed: x")
     assert state(sql, parked["done"], "ml_status") == ("done", "done", None)
+    assert state(sql, parked["finished"], "fuse_status") == (
+        "done", "failed", "[fuse] write failed: y")
+
+
+def test_a_finished_track_is_rearmed_and_stays_done(sql, parked):
+    conn = runner.get_conn()
+    try:
+        assert runner.rearm_failed(conn, "fuse") == {"fuse": 1}
+    finally:
+        conn.close()
+    assert state(sql, parked["finished"], "fuse_status") == ("done", "pending", None)
 
 
 def test_all_rearms_every_stage_in_one_go(sql, parked):
@@ -53,7 +69,7 @@ def test_all_rearms_every_stage_in_one_go(sql, parked):
     finally:
         conn.close()
     assert counts == {"preview": 1, "download": 0, "librosa": 0, "classify": 1,
-                      "language": 0, "fuse": 0, "youtube": 0}
+                      "language": 0, "fuse": 1, "youtube": 0}
     assert state(sql, parked["preview"], "preview_status") == ("pending", "pending", None)
 
 
@@ -61,7 +77,7 @@ def test_the_flag_rearms_then_runs_and_reports_the_count(sql, parked, monkeypatc
     monkeypatch.setattr(runner, "build_stages", lambda names: [])
     with caplog.at_level(logging.INFO, logger="vibescape.ingest.orch"):
         assert runner.main(["--retry-failed", "all"]) == 0
-    assert "re-armed 2 row(s)" in caplog.text
+    assert "re-armed 3 row(s)" in caplog.text
     assert state(sql, parked["classify"], "ml_status") == ("pending", "pending", None)
 
 
