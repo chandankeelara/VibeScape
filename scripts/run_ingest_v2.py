@@ -51,7 +51,7 @@ Usage:
     # Only re-run the library-wide score recompute, no stages:
     python scripts/run_ingest_v2.py --recompute-only
 
-    # Re-arm the rows a stage parked as failed (one stage, or all), then run:
+    # Re-arm rows parked at <stage>_stage_error (one stage, or all), then run:
     python scripts/run_ingest_v2.py --retry-failed classify
 
     # Production Turso instead of the local SQLite file (the default,
@@ -118,7 +118,8 @@ from ingest_pipeline.stage_youtube import YoutubeStage  # noqa: E402
 from ingest_pipeline.stage_language import LanguageStage  # noqa: E402
 from ingest_pipeline.stage_librosa import LibrosaStage  # noqa: E402
 from ingest_pipeline.stage_fuse import FuseStage  # noqa: E402
-from ingest_pipeline.base import STATUS_DONE, id_filter, stage_error_status  # noqa: E402
+from ingest_pipeline.base import (  # noqa: E402
+    LEFT_ARMED, STATUS_DONE, id_filter, stage_error_status)
 import score_recompute  # noqa: E402
 import _target  # noqa: E402
 
@@ -156,36 +157,31 @@ def build_stages(names: list[str]) -> list:
 
 
 def rearm_failed(conn, which: str) -> dict[str, int]:
-    """Send rows a stage parked back into the pipeline.
+    """Send rows parked at <stage>_stage_error back into the pipeline.
 
     A row that failed a stage (an exception in process_row, or a write the
-    stage could not make) is parked in one of two shapes, and this undoes
-    both, for one stage or `all`, in one transaction:
+    stage could not make) is parked: ingestion_status='<stage>_stage_error',
+    the stage's own column 'failed', the error in ingestion_error. That
+    keeps it out of every gate until somebody decides the cause is fixed.
+    This undoes exactly that, for one stage or `all`: ingestion_status and
+    the stage's column back to 'pending', ingestion_error cleared, in one
+    transaction. Returns {stage: rows re-armed}.
 
-      - in flight: ingestion_status='<stage>_stage_error' and the stage's
-        own column 'failed'. Both go back to 'pending'.
-      - finished: ingestion_status still 'done' (parking never demotes a
-        finished track, see ingest_pipeline/base.py) and the stage's
-        column 'failed'. Only the column goes back to 'pending'.
-
-    ingestion_error is cleared either way. Returns {stage: rows re-armed}.
+    A finished track is never parked (ingest_pipeline/base.py, "Writing a
+    batch"): a failure leaves it 'done' and armed, and the next pass retries
+    it without this flag.
     """
     names = list(STAGE_CLASSES) if which == "all" else [which]
     unknown = [n for n in names if n not in STAGE_CLASSES]
     if unknown:
         raise SystemExit(f"--retry-failed: unknown stage {which!r}; "
                          f"expected all or one of {list(STAGE_CLASSES)}")
-    stmts = []
-    for n in names:
-        col = STAGE_CLASSES[n].status_column
-        stmts.append((f"UPDATE tracks SET ingestion_status = 'pending', {col} = 'pending', "
-                      "ingestion_error = NULL WHERE ingestion_status = ?",
-                      (stage_error_status(STAGE_CLASSES[n].name),)))
-        stmts.append((f"UPDATE tracks SET {col} = 'pending', ingestion_error = NULL "
-                      f"WHERE ingestion_status = 'done' AND {col} = 'failed'", ()))
-    cursors = conn.execute_batch(stmts)
-    return {n: max(cursors[2 * i].rowcount, 0) + max(cursors[2 * i + 1].rowcount, 0)
-            for i, n in enumerate(names)}
+    cursors = conn.execute_batch([
+        (f"UPDATE tracks SET ingestion_status = 'pending', "
+         f"{STAGE_CLASSES[n].status_column} = 'pending', ingestion_error = NULL "
+         "WHERE ingestion_status = ?", (stage_error_status(STAGE_CLASSES[n].name),))
+        for n in names])
+    return {n: max(c.rowcount, 0) for n, c in zip(names, cursors)}
 
 
 def _gated(stages: list) -> list:
@@ -242,9 +238,14 @@ def select_cohort(conn, stages: list, batch: int, only_ids=None) -> list[int]:
     2026-10-15 found 28 such rows at the head of the id order, ahead of 799
     pending rows that had never entered the pipeline.
 
-    A pass on a non-empty cohort always processes something: its lowest id
+    A pass on a non-empty cohort always acts on something: its lowest id
     came from some stage's gate, and only an earlier stage acting on the
-    row (which counts) can move it out of that gate.
+    row can move it out of that gate. That counts as processed, except
+    where the stage failed on a finished track and left it armed (base.py,
+    "Writing a batch"): that is not progress, and run_pass leaves it out.
+    So if --batch finished tracks at the head of the id order fail every
+    pass, they fill every cohort and a loop ends as drained while higher
+    ids wait; each such failure is in the log as "left armed".
 
     `only_ids` (--only-ids) restricts every gate, and so the union; an
     empty list selects nothing.
@@ -285,6 +286,11 @@ def run_pass(stages: list, batch: int, only_ids=None) -> tuple[int, int]:
     finished as 'done'). The second says whether a recompute is owed: at the
     end of a single pass, or — accumulated across passes — once the loop
     drains (see the module docstring for why not per pass).
+
+    "Processed" leaves out the finished tracks a stage failed on and left
+    armed (LEFT_ARMED). Counted, one that fails the same way every pass
+    would keep --until-drained passing forever with no sleep, and --loop
+    from ever backing off.
     """
     conn = get_conn()
     total_processed = 0
@@ -297,7 +303,7 @@ def run_pass(stages: list, batch: int, only_ids=None) -> tuple[int, int]:
                  len(cohort), cohort[0], cohort[-1])
         for stage in stages:
             counts = stage.run_batch(conn, batch, log, only_ids=cohort)
-            total_processed += sum(counts.values())
+            total_processed += sum(n for status, n in counts.items() if status != LEFT_ARMED)
             if stage.name in SCORING_STAGES:
                 scored += int(counts.get(STATUS_DONE, 0))
     finally:
@@ -362,8 +368,8 @@ def main(argv: list[str] | None = None) -> int:
                              "(activation_relative / vibe_score / mood), no stages")
     parser.add_argument("--retry-failed", choices=[*STAGE_CLASSES, "all"], default=None,
                         metavar="STAGE|all",
-                        help="first re-arm the rows STAGE (or any stage) parked as "
-                             "failed, in flight or finished, then run as usual")
+                        help="first re-arm the rows parked at <STAGE>_stage_error "
+                             "(or at any stage's), then run as usual")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 

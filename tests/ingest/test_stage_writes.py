@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 import requests
 
+import run_ingest_v2 as runner
 from ingest_pipeline.base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, id_filter
 from ingest_pipeline.fused_vector import FUSED_DIM, MERT_DIM
 from ingest_pipeline.stage_classify import ClassifyStage
@@ -216,25 +217,69 @@ def test_two_unique_collisions_side_by_side_are_each_retried(sql, conn):
 
 # ------------------------------------------------------- finished tracks
 #
-# Every DJ, similar and vibe query requires ingestion_status='done'. A stage
-# that fails on a finished track must not demote it over one failed write.
+# Every DJ, similar and vibe query requires ingestion_status='done', and
+# 'done' means every stage passed. A stage that fails on a finished track
+# never parks it: the track stays exactly as it was, still armed, and the
+# next pass tries again.
 
-def test_parking_a_finished_track_leaves_it_done(sql, conn):
-    a, b = finished(sql, 2)
-    stage = Refuse({a: (STATUS_DONE, {"album": "A"}, None),
-                    b: (STATUS_DONE, {"album": "B", "spotify_id": "S0"}, None)})  # a's
-    assert stage.run_batch(conn, 10, log) == {"done": 1, "no_match": 0, "failed": 1}
-    status, fuse, error = sql.execute("SELECT ingestion_status, fuse_status, ingestion_error "
-                                      "FROM tracks WHERE id = ?", (b,)).fetchone()
-    assert (status, fuse) == ("done", "failed") and "write failed" in error
+def finished_and_in_flight(sql):
+    """A finished track re-armed for fuse and an in-flight one at fuse, plus
+    a third track (spotify_id S2) that fuse does not select."""
+    done, flight, _ = add_rows(sql, 3)
+    sql.execute("UPDATE tracks SET ingestion_status = 'done', fuse_status = 'pending' "
+                "WHERE id = ?", (done,))
+    sql.execute("UPDATE tracks SET fuse_status = 'pending' WHERE id = ?", (flight,))
+    sql.commit()
+    return done, flight
 
 
-def test_a_stage_that_fails_on_a_finished_track_leaves_it_done(sql, conn):
-    (a,) = finished(sql, 1)
-    Refuse({a: (STATUS_FAILED, {}, "unexpected MERT dim 0")}).run_batch(conn, 10, log)
-    status, fuse, error = sql.execute("SELECT ingestion_status, fuse_status, ingestion_error "
-                                      "FROM tracks WHERE id = ?", (a,)).fetchone()
-    assert (status, fuse) == ("done", "failed") and "unexpected MERT dim 0" in error
+def fuse_state(sql, tid):
+    return tuple(sql.execute("SELECT ingestion_status, fuse_status, album, ingestion_error "
+                             "FROM tracks WHERE id = ?", (tid,)).fetchone())
+
+
+def test_a_finished_track_whose_write_keeps_failing_is_left_armed(sql, conn, batches, caplog):
+    done, flight = finished_and_in_flight(sql)
+    # S2 is taken (UNIQUE), and apple_id is droppable, so each write raises
+    # IntegrityError twice: in the batch, then alone without apple_id.
+    stage = Refuse({done: (STATUS_DONE, {"album": "D", "spotify_id": "S2", "apple_id": 1}, None),
+                    flight: (STATUS_DONE, {"album": "F", "spotify_id": "S2", "apple_id": 2},
+                             None)})
+
+    counts = stage.run_batch(conn, 10, log)
+
+    assert counts == {"done": 0, "no_match": 0, "failed": 1, "left_armed": 1}
+    assert fuse_state(sql, done) == ("done", "pending", None, None)
+    status, fuse, album, error = fuse_state(sql, flight)
+    assert (status, fuse, album) == ("fuse_stage_error", "failed", None)
+    assert "write failed" in error and "UNIQUE" in error
+    assert f"row {done} is finished; left armed for the next pass" in caplog.text
+    # the batch, the batch without done, then each alone: without apple_id, park
+    assert [len(x) for x in batches] == [2, 1, 1, 1, 1, 1]
+
+
+def test_a_stage_that_fails_on_a_finished_track_leaves_it_armed(sql, conn, caplog):
+    done, flight = finished_and_in_flight(sql)
+    stage = Refuse({done: (STATUS_FAILED, {}, "unexpected MERT dim 0"),
+                    flight: (STATUS_FAILED, {}, "unexpected MERT dim 0")})
+
+    counts = stage.run_batch(conn, 10, log)
+
+    assert counts == {"done": 0, "no_match": 0, "failed": 1, "left_armed": 1}
+    assert fuse_state(sql, done) == ("done", "pending", None, None)
+    assert fuse_state(sql, flight) == (
+        "fuse_stage_error", "failed", None, "[fuse] unexpected MERT dim 0")
+    assert f"row {done} is finished; left armed for the next pass" in caplog.text
+
+
+def test_a_pass_that_only_left_finished_tracks_armed_is_not_progress(sql):
+    # Counted as processed, a finished track failing every pass would keep
+    # --until-drained passing forever without a sleep.
+    (done,) = finished(sql, 1)
+    stage = Refuse({done: (STATUS_FAILED, {}, "unexpected MERT dim 0")})
+    assert runner.run_pass([stage], 10) == (0, 0)
+    assert runner.run_pass([stage], 10) == (0, 0)
+    assert fuse_state(sql, done) == ("done", "pending", None, None)
 
 
 def test_a_clean_batch_is_one_execute_batch(sql, app_module, batches):

@@ -33,12 +33,10 @@ Status vocabulary (per stage):
     no_match — stage completed but produced no result (e.g. no preview
                provider found a URL, no YouTube hit). Terminal.
     failed   — an unexpected exception, or a write the stage could not
-               make. Parks the row until
+               make. Parks the row (with
+               ingestion_status='<stage>_stage_error') until
                `run_ingest_v2.py --retry-failed <stage>|all` re-arms it.
-               A row still in flight also gets
-               ingestion_status='<stage>_stage_error'; a finished track
-               (ingestion_status='done', being re-fused or re-armed) keeps
-               'done', so one failed stage cannot take it out of the DJ.
+               Never written to a finished track: see "Writing a batch".
 
 Writing a batch
 ---------------
@@ -64,20 +62,27 @@ a constraint judges a row's data, and nothing else a write can hit does.
     once they have landed, the row alone is retried without
     _RETRY_DROPPABLE_FIELDS, and if that still fails it is parked: its own
     column 'failed', '<stage>_stage_error', the error text, like an
-    exception in process_row. `run_ingest_v2.py --retry-failed` re-arms it.
+    exception in process_row (unless it is finished: below).
+    `run_ingest_v2.py --retry-failed` re-arms it.
   - Any other database error is raised with nothing parked and nothing
     landed: a column or table production lacks, a read-only token, a busy
     or locked database, a failed COMMIT. None of those is a row's fault,
     so the stage stops and the rows stay pending until the cause is fixed.
 
-Parking never demotes a finished track. Every DJ, similar and vibe query
-requires ingestion_status='done', and stages do run on done tracks: fuse
-after a language correction, youtube when re-armed. Parking one of those
-sets its own column 'failed' and ingestion_error only, and leaves 'done'
-(UnlessDone, in the same UPDATE), so a failed re-fuse keeps the track in
-the pool on its old vector instead of dropping it. The asymmetry has a
-cost: a GROUP BY ingestion_status does not show such a row. Look for
-`<stage>_status = 'failed'` too; `--retry-failed` re-arms both shapes.
+A finished track is never parked. Stages do run on ingestion_status='done'
+rows (fuse after a language correction, youtube when re-armed), every DJ,
+similar and vibe query requires 'done', and README's invariant is that
+'done' means every stage passed. So when a stage fails on a finished row,
+the park is not written at all: its UPDATE carries `AND ingestion_status
+IS NOT 'done'` (one statement, no read), and a rowcount of 0 means the row
+was finished. It stays exactly as it was, its stage column still
+'pending', so it is still armed and the next pass tries again; the failure
+is logged ("left armed") and counted under 'left_armed' for this pass. That
+count is not progress: a finished row failing the same way every pass would
+otherwise keep --until-drained from ever draining and --loop from ever
+backing off. The cost of the asymmetry: no GROUP BY shows such a row, only
+the log, and nothing stops it being retried every pass (enough of them
+stall a run; see select_cohort in scripts/run_ingest_v2.py).
 
 Until 2026-10-15 one failing row aborted the stage's write loop after the
 batch's work was done: SQLite rolled the whole batch back (the next pass
@@ -123,9 +128,16 @@ STATUS_FAILED = "failed"
 # ingestion_status='pending', so a broken row stops re-entering the
 # pipeline every pass. `run_ingest_v2.py --retry-failed <stage>` finds the
 # row by this value and sets it and the stage's own column (which reads
-# 'failed') back to 'pending'. Never written over 'done' (UnlessDone).
+# 'failed') back to 'pending'. Never written over 'done': a finished row is
+# left armed instead ("Writing a batch").
 def stage_error_status(stage_name: str) -> str:
     return f"{stage_name}_stage_error"
+
+
+# The run_batch count of finished rows a stage failed on and left armed.
+# Not progress: the runner leaves it out of a pass's processed total.
+LEFT_ARMED = "left_armed"
+
 # RETIRED 2026-10-10 with the Whisper language stage. It meant "Whisper
 # produced a tag but nothing has verified it", and nothing writes it any
 # more. LanguageStage normalises leftover rows in this state back to
@@ -163,25 +175,16 @@ def iso_now() -> str:
     return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
 
 
-class UnlessDone(str):
-    """A value written only where the column does not already read 'done'.
-
-    For ingestion_status when a stage parks a row: a finished track that a
-    stage runs on again (a re-fuse, a re-armed youtube) must keep 'done',
-    which every DJ, similar and vibe query requires. Decided in the same
-    UPDATE, so it costs no read and cannot race one.
-    """
-
-
-def update_stmt(track_id: int, fields: dict) -> tuple[str, list]:
+def update_stmt(track_id: int, fields: dict, unless_done: bool = False) -> tuple[str, list]:
     """(sql, params) for `UPDATE tracks SET <fields> WHERE id = track_id`.
-    An UnlessDone value is written only where its column is not 'done'."""
-    set_clause = ", ".join(
-        f"{k} = CASE WHEN {k} = 'done' THEN {k} ELSE ? END" if isinstance(v, UnlessDone)
-        else f"{k} = ?"
-        for k, v in fields.items())
-    params = [str(v) if isinstance(v, UnlessDone) else v for v in fields.values()]
-    return f"UPDATE tracks SET {set_clause} WHERE id = ?", [*params, int(track_id)]
+
+    unless_done: only where the row is not finished, so a park never lands
+    on a 'done' track (see "Writing a batch"); its rowcount says which.
+    `IS NOT`, not `!=`, so a NULL ingestion_status still counts as not done.
+    """
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    where = "id = ? AND ingestion_status IS NOT 'done'" if unless_done else "id = ?"
+    return f"UPDATE tracks SET {set_clause} WHERE {where}", [*fields.values(), int(track_id)]
 
 
 @dataclass
@@ -195,10 +198,12 @@ class RowResult:
 
 class RowWrite(NamedTuple):
     """Everything one result writes: its tracks columns, plus statements
-    that must land in the same transaction (see Stage.row_writes)."""
+    that must land in the same transaction (see Stage.row_writes). `park`
+    marks a failed result, whose UPDATE must not land on a finished row."""
     track_id: int
     fields: dict
     extra: list
+    park: bool = False
 
 
 class Stage(ABC):
@@ -294,8 +299,9 @@ class Stage(ABC):
         """
         Fetch a batch of pending rows, dispatch process_row across a thread
         pool, write the results (see "Writing a batch" in the module
-        docstring), and return per-status counts. A row whose write failed
-        counts as 'failed'. Called by the orchestrator once per pass.
+        docstring), and return per-status counts. A row parked after a
+        failed write counts as 'failed'; a finished row a failure left armed
+        counts as LEFT_ARMED. Called by the orchestrator once per pass.
         """
         rows = self.fetch_pending(conn, limit, only_ids)
         counts = {STATUS_DONE: 0, STATUS_NO_MATCH: 0, STATUS_FAILED: 0}
@@ -318,31 +324,34 @@ class Stage(ABC):
         writes = []
         for res in results:
             fields, extra = self.row_writes(res)
-            writes.append(RowWrite(int(res.track_id),
-                                   self._finalize_fields(fields, res), extra))
-        unwritten = self._write_results(conn, writes, log)
+            writes.append(RowWrite(int(res.track_id), self._finalize_fields(fields, res),
+                                   extra, park=res.status == STATUS_FAILED))
+        instead = self._write_results(conn, writes, log)
         for res in results:
-            status = STATUS_FAILED if int(res.track_id) in unwritten else res.status
+            status = instead.get(int(res.track_id), res.status)
             counts[status] = counts.get(status, 0) + 1
 
         log.info("[%s] batch done: %s", self.name, counts)
         return counts
 
-    def _write_results(self, conn, writes: list[RowWrite], log) -> set[int]:
+    def _write_results(self, conn, writes: list[RowWrite], log) -> dict[int, str]:
         """Write the batch by the rules in "Writing a batch" (module
-        docstring). Returns the track ids that could not be written; those
-        rows are parked at <stage>_stage_error."""
+        docstring). Returns the rows that did not end as their result said,
+        with what to count them as: STATUS_FAILED for a row parked because
+        its write failed, LEFT_ARMED for a finished row a failure left as it
+        was."""
         batch = list(writes)
         set_aside: list[tuple[RowWrite, Exception]] = []
+        instead: dict[int, str] = {}
         while batch:
-            stmts, owner = [], []
+            stmts, owner, heads = [], [], []
             for i, w in enumerate(batch):
+                heads.append(len(stmts))
                 for stmt in self._statements(w):
                     stmts.append(stmt)
                     owner.append(i)
             try:
-                conn.execute_batch(stmts)
-                break
+                cursors = conn.execute_batch(stmts)
             except Exception as e:
                 if not isinstance(e, sqlite3.Error):
                     log.warning("[%s] transport error writing %d rows (%s): outcome "
@@ -359,15 +368,34 @@ class Stage(ABC):
                 log.warning("[%s] row %d broke the batch write (%s); writing the "
                             "other %d without it", self.name, bad.track_id, e, len(batch))
                 set_aside.append((bad, e))
-        return {w.track_id for w, e in set_aside if not self._settle(conn, w, e, log)}
+                continue
+            # A failed result's park that matched nothing: the row is
+            # finished. Its UPDATE is its first statement, and its only one.
+            for i, w in enumerate(batch):
+                if w.park and cursors[heads[i]].rowcount == 0:
+                    instead[w.track_id] = self._leave_armed(
+                        w.track_id, w.fields.get("ingestion_error"), log)
+            break
+        for w, e in set_aside:
+            settled = self._settle(conn, w, e, log)
+            if settled:
+                instead[w.track_id] = settled
+        return instead
 
     @staticmethod
     def _statements(w: RowWrite) -> list:
-        return [update_stmt(w.track_id, w.fields), *w.extra]
+        return [update_stmt(w.track_id, w.fields, unless_done=w.park), *w.extra]
 
-    def _settle(self, conn, w: RowWrite, error: sqlite3.IntegrityError, log) -> bool:
+    def _leave_armed(self, track_id: int, error, log) -> str:
+        log.warning("[%s] row %d is finished; left armed for the next pass (%s)",
+                    self.name, track_id, error)
+        return LEFT_ARMED
+
+    def _settle(self, conn, w: RowWrite, error: sqlite3.IntegrityError, log) -> str | None:
         """Deal with a row whose constraint violation broke the batch,
-        alone. True if it landed after all.
+        alone. Returns None if its write landed after all, else what to
+        count it as: STATUS_FAILED once parked, LEFT_ARMED if it is finished
+        and so was left as it was.
 
         A UNIQUE collision (typically the legacy `UNIQUE (user_id,
         apple_id)` from the pre-split-tracks era) is retried without the
@@ -378,9 +406,12 @@ class Stage(ABC):
         2026-10-15, since nothing in this pipeline has run against it.
 
         If the row still violates a constraint it is parked: 'failed',
-        '<stage>_stage_error' and the error text. Any other error on the
-        way, the park write's included, propagates: it is not this row's
-        fault (see "Writing a batch") and the stage should stop.
+        '<stage>_stage_error' and the error text, unless it is finished
+        (the park's WHERE skips 'done' rows; a rowcount of 0 says so, and
+        would also say so for a row deleted meanwhile, which is equally
+        fine to leave alone). Any other error on the way, the park write's
+        included, propagates: it is not this row's fault (see "Writing a
+        batch") and the stage should stop.
         """
         dropped = [k for k in _RETRY_DROPPABLE_FIELDS if k in w.fields]
         if dropped:
@@ -389,17 +420,19 @@ class Stage(ABC):
                 conn.execute_batch(self._statements(w._replace(fields=reduced)))
                 log.warning("row %d retried without %s due to unique-constraint "
                             "collision", w.track_id, dropped)
-                return True
+                return None
             except sqlite3.IntegrityError as e:
                 error = e
-        log.warning("[%s] row %d could not be written, marking it failed: %s",
-                    self.name, w.track_id, error)
-        conn.execute_batch([update_stmt(w.track_id, {
+        parked = conn.execute_batch([update_stmt(w.track_id, {
             self.status_column: STATUS_FAILED,
-            "ingestion_status": UnlessDone(stage_error_status(self.name)),
+            "ingestion_status": stage_error_status(self.name),
             "ingestion_error": f"[{self.name}] write failed: {error}"[:500],
-        })])
-        return False
+        }, unless_done=True)])[0]
+        if parked.rowcount == 0:
+            return self._leave_armed(w.track_id, f"write failed: {error}", log)
+        log.warning("[%s] row %d could not be written, marked it failed: %s",
+                    self.name, w.track_id, error)
+        return STATUS_FAILED
 
     def _finalize_fields(self, fields: dict, res: "RowResult") -> dict:
         """
@@ -419,9 +452,10 @@ class Stage(ABC):
                 fields[col] = STATUS_PENDING
         elif res.status == STATUS_FAILED:
             # Surface the failure on the row, not only in the log, and
-            # stop it re-entering at preview; a finished track keeps
-            # 'done' (see "Writing a batch").
-            fields["ingestion_status"] = UnlessDone(stage_error_status(self.name))
+            # stop it re-entering at preview. run_batch writes this as a
+            # park, which never lands on a finished track ("Writing a
+            # batch").
+            fields["ingestion_status"] = stage_error_status(self.name)
             if res.error:
                 fields["ingestion_error"] = f"[{self.name}] {res.error}"[:500]
         # A terminal verdict for the whole track, if this stage has one.

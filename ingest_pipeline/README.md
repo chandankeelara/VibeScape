@@ -67,23 +67,29 @@ run before language once, silently bucketing tracks as `'other'`.
 On `failed`, a stage arms nothing and writes
 `ingestion_status='<stage>_stage_error'` (`preview_stage_error`,
 `classify_stage_error`, …) plus the exception in `ingestion_error`. One
-`GROUP BY ingestion_status` tells you which stage is failing and how often,
-with no log parsing. The row also stops re-entering at `preview`, whose
+`GROUP BY ingestion_status` tells you which stage is failing on tracks in
+flight, and how often, with no log parsing. The row also stops re-entering at `preview`, whose
 gate only matches `'pending'`, while its own column keeps `'failed'`.
 
-**Except a finished track.** Stages do run on `ingestion_status='done'`
-rows (fuse after a language correction, youtube when re-armed), and every
-DJ, similar and vibe query requires `'done'`. So a failure there writes the
-stage's own column `'failed'` and `ingestion_error` only, and the track
-keeps `'done'` and stays in the pool on its old values. The `GROUP BY
-ingestion_status` above does not see such a row; count those with
-`WHERE ingestion_status = 'done' AND <status column> = 'failed'`
-(`fuse_status`, `youtube_status`; classify's is `ml_status`).
-
 Once the cause is fixed, `run_ingest_v2.py --retry-failed <stage>` (or
-`all`) re-arms both shapes: an in-flight row's `ingestion_status` and
-stage column back to `'pending'`, a finished row's stage column only. It
-clears the error, then runs.
+`all`) sets both back to `'pending'`, clears the error, and runs.
+
+**Except a finished track: it is never parked.** Stages do run on
+`ingestion_status='done'` rows (fuse after a language correction, youtube
+when re-armed), every DJ, similar and vibe query requires `'done'`, and
+`'done'` means every stage passed (§ The invariant). So the park's UPDATE
+carries `AND ingestion_status IS NOT 'done'`, and when it matches nothing
+the failure writes nothing at all: the track keeps `'done'`, its old
+values, and its stage column `'pending'`, so it is still armed and the
+next pass tries again. The failure is in the log only (`row N is finished;
+left armed for the next pass`), and the stage's `batch done` line counts it
+under `left_armed`.
+
+The cost of that asymmetry: no `GROUP BY` shows such a row, and nothing
+stops it failing every pass. `left_armed` is not progress, so a loop still
+drains and backs off around one; but if `--batch` of them sit at the head
+of the id order they fill every cohort, and `--until-drained` ends as
+drained while higher ids wait (`select_cohort` in `run_ingest_v2.py`).
 
 A stage writes its whole batch in one transaction (`execute_batch`, one
 round trip on Turso). When that fails, the kind of error decides
@@ -98,7 +104,8 @@ row's fault:
   aside and the rest written again without it. Then that row alone: a
   UNIQUE collision on the legacy `apple_id` constraint is retried without
   `apple_id`, `track_view_url` and `genre`; if it still fails it is parked
-  like a failure above, with `ingestion_error='[<stage>] write failed: …'`.
+  like a failure above, with `ingestion_error='[<stage>] write failed: …'`
+  (or, if it is finished, left armed).
 - **Any other database error** — a column or table production lacks, a
   read-only token, a busy or locked database, a failed COMMIT: raised,
   nothing landed, nothing parked. The stage stops until the cause is fixed.

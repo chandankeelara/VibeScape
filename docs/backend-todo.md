@@ -365,7 +365,8 @@ A stage's batch is one `execute_batch`. If it fails, the error's kind
 decides: a transport error is raised with nothing parked (outcome unknown;
 every statement is idempotent); a constraint violation's row (`step`) is
 set aside, the rest written again, and that row alone gets the
-droppable-fields retry or is parked at `<stage>_stage_error`; any other
+droppable-fields retry or is parked at `<stage>_stage_error` (a finished
+track never is: it is left armed, see 3.12); any other
 database error (missing column, read-only, locked, failed COMMIT) is
 raised with nothing landed and nothing parked. (The first version rewrote
 every row alone and parked on any error, so a timeout parked good rows; the
@@ -388,11 +389,9 @@ per row, or catch per row.
 `scripts/run_ingest_v2.py` `rearm_failed`
 
 `--retry-failed STAGE|all` sets the rows at `<stage>_stage_error` back to
-`ingestion_status='pending'` with the stage's own column `'pending'`, and
-a finished row that a stage parked (still `'done'`, its column
-`'failed'`: parking never demotes a finished track) back to its column
-`'pending'` only; `ingestion_error` cleared, one transaction. It logs the
-count, then runs as usual. base.py's two promises are true now. Covered by
+`ingestion_status='pending'` with the stage's own column `'pending'` and
+`ingestion_error` cleared (one transaction), logs the count, then runs as
+usual. base.py's two promises are true now. Covered by
 `tests/ingest/test_retry_failed.py`. Original:
 
 **verified.** `base.py` twice tells the reader that a `failed` row can be
@@ -547,6 +546,21 @@ wait (it skips them) and the README's `MIN(created_at)` describing the
 stamped minority. Candidate backfill: the earliest `user_tracks.added_at` per
 track, if prod's `user_tracks` kept its default (not checked). Check first:
 how many NULL-`created_at` tracks have a non-NULL `MIN(added_at)`.
+
+### 3.12 A finished track that fails a stage every pass is retried forever, and enough of them stall a run
+`ingest_pipeline/base.py` ("Writing a batch"), `scripts/run_ingest_v2.py` `select_cohort`
+
+**by construction (2026-10-15), not observed.** A stage that fails on an
+`ingestion_status='done'` track (a re-fuse, a re-armed youtube) never parks
+it, so that 'done' keeps meaning every stage passed: the write matches
+nothing and the track stays armed. Nothing records the failure but the log
+(`row N is finished; left armed for the next pass`), so a track that fails
+the same way every time is retried every pass for good. The runner counts
+it as no progress, so one such track cannot keep `--until-drained` from
+ending or `--loop` from backing off. But `--batch` of them at the head of
+the id order fill every cohort: the run ends as drained while higher ids
+wait. Candidate fix if it ever shows: the runner keeps the ids left armed
+in this run and leaves them out of its later cohorts.
 
 ## 4. Cleanup
 
