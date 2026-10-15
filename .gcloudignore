@@ -69,3 +69,6 @@ fly.toml
 # can compile it; node_modules and dist are NOT (dist is built in-image).
 frontend-next/node_modules/
 frontend-next/dist/
+
+# Dated prod snapshots - contain users and live session tokens. Never upload.
+data/backups/
