@@ -381,19 +381,25 @@ gate: it looks (one ids-only query, the gate's lowest `--batch` ids), runs
 that batch with `run_batch` as a pass would, and looks again. So preview
 queries iTunes while classify runs MERT and fuse fuses, on different rows.
 
-Where two gates accept the same row, the stage that **feeds** the other gets
-it first: a stage's look leaves out the rows a feeder's gate still accepts.
-A feeder is a selected stage that arms it, or one named in its `after`.
-`language` sits beside the chain and overlaps preview and download on
-production rows; it waits for both (`LanguageStage.after`), so a row that
-turns out to have no preview keeps `language_status` NULL, as in a pass.
-The chain stages overlapped too, on a SQLite file built from `schema.sql`:
-`ml_status` defaults to `'pending'` there, so a downloaded row was in
-librosa's gate and classify's at once (checked 2026-10-16), and classify
-taking it first would have run MERT twice. Since then classify's gate
-requires `librosa_status = 'done'`, its real precondition, and the feeder
-rule is what any overlap left or to come falls back on. Per row the order
-is a pass's, without the cohort.
+Where two gates accept the same row, the stage **upstream** gets it first: a
+stage's look leaves out the rows that any stage upstream of it in the run
+can still act on. Upstream means its feeders (a selected stage that arms
+it, or one named in its `after`), their feeders, and so on. `language` sits
+beside the chain and overlaps preview and download on production rows; it
+waits for both (`LanguageStage.after`), so a row that turns out to have no
+preview keeps `language_status` NULL, as in a pass. The chain stages
+overlapped too, on a SQLite file built from `schema.sql`: `ml_status`
+defaults to `'pending'` there, so a downloaded row was in librosa's gate and
+classify's at once (checked 2026-10-16), and classify taking it first would
+have run MERT twice. Since then classify's gate requires
+`librosa_status = 'done'`, its real precondition. States a
+`--retry-failed` or a language tag leaves behind can still put one row in
+the gates of two chain stages that are not neighbours, preview and fuse
+say, so the rule follows feeders all the way up, not one step (found in
+review, 2026-10-16). A row therefore goes through the chain stages in a
+pass's order. Language, with only preview and download upstream, may act on
+it while librosa, classify, fuse or youtube does, and so may two stages with
+a `--stages` gap between them.
 
 A feeder also hands off: a batch with `'done'` rows wakes the stages it
 feeds at once, instead of when their back-off runs out. With a subset

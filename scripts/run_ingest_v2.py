@@ -101,18 +101,24 @@ the lowest --batch ids its gate accepts), runs a batch of those rows with
 run_batch as a pass does, and looks again. There is no cohort.
 
 A stage's feeders are the selected stages that arm it (Stage.arms) and the
-ones it comes after (Stage.after: language after preview and download). A
-feeder hands off: its batch with 'done' rows wakes the stages it feeds, so
-they look at once. And it goes first: a look leaves out the rows a feeder's
-gate still accepts, because gates can overlap. Language's does, beside the
-chain: a new production row is in preview's gate and language's, and
-language waits for preview and download, either of which can settle it
-'no_preview', which keeps language_status NULL. Librosa's and classify's
-overlapped on a schema.sql file, whose ml_status defaults to 'pending', so
-classify could take a downloaded row first and MERT it twice; since
-2026-10-16 classify's own gate requires librosa_status 'done'. So per row
-the order is a pass's. With --stages preview,fuse nothing feeds across the
-gap.
+ones it comes after (Stage.after: language after preview and download);
+the stages upstream of it are its feeders, theirs, and so on. A feeder
+hands off: its batch with 'done' rows wakes the stages it feeds, so they
+look at once. And what is upstream goes first: a look leaves out the rows
+any stage upstream of it in the run can still act on, because gates can
+overlap. Language's does, beside the chain: a new production row is in
+preview's gate and language's, and language waits for preview and
+download, either of which can settle it 'no_preview', which keeps
+language_status NULL. Librosa's and classify's overlapped on a schema.sql
+file, whose ml_status defaults to 'pending', so classify could take a
+downloaded row first and MERT it twice; since 2026-10-16 classify's own
+gate requires librosa_status 'done'. And states a --retry-failed or a
+language tag leaves behind put one row in the gates of two chain stages
+that are not neighbours (preview and fuse, say; _look_for). So a row goes
+through the chain stages in a pass's order. Language, upstream of none of
+them and with only preview and download upstream of it, may act on a row
+while librosa, classify, fuse or youtube does, and so may two stages with
+a --stages gap between them (preview,fuse): nothing feeds across it.
 
 An idle stage waits for a hand-off, or for IDLE_BACKOFF_FIRST_S (5 s)
 doubling to IDLE_BACKOFF_MAX_S (60 s), reset by a look that does work. An
@@ -531,8 +537,9 @@ def _concurrent_conn():
 
 def _look_query(stage, ahead: list, batch: int, only_ids) -> tuple[str, tuple] | None:
     """The ids-only query a concurrent stage looks with: lowest_ids_query on
-    its own gate, leaving out the rows a stage in `ahead` (its feeders) can
-    still act on. None for a stage that declares no gate (a test double)."""
+    its own gate, leaving out the rows a stage in `ahead` (every stage
+    upstream of it in the run, _ConcurrentRun._look_for) can still act on.
+    None for a stage that declares no gate (a test double)."""
     if not getattr(stage, "gate_sql", None):
         return None
     return lowest_ids_query([stage], batch, only_ids, leave_out=_gated(ahead))
@@ -549,6 +556,7 @@ class _Worker:
         self.wake = threading.Event()
         self.feeders: list[_Worker] = []      # arm this stage, or it runs after them
         self.fed: list[_Worker] = []          # the stages this one feeds
+        self.ancestors: list[_Worker] = []    # its feeders, theirs, and so on
         self.thread: threading.Thread | None = None
         self.totals = {STATUS_DONE: 0, STATUS_NO_MATCH: 0, STATUS_FAILED: 0}
         self.busy = False
@@ -584,6 +592,13 @@ class _ConcurrentRun:
                 raise SystemExit(f"--concurrent: {sorted(left)} feed each other in a circle")
             for n in free:
                 del left[n]
+        for w in self.workers:
+            todo = list(w.feeders)
+            while todo:
+                v = todo.pop()
+                if v not in w.ancestors:
+                    w.ancestors.append(v)
+                    todo.extend(v.feeders)
         self.lock = threading.Lock()
         self.stopping = threading.Event()   # every stage: stop after the current batch
         self.changed = threading.Event()    # the main thread: something to look at
@@ -743,7 +758,7 @@ class _ConcurrentRun:
         conn = None
         try:
             conn = _concurrent_conn()
-            look = _look_query(w.stage, [f.stage for f in w.feeders], self.batch, self.only_ids)
+            look = self._look_for(w)
             pause = IDLE_BACKOFF_FIRST_S
             while not self.stopping.is_set():
                 # Cleared before the look, so a hand-off written after the
@@ -810,6 +825,18 @@ class _ConcurrentRun:
                     conn.close()
                 except Exception:
                     pass
+
+    def _look_for(self, w: _Worker) -> tuple[str, tuple] | None:
+        """w's look query: its gate, leaving out every row a stage upstream
+        of it in the run can still act on, not only a direct feeder. With
+        direct feeders alone, preview and librosa, preview and classify,
+        preview and fuse, download and fuse, and librosa and fuse could each
+        take one row at once (found in review by enumerating 983,040 row
+        states, 2026-10-16): a done row whose librosa a --retry-failed
+        re-armed after classify had encoded it, then a language tag re-arming
+        fuse, and fuse built from stale inputs. Hand-offs stay on direct
+        edges (w.fed)."""
+        return _look_query(w.stage, [a.stage for a in w.ancestors], self.batch, self.only_ids)
 
     def _look(self, conn, w: _Worker, look) -> dict[str, int] | None:
         """One look: the ids query, then a batch of those rows if any. None

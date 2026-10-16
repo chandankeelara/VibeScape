@@ -8,6 +8,7 @@ file. Timings are bounded generously; the events make the order of what
 happens deterministic, not the clock.
 """
 import _thread
+import itertools
 import logging
 import re
 import secrets
@@ -16,12 +17,15 @@ import sqlite3
 import threading
 import time
 
+import numpy as np
 import pytest
 
 import run_ingest_v2 as runner
 from ingest_pipeline import base
 from ingest_pipeline.base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, STATUS_NO_MATCH
+from ingest_pipeline.fused_vector import MERT_DIM
 from ingest_pipeline.stage_classify import ClassifyStage
+from ingest_pipeline.stage_fuse import CURRENT_MERT_VERSION
 from ingest_pipeline.stage_download import DownloadStage
 from ingest_pipeline.stage_language import LanguageStage
 from ingest_pipeline.stage_librosa import LibrosaStage
@@ -473,10 +477,55 @@ def test_who_feeds_whom_and_nothing_across_a_gap():
     assert fed == {"preview": ["download", "language"], "download": ["librosa", "language"],
                    "librosa": ["classify"], "classify": ["fuse"], "language": [],
                    "fuse": ["youtube"], "youtube": []}
+    chain = ["preview", "download", "librosa", "classify", "fuse", "youtube"]
+    upstream = {w.name: {a.name for a in w.ancestors} for w in run.workers}
+    assert upstream == {**{s: set(chain[:i]) for i, s in enumerate(chain)},
+                        "language": {"preview", "download"}}
     gap = runner._ConcurrentRun([bare(PreviewStage), bare(runner.STAGE_CLASSES["fuse"])], 50,
                                 None, "single")
-    assert [(w.name, w.feeders, w.fed) for w in gap.workers] == [("preview", [], []),
-                                                                 ("fuse", [], [])]
+    assert [(w.name, w.feeders, w.fed, w.ancestors) for w in gap.workers] == [
+        ("preview", [], [], []), ("fuse", [], [], [])]
+
+
+def test_a_stage_upstream_of_another_never_shares_a_row_with_it(sql):
+    # Every row state from a small matrix: each stage column NULL, 'pending'
+    # or 'done', ingestion_status pending or done (4,374 rows). With only a
+    # stage's direct feeders left out of its look, preview and librosa,
+    # preview and classify, preview and fuse, download and fuse, and librosa
+    # and fuse could take one row at once (found in review by enumerating
+    # 983,040 states). With every stage upstream of it left out, two stages
+    # one of which is upstream of the other never do.
+    cols = ("preview_status", "download_status", "librosa_status", "ml_status",
+            "language_status", "fuse_status", "youtube_status")
+    states = [(ingestion, *combo) for ingestion in ("pending", "done")
+              for combo in itertools.product((None, "pending", "done"), repeat=len(cols))]
+    sql.executemany(
+        f"INSERT INTO tracks (title, artist, spotify_id, vibe_score, preview_url, audio_path, "
+        f"ingestion_status, {', '.join(cols)}) "
+        f"VALUES ('T', 'A', ?, 0, 'https://p', 'a.m4a', ?{', ?' * len(cols)})",
+        [(f"s{i}", *state) for i, state in enumerate(states)])
+    sql.execute("INSERT INTO track_embeddings (track_id, mert_embedding, model_version) "
+                "SELECT id, ?, ? FROM tracks WHERE ml_status = 'done'",
+                (np.ones(MERT_DIM, np.float32).tobytes(), CURRENT_MERT_VERSION))
+    sql.commit()
+    run = runner._ConcurrentRun([bare(c) for c in runner.STAGE_CLASSES.values()], 10 ** 6,
+                                None, "single")
+
+    looks = {w.name: {r[0] for r in sql.execute(*run._look_for(w))} for w in run.workers}
+    gates = {w.name: {r[0] for r in sql.execute(*runner._look_query(w.stage, [], 10 ** 6, None))}
+             for w in run.workers}
+
+    # Upstream, spelled out here rather than read off the run under test.
+    chain = ["preview", "download", "librosa", "classify", "fuse", "youtube"]
+    upstream = {**{s: chain[:i] for i, s in enumerate(chain)},
+                "language": ["preview", "download"]}
+    shared = {(a, b): len(looks[a] & looks[b])
+              for b, above in upstream.items() for a in above if looks[a] & looks[b]}
+    assert shared == {}
+    # The matrix does put rows in both gates of each pair review found.
+    for a, b in [("preview", "librosa"), ("preview", "classify"), ("preview", "fuse"),
+                 ("download", "fuse"), ("librosa", "fuse")]:
+        assert gates[a] & gates[b], (a, b)
 
 
 def test_a_stage_given_twice_or_a_circle_of_feeders_is_refused():

@@ -104,11 +104,13 @@ schema gap parked every row of every batch. The second judged by position
 which still parked a row that alone wrote a column production lacks.
 
 Note: no row-level locking. In a concurrent run (run_ingest_v2.py
---concurrent) two stages act on one row at once only when one of them is
-language, which sits beside the chain: the runner keeps a stage off the
-rows the stages feeding it can still act on (`arms`, `after`). Each UPDATE
-sets only its stage's columns and the column it arms, so neither write
-undoes the other. Two runs against one database are not guarded against:
+--concurrent) the runner keeps a stage off the rows any stage upstream of
+it in the run can still act on (`arms` and `after`, followed through), so
+two stages act on one row at once only when neither is upstream of the
+other there: language and librosa, classify, fuse or youtube, or two
+stages with a --stages gap between them. Each UPDATE sets only its stage's
+columns and the column it arms, so neither write undoes the other. Two
+runs against one database are not guarded against:
 the last UPDATE wins, and every stage write is idempotent for its own
 columns. Cheap and correct enough for the current volume.
 """
