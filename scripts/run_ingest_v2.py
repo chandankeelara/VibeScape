@@ -4,7 +4,9 @@ V2 modular ingest orchestrator.
 Runs each stage across its full pending batch (concurrent I/O within a
 stage), then advances to the next stage. Each stage settles
 ingestion_status itself; there is no separate promote pass.
-Songs move through the pipeline in waves — not one-by-one.
+Songs move through the pipeline in waves — not one-by-one. With
+--concurrent the stages run at the same time instead ("Concurrent mode",
+below).
 
 Wired stages, in order:
   preview   (stage_preview.py)   — resolves a 30s preview URL
@@ -54,6 +56,9 @@ Usage:
     # Re-arm rows parked at <stage>_stage_error (one stage, or all), then run:
     python scripts/run_ingest_v2.py --retry-failed classify
 
+    # Every stage at once, a thread each, until all are idle:
+    python scripts/run_ingest_v2.py --concurrent --until-drained
+
     # Production Turso instead of the local SQLite file (the default,
     # --target local). Credentials come from the gitignored .env.prod, see
     # scripts/_target.py. Back up first: python scripts/backup_prod_db.py
@@ -85,12 +90,86 @@ owns — so it runs only if one of them finished a track:
 
 Imports used to run it after every sync; a sync only adds unanalysed rows,
 so it moved here (2026-10-13).
+
+Concurrent mode (--concurrent)
+------------------------------
+A pass runs its stages one after another, so the GPU waits while iTunes is
+asked and the network waits while MERT runs. With --concurrent every
+selected stage runs at once, in a thread of its own with its own
+connection, working through its own gate: it looks (one ids-only query,
+the lowest --batch ids its gate accepts), runs a batch of those rows with
+run_batch as a pass does, and looks again. There is no cohort.
+
+A stage's feeders are the selected stages that arm it (Stage.arms). A
+feeder hands off: its batch with 'done' rows wakes the stages it feeds, so
+they look at once. With --stages preview,fuse nothing feeds across the gap.
+
+An idle stage waits for a hand-off, or for IDLE_BACKOFF_FIRST_S (5 s)
+doubling to IDLE_BACKOFF_MAX_S (60 s), reset by a look that does work. An
+idle look is one ids-only query and nothing else. Measured 2026-10-16 on a
+SQLite file of 6,238 tracks (production's count on 2026-10-15) with nothing
+to do: 28 looks in the first minute (each stage at 0, 5, 15 and 35 s), then
+7 a minute, nothing else sent. By EXPLAIN QUERY PLAN six of them scan
+tracks and preview's uses idx_tracks_ingestion_status (production's indexes
+not checked). Turso bills rows read, so an idle --concurrent --loop there
+reads ~37,000 rows a minute, ~54M a day, where the sequential --loop backs
+off to one scan per 10 minutes. Against production, --until-drained.
+
+How a run ends:
+
+  * No loop flag, a single pass: a stage stops at the first look that finds
+    nothing to do and began after every stage feeding it had stopped. So it
+    takes what its gate holds and what its feeders hand it, in batches of
+    --batch, and a stage nothing in the run feeds stops at its first empty
+    look. A row that reaches a gate from outside the run (the app, a
+    tagging session) is taken only while that stage still runs. --batch
+    does not bound the run: for a small first look, run a sequential pass.
+  * --until-drained: every stage is idle, and each one's latest look began
+    after the latest batch that did work anywhere. Not when one gate is
+    empty while its upstream is in a batch. When all are idle but some
+    looked before the latest work, those are woken to look again at once,
+    so the end does not wait out their back-off.
+  * --loop: never ends by itself; each time it drains, the owed recompute
+    runs, and again at the next idle look if it failed. With --only-ids it
+    ends when drained, as the passes do.
+
+The score recompute runs once at the end, or each time a --loop drains, if
+a SCORING_STAGES stage finished rows; a failed one exits 1. Under --loop
+the stages may write while it runs, and what they score is owed to the
+next one.
+
+An exception that escapes a stage's thread (base.py raises on a transport
+error after its retries, and on a write error that is not one row's fault)
+is logged with the stage's name and stops the run: every other stage
+finishes the batch it is in and exits, an idle one at once, nothing is
+recomputed, exit 1. Ctrl-C does the same, exit 130; a second Ctrl-C exits
+at once, and each batch still in flight lands whole or not at all.
+
+Every line names its stage ([preview]; [runner] for the main thread), and
+every SUMMARY_EVERY_S (60 s) a summary line gives each stage's
+done/no_match/failed and what it is doing. On SQLite each stage thread's
+connection waits 30 s for a lock and the file is put in WAL mode
+(_concurrent_conn has the measurements). On Turso each thread's connection
+is its own HTTP session; concurrent writers there have not been run
+(2026-10-16).
+
+Shared state, read 2026-10-16: each stage object is used by its own thread
+only, and process_row by that stage's pool, as in a pass. ItunesPreview's
+throttle lock is class-level and only preview's pool takes it. ml_backend
+loads MERT lazily without a lock, and only classify's single pool thread
+calls it. logging's handlers lock per record. LanguageStage.run_batch counts
+waiting rows on the connection it is given, its own thread's.
 """
 from __future__ import annotations
 
 import argparse
 import logging
+import os
+import re
+import signal
+import sqlite3
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -119,7 +198,7 @@ from ingest_pipeline.stage_language import LanguageStage  # noqa: E402
 from ingest_pipeline.stage_librosa import LibrosaStage  # noqa: E402
 from ingest_pipeline.stage_fuse import FuseStage  # noqa: E402
 from ingest_pipeline.base import (  # noqa: E402
-    LEFT_ARMED, STATUS_DONE, id_filter, stage_error_status)
+    LEFT_ARMED, STATUS_DONE, STATUS_FAILED, STATUS_NO_MATCH, id_filter, stage_error_status)
 import score_recompute  # noqa: E402
 import _target  # noqa: E402
 
@@ -343,14 +422,450 @@ def after_pass(scored: int) -> bool:
     return recompute_scores()
 
 
+# ------------------------------------------------------------ --concurrent
+#
+# "Concurrent mode" in the module docstring says what this does and why.
+
+# An idle stage looks again after this long, doubling after each look that
+# finds nothing up to the cap, and back to the start after one that does
+# work. Its hand-off event usually wakes it first; the back-off is for rows
+# that reach its gate from outside the run (the app, a tagging session).
+IDLE_BACKOFF_FIRST_S = 5
+IDLE_BACKOFF_MAX_S = 60
+# How often a concurrent run logs what each stage has done and is doing.
+SUMMARY_EVERY_S = 60
+# How long a stage thread's SQLite connection waits for a lock before
+# raising "database is locked". db_client leaves Python's default, 5 s.
+SQLITE_BUSY_TIMEOUT_MS = 30_000
+# The main thread never blocks longer than this, so it acts on a Ctrl-C
+# within it.
+_SUPERVISE_TICK_S = 0.5
+
+_MODE_TEXT = {"single": "single pass", "until_drained": "until drained", "loop": "loop"}
+
+
+def _wait_for(event: threading.Event, timeout: float) -> bool:
+    """An idle stage's sleep: until its event is set or `timeout` passes.
+    Tests stub it."""
+    return event.wait(timeout)
+
+
+# A second Ctrl-C ends the process here rather than by returning: at exit
+# the interpreter joins every ThreadPoolExecutor's threads, so a stage in
+# the middle of a batch would still run its last rows first (2026-10-16,
+# Python 3.13.11: three queued 1.5 s jobs on a pool started from a daemon
+# thread held the process 4.6 s after its main thread returned). Tests
+# stub it.
+_exit_now = os._exit
+
+
+def _install_sigint(handler):
+    """Make `handler` this process's Ctrl-C for a concurrent run; returns a
+    function that puts back the one before. Off the main thread, which
+    signals never reach, it installs nothing."""
+    if threading.current_thread() is not threading.main_thread():
+        return lambda: None
+    previous = signal.signal(signal.SIGINT, handler)
+    # None: the one before was not set from Python.
+    return lambda: signal.signal(signal.SIGINT,
+                                 signal.SIG_DFL if previous is None else previous)
+
+
+def _concurrent_conn():
+    """get_conn(), set up for several stage threads writing one database.
+
+    Turso needs nothing more: each thread gets its own connection, so its
+    own requests.Session, which is not thread-safe. A SQLite connection gets
+    SQLITE_BUSY_TIMEOUT_MS, and the file is put in WAL mode (raises if it
+    will not go). Measured 2026-10-16 (Python 3.13.11, SQLite 3.51.0,
+    Windows, scratch files):
+
+      - db_client's connections already wait 5 s for a lock, and with that,
+        seven threads writing 50-row execute_batch()es beside seven reading
+        ran 420 batches without one "database is locked", in rollback-
+        journal mode and in WAL alike. With no wait, most of them failed.
+        Short batches do not lock each other out.
+      - What fails is a COMMIT in rollback-journal mode while another
+        connection holds a read open: it needs the exclusive lock, waits
+        for the reader, and raises once the wait runs out (a reader holding
+        6 s: "database is locked" at 5.5 s; holding 2 s: committed at
+        2.0 s). In WAL mode the same COMMIT landed in 0.01 s.
+
+    So WAL is what keeps readers (every stage's look, a dev uvicorn) and
+    writers from waiting on each other; the longer timeout is headroom for
+    writers waiting on writers. WAL belongs to the file and stays after the
+    run, with -wal and -shm files beside it while a connection is open;
+    `PRAGMA journal_mode=DELETE`, with no other connection open, undoes it.
+    """
+    conn = get_conn()
+    if not isinstance(conn, sqlite3.Connection):
+        return conn
+    try:
+        conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+        mode = str(conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]).lower()
+    except BaseException:
+        conn.close()
+        raise
+    if mode != "wal":
+        conn.close()
+        raise RuntimeError(f"the SQLite file stayed in journal_mode={mode}, not WAL, which "
+                           "--concurrent needs; run without it")
+    return conn
+
+
+def _look_query(stage, batch: int, only_ids) -> tuple[str, tuple] | None:
+    """The ids-only query a concurrent stage looks with: the lowest `batch`
+    ids its gate accepts. None for a stage that declares no gate (a test
+    double)."""
+    if not getattr(stage, "gate_sql", None):
+        return None
+    idf, idp = id_filter(only_ids, "t.")
+    return (f"SELECT t.id FROM tracks t WHERE ({stage.gate_sql}) {idf}ORDER BY t.id ASC LIMIT ?",
+            (*stage.gate_params, *idp, batch))
+
+
+class _Worker:
+    """One stage of a concurrent run: its thread, its hand-off event, and
+    what the summary reports. All but `stage`, `name`, `wake`, `feeders`
+    and `fed` is read and written under the run's lock."""
+
+    def __init__(self, stage):
+        self.stage = stage
+        self.name = stage.name
+        self.wake = threading.Event()
+        self.feeders: list[_Worker] = []      # the stages that arm this one
+        self.fed: list[_Worker] = []          # the stages this one feeds
+        self.thread: threading.Thread | None = None
+        self.totals = {STATUS_DONE: 0, STATUS_NO_MATCH: 0, STATUS_FAILED: 0}
+        self.busy = False
+        self.stopped = False
+        # The run's generation when this stage's latest look that found
+        # nothing to do began; -1 before its first.
+        self.looked_at = -1
+        self.state, self.since, self.next_look = "starting", time.monotonic(), None
+
+
+class _ConcurrentRun:
+    """See "Concurrent mode" in the module docstring."""
+
+    def __init__(self, stages: list, batch: int, only_ids, mode: str):
+        names = [s.name for s in stages]
+        twice = sorted({n for n in names if names.count(n) > 1})
+        if twice:
+            raise SystemExit(f"--concurrent runs each stage once; given twice: {twice}")
+        self.batch, self.only_ids, self.mode = batch, only_ids, mode
+        self.workers = [_Worker(s) for s in stages]
+        for w in self.workers:
+            column = getattr(w.stage, "status_column", None)
+            w.feeders = [v for v in self.workers
+                         if v is not w and column in getattr(v.stage, "arms", ())]
+        for w in self.workers:
+            w.fed = [v for v in self.workers if w in v.feeders]
+        # A single pass stops a stage after its feeders, so they must not
+        # feed each other in a circle.
+        left = {w.name: {f.name for f in w.feeders} for w in self.workers}
+        while left:
+            free = [n for n, fs in left.items() if not fs & left.keys()]
+            if not free:
+                raise SystemExit(f"--concurrent: {sorted(left)} feed each other in a circle")
+            for n in free:
+                del left[n]
+        self.lock = threading.Lock()
+        self.stopping = threading.Event()   # every stage: stop after the current batch
+        self.changed = threading.Event()    # the main thread: something to look at
+        self.generation = 0                 # +1 for every batch that did work
+        self.drained_at = None              # the generation the run last drained at
+        self.scored = 0                     # rows SCORING_STAGES finished, not recomputed yet
+        self.failure = None                 # (stage name, exception), the first one
+        # Ctrl-C presses, counted by _on_sigint, and whether the second one
+        # gave up on the stages still in a batch.
+        self.interrupts = 0
+        self.abandoned = False
+
+    # ------------------------------------------------------------ main thread
+
+    def run(self) -> int:
+        log.info("concurrent run, %s, --batch %d: %s", _MODE_TEXT[self.mode], self.batch,
+                 "; ".join(f"{w.name} hands off to {', '.join(v.name for v in w.fed) or 'none'}"
+                           for w in self.workers) or "no stages")
+        restore = _install_sigint(self._on_sigint)
+        try:
+            for w in self.workers:
+                w.thread = threading.Thread(target=self._work, args=(w,), name=w.name,
+                                            daemon=True)
+                w.thread.start()
+            self._supervise()
+            for w in self.workers:
+                while w.thread.is_alive() and not self.abandoned:
+                    w.thread.join(_SUPERVISE_TICK_S)
+        except BaseException:
+            self.stop()
+            raise
+        finally:
+            restore()
+        if self.abandoned:
+            return 130
+        return self._finish()
+
+    def _on_sigint(self, signum, frame) -> None:
+        """Ctrl-C during the run. The first press only counts: the main
+        thread's next tick stops the stages, since a signal handler that
+        took a lock the interrupted code holds would deadlock. The second
+        gives up on the batches in flight: a batch is one transaction, so
+        each lands whole or not at all. os.write, not logging, for the same
+        reason."""
+        self.interrupts += 1
+        if self.interrupts < 2:
+            return
+        busy = [w.name for w in self.workers if not w.stopped]
+        os.write(2, f"interrupted again: exiting now, leaving {busy} mid-batch\n".encode())
+        self.abandoned = True
+        _exit_now(130)
+
+    def _supervise(self) -> None:
+        """Wait until every stage has stopped; meanwhile act on Ctrl-C, run
+        a loop's owed recompute each time it drains, and log the summary."""
+        next_summary = time.monotonic() + SUMMARY_EVERY_S
+        handled = None
+        told = False
+        while not self.abandoned:
+            if self.interrupts and not told:
+                told = True
+                log.warning("interrupted: every stage stops after its current batch "
+                            "(Ctrl-C again to exit at once)")
+                self.stop()
+            self.changed.wait(_SUPERVISE_TICK_S)
+            self.changed.clear()
+            with self.lock:
+                # A thread ends through _work's finally, which marks it
+                # stopped; going by liveness as well keeps Ctrl-C able to
+                # end the run should one ever die some other way.
+                if all(w.stopped or not w.thread.is_alive() for w in self.workers):
+                    return
+                drained = self.drained_at
+            if (self.mode == "loop" and not self.stopping.is_set()
+                    and drained is not None and drained != handled):
+                handled = drained
+                log.info("drained: every stage is idle")
+                if not self._recompute_owed():
+                    with self.lock:
+                        self.drained_at = None      # reported again at the next idle look
+                    handled = None
+            if time.monotonic() >= next_summary:
+                self._log_summary()
+                next_summary = time.monotonic() + SUMMARY_EVERY_S
+
+    def _recompute_owed(self) -> bool:
+        with self.lock:
+            owed = self.scored
+        if owed <= 0:
+            return True
+        log.info("%d rows scored since the last recompute; recomputing library scores", owed)
+        if not recompute_scores():
+            log.warning("score recompute owed for %d rows; retrying at the next idle point", owed)
+            return False
+        with self.lock:
+            self.scored -= owed
+        return True
+
+    def _finish(self) -> int:
+        """After every stage thread has ended: the owed recompute, and the
+        run's exit status."""
+        self._log_summary()
+        owed_note = ("score recompute owed for %d rows, not run; once the cause is fixed: "
+                     "python scripts/run_ingest_v2.py --recompute-only")
+        if self.failure or self.interrupts:
+            if self.failure:
+                name, e = self.failure
+                log.error("the run stopped because [%s] failed (%s: %s); every other stage "
+                          "finished its batch first", name, type(e).__name__, e)
+            if self.scored:
+                log.warning(owed_note, self.scored)
+            return 1 if self.failure else 130
+        log.info("%s; done", "drained" if self.mode != "single" else "single pass finished")
+        if self.scored <= 0:
+            return 0
+        log.info("%d rows scored in this run; recomputing library scores", self.scored)
+        try:
+            return 0 if recompute_scores() else 1
+        except KeyboardInterrupt:
+            log.warning(owed_note, self.scored)
+            return 130
+
+    def _log_summary(self) -> None:
+        now = time.monotonic()
+        with self.lock:
+            parts = []
+            for w in self.workers:
+                t = w.totals
+                text = f"{w.name} {t[STATUS_DONE]}/{t[STATUS_NO_MATCH]}/{t[STATUS_FAILED]}"
+                text += "".join(f" +{n} {k}" for k, n in t.items()
+                                if n and k not in (STATUS_DONE, STATUS_NO_MATCH, STATUS_FAILED))
+                text += f", {w.state} for {now - w.since:.0f}s"
+                if w.state == "idle" and w.next_look is not None:
+                    text += f", next look in {max(0.0, w.next_look - now):.0f}s"
+                parts.append(text)
+        log.info("summary, done/no_match/failed: %s", "; ".join(parts) or "no stages")
+
+    def stop(self) -> None:
+        """Every stage stops after the batch it is in; an idle one at once."""
+        self.stopping.set()
+        for w in self.workers:
+            w.wake.set()
+        self.changed.set()
+
+    # ----------------------------------------------------------- stage threads
+
+    def _work(self, w: _Worker) -> None:
+        conn = None
+        try:
+            conn = _concurrent_conn()
+            look = _look_query(w.stage, self.batch, self.only_ids)
+            pause = IDLE_BACKOFF_FIRST_S
+            while not self.stopping.is_set():
+                # Cleared before the look, so a hand-off written after the
+                # look read the table still wakes the next wait.
+                w.wake.clear()
+                with self.lock:
+                    generation = self.generation
+                    feeders_stopped = all(f.stopped for f in w.feeders)
+                    w.busy, w.state, w.since = True, "looking", time.monotonic()
+                counts = self._look(conn, w, look)
+                # As in run_pass: a finished track left armed is no progress.
+                progressed = sum(n for k, n in counts.items() if k != LEFT_ARMED)
+                with self.lock:
+                    w.busy = False
+                    for k, n in counts.items():
+                        w.totals[k] = w.totals.get(k, 0) + n
+                    if progressed:
+                        self.generation += 1
+                        if w.name in SCORING_STAGES:
+                            self.scored += int(counts.get(STATUS_DONE, 0))
+                    else:
+                        w.looked_at = generation
+                        if self.mode == "single" and feeders_stopped:
+                            log.info("[%s] finished: nothing left to do, and every stage "
+                                     "feeding it had stopped", w.name)
+                            w.state = "finished"
+                            break
+                        w.state, w.since = "idle", time.monotonic()
+                        w.next_look = w.since + pause
+                        self._check_drained()
+                if progressed:
+                    if counts.get(STATUS_DONE):
+                        for v in w.fed:
+                            v.wake.set()
+                    pause = IDLE_BACKOFF_FIRST_S
+                    continue
+                log.debug("[%s] nothing to do; next look within %gs", w.name, pause)
+                _wait_for(w.wake, pause)
+                pause = min(pause * 2, IDLE_BACKOFF_MAX_S)
+        except BaseException as e:
+            log.exception("[%s] failed; stopping every stage after its current batch", w.name)
+            with self.lock:
+                if self.failure is None:
+                    self.failure = (w.name, e)
+                w.state = f"failed ({type(e).__name__})"
+            self.stop()
+        finally:
+            with self.lock:
+                w.stopped, w.busy = True, False
+                if w.state not in ("finished",) and not w.state.startswith("failed"):
+                    w.state = "stopped"
+                w.since = time.monotonic()
+            # A stage waiting on this one may be able to finish now.
+            for v in w.fed:
+                v.wake.set()
+            self.changed.set()
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    def _look(self, conn, w: _Worker, look) -> dict[str, int]:
+        """One look: the ids query, then a batch of those rows if any."""
+        if look is None:
+            with self.lock:
+                w.state = "in a batch"
+            return w.stage.run_batch(conn, self.batch, log, only_ids=self.only_ids)
+        sql, params = look
+        ids = [int(r[0]) for r in conn.execute(sql, params).fetchall()]
+        if not ids:
+            return {}
+        with self.lock:
+            w.state, w.since = f"in a batch of {len(ids)}", time.monotonic()
+        return w.stage.run_batch(conn, self.batch, log, only_ids=ids)
+
+    def _check_drained(self) -> None:
+        """Called under the lock by a stage whose look found nothing to do.
+
+        The run is drained when every stage is idle and each one's latest
+        look began after the latest batch that did work. If all are idle
+        but some looked before that work, they are woken to look again now
+        rather than when their back-off ends.
+        """
+        if self.mode == "single" or self.stopping.is_set():
+            return
+        running = [w for w in self.workers if not w.stopped]
+        if any(w.busy for w in running):
+            return
+        stale = [w for w in running if w.looked_at != self.generation]
+        if stale:
+            for w in stale:
+                w.wake.set()
+            return
+        if self.drained_at == self.generation:
+            return
+        self.drained_at = self.generation
+        if self.mode == "until_drained":
+            self.stopping.set()
+            for w in self.workers:
+                w.wake.set()
+        self.changed.set()
+
+
+def run_concurrent(stages: list, batch: int, only_ids=None, mode: str = "single") -> int:
+    """Run `stages` at once, one thread each (see "Concurrent mode" in the
+    module docstring); mode is 'single', 'until_drained' or 'loop'.
+    Returns the exit status: 0, 1 if a stage failed or the owed recompute
+    did, 130 after Ctrl-C."""
+    # Switches a SQLite file to WAL before any stage thread opens it.
+    _concurrent_conn().close()
+    return _ConcurrentRun(stages, batch, only_ids, mode).run()
+
+
+_POOL_SUFFIX = re.compile(r"_\d+$")
+
+
+class _StageFormatter(logging.Formatter):
+    """Puts the stage on every line of a concurrent run. A record's thread
+    is a stage's own (named after it) or one of its run_batch pool's
+    (<stage>_<n>); the main thread is the runner. A line that already opens
+    with its stage's tag, as base.py's do, gets no second one."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        thread = record.threadName or ""
+        stage = "runner" if thread == "MainThread" else _POOL_SUFFIX.sub("", thread)
+        record.stage_tag = ("" if record.getMessage().startswith(f"[{stage}]")
+                            else f"[{stage}] ")
+        return super().format(record)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     _target.add_argument(parser)
     parser.add_argument("--batch", type=int, default=50,
-                        help="max rows per stage per pass (default 50)")
+                        help="max rows per stage per pass, or per batch with --concurrent "
+                             "(default 50)")
     parser.add_argument("--stages", type=str,
                         default="preview,download,librosa,classify,language,fuse,youtube",
                         help="comma-separated stage names (default: all seven in order)")
+    parser.add_argument("--concurrent", action="store_true",
+                        help="run the stages at the same time, a thread each, each through "
+                             "its own gate. Alone: every stage works until it and the "
+                             "stages feeding it have nothing left, so --batch does not "
+                             "bound the run. See 'Concurrent mode' above")
     looping = parser.add_mutually_exclusive_group()
     looping.add_argument("--until-drained", action="store_true",
                          help="pass after pass until one finds nothing to do, run the "
@@ -359,7 +874,8 @@ def main(argv: list[str] | None = None) -> int:
                          help="keep running for good (a dev DB); idle sleeps start at "
                               "--interval and double up to 10 min, work resets them")
     parser.add_argument("--interval", type=int, default=30,
-                        help="--loop's first idle sleep, in seconds (default 30)")
+                        help="--loop's first idle sleep, in seconds (default 30); "
+                             "--concurrent stages back off from 5 s to 60 s instead")
     parser.add_argument("--only-ids", type=str, default=None,
                         help="file of tracks.id, one per line: advance only these "
                              "rows; a loop exits once they are idle")
@@ -375,10 +891,18 @@ def main(argv: list[str] | None = None) -> int:
 
     # Before anything connects; exits here if --target prod is not set up.
     where = _target.apply(args.target)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format=f"%(asctime)s %(levelname)s target={args.target} %(name)s: %(message)s",
-    )
+    level = logging.DEBUG if args.verbose else logging.INFO
+    if args.concurrent:
+        handler = logging.StreamHandler()
+        handler.setFormatter(_StageFormatter(
+            f"%(asctime)s %(levelname)s target={args.target} %(name)s: "
+            "%(stage_tag)s%(message)s"))
+        logging.basicConfig(level=level, handlers=[handler])
+    else:
+        logging.basicConfig(
+            level=level,
+            format=f"%(asctime)s %(levelname)s target={args.target} %(name)s: %(message)s",
+        )
     log.info("%s", where)
 
     ensure_db()
@@ -406,6 +930,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.only_ids:
         only_ids = [int(x) for x in Path(args.only_ids).read_text().split() if x.strip()]
         log.info("scoped to %d ids from %s", len(only_ids), args.only_ids)
+
+    if args.concurrent:
+        # --loop over --only-ids ends once they are idle, as the passes do.
+        mode = ("loop" if args.loop and only_ids is None
+                else "until_drained" if args.loop or args.until_drained else "single")
+        return run_concurrent(stages, args.batch, only_ids, mode)
 
     if not (args.loop or args.until_drained):
         processed, scored = run_pass(stages, args.batch, only_ids)

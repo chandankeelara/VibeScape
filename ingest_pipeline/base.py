@@ -98,8 +98,11 @@ schema gap parked every row of every batch. The second judged by position
 (a retry failing the same way at its first statement was systematic),
 which still parked a row that alone wrote a column production lacks.
 
-Note: no row-level locking. If two workers ever race on the same row,
-the last UPDATE wins and both stage writes are idempotent for their own
+Note: no row-level locking. In a concurrent run (run_ingest_v2.py
+--concurrent) two stages can act on one row at once. Each UPDATE sets only
+its stage's columns and the column it arms, so neither write undoes the
+other. Two runs against one database are not guarded against:
+the last UPDATE wins, and every stage write is idempotent for its own
 columns. Cheap and correct enough for the current volume.
 """
 from __future__ import annotations
@@ -238,7 +241,7 @@ class Stage(ABC):
         the stage can act on now, and what it reads from them. See below.
       - process_row(row): the work for one track. Runs in a worker thread.
         Return RowResult; do NOT touch the DB from here (run_batch writes
-        results on the main thread).
+        results on the thread that called it).
       - row_writes(res), optionally: statements that must land with the
         row's tracks UPDATE (classify and fuse write track_embeddings).
     """
@@ -324,7 +327,8 @@ class Stage(ABC):
         pool, write the results (see "Writing a batch" in the module
         docstring), and return per-status counts. A row parked after a
         failed write counts as 'failed'; a finished row a failure left armed
-        counts as LEFT_ARMED. Called by the orchestrator once per pass.
+        counts as LEFT_ARMED. Called by the orchestrator once per pass, or
+        by a concurrent run's stage thread once per batch.
         """
         rows = self.fetch_pending(conn, limit, only_ids)
         counts = {STATUS_DONE: 0, STATUS_NO_MATCH: 0, STATUS_FAILED: 0}
@@ -336,14 +340,17 @@ class Stage(ABC):
                  self.name, len(rows), self.max_workers)
 
         results: list[RowResult] = []
-        with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+        # Pool threads are named <stage>_<n>, so a concurrent run's log can
+        # say which stage a line from process_row came from.
+        with ThreadPoolExecutor(max_workers=self.max_workers,
+                                thread_name_prefix=self.name) as ex:
             future_to_row = {ex.submit(self._safe_process, r): r for r in rows}
             for fut in as_completed(future_to_row):
                 results.append(fut.result())
         # as_completed order is arbitrary; write in id order.
         results.sort(key=lambda r: int(r.track_id))
 
-        # Written on the main thread, after every row is processed.
+        # Written on the calling thread, after every row is processed.
         writes = []
         for res in results:
             fields, extra = self.row_writes(res)

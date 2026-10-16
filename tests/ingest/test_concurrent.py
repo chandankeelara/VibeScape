@@ -1,0 +1,720 @@
+"""scripts/run_ingest_v2.py --concurrent: every selected stage at once, a
+thread each, each working through its own gate ("Concurrent mode" in the
+runner's docstring).
+
+The stages here are real Stage subclasses (real gate queries, run_batch and
+write rules) whose process_row is the test's, on each test's own SQLite
+file. Timings are bounded generously; the events make the order of what
+happens deterministic, not the clock.
+"""
+import _thread
+import logging
+import re
+import secrets
+import sqlite3
+import threading
+import time
+
+import pytest
+
+import run_ingest_v2 as runner
+from ingest_pipeline import base
+from ingest_pipeline.base import RowResult, Stage, STATUS_DONE, STATUS_NO_MATCH
+from ingest_pipeline.stage_preview import PreviewStage
+
+STATUS = ("preview_status", "download_status", "librosa_status", "ml_status",
+          "language_status", "fuse_status", "youtube_status")
+STAGE_THREAD = re.compile(rf"^({'|'.join(runner.STAGE_CLASSES)})(_\d+)?$")
+
+
+def add(sql, n, **cols):
+    """n pending tracks in production's shape (no column defaults, so every
+    stage column NULL), with `cols` set. Returns their ids."""
+    values = {c: None for c in STATUS}
+    values.update(cols)
+    ids = []
+    for _ in range(n):
+        cur = sql.execute("INSERT INTO tracks (title, artist, spotify_id, ingestion_status, "
+                          "vibe_score) VALUES ('T', 'A', ?, 'pending', 0.0)",
+                          (secrets.token_hex(8),))
+        ids.append(int(cur.lastrowid))
+        sql.execute(f"UPDATE tracks SET {', '.join(f'{k} = ?' for k in values)} WHERE id = ?",
+                    (*values.values(), ids[-1]))
+    sql.commit()
+    return ids
+
+
+def column(sql, name, ids):
+    marks = ",".join("?" * len(ids))
+    return [r[0] for r in sql.execute(f"SELECT {name} FROM tracks WHERE id IN ({marks}) "
+                                      "ORDER BY id", ids)]
+
+
+def path_of(sql):
+    return sql.execute("PRAGMA database_list").fetchone()[2]
+
+
+def elsewhere(path, write):
+    """write(conn) on a connection of its own, as the app or a tagging
+    session would, from whichever thread calls this."""
+    conn = sqlite3.connect(path, timeout=30)
+    try:
+        result = write(conn)
+        conn.commit()
+        return result
+    finally:
+        conn.close()
+
+
+class Fake(Stage):
+    """A stage whose per-row work is `work(track_id)` and whose result is
+    `result(track_id)`, ('done', {}) unless given."""
+    max_workers = 1
+
+    def __init__(self, name, status_column, gate_sql, arms=(), work=None, result=None,
+                 gate_params=(), finalizes=None):
+        self.name, self.status_column, self.gate_sql = name, status_column, gate_sql
+        self.gate_params, self.arms = gate_params, arms
+        self.finalizes = finalizes or {}
+        self.work, self.result = work, result
+        self.seen = []                 # (track id, perf_counter) per row processed
+        self.written = []              # perf_counter after each batch written
+        self.busy_timeouts = []        # the connection's, per batch
+
+    def process_row(self, row):
+        tid = int(row["id"])
+        if self.work:
+            self.work(tid)
+        self.seen.append((tid, time.perf_counter()))
+        status, fields = self.result(tid) if self.result else (STATUS_DONE, {})
+        return RowResult(tid, status, dict(fields))
+
+    def run_batch(self, conn, limit, log, only_ids=None):
+        if isinstance(conn, sqlite3.Connection):
+            self.busy_timeouts.append(conn.execute("PRAGMA busy_timeout").fetchone()[0])
+        counts = super().run_batch(conn, limit, log, only_ids)
+        self.written.append(time.perf_counter())
+        return counts
+
+
+def chain(**work):
+    """librosa -> classify -> fuse on their real status columns, with gates
+    that are only each column 'pending'; `work` by stage name."""
+    return (Fake("librosa", "librosa_status", "t.librosa_status = 'pending'",
+                 arms=("ml_status",), work=work.get("librosa")),
+            Fake("classify", "ml_status", "t.ml_status = 'pending'",
+                 arms=("fuse_status",), work=work.get("classify")),
+            Fake("fuse", "fuse_status", "t.fuse_status = 'pending'", work=work.get("fuse")))
+
+
+def bare(cls):
+    """A real stage without its __init__ (which loads librosa, yt-dlp or
+    MERT); its gate is class-level."""
+    return object.__new__(cls)
+
+
+@pytest.fixture(autouse=True)
+def no_stage_thread_outlives_its_run():
+    yield
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        left = [t.name for t in threading.enumerate() if STAGE_THREAD.match(t.name)]
+        if not left:
+            return
+        time.sleep(0.05)
+    pytest.fail(f"stage threads still alive after the run: {left}")
+
+
+@pytest.fixture(autouse=True)
+def no_write_retry_pauses(monkeypatch):
+    monkeypatch.setattr(base, "_sleep", lambda s: None)
+
+
+@pytest.fixture(autouse=True)
+def watchdog():
+    """A run that never ends must not hang the suite: after 30 s this
+    presses Ctrl-C (a concurrent run stops on it; anywhere else it raises).
+    Every test here is done in a few seconds."""
+    timer = threading.Timer(30, _thread.interrupt_main)
+    timer.daemon = True
+    timer.start()
+    yield
+    timer.cancel()
+
+
+@pytest.fixture(autouse=True)
+def exits(monkeypatch):
+    """What a second Ctrl-C would have exited the process with. Recorded
+    instead, so not even the watchdog's press after a test's own can end
+    pytest."""
+    codes = []
+    monkeypatch.setattr(runner, "_exit_now", codes.append)
+    return codes
+
+
+@pytest.fixture
+def recomputes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(runner, "recompute_scores", lambda: calls.append(1) or True)
+    return calls
+
+
+class Waits(list):
+    """Every idle wait a stage made: (thread, timeout, began, ended, woken).
+    asleep(name) is set once that stage has begun one."""
+
+    def __init__(self):
+        super().__init__()
+        self._asleep = {}
+        self._lock = threading.Lock()
+
+    def asleep(self, name):
+        with self._lock:
+            return self._asleep.setdefault(name, threading.Event())
+
+
+@pytest.fixture
+def waits(monkeypatch):
+    seen = Waits()
+    real = runner._wait_for
+
+    def recording(event, timeout):
+        name = threading.current_thread().name
+        began = time.perf_counter()
+        seen.asleep(name).set()
+        woken = real(event, timeout)
+        seen.append((name, timeout, began, time.perf_counter(), woken))
+        return woken
+    monkeypatch.setattr(runner, "_wait_for", recording)
+    return seen
+
+
+@pytest.fixture
+def stop_called(monkeypatch):
+    """Set once the run has asked every stage to stop."""
+    called = threading.Event()
+    real = runner._ConcurrentRun.stop
+
+    def stop(self):
+        real(self)
+        called.set()
+    monkeypatch.setattr(runner._ConcurrentRun, "stop", stop)
+    return called
+
+
+# ------------------------------------------------------------- overlap
+
+def two_batches_then_downstream(sql, before_first=None):
+    """librosa has two batches of two rows; inside its second it waits until
+    classify has been through its first (classify waits until librosa is in
+    that second batch, so both are mid-batch at once). `before_first` runs
+    in librosa's first batch. Returns the stages, the ids, what classify saw
+    and whether librosa's waits ended in time."""
+    ids = add(sql, 4, librosa_status="pending")
+    in_second, b_through = threading.Event(), threading.Event()
+    seen_by_b = []
+    up_waited = []
+
+    def up_work(tid):
+        if tid in ids[:2] and before_first:
+            before_first()
+        if tid in ids[2:]:
+            in_second.set()
+            up_waited.append(b_through.wait(10))
+
+    def down_work(tid):
+        seen_by_b.append((tid, in_second.wait(10), len(up.written)))
+        if tid == ids[1]:                        # the last row of classify's first batch
+            b_through.set()
+    up, down, _ = chain(librosa=up_work, classify=down_work)
+    return up, down, ids, seen_by_b, up_waited
+
+
+def test_the_next_stage_works_while_the_first_is_inside_its_second_batch(
+        sql, monkeypatch, recomputes):
+    # Not merely that the totals match: classify processes its first batch
+    # while librosa is inside its second, with one batch written. A back-off
+    # of 30 s means only the hand-off can wake classify in time.
+    monkeypatch.setattr(runner, "IDLE_BACKOFF_FIRST_S", 30)
+    up, down, ids, seen_by_b, up_waited = two_batches_then_downstream(sql)
+    t0 = time.perf_counter()
+
+    assert runner.run_concurrent([up, down], 2, mode="until_drained") == 0
+
+    took = time.perf_counter() - t0
+    # classify's first two rows: librosa inside its second batch, one written
+    assert seen_by_b[:2] == [(ids[0], True, 1), (ids[1], True, 1)]
+    assert up_waited == [True, True]
+    assert sorted(t for t, _ in down.seen) == ids
+    assert column(sql, "ml_status", ids) == ["done"] * 4
+    gap = down.seen[0][1] - up.written[0]
+    print(f"classify's first row {gap * 1000:.1f} ms after librosa's first batch was "
+          f"written, while librosa was inside its second; run took {took:.2f}s")
+    assert took < 10
+
+
+def test_a_hand_off_wakes_the_next_stage_long_before_its_back_off(
+        sql, monkeypatch, recomputes, waits):
+    monkeypatch.setattr(runner, "IDLE_BACKOFF_FIRST_S", 30)
+    # librosa's first batch is held until classify has looked, found
+    # nothing and gone to sleep for its 30 s.
+    up, down, ids, _, _ = two_batches_then_downstream(
+        sql, before_first=lambda: waits.asleep("classify").wait(10))
+
+    assert runner.run_concurrent([up, down], 2, mode="until_drained") == 0
+
+    # The hand-off woke it within a second of librosa's first batch landing.
+    first = next(w for w in waits if w[0] == "classify")
+    _, timeout, began, ended, woken = first
+    assert (timeout, woken) == (30, True)
+    assert began < up.written[0] < ended < up.written[0] + 1.0
+    print(f"classify woke {(ended - up.written[0]) * 1000:.1f} ms after librosa's first "
+          "batch was written, 30 s before its back-off would have")
+
+
+# ------------------------------------------------------------- draining
+
+def test_until_drained_waits_out_a_slow_upstream_and_recomputes_once(
+        sql, monkeypatch, recomputes, waits):
+    # classify's gate is empty between librosa's batches, again and again;
+    # the run must not end then.
+    monkeypatch.setattr(runner, "IDLE_BACKOFF_FIRST_S", 0.02)
+    monkeypatch.setattr(runner, "IDLE_BACKOFF_MAX_S", 0.05)
+    ids = add(sql, 6, librosa_status="pending")
+    up, down, _ = chain(librosa=lambda tid: time.sleep(0.15))
+
+    t0 = time.perf_counter()
+    assert runner.run_concurrent([up, down], 2, mode="until_drained") == 0
+    took = time.perf_counter() - t0
+
+    assert len(up.written) == 3 and sorted(t for t, _ in down.seen) == ids
+    idle_between = [w for w in waits if w[0] == "classify" and w[2] < up.written[-1]]
+    assert len(idle_between) >= 2, "classify never went idle while librosa still had work"
+    assert recomputes == [1]                 # librosa is a scoring stage: once, at the end
+    assert took < 0.9 + 3
+
+
+def test_no_recompute_unless_a_scoring_stage_finished_rows(sql, recomputes):
+    ids = add(sql, 3, preview_status="pending")
+    preview = Fake("preview", "preview_status", "t.preview_status = 'pending'",
+                   arms=("download_status",))
+    download = Fake("download", "download_status", "t.download_status = 'pending'")
+    classify = Fake("classify", "ml_status", "t.ml_status = 'pending'")   # nothing to do
+    assert runner.run_concurrent([preview, download, classify], 2, mode="until_drained") == 0
+    assert column(sql, "download_status", ids) == ["done"] * 3
+    assert recomputes == []
+
+
+def test_until_drained_exits_1_when_the_recompute_fails(sql, monkeypatch):
+    add(sql, 2, librosa_status="pending")
+    monkeypatch.setattr(runner, "recompute_scores", lambda: False)
+    assert runner.run_concurrent(list(chain()), 5, mode="until_drained") == 1
+
+
+def test_a_loop_recomputes_each_time_it_drains_not_per_batch(sql, monkeypatch):
+    monkeypatch.setattr(runner, "IDLE_BACKOFF_FIRST_S", 0.02)
+    monkeypatch.setattr(runner, "IDLE_BACKOFF_MAX_S", 0.05)
+    ids = add(sql, 6, librosa_status="pending")
+    # Batches spread over more than one of the main thread's 0.5 s ticks.
+    up, down, _ = chain(librosa=lambda t: time.sleep(0.15))
+    calls = []
+
+    def recompute():
+        calls.append(sorted(t for t, _ in down.seen))
+        if len(calls) == 1:
+            # More work arrives after the first drain: the loop keeps going.
+            elsewhere(path_of(sql), lambda c: c.execute(
+                "UPDATE tracks SET librosa_status = 'pending' WHERE id = ?", (ids[0],)))
+        else:
+            _thread.interrupt_main()             # Ctrl-C, to end the loop
+        return True
+    monkeypatch.setattr(runner, "recompute_scores", recompute)
+
+    assert runner.run_concurrent([up, down], 2, mode="loop") == 130
+    # once after all three batches had gone through both stages, once more
+    # after the one re-armed row had
+    assert calls == [ids, sorted(ids + [ids[0]])]
+
+
+def test_a_failed_loop_recompute_is_retried_at_the_next_idle_look(sql, monkeypatch):
+    monkeypatch.setattr(runner, "IDLE_BACKOFF_FIRST_S", 0.02)
+    monkeypatch.setattr(runner, "IDLE_BACKOFF_MAX_S", 0.05)
+    add(sql, 2, librosa_status="pending")
+    calls = []
+
+    def recompute():
+        calls.append(time.perf_counter())
+        if len(calls) == 1:
+            return False
+        _thread.interrupt_main()                 # Ctrl-C, to end the loop
+        return True
+    monkeypatch.setattr(runner, "recompute_scores", recompute)
+    assert runner.run_concurrent(list(chain()), 5, mode="loop") == 130
+    # no new work came: the retry is the next idle look, a back-off away
+    assert len(calls) == 2 and calls[1] - calls[0] < 2
+
+
+# ------------------------------------------------------------- single pass
+
+def test_a_stage_whose_feeder_stops_without_handing_off_finishes_at_once(sql, monkeypatch,
+                                                                         recomputes):
+    # preview's batch settles every row no_match, so it hands download
+    # nothing; download is asleep for 30 s by then, waiting on preview.
+    # Stopping, preview wakes it, and download sees nothing will come.
+    monkeypatch.setattr(runner, "IDLE_BACKOFF_FIRST_S", 30)
+    add(sql, 2, preview_status="pending")
+    preview = Fake("preview", "preview_status", "t.preview_status = 'pending'",
+                   arms=("download_status",), work=lambda t: time.sleep(0.3),
+                   result=lambda t: (STATUS_NO_MATCH, {}))
+    download = Fake("download", "download_status", "t.download_status = 'pending'")
+    t0 = time.perf_counter()
+    assert runner.run_concurrent([preview, download], 10) == 0
+    assert time.perf_counter() - t0 < 5 and download.seen == []
+
+
+def test_a_stage_inside_a_batch_is_not_idle_though_it_looked_after_the_last_work():
+    # Its last empty look began at the current generation, and its next one
+    # found rows that came from outside the run (the app inserted them), so
+    # no work is recorded yet. The run is not drained until that batch ends.
+    run = runner._ConcurrentRun(list(chain()), 50, None, "until_drained")
+    with run.lock:
+        run.generation = 3
+        for w in run.workers:
+            w.looked_at = 3
+        run.workers[0].busy = True
+        run._check_drained()
+    assert not run.stopping.is_set() and run.drained_at is None
+    with run.lock:
+        run.workers[0].busy = False
+        run._check_drained()
+    assert run.stopping.is_set() and run.drained_at == 3
+
+
+def test_a_single_pass_takes_what_the_gates_hold_and_what_feeders_hand_on(
+        sql, monkeypatch, recomputes):
+    # Each stage stops at a look that finds nothing and began after every
+    # stage feeding it had stopped. So librosa (no feeder) stops once its
+    # gate is empty, and a row reaching its gate later is not taken;
+    # classify keeps going while librosa runs, then until it too finds
+    # nothing, so a row reaching its gate while it still runs is taken.
+    # youtube has no feeder and nothing to do: it stops at its first look.
+    monkeypatch.setattr(runner, "IDLE_BACKOFF_FIRST_S", 30)
+    path = path_of(sql)
+    ids = add(sql, 4, librosa_status="pending")
+    late = {}
+
+    def alive(name):
+        return any(t.name == name and t.is_alive() for t in threading.enumerate())
+
+    def up_work(tid):
+        if tid == ids[2]:
+            late["youtube_alive_in_second_batch"] = alive("youtube")
+        else:
+            time.sleep(0.2)
+
+    def down_work(tid):
+        if tid != ids[3]:
+            return
+        deadline = time.monotonic() + 10
+        while alive("librosa") and time.monotonic() < deadline:
+            time.sleep(0.01)
+        late["for_librosa"], = elsewhere(path, lambda c: add(c, 1, librosa_status="pending"))
+        late["for_classify"], = elsewhere(path, lambda c: add(c, 1, ml_status="pending"))
+    up, down, _ = chain(librosa=up_work, classify=down_work)
+    lone = Fake("youtube", "youtube_status", "t.youtube_status = 'pending'")
+
+    assert runner.run_concurrent([up, down, lone], 2) == 0
+
+    assert late["youtube_alive_in_second_batch"] is False
+    assert sorted(t for t, _ in up.seen) == ids
+    assert sorted(t for t, _ in down.seen) == sorted(ids + [late["for_classify"]])
+    assert column(sql, "librosa_status", [late["for_librosa"]]) == ["pending"]
+    assert lone.seen == [] and recomputes == [1]
+
+
+# ------------------------------------------------------------- feeders
+
+def test_who_feeds_whom_and_nothing_across_a_gap():
+    run = runner._ConcurrentRun([bare(c) for c in runner.STAGE_CLASSES.values()], 50, None,
+                                "single")
+    fed = {w.name: [v.name for v in w.fed] for w in run.workers}
+    assert fed == {"preview": ["download"], "download": ["librosa"],
+                   "librosa": ["classify"], "classify": ["fuse"], "language": [],
+                   "fuse": ["youtube"], "youtube": []}
+    gap = runner._ConcurrentRun([bare(PreviewStage), bare(runner.STAGE_CLASSES["fuse"])], 50,
+                                None, "single")
+    assert [(w.name, w.feeders, w.fed) for w in gap.workers] == [("preview", [], []),
+                                                                 ("fuse", [], [])]
+
+
+def test_a_stage_given_twice_or_a_circle_of_feeders_is_refused():
+    with pytest.raises(SystemExit, match="given twice"):
+        runner._ConcurrentRun([bare(PreviewStage), bare(PreviewStage)], 50, None, "single")
+    a = Fake("preview", "preview_status", "1", arms=("download_status",))
+    b = Fake("download", "download_status", "1", arms=("preview_status",))
+    with pytest.raises(SystemExit, match="circle"):
+        runner._ConcurrentRun([a, b], 50, None, "single")
+
+
+def test_an_idle_look_is_one_ids_only_query_for_all_seven_real_gates(sql, monkeypatch,
+                                                                     recomputes):
+    # What an idle stage costs per look, on Turso billed by rows read: one
+    # ids-only query, no fetch and no language waiting count.
+    statements = []
+    real = runner._concurrent_conn
+
+    def traced():
+        conn = real()
+        name = threading.current_thread().name
+        conn.set_trace_callback(lambda s: statements.append((name, s)))
+        return conn
+    monkeypatch.setattr(runner, "_concurrent_conn", traced)
+    add(sql, 3, ingestion_status="done", **{c: "done" for c in STATUS})
+
+    assert runner.run_concurrent([bare(c) for c in runner.STAGE_CLASSES.values()], 50) == 0
+
+    looks = [(n, s) for n, s in statements if n != "MainThread" and not s.startswith("PRAGMA")]
+    assert {n for n, _ in looks} == set(runner.STAGE_CLASSES)
+    assert all(s.startswith("SELECT t.id FROM tracks t WHERE") for _, s in looks), looks
+
+
+# ------------------------------------------------------------- failure, Ctrl-C
+
+def test_one_failing_stage_stops_the_others_after_their_batch(sql, monkeypatch, recomputes,
+                                                              caplog):
+    # A column the database lacks: base.py raises with nothing parked, and
+    # it escapes the stage's thread. youtube is inside its first of two
+    # batches then; fuse is asleep with 30 s to go.
+    monkeypatch.setattr(runner, "IDLE_BACKOFF_FIRST_S", 30)
+    boom_ids = add(sql, 1, preview_status="pending")
+    slow_ids = add(sql, 4, youtube_status="pending")
+    slow_started = threading.Event()
+    boom = Fake("preview", "preview_status", "t.preview_status = 'pending'",
+                work=lambda t: slow_started.wait(10),
+                result=lambda t: (STATUS_DONE, {"no_such_column": 1}))
+    slow = Fake("youtube", "youtube_status", "t.youtube_status = 'pending'",
+                work=lambda t: (slow_started.set(), time.sleep(0.5)))
+    idle = Fake("fuse", "fuse_status", "t.fuse_status = 'pending'")
+    t0 = time.perf_counter()
+
+    with caplog.at_level(logging.INFO, logger="vibescape.ingest.orch"):
+        assert runner.run_concurrent([boom, slow, idle], 2, mode="until_drained") == 1
+
+    took = time.perf_counter() - t0
+    assert took < 5                                        # fuse was woken, not waited out
+    # youtube's batch landed, and it started no other
+    assert column(sql, "youtube_status", slow_ids) == ["done", "done", "pending", "pending"]
+    assert column(sql, "preview_status", boom_ids) == ["pending"]
+    assert idle.seen == [] and recomputes == []
+    assert "[preview] failed; stopping every stage after its current batch" in caplog.text
+    assert "no_such_column" in caplog.text
+    assert "the run stopped because [preview] failed" in caplog.text
+
+
+def test_a_stage_that_cannot_connect_stops_the_run(sql, monkeypatch, recomputes):
+    real = runner._concurrent_conn
+
+    def refuse():
+        if threading.current_thread().name == "classify":
+            raise RuntimeError("no connection for classify")
+        return real()
+    monkeypatch.setattr(runner, "_concurrent_conn", refuse)
+    add(sql, 1, librosa_status="pending")
+    assert runner.run_concurrent(list(chain()), 5, mode="loop") == 1
+
+
+def test_ctrl_c_stops_every_stage_after_its_current_batch(sql, recomputes, stop_called):
+    ids = add(sql, 4, librosa_status="pending")
+    in_batch, release = threading.Event(), threading.Event()
+    up, down, _ = chain(librosa=lambda t: (in_batch.set(), release.wait(10)))
+
+    def press_ctrl_c():
+        in_batch.wait(10)
+        _thread.interrupt_main()
+        stop_called.wait(10)
+        release.set()
+    threading.Thread(target=press_ctrl_c, daemon=True).start()
+
+    assert runner.run_concurrent([up, down], 2, mode="loop") == 130
+    # the batch it was in landed; the second batch was never started
+    assert sorted(t for t, _ in up.seen) == ids[:2]
+    assert column(sql, "librosa_status", ids) == ["done", "done", "pending", "pending"]
+
+
+def test_ctrl_c_ends_the_run_even_if_a_stage_thread_died_unmarked(sql, monkeypatch,
+                                                                  recomputes, exits):
+    # _work marks its stage stopped in a finally, so this cannot happen
+    # today; if it ever did, the run must still end on one Ctrl-C.
+    real = runner._ConcurrentRun._work
+    dying = threading.Event()
+
+    def work(self, w):
+        if w.name == "classify":
+            dying.set()
+            raise RuntimeError("died before its try")
+        real(self, w)
+    monkeypatch.setattr(runner._ConcurrentRun, "_work", work)
+    monkeypatch.setattr(threading, "excepthook", lambda args: None)   # expected
+    add(sql, 1, librosa_status="pending")
+
+    def press_ctrl_c():
+        dying.wait(10)
+        deadline = time.monotonic() + 10
+        while any(t.name == "classify" for t in threading.enumerate()) \
+                and time.monotonic() < deadline:
+            time.sleep(0.01)
+        _thread.interrupt_main()
+    threading.Thread(target=press_ctrl_c, daemon=True).start()
+    t0 = time.perf_counter()
+
+    assert runner.run_concurrent(list(chain()), 5, mode="loop") == 130
+    assert time.perf_counter() - t0 < 5 and exits == []
+
+
+def test_a_second_ctrl_c_exits_without_waiting_for_the_batch(sql, recomputes, stop_called,
+                                                             exits):
+    add(sql, 2, librosa_status="pending")
+    in_batch, release = threading.Event(), threading.Event()
+    up, down, _ = chain(librosa=lambda t: (in_batch.set(), release.wait(10)))
+
+    def press_ctrl_c_twice():
+        in_batch.wait(10)
+        _thread.interrupt_main()
+        stop_called.wait(10)
+        _thread.interrupt_main()
+    threading.Thread(target=press_ctrl_c_twice, daemon=True).start()
+
+    try:
+        assert runner.run_concurrent([up, down], 2, mode="loop") == 130
+        assert exits == [130]
+        assert any(t.name == "librosa" for t in threading.enumerate())   # left mid-batch
+    finally:
+        release.set()                       # let it finish, so it outlives no test
+
+
+# ------------------------------------------------------------- idle back-off
+
+def test_an_idle_stage_backs_off_from_5_s_to_60_s_and_work_resets_it(sql, monkeypatch):
+    path = path_of(sql)
+    timeouts = []
+
+    class Enough(Exception):
+        pass
+
+    def fake_wait(event, timeout):
+        timeouts.append(timeout)
+        if len(timeouts) == 6:              # a row arrives while it sleeps
+            elsewhere(path, lambda c: add(c, 1, preview_status="pending"))
+        if len(timeouts) == 9:
+            raise Enough
+        return False
+    monkeypatch.setattr(runner, "_wait_for", fake_wait)
+    stage = Fake("preview", "preview_status", "t.preview_status = 'pending'")
+
+    assert runner.run_concurrent([stage], 10, mode="loop") == 1    # Enough stops it
+    assert timeouts == [5, 10, 20, 40, 60, 60, 5, 10, 20]
+    assert len(stage.seen) == 1
+
+
+# ------------------------------------------------------------- SQLite
+
+def test_two_stage_threads_write_at_once_beside_an_open_reader(db, sql, recomputes):
+    # db_client's 5 s lock wait already keeps short batches from locking
+    # each other out (measured 2026-10-16). What fails without WAL is a
+    # COMMIT while another connection holds a read open: in rollback-journal
+    # mode every COMMIT below would wait for `reader`, which stays inside
+    # one read transaction for the whole run.
+    a_ids = add(sql, 40, preview_status="pending")
+    b_ids = add(sql, 40, youtube_status="pending")
+    reader = sqlite3.connect(db, isolation_level=None, check_same_thread=False)
+    holding = threading.Event()
+
+    def hold_a_read_open(tid):
+        if not holding.is_set():
+            reader.execute("BEGIN")
+            reader.execute("SELECT COUNT(*) FROM tracks").fetchall()
+            holding.set()
+        time.sleep(0.005)
+    a = Fake("preview", "preview_status", "t.preview_status = 'pending'", work=hold_a_read_open)
+    b = Fake("youtube", "youtube_status", "t.youtube_status = 'pending'",
+             work=lambda t: (holding.wait(10), time.sleep(0.005)))
+    # Let a stuck COMMIT end the test in seconds instead of the lock wait.
+    release = threading.Timer(10, lambda: reader.execute("COMMIT"))
+    release.start()
+    try:
+        assert runner.run_concurrent([a, b], 5) == 0
+        still_reading = reader.in_transaction
+    finally:
+        release.cancel()
+        if reader.in_transaction:
+            reader.execute("COMMIT")
+        reader.close()
+
+    assert still_reading, "the writers only finished once the reader let go"
+    assert column(sql, "preview_status", a_ids) == ["done"] * 40
+    assert column(sql, "youtube_status", b_ids) == ["done"] * 40
+    # both were writing during the same stretch, not one after the other
+    assert a.written[0] < b.written[-1] and b.written[0] < a.written[-1]
+    assert set(a.busy_timeouts + b.busy_timeouts) == {runner.SQLITE_BUSY_TIMEOUT_MS}
+    assert sql.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+
+# ------------------------------------------------------------- CLI, logging
+
+def test_main_runs_concurrently_and_only_ids_restricts_every_stage(sql, monkeypatch, recomputes,
+                                                                   tmp_path):
+    ids = add(sql, 6, librosa_status="pending")
+    scope = tmp_path / "ids.txt"
+    scope.write_text("\n".join(str(i) for i in ids[:3]))
+    stages = list(chain())
+    monkeypatch.setattr(runner, "build_stages", lambda names: stages)
+
+    assert runner.main(["--concurrent", "--loop", "--batch", "2", "--only-ids", str(scope)]) == 0
+
+    assert column(sql, "ml_status", ids) == ["done"] * 3 + [None] * 3
+    assert column(sql, "librosa_status", ids) == ["done"] * 3 + ["pending"] * 3
+
+
+def test_the_summary_says_what_each_stage_has_done_and_is_doing(sql, monkeypatch, recomputes,
+                                                                caplog):
+    monkeypatch.setattr(runner, "SUMMARY_EVERY_S", 0.2)
+    add(sql, 2, librosa_status="pending")
+    up, down, _ = chain(librosa=lambda t: time.sleep(0.4))
+    with caplog.at_level(logging.INFO, logger="vibescape.ingest.orch"):
+        assert runner.run_concurrent([up, down], 2) == 0
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("summary")]
+    assert any("librosa 0/0/0, in a batch of 2 for" in m for m in lines), lines
+    assert "librosa 2/0/0, finished" in lines[-1] and "classify 2/0/0, finished" in lines[-1]
+
+
+@pytest.mark.parametrize("thread,message,line", [
+    ("preview", "[preview] processing 3 rows", "[preview] processing 3 rows"),
+    ("download_3", "download failed for X", "[download] download failed for X"),
+    ("classify", "row 7 retried without ['apple_id']", "[classify] row 7 retried"),
+    ("MainThread", "summary, done/no_match/failed: ...", "[runner] summary"),
+])
+def test_every_line_of_a_concurrent_run_names_its_stage(thread, message, line):
+    formatter = runner._StageFormatter("%(stage_tag)s%(message)s")
+    record = logging.LogRecord("x", logging.INFO, __file__, 1, message, None, None)
+    record.threadName = thread
+    assert formatter.format(record).startswith(line)
+
+
+def test_a_line_logged_inside_a_batch_names_its_stage(sql, recomputes):
+    # process_row runs on run_batch's pool, whose threads are named after
+    # the stage; a provider's or db_client's warning comes from there.
+    (tid,) = add(sql, 1, preview_status="pending")
+    lines = []
+    handler = logging.Handler()
+    handler.setFormatter(runner._StageFormatter("%(stage_tag)s%(message)s"))
+    handler.emit = lambda record: lines.append(handler.format(record))
+    logger = logging.getLogger("vibescape.test.concurrent")
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    try:
+        stage = Fake("preview", "preview_status", "t.preview_status = 'pending'",
+                     work=lambda t: logger.info("looking up row %d", t))
+        assert runner.run_concurrent([stage], 5) == 0
+    finally:
+        logger.removeHandler(handler)
+    assert lines == [f"[preview] looking up row {tid}"]
