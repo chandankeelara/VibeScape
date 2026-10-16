@@ -369,7 +369,7 @@ def test_classify_writes_its_vector_with_the_row(sql, app_module, batches, tmp_p
     audio = tmp_path / "a.m4a"
     audio.write_bytes(b"\0" * 2048)
     sql.execute("UPDATE tracks SET ml_status = 'pending', download_status = 'done', "
-                "audio_path = ? WHERE id = ?", (str(audio), tid))
+                "librosa_status = 'done', audio_path = ? WHERE id = ?", (str(audio), tid))
     sql.commit()
     vec = np.linspace(-1, 1, MERT_DIM, dtype=np.float32)
     stage = ClassifyStage()
@@ -403,7 +403,7 @@ def test_classify_fails_a_row_whose_model_output_is_not_finite(sql, app_module, 
     audio = tmp_path / "a.m4a"
     audio.write_bytes(b"\0" * 2048)
     sql.execute("UPDATE tracks SET ml_status = 'pending', download_status = 'done', "
-                "audio_path = ? WHERE id = ?", (str(audio), tid))
+                "librosa_status = 'done', audio_path = ? WHERE id = ?", (str(audio), tid))
     sql.commit()
     vector = np.linspace(-1, 1, MERT_DIM, dtype=np.float32)
     if vec == "nan":

@@ -377,15 +377,17 @@ queries iTunes while classify runs MERT and fuse fuses, on different rows.
 
 Where two gates accept the same row, the stage that **feeds** the other gets
 it first: a stage's look leaves out the rows a feeder's gate still accepts.
-A feeder is a selected stage that arms it, or one named in its `after`. They
-do overlap: on a SQLite file built from `schema.sql`, `ml_status` defaults
-to `'pending'`, so a downloaded row is in librosa's gate and classify's at
-once (checked 2026-10-16). Taken by classify first, it would get a second
-MERT pass when librosa re-arms it. Production has no column defaults, so its
-chain stages do not overlap. `language` sits beside the chain and overlaps
-preview and download there; it waits for both (`LanguageStage.after`), so a
-row that turns out to have no preview keeps `language_status` NULL, as in a
-pass. Per row the order is a pass's, without the cohort.
+A feeder is a selected stage that arms it, or one named in its `after`.
+`language` sits beside the chain and overlaps preview and download on
+production rows; it waits for both (`LanguageStage.after`), so a row that
+turns out to have no preview keeps `language_status` NULL, as in a pass.
+The chain stages overlapped too, on a SQLite file built from `schema.sql`:
+`ml_status` defaults to `'pending'` there, so a downloaded row was in
+librosa's gate and classify's at once (checked 2026-10-16), and classify
+taking it first would have run MERT twice. Since then classify's gate
+requires `librosa_status = 'done'`, its real precondition, and the feeder
+rule is what any overlap left or to come falls back on. Per row the order
+is a pass's, without the cohort.
 
 A feeder also hands off: a batch with `'done'` rows wakes the stages it
 feeds at once, instead of when their back-off runs out. With a subset

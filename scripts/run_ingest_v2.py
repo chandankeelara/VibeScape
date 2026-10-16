@@ -104,13 +104,15 @@ A stage's feeders are the selected stages that arm it (Stage.arms) and the
 ones it comes after (Stage.after: language after preview and download). A
 feeder hands off: its batch with 'done' rows wakes the stages it feeds, so
 they look at once. And it goes first: a look leaves out the rows a feeder's
-gate still accepts, because gates do overlap. On a SQLite file built from
-schema.sql ml_status defaults to 'pending', so a downloaded row is in
-librosa's gate and classify's at once (checked 2026-10-16), and classify
-taking it first would cost a second MERT pass once librosa re-armed it.
-Language waits for preview and download, either of which can settle a row
-'no_preview', and such a row keeps language_status NULL. So per row the
-order is a pass's. With --stages preview,fuse nothing feeds across the gap.
+gate still accepts, because gates can overlap. Language's does, beside the
+chain: a new production row is in preview's gate and language's, and
+language waits for preview and download, either of which can settle it
+'no_preview', which keeps language_status NULL. Librosa's and classify's
+overlapped on a schema.sql file, whose ml_status defaults to 'pending', so
+classify could take a downloaded row first and MERT it twice; since
+2026-10-16 classify's own gate requires librosa_status 'done'. So per row
+the order is a pass's. With --stages preview,fuse nothing feeds across the
+gap.
 
 An idle stage waits for a hand-off, or for IDLE_BACKOFF_FIRST_S (5 s)
 doubling to IDLE_BACKOFF_MAX_S (60 s), reset by a look that does work. An

@@ -487,21 +487,29 @@ def test_a_stage_given_twice_or_a_circle_of_feeders_is_refused():
         runner._ConcurrentRun([a, b], 50, None, "single")
 
 
-def test_a_row_in_two_gates_goes_to_the_stage_that_arms_the_other_first(sql, recomputes):
+def test_classify_never_takes_a_row_librosa_can_still_act_on(sql, recomputes):
     # A schema.sql database (a dev checkout, every test) defaults ml_status
-    # to 'pending', so a downloaded row is in librosa's gate and classify's
-    # at once. Taking it first, classify would run MERT on it, and again
-    # once librosa re-armed it.
+    # to 'pending', so a downloaded row is armed for classify before librosa
+    # has run. Classify's gate now requires librosa_status 'done', so even
+    # with librosa not in the run, where no feeder holds the row back, a
+    # pass and a concurrent run alike leave it; MERT on it first would be
+    # wasted once librosa re-armed it.
     (tid,) = add(sql, 1, preview_status="done", download_status="done",
                  librosa_status="pending", ml_status="pending", audio_path="data/audio/x.m4a")
+
+    def classify():
+        return Fake("classify", "ml_status", ClassifyStage.gate_sql, arms=ClassifyStage.arms)
+    alone = classify()
+    assert runner.run_pass([alone], 10) == (0, 0)
+    assert runner.run_concurrent([alone], 10) == 0
+    assert alone.seen == []
+
     librosa = Fake("librosa", "librosa_status", LibrosaStage.gate_sql, arms=LibrosaStage.arms,
                    work=lambda t: time.sleep(0.3))
-    classify = Fake("classify", "ml_status", ClassifyStage.gate_sql, arms=ClassifyStage.arms)
-
-    assert runner.run_concurrent([librosa, classify], 10) == 0
-
-    assert [t for t, _ in classify.seen] == [tid]             # once,
-    assert classify.seen[0][1] > librosa.written[0]           # after librosa's write
+    after = classify()
+    assert runner.run_concurrent([librosa, after], 10) == 0
+    assert [t for t, _ in after.seen] == [tid]                # once,
+    assert after.seen[0][1] > librosa.written[0]              # after librosa's write
 
 
 def test_language_waits_for_preview_and_download_so_no_preview_rows_keep_null(sql, recomputes):
@@ -529,17 +537,17 @@ def test_language_waits_for_preview_and_download_so_no_preview_rows_keep_null(sq
 
 
 def test_a_feeder_gate_that_is_null_for_a_row_does_not_hide_it(sql, recomputes):
-    # A legacy row re-armed for classify: librosa_status NULL, so librosa's
-    # gate is NULL (not false) for it. NOT NULL is NULL, which would leave
-    # the row to no one.
-    (tid,) = add(sql, 1, preview_status="done", download_status="done", ml_status="pending",
-                 audio_path="data/audio/x.m4a")
-    classify = Fake("classify", "ml_status", ClassifyStage.gate_sql, arms=ClassifyStage.arms)
-    librosa = bare(LibrosaStage)
-    assert sql.execute(f"SELECT ({LibrosaStage.gate_sql}) FROM tracks t WHERE id = ?",
+    # A row with ingestion_status NULL: language's gate takes it, and
+    # preview's is NULL rather than false for it (NULL = 'pending' is NULL).
+    # NOT NULL is NULL, which would leave the row to no one; a pass gives it
+    # to language.
+    (tid,) = add(sql, 1, ingestion_status=None)
+    assert sql.execute(f"SELECT ({PreviewStage.gate_sql}) FROM tracks t WHERE id = ?",
                        (tid,)).fetchone()[0] is None
-    assert runner.run_concurrent([librosa, classify], 10) == 0
-    assert [t for t, _ in classify.seen] == [tid]
+    stages = [bare(PreviewStage), bare(DownloadStage), LanguageStage()]
+    assert runner.run_concurrent(stages, 10) == 0
+    assert sql.execute("SELECT language_status FROM tracks WHERE id = ?",
+                       (tid,)).fetchone()[0] == "pending"
 
 
 def test_an_idle_look_is_one_ids_only_query_for_all_seven_real_gates(sql, monkeypatch,
