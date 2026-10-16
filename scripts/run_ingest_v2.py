@@ -155,11 +155,12 @@ at once, and each batch still in flight lands whole or not at all.
 
 Every line names its stage ([preview]; [runner] for the main thread), and
 every SUMMARY_EVERY_S (60 s) a summary line gives each stage's
-done/no_match/failed and what it is doing. On SQLite each stage thread's
-connection waits 30 s for a lock and the file is put in WAL mode
-(_concurrent_conn has the measurements). On Turso each thread's connection
-is its own HTTP session; concurrent writers there have not been run
-(2026-10-16).
+done/no_match/failed and what it is doing. On SQLite, which stays in
+rollback-journal mode, every connection waits 30 s for a lock: a stage's
+commit waits out a read another connection holds open, up to that long
+(db_client._SQLITE_LOCK_WAIT_S has the measurements). On Turso each
+thread's connection is its own HTTP session; concurrent writers there have
+not been run (2026-10-16).
 
 Shared state, read 2026-10-16: each stage object is used by its own thread
 only, and process_row by that stage's pool, as in a pass. ItunesPreview's
@@ -175,7 +176,6 @@ import logging
 import os
 import re
 import signal
-import sqlite3
 import sys
 import threading
 import time
@@ -442,9 +442,6 @@ IDLE_BACKOFF_FIRST_S = 5
 IDLE_BACKOFF_MAX_S = 60
 # How often a concurrent run logs what each stage has done and is doing.
 SUMMARY_EVERY_S = 60
-# How long a stage thread's SQLite connection waits for a lock before
-# raising "database is locked". db_client leaves Python's default, 5 s.
-SQLITE_BUSY_TIMEOUT_MS = 30_000
 # The main thread never blocks longer than this, so it acts on a Ctrl-C
 # within it.
 _SUPERVISE_TICK_S = 0.5
@@ -480,45 +477,12 @@ def _install_sigint(handler):
 
 
 def _concurrent_conn():
-    """get_conn(), set up for several stage threads writing one database.
-
-    Turso needs nothing more: each thread gets its own connection, so its
-    own requests.Session, which is not thread-safe. A SQLite connection gets
-    SQLITE_BUSY_TIMEOUT_MS, and the file is put in WAL mode (raises if it
-    will not go). Measured 2026-10-16 (Python 3.13.11, SQLite 3.51.0,
-    Windows, scratch files):
-
-      - db_client's connections already wait 5 s for a lock, and with that,
-        seven threads writing 50-row execute_batch()es beside seven reading
-        ran 420 batches without one "database is locked", in rollback-
-        journal mode and in WAL alike. With no wait, most of them failed.
-        Short batches do not lock each other out.
-      - What fails is a COMMIT in rollback-journal mode while another
-        connection holds a read open: it needs the exclusive lock, waits
-        for the reader, and raises once the wait runs out (a reader holding
-        6 s: "database is locked" at 5.5 s; holding 2 s: committed at
-        2.0 s). In WAL mode the same COMMIT landed in 0.01 s.
-
-    So WAL is what keeps readers (every stage's look, a dev uvicorn) and
-    writers from waiting on each other; the longer timeout is headroom for
-    writers waiting on writers. WAL belongs to the file and stays after the
-    run, with -wal and -shm files beside it while a connection is open;
-    `PRAGMA journal_mode=DELETE`, with no other connection open, undoes it.
-    """
-    conn = get_conn()
-    if not isinstance(conn, sqlite3.Connection):
-        return conn
-    try:
-        conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
-        mode = str(conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]).lower()
-    except BaseException:
-        conn.close()
-        raise
-    if mode != "wal":
-        conn.close()
-        raise RuntimeError(f"the SQLite file stayed in journal_mode={mode}, not WAL, which "
-                           "--concurrent needs; run without it")
-    return conn
+    """A stage thread's own connection, from get_conn(): one per thread,
+    never shared. A Turso connection holds a requests.Session, which is not
+    thread-safe. SQLite needs nothing more: every connection db_client opens
+    waits 30 s for a lock, where short stage batches never come near
+    (db_client._SQLITE_LOCK_WAIT_S has the measurements). Tests stub it."""
+    return get_conn()
 
 
 def _look_query(stage, ahead: list, batch: int, only_ids) -> tuple[str, tuple] | None:
@@ -848,8 +812,6 @@ def run_concurrent(stages: list, batch: int, only_ids=None, mode: str = "single"
     module docstring); mode is 'single', 'until_drained' or 'loop'.
     Returns the exit status: 0, 1 if a stage failed or the owed recompute
     did, 130 after Ctrl-C."""
-    # Switches a SQLite file to WAL before any stage thread opens it.
-    _concurrent_conn().close()
     return _ConcurrentRun(stages, batch, only_ids, mode).run()
 
 

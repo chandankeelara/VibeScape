@@ -357,3 +357,11 @@ def test_sqlite_a_commit_that_fails_rolls_back(tmp_path, monkeypatch):
     conn.execute_batch([("INSERT INTO t (name) VALUES ('b')", ())])
     assert [r[0] for r in conn.execute("SELECT name FROM t")] == ["b"]
     conn.close()
+
+
+def test_every_sqlite_connection_waits_30_s_for_a_lock(local):
+    # Python's default is 5 s, which a COMMIT waiting on a read held open
+    # outlasted (measured 2026-10-16, db_client._SQLITE_LOCK_WAIT_S). The
+    # app, the scripts and every stage thread open theirs here.
+    assert local.execute("PRAGMA busy_timeout").fetchone()[0] == 30_000
+    assert local.execute("PRAGMA journal_mode").fetchone()[0] == "delete"

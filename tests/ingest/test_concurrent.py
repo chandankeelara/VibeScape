@@ -677,45 +677,48 @@ def test_an_idle_stage_backs_off_from_5_s_to_60_s_and_work_resets_it(sql, monkey
 
 # ------------------------------------------------------------- SQLite
 
-def test_two_stage_threads_write_at_once_beside_an_open_reader(db, sql, recomputes):
-    # db_client's 5 s lock wait already keeps short batches from locking
-    # each other out (measured 2026-10-16). What fails without WAL is a
-    # COMMIT while another connection holds a read open: in rollback-journal
-    # mode every COMMIT below would wait for `reader`, which stays inside
-    # one read transaction for the whole run.
+def test_two_stage_threads_write_at_once_and_wait_out_a_read_held_open(db, sql, recomputes):
+    # The file stays in rollback-journal mode: WAL would stay with it, and a
+    # backup copying the .db alone then misses what is still in the -wal
+    # (db_client._SQLITE_LOCK_WAIT_S). So a COMMIT waits for any connection
+    # holding a read open, here `reader` for 1.5 s from inside the first
+    # batch, and db_client's 30 s lock wait outlasts it. Short batches do not
+    # lock each other out (measured 2026-10-16).
     a_ids = add(sql, 40, preview_status="pending")
     b_ids = add(sql, 40, youtube_status="pending")
     reader = sqlite3.connect(db, isolation_level=None, check_same_thread=False)
-    holding = threading.Event()
+    holding, released = threading.Event(), []
+
+    def let_go():
+        released.append(time.perf_counter())
+        reader.execute("COMMIT")
 
     def hold_a_read_open(tid):
         if not holding.is_set():
             reader.execute("BEGIN")
             reader.execute("SELECT COUNT(*) FROM tracks").fetchall()
+            threading.Timer(1.5, let_go).start()
             holding.set()
         time.sleep(0.005)
     a = Fake("preview", "preview_status", "t.preview_status = 'pending'", work=hold_a_read_open)
     b = Fake("youtube", "youtube_status", "t.youtube_status = 'pending'",
              work=lambda t: (holding.wait(10), time.sleep(0.005)))
-    # Let a stuck COMMIT end the test in seconds instead of the lock wait.
-    release = threading.Timer(10, lambda: reader.execute("COMMIT"))
-    release.start()
     try:
         assert runner.run_concurrent([a, b], 5) == 0
-        still_reading = reader.in_transaction
     finally:
-        release.cancel()
-        if reader.in_transaction:
-            reader.execute("COMMIT")
+        deadline = time.monotonic() + 5
+        while not released and time.monotonic() < deadline:
+            time.sleep(0.01)
         reader.close()
 
-    assert still_reading, "the writers only finished once the reader let go"
     assert column(sql, "preview_status", a_ids) == ["done"] * 40
     assert column(sql, "youtube_status", b_ids) == ["done"] * 40
+    # the first commits waited for the reader to let go, and nothing failed
+    assert a.written[0] > released[0] and b.written[0] > released[0]
     # both were writing during the same stretch, not one after the other
     assert a.written[0] < b.written[-1] and b.written[0] < a.written[-1]
-    assert set(a.busy_timeouts + b.busy_timeouts) == {runner.SQLITE_BUSY_TIMEOUT_MS}
-    assert sql.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    assert set(a.busy_timeouts + b.busy_timeouts) == {30_000}
+    assert sql.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
 
 
 # ------------------------------------------------------------- CLI, logging

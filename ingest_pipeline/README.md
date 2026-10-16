@@ -487,13 +487,13 @@ second Ctrl-C exits at once). Each log line names its stage (`[preview]`;
 `[runner]` for the main thread), and every minute a summary line gives each
 stage's done/no_match/failed and what it is doing.
 
-On the local file the first concurrent run switches SQLite to WAL mode, so
-that a stage's commit never waits for another's read (measured, see
-`_concurrent_conn` in the runner). WAL stays with the file: `-wal` and
-`-shm` files sit beside it while a connection is open, and a copy of the
-`.db` alone can miss the newest writes, so copy it with every connection
-closed. `PRAGMA journal_mode=DELETE`, with nothing else connected, undoes
-it.
+The local file stays in SQLite's rollback-journal mode. Every connection
+`db_client` opens waits 30 s for a lock, which short stage batches never
+come near, and which lets a stage's commit wait out a read another
+connection holds open (a dev uvicorn's, say); the measurements are at
+`_SQLITE_LOCK_WAIT_S` in `backend/db_client.py`. WAL would spare that wait
+and is not used: it stays with the file, and a backup that copies the `.db`
+alone then misses whatever is still in the `-wal`.
 
 `classify` always runs MERT in this process, on the local GPU. There is no
 Modal mode for it: `predict_and_embed_from_path` (`ingest/ml_backend.py`)

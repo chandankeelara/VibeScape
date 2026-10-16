@@ -56,9 +56,9 @@ data/*.presprint
 data/*.pre-user-tracks-*
 data/vibescape_prod.db
 data/vibescape.db.*
-# SQLite's WAL sidecars, beside the file while a connection is open once
-# `run_ingest_v2.py --concurrent` has put it in WAL mode: recent pages of
-# the same database, users and sessions included.
+# SQLite's WAL sidecars, beside the file while a connection is open if it
+# is ever put in WAL mode by hand: recent pages of the same database,
+# users and sessions included.
 data/*.db-wal
 data/*.db-shm
 

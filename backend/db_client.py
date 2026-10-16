@@ -72,6 +72,22 @@ _DEFAULT_DB_PATH = _ROOT / "data" / "vibescape.db"
 # not a measurement (2026-10-15).
 _BATCH_TIMEOUT_S = 120.0
 
+# How long a SQLite connection waits on another's lock before it raises
+# "database is locked"; Python's default is 5 s. Measured 2026-10-16
+# (Python 3.13.11, SQLite 3.51.0): short write batches never lock each
+# other out even at 5 s (seven threads writing 50-row execute_batch()es
+# beside seven readers, 420 batches, no error). What runs out is a COMMIT
+# waiting for a connection that holds a read open, since in rollback-
+# journal mode it needs the exclusive lock: against a reader holding 6 s it
+# failed at 5.5 s with the default, and with 30 s committed at 6.1 s (the
+# lead session's measurement). WAL would spare that wait and was tried for
+# run_ingest_v2.py --concurrent the same day, then dropped: it stays with
+# the file, and the repo's backups copy the .db alone, which misses what is
+# still in the -wal (a _dedupe_local_by_isrc.py --apply backup taken after
+# a run ended by a second Ctrl-C restored 0 of 300 committed rows, 300 of
+# 300 in rollback-journal mode; also the lead session's).
+_SQLITE_LOCK_WAIT_S = 30.0
+
 
 # ---------------- Turso HTTP adapter ----------------
 
@@ -434,9 +450,10 @@ class _SqliteConnection(sqlite3.Connection):
         statement.
 
         The COMMIT is inside the rollback too. In rollback-journal mode it
-        takes the exclusive lock, and fails with "database is locked" while
-        another connection reads (a dev uvicorn serving requests during a
-        local run). It used to sit after the try, and a failed COMMIT left
+        takes the exclusive lock, so it waits for any connection holding a
+        read open (a dev uvicorn serving requests during a local run) and
+        fails with "database is locked" if that outlasts the lock wait
+        (_SQLITE_LOCK_WAIT_S). It used to sit after the try, and a failed COMMIT left
         the transaction open on this connection, so the next execute_batch
         died at BEGIN ("cannot start a transaction within a transaction").
         """
@@ -487,8 +504,8 @@ def create_connection():
     if backend in ("", "sqlite", "sqlite3"):
         db_path = _resolve_db_path()
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(db_path), check_same_thread=False,
-                               factory=_SqliteConnection)
+        conn = sqlite3.connect(str(db_path), timeout=_SQLITE_LOCK_WAIT_S,
+                               check_same_thread=False, factory=_SqliteConnection)
         conn.row_factory = sqlite3.Row
         return conn
 
