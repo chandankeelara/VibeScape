@@ -340,16 +340,36 @@ def select_cohort(conn, stages: list, batch: int, only_ids=None) -> list[int]:
     ids: set[int] = set()
     gated = _gated(stages)
     if gated:
-        where = " OR ".join(f"({s.gate_sql})" for s in gated)
-        idf, idp = id_filter(only_ids, "t.")
         ids.update(int(r[0]) for r in conn.execute(
-            f"SELECT t.id FROM tracks t WHERE ({where}) {idf}ORDER BY t.id ASC LIMIT ?",
-            (*[p for s in gated for p in s.gate_params], *idp, batch),
-        ).fetchall())
+            *lowest_ids_query(gated, batch, only_ids)).fetchall())
     for stage in stages:
         if stage not in gated:
             ids.update(int(r["id"]) for r in stage.fetch_pending(conn, batch, only_ids))
     return sorted(ids)[:batch]
+
+
+def lowest_ids_query(stages: list, batch: int, only_ids=None,
+                     leave_out: list = ()) -> tuple[str, tuple]:
+    """(sql, params) for the lowest `batch` track ids, in id order, that
+    some stage in `stages` has in its gate and no stage in `leave_out` does,
+    within `only_ids` (id_filter): one ids-only scan of tracks.
+
+    A pass's cohort asks it with every selected stage (select_cohort), a
+    concurrent stage's look with itself alone, leaving out its feeders
+    (_look_query), so a rule about which rows a run takes is written here
+    once. COALESCE because a gate can be NULL rather than false for a row (a
+    NULL status column compared with 'pending'), and NOT NULL is NULL: the
+    row would be dropped as if a left-out stage could act on it.
+    """
+    def union(group):
+        return " OR ".join(f"({s.gate_sql})" for s in group)
+    sql = f"SELECT t.id FROM tracks t WHERE ({union(stages)}) "
+    params = [p for s in stages for p in s.gate_params]
+    if leave_out:
+        sql += f"AND NOT COALESCE({union(leave_out)}, 0) "
+        params += [p for s in leave_out for p in s.gate_params]
+    idf, idp = id_filter(only_ids, "t.")
+    return f"{sql}{idf}ORDER BY t.id ASC LIMIT ?", (*params, *idp, batch)
 
 
 def run_pass(stages: list, batch: int, only_ids=None) -> tuple[int, int]:
@@ -498,24 +518,12 @@ def _concurrent_conn():
 
 
 def _look_query(stage, ahead: list, batch: int, only_ids) -> tuple[str, tuple] | None:
-    """The ids-only query a concurrent stage looks with: the lowest `batch`
-    ids its gate accepts that no stage in `ahead` (its feeders) can still
-    act on. None for a stage that declares no gate (a test double).
-
-    COALESCE because a gate can be NULL rather than false for a row (a NULL
-    status column compared with 'pending'), and NOT NULL is NULL: the row
-    would be dropped as if a feeder could act on it.
-    """
+    """The ids-only query a concurrent stage looks with: lowest_ids_query on
+    its own gate, leaving out the rows a stage in `ahead` (its feeders) can
+    still act on. None for a stage that declares no gate (a test double)."""
     if not getattr(stage, "gate_sql", None):
         return None
-    sql = f"SELECT t.id FROM tracks t WHERE ({stage.gate_sql}) "
-    params = list(stage.gate_params)
-    ahead = _gated(ahead)
-    if ahead:
-        sql += f"AND NOT COALESCE({' OR '.join(f'({s.gate_sql})' for s in ahead)}, 0) "
-        params += [p for s in ahead for p in s.gate_params]
-    idf, idp = id_filter(only_ids, "t.")
-    return f"{sql}{idf}ORDER BY t.id ASC LIMIT ?", (*params, *idp, batch)
+    return lowest_ids_query([stage], batch, only_ids, leave_out=_gated(ahead))
 
 
 class _Worker:

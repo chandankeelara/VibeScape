@@ -564,6 +564,24 @@ def test_an_idle_look_is_one_ids_only_query_for_all_seven_real_gates(sql, monkey
     assert all(s.startswith("SELECT t.id FROM tracks t WHERE") for _, s in looks), looks
 
 
+def test_a_pass_and_a_concurrent_look_ask_for_ids_the_same_way(sql):
+    # Both are lowest_ids_query, so a rule about which rows a run takes
+    # (backlog 3.12's fix, say) is written once: for one stage, a pass's
+    # cohort query is that stage's look, word for word.
+    sent = []
+
+    class Spy:
+        def execute(self, q, params=()):
+            sent.append((q, tuple(params)))
+            return sql.execute(q, params)
+
+    for cls in runner.STAGE_CLASSES.values():
+        stage = bare(cls)
+        sent.clear()
+        runner.select_cohort(Spy(), [stage], 7, only_ids=[1, 2])
+        assert sent == [runner._look_query(stage, [], 7, [1, 2])], cls.__name__
+
+
 # ------------------------------------------------------------- failure, Ctrl-C
 
 def test_one_failing_stage_stops_the_others_after_their_batch(sql, monkeypatch, recomputes,
