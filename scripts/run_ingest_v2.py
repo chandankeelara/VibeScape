@@ -713,6 +713,8 @@ class _ConcurrentRun:
                     feeders_stopped = all(f.stopped for f in w.feeders)
                     w.busy, w.state, w.since = True, "looking", time.monotonic()
                 counts = self._look(conn, w, look)
+                if counts is None:               # stopped during the look
+                    break
                 # As in run_pass: a finished track left armed is no progress.
                 progressed = sum(n for k, n in counts.items() if k != LEFT_ARMED)
                 with self.lock:
@@ -739,6 +741,11 @@ class _ConcurrentRun:
                             v.wake.set()
                     pause = IDLE_BACKOFF_FIRST_S
                     continue
+                # stop() sets the flag before this stage's event, and the
+                # clear above wipes an event set just before it; the flag
+                # stays. Checked here, no stop waits out the back-off.
+                if self.stopping.is_set():
+                    break
                 log.debug("[%s] nothing to do; next look within %gs", w.name, pause)
                 _wait_for(w.wake, pause)
                 pause = min(pause * 2, IDLE_BACKOFF_MAX_S)
@@ -765,9 +772,14 @@ class _ConcurrentRun:
                 except Exception:
                     pass
 
-    def _look(self, conn, w: _Worker, look) -> dict[str, int]:
-        """One look: the ids query, then a batch of those rows if any."""
+    def _look(self, conn, w: _Worker, look) -> dict[str, int] | None:
+        """One look: the ids query, then a batch of those rows if any. None
+        if the run was told to stop meanwhile: a stop that lands during the
+        look must not start a batch (one more batch of MERT after another
+        stage failed, say)."""
         if look is None:
+            if self.stopping.is_set():
+                return None
             with self.lock:
                 w.state = "in a batch"
             return w.stage.run_batch(conn, self.batch, log, only_ids=self.only_ids)
@@ -775,6 +787,8 @@ class _ConcurrentRun:
         ids = [int(r[0]) for r in conn.execute(sql, params).fetchall()]
         if not ids:
             return {}
+        if self.stopping.is_set():
+            return None
         with self.lock:
             w.state, w.since = f"in a batch of {len(ids)}", time.monotonic()
         return w.stage.run_batch(conn, self.batch, log, only_ids=ids)

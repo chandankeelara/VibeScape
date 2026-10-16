@@ -651,6 +651,68 @@ def test_a_second_ctrl_c_exits_without_waiting_for_the_batch(sql, recomputes, st
         release.set()                       # let it finish, so it outlives no test
 
 
+class StopBeforeClear(threading.Event):
+    """A stage's event whose first clear() comes right after the run's
+    stop(): the stop lands between the loop's check of the flag and its
+    clear of the event, which wipes the event stop() just set."""
+
+    def __init__(self, run):
+        super().__init__()
+        self.run, self.fired = run, False
+
+    def clear(self):
+        if not self.fired:
+            self.fired = True
+            self.run.stop()
+        super().clear()
+
+
+def test_a_stop_just_before_a_stage_clears_its_event_is_not_lost(sql, monkeypatch, recomputes):
+    # The look finds nothing, so the stage goes to sleep for its back-off:
+    # 30 s here, with nothing left to wake it but the flag.
+    monkeypatch.setattr(runner, "IDLE_BACKOFF_FIRST_S", 30)
+    stage = Fake("preview", "preview_status", "t.preview_status = 'pending'")
+    run = runner._ConcurrentRun([stage], 10, None, "loop")
+    run.workers[0].wake = StopBeforeClear(run)
+    t0 = time.perf_counter()
+    assert run.run() == 0
+    assert time.perf_counter() - t0 < 2 and run.workers[0].wake.fired
+
+
+class StopDuringLook:
+    """A stage's connection that asks the run to stop as it runs the stage's
+    first look, the ids query: stop() lands during the look."""
+
+    def __init__(self, conn, run):
+        self._conn, self._run, self.fired = conn, run, False
+
+    def execute(self, sql, params=()):
+        if not self.fired and sql.startswith("SELECT t.id FROM tracks t"):
+            self.fired = True
+            self._run.stop()
+        return self._conn.execute(sql, params)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def test_a_stop_during_a_look_starts_no_batch(sql, monkeypatch, recomputes):
+    # Rows in the gate, so the look finds work; the stop came first.
+    ids = add(sql, 3, preview_status="pending")
+    stage = Fake("preview", "preview_status", "t.preview_status = 'pending'")
+    run = runner._ConcurrentRun([stage], 10, None, "until_drained")
+    conns = []
+    real = runner._concurrent_conn
+
+    def stopping_conn():
+        conns.append(StopDuringLook(real(), run))
+        return conns[-1]
+    monkeypatch.setattr(runner, "_concurrent_conn", stopping_conn)
+    assert run.run() == 0
+    assert conns[0].fired and stage.seen == [] and stage.written == []
+    assert column(sql, "preview_status", ids) == ["pending"] * 3
+
+
 # ------------------------------------------------------------- idle back-off
 
 def test_an_idle_stage_backs_off_from_5_s_to_60_s_and_work_resets_it(sql, monkeypatch):
