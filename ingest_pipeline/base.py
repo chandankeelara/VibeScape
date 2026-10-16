@@ -99,9 +99,11 @@ schema gap parked every row of every batch. The second judged by position
 which still parked a row that alone wrote a column production lacks.
 
 Note: no row-level locking. In a concurrent run (run_ingest_v2.py
---concurrent) two stages can act on one row at once. Each UPDATE sets only
-its stage's columns and the column it arms, so neither write undoes the
-other. Two runs against one database are not guarded against:
+--concurrent) two stages act on one row at once only when one of them is
+language, which sits beside the chain: the runner keeps a stage off the
+rows the stages feeding it can still act on (`arms`, `after`). Each UPDATE
+sets only its stage's columns and the column it arms, so neither write
+undoes the other. Two runs against one database are not guarded against:
 the last UPDATE wins, and every stage write is idempotent for its own
 columns. Cheap and correct enough for the current volume.
 """
@@ -276,6 +278,14 @@ class Stage(ABC):
     # session writes the tag (language_tagging.tag), which is the only
     # point at which fuse could act on it.
     arms_on: tuple[str, ...] = (STATUS_DONE,)
+
+    # Stages (by name) that must be done with a row before this one takes
+    # it, besides the stages that arm this one, which count anyway. Only a
+    # concurrent run reads it (scripts/run_ingest_v2.py --concurrent): there
+    # each stage works through its own gate, a row can be in two gates at
+    # once, and the runner gives it to these first. The sequential runner's
+    # pass order already does.
+    after: tuple[str, ...] = ()
 
     # Stage status -> the ingestion_status it settles the whole track on.
     # Used where a stage's outcome is terminal for the track, not just for

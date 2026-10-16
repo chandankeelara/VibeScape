@@ -67,6 +67,13 @@ class LanguageStage(Stage):
     # Arms nothing -- see the module docstring.
     arms = ()
     max_workers = 1
+    # In a concurrent run a row waits until preview and download are done
+    # with it: either can settle it 'no_preview', and such a row keeps its
+    # NULL (see the module docstring). Without this the stage would
+    # normalise every pending row at once, ahead of preview, including the
+    # ones about to turn out to have no preview. It still runs ahead of
+    # librosa and classify, so a session can tag while the GPU works.
+    after = ("preview", "download")
 
     # Live rows whose language_status is not yet the waiting spelling. No
     # upstream gate: metadata is present from the INSERT. The only

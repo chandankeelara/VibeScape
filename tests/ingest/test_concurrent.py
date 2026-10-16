@@ -20,6 +20,10 @@ import pytest
 import run_ingest_v2 as runner
 from ingest_pipeline import base
 from ingest_pipeline.base import RowResult, Stage, STATUS_DONE, STATUS_NO_MATCH
+from ingest_pipeline.stage_classify import ClassifyStage
+from ingest_pipeline.stage_download import DownloadStage
+from ingest_pipeline.stage_language import LanguageStage
+from ingest_pipeline.stage_librosa import LibrosaStage
 from ingest_pipeline.stage_preview import PreviewStage
 
 STATUS = ("preview_status", "download_status", "librosa_status", "ml_status",
@@ -438,7 +442,7 @@ def test_who_feeds_whom_and_nothing_across_a_gap():
     run = runner._ConcurrentRun([bare(c) for c in runner.STAGE_CLASSES.values()], 50, None,
                                 "single")
     fed = {w.name: [v.name for v in w.fed] for w in run.workers}
-    assert fed == {"preview": ["download"], "download": ["librosa"],
+    assert fed == {"preview": ["download", "language"], "download": ["librosa", "language"],
                    "librosa": ["classify"], "classify": ["fuse"], "language": [],
                    "fuse": ["youtube"], "youtube": []}
     gap = runner._ConcurrentRun([bare(PreviewStage), bare(runner.STAGE_CLASSES["fuse"])], 50,
@@ -454,6 +458,61 @@ def test_a_stage_given_twice_or_a_circle_of_feeders_is_refused():
     b = Fake("download", "download_status", "1", arms=("preview_status",))
     with pytest.raises(SystemExit, match="circle"):
         runner._ConcurrentRun([a, b], 50, None, "single")
+
+
+def test_a_row_in_two_gates_goes_to_the_stage_that_arms_the_other_first(sql, recomputes):
+    # A schema.sql database (a dev checkout, every test) defaults ml_status
+    # to 'pending', so a downloaded row is in librosa's gate and classify's
+    # at once. Taking it first, classify would run MERT on it, and again
+    # once librosa re-armed it.
+    (tid,) = add(sql, 1, preview_status="done", download_status="done",
+                 librosa_status="pending", ml_status="pending", audio_path="data/audio/x.m4a")
+    librosa = Fake("librosa", "librosa_status", LibrosaStage.gate_sql, arms=LibrosaStage.arms,
+                   work=lambda t: time.sleep(0.3))
+    classify = Fake("classify", "ml_status", ClassifyStage.gate_sql, arms=ClassifyStage.arms)
+
+    assert runner.run_concurrent([librosa, classify], 10) == 0
+
+    assert [t for t, _ in classify.seen] == [tid]             # once,
+    assert classify.seen[0][1] > librosa.written[0]           # after librosa's write
+
+
+def test_language_waits_for_preview_and_download_so_no_preview_rows_keep_null(sql, recomputes):
+    # Production rows start with every stage column NULL, in preview's gate
+    # and language's at once. A row preview settles 'no_preview' must keep
+    # language_status NULL, as it does in a sequential pass.
+    found, missing = add(sql, 2)
+
+    def preview_result(t):
+        if t == missing:
+            return STATUS_NO_MATCH, {}
+        return STATUS_DONE, {"preview_url": "https://p.example/x.m4a"}
+    preview = Fake("preview", "preview_status", PreviewStage.gate_sql, arms=PreviewStage.arms,
+                   finalizes=PreviewStage.finalizes, result=preview_result,
+                   work=lambda t: time.sleep(0.2))
+    download = Fake("download", "download_status", DownloadStage.gate_sql,
+                    arms=DownloadStage.arms, result=lambda t: (STATUS_DONE, {"audio_path": "a"}))
+    language = LanguageStage()
+
+    assert runner.run_concurrent([preview, download, language], 10) == 0
+
+    rows = {r[0]: tuple(r[1:]) for r in sql.execute(
+        "SELECT id, ingestion_status, language_status FROM tracks")}
+    assert rows == {found: ("pending", "pending"), missing: ("no_preview", None)}
+
+
+def test_a_feeder_gate_that_is_null_for_a_row_does_not_hide_it(sql, recomputes):
+    # A legacy row re-armed for classify: librosa_status NULL, so librosa's
+    # gate is NULL (not false) for it. NOT NULL is NULL, which would leave
+    # the row to no one.
+    (tid,) = add(sql, 1, preview_status="done", download_status="done", ml_status="pending",
+                 audio_path="data/audio/x.m4a")
+    classify = Fake("classify", "ml_status", ClassifyStage.gate_sql, arms=ClassifyStage.arms)
+    librosa = bare(LibrosaStage)
+    assert sql.execute(f"SELECT ({LibrosaStage.gate_sql}) FROM tracks t WHERE id = ?",
+                       (tid,)).fetchone()[0] is None
+    assert runner.run_concurrent([librosa, classify], 10) == 0
+    assert [t for t, _ in classify.seen] == [tid]
 
 
 def test_an_idle_look_is_one_ids_only_query_for_all_seven_real_gates(sql, monkeypatch,

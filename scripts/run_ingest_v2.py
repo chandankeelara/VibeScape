@@ -100,9 +100,17 @@ connection, working through its own gate: it looks (one ids-only query,
 the lowest --batch ids its gate accepts), runs a batch of those rows with
 run_batch as a pass does, and looks again. There is no cohort.
 
-A stage's feeders are the selected stages that arm it (Stage.arms). A
+A stage's feeders are the selected stages that arm it (Stage.arms) and the
+ones it comes after (Stage.after: language after preview and download). A
 feeder hands off: its batch with 'done' rows wakes the stages it feeds, so
-they look at once. With --stages preview,fuse nothing feeds across the gap.
+they look at once. And it goes first: a look leaves out the rows a feeder's
+gate still accepts, because gates do overlap. On a SQLite file built from
+schema.sql ml_status defaults to 'pending', so a downloaded row is in
+librosa's gate and classify's at once (checked 2026-10-16), and classify
+taking it first would cost a second MERT pass once librosa re-armed it.
+Language waits for preview and download, either of which can settle a row
+'no_preview', and such a row keeps language_status NULL. So per row the
+order is a pass's. With --stages preview,fuse nothing feeds across the gap.
 
 An idle stage waits for a hand-off, or for IDLE_BACKOFF_FIRST_S (5 s)
 doubling to IDLE_BACKOFF_MAX_S (60 s), reset by a look that does work. An
@@ -513,15 +521,25 @@ def _concurrent_conn():
     return conn
 
 
-def _look_query(stage, batch: int, only_ids) -> tuple[str, tuple] | None:
+def _look_query(stage, ahead: list, batch: int, only_ids) -> tuple[str, tuple] | None:
     """The ids-only query a concurrent stage looks with: the lowest `batch`
-    ids its gate accepts. None for a stage that declares no gate (a test
-    double)."""
+    ids its gate accepts that no stage in `ahead` (its feeders) can still
+    act on. None for a stage that declares no gate (a test double).
+
+    COALESCE because a gate can be NULL rather than false for a row (a NULL
+    status column compared with 'pending'), and NOT NULL is NULL: the row
+    would be dropped as if a feeder could act on it.
+    """
     if not getattr(stage, "gate_sql", None):
         return None
+    sql = f"SELECT t.id FROM tracks t WHERE ({stage.gate_sql}) "
+    params = list(stage.gate_params)
+    ahead = _gated(ahead)
+    if ahead:
+        sql += f"AND NOT COALESCE({' OR '.join(f'({s.gate_sql})' for s in ahead)}, 0) "
+        params += [p for s in ahead for p in s.gate_params]
     idf, idp = id_filter(only_ids, "t.")
-    return (f"SELECT t.id FROM tracks t WHERE ({stage.gate_sql}) {idf}ORDER BY t.id ASC LIMIT ?",
-            (*stage.gate_params, *idp, batch))
+    return f"{sql}{idf}ORDER BY t.id ASC LIMIT ?", (*params, *idp, batch)
 
 
 class _Worker:
@@ -533,7 +551,7 @@ class _Worker:
         self.stage = stage
         self.name = stage.name
         self.wake = threading.Event()
-        self.feeders: list[_Worker] = []      # the stages that arm this one
+        self.feeders: list[_Worker] = []      # arm this stage, or it runs after them
         self.fed: list[_Worker] = []          # the stages this one feeds
         self.thread: threading.Thread | None = None
         self.totals = {STATUS_DONE: 0, STATUS_NO_MATCH: 0, STATUS_FAILED: 0}
@@ -557,8 +575,8 @@ class _ConcurrentRun:
         self.workers = [_Worker(s) for s in stages]
         for w in self.workers:
             column = getattr(w.stage, "status_column", None)
-            w.feeders = [v for v in self.workers
-                         if v is not w and column in getattr(v.stage, "arms", ())]
+            w.feeders = [v for v in self.workers if v is not w and (
+                column in getattr(v.stage, "arms", ()) or v.name in getattr(w.stage, "after", ()))]
         for w in self.workers:
             w.fed = [v for v in self.workers if w in v.feeders]
         # A single pass stops a stage after its feeders, so they must not
@@ -720,7 +738,7 @@ class _ConcurrentRun:
         conn = None
         try:
             conn = _concurrent_conn()
-            look = _look_query(w.stage, self.batch, self.only_ids)
+            look = _look_query(w.stage, [f.stage for f in w.feeders], self.batch, self.only_ids)
             pause = IDLE_BACKOFF_FIRST_S
             while not self.stopping.is_set():
                 # Cleared before the look, so a hand-off written after the
