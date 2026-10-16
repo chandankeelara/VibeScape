@@ -11,6 +11,7 @@ import _thread
 import logging
 import re
 import secrets
+import signal
 import sqlite3
 import threading
 import time
@@ -681,6 +682,21 @@ def test_ctrl_c_stops_every_stage_after_its_current_batch(sql, recomputes, stop_
     # the batch it was in landed; the second batch was never started
     assert sorted(t for t, _ in up.seen) == ids[:2]
     assert column(sql, "librosa_status", ids) == ["done", "done", "pending", "pending"]
+
+
+def test_a_ctrl_c_as_the_last_stage_ends_is_still_logged(sql, monkeypatch, recomputes, caplog):
+    # The press comes inside the only batch; the stage then finishes and the
+    # run is over before the main thread's next tick (made long here, so only
+    # the stage's own exit wakes it). It used to return without a word, the
+    # press showing only in the exit status.
+    monkeypatch.setattr(runner, "_SUPERVISE_TICK_S", 30)
+    add(sql, 1, preview_status="pending")
+    stage = Fake("preview", "preview_status", "t.preview_status = 'pending'")
+    run = runner._ConcurrentRun([stage], 10, None, "single")
+    stage.work = lambda t: run._on_sigint(signal.SIGINT, None)
+    with caplog.at_level(logging.INFO, logger="vibescape.ingest.orch"):
+        assert run.run() == 130
+    assert "interrupted: every stage stops after its current batch" in caplog.text
 
 
 def test_ctrl_c_ends_the_run_even_if_a_stage_thread_died_unmarked(sql, monkeypatch,

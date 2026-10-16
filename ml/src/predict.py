@@ -29,13 +29,24 @@ def _load_audio(path: str, sr: int) -> np.ndarray:
 
 def _load_audio_ffmpeg(path: str, sr: int) -> np.ndarray:
     """Fallback loader using ffmpeg. Handles m4a/aac/opus containers that
-    libsndfile can't open natively (imageio-ffmpeg ships the binary)."""
+    libsndfile can't open natively (imageio-ffmpeg ships the binary); every
+    cached .m4a preview the pipeline classifies comes through here.
+
+    ffmpeg gets a process group of its own (a session on POSIX), so a
+    console Ctrl-C, which Windows sends to every process on the console and
+    POSIX to the foreground process group, does not kill it mid-decode. It
+    did: a concurrent run lets the stage finish its batch, and the killed
+    rows were parked at classify_stage_error with an error blaming their
+    audio (reproduced 2026-10-16). imageio_ffmpeg does the same for its own
+    children (_utils._popen_kwargs)."""
     import subprocess
     import imageio_ffmpeg
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     cmd = [ffmpeg, "-i", str(path), "-f", "s16le", "-ac", "1", "-ar", str(sr),
            "-loglevel", "error", "-"]
-    proc = subprocess.run(cmd, capture_output=True, check=True)
+    detached = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+                if sys.platform == "win32" else {"start_new_session": True})
+    proc = subprocess.run(cmd, capture_output=True, check=True, **detached)
     pcm = np.frombuffer(proc.stdout, dtype=np.int16)
     return (pcm.astype(np.float32) / 32768.0)
 

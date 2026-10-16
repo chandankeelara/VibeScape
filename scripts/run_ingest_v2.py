@@ -593,6 +593,7 @@ class _ConcurrentRun:
         # gave up on the stages still in a batch.
         self.interrupts = 0
         self.abandoned = False
+        self._told = False                  # the first press has been logged
 
     # ------------------------------------------------------------ main thread
 
@@ -639,22 +640,18 @@ class _ConcurrentRun:
         a loop's owed recompute each time it drains, and log the summary."""
         next_summary = time.monotonic() + SUMMARY_EVERY_S
         handled = None
-        told = False
         while not self.abandoned:
-            if self.interrupts and not told:
-                told = True
-                log.warning("interrupted: every stage stops after its current batch "
-                            "(Ctrl-C again to exit at once)")
-                self.stop()
+            self._act_on_interrupt()
             self.changed.wait(_SUPERVISE_TICK_S)
             self.changed.clear()
             with self.lock:
                 # A thread ends through _work's finally, which marks it
                 # stopped; going by liveness as well keeps Ctrl-C able to
                 # end the run should one ever die some other way.
-                if all(w.stopped or not w.thread.is_alive() for w in self.workers):
-                    return
+                done = all(w.stopped or not w.thread.is_alive() for w in self.workers)
                 drained = self.drained_at
+            if done:
+                return
             if (self.mode == "loop" and not self.stopping.is_set()
                     and drained is not None and drained != handled):
                 handled = drained
@@ -680,9 +677,21 @@ class _ConcurrentRun:
             self.scored -= owed
         return True
 
+    def _act_on_interrupt(self) -> None:
+        """The first Ctrl-C, once (_on_sigint only counts it): say so, and
+        stop every stage. _supervise acts at each tick; _finish acts again,
+        so a press that came while the last stage was ending, after the
+        last tick, is still said and not only counted in the exit status."""
+        if self.interrupts and not self._told:
+            self._told = True
+            log.warning("interrupted: every stage stops after its current batch "
+                        "(Ctrl-C again to exit at once)")
+            self.stop()
+
     def _finish(self) -> int:
         """After every stage thread has ended: the owed recompute, and the
         run's exit status."""
+        self._act_on_interrupt()
         self._log_summary()
         owed_note = ("score recompute owed for %d rows, not run; once the cause is fixed: "
                      "python scripts/run_ingest_v2.py --recompute-only")
