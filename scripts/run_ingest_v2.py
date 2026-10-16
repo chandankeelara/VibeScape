@@ -120,10 +120,11 @@ idle look is one ids-only query and nothing else. Measured 2026-10-16 on a
 SQLite file of 6,238 tracks (production's count on 2026-10-15) with nothing
 to do: 28 looks in the first minute (each stage at 0, 5, 15 and 35 s), then
 7 a minute, nothing else sent. By EXPLAIN QUERY PLAN six of them scan
-tracks and preview's uses idx_tracks_ingestion_status (production's indexes
-not checked). Turso bills rows read, so an idle --concurrent --loop there
-reads ~37,000 rows a minute, ~54M a day, where the sequential --loop backs
-off to one scan per 10 minutes. Against production, --until-drained.
+tracks there and preview's uses idx_tracks_ingestion_status; production's
+tracks has no indexes at all (backlog 1.13), so all seven scan it. Turso
+bills rows read, so an idle --concurrent --loop there reads ~44,000 rows a
+minute at that size, ~63M a day, where the sequential --loop backs off to
+one scan per 10 minutes. Against production, --until-drained.
 
 How a run ends:
 
@@ -152,8 +153,12 @@ An exception that escapes a stage's thread (base.py raises on a transport
 error after its retries, and on a write error that is not one row's fault)
 is logged with the stage's name and stops the run: every other stage
 finishes the batch it is in and exits, an idle one at once, nothing is
-recomputed, exit 1. Ctrl-C does the same, exit 130; a second Ctrl-C exits
-at once, and each batch still in flight lands whole or not at all.
+recomputed, exit 1. Ctrl-C does the same, exit 130, as soon as the main
+thread acts on it: within _SUPERVISE_TICK_S, except during a --loop's
+recompute after a drain, which it finishes first (~8 s on production,
+~0.3 s locally). A second Ctrl-C exits as soon as the main thread runs
+Python again (during that recompute, after the database call in hand), and
+each batch still in flight lands whole or not at all.
 
 Every line names its stage ([preview]; [runner] for the main thread), and
 every SUMMARY_EVERY_S (60 s) a summary line gives each stage's
@@ -476,8 +481,11 @@ IDLE_BACKOFF_FIRST_S = 5
 IDLE_BACKOFF_MAX_S = 60
 # How often a concurrent run logs what each stage has done and is doing.
 SUMMARY_EVERY_S = 60
-# The main thread never blocks longer than this, so it acts on a Ctrl-C
-# within it.
+# The main thread waits at most this long at a time, so it acts on a Ctrl-C
+# within it, except while it runs a --loop's recompute after a drain: then
+# when that returns, ~8 s on production's 4,918 scored rows and ~0.3 s
+# locally (the lead session's timings, 2026-10-16). --until-drained
+# recomputes only after the stage threads have stopped.
 _SUPERVISE_TICK_S = 0.5
 
 _MODE_TEXT = {"single": "single pass", "until_drained": "until drained", "loop": "loop"}

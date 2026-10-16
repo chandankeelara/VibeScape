@@ -484,8 +484,10 @@ gate holds and what is handed to it, and stops once it and the stages
 feeding it have nothing left. So `--batch` sizes each batch but does not
 bound the run; a small first look is a sequential pass. An idle stage looks
 again after 5 s, doubling to 60 s, unless a hand-off wakes it first. A
-failing stage, or Ctrl-C, stops every stage after the batch it is in (a
-second Ctrl-C exits at once). Each log line names its stage (`[preview]`;
+failing stage, or Ctrl-C, stops every stage after the batch it is in; a
+Ctrl-C while a `--loop` recomputes after a drain takes effect when the
+recompute returns (~8 s on production, measured 2026-10-16). A second
+Ctrl-C exits without waiting for either. Each log line names its stage (`[preview]`;
 `[runner]` for the main thread), and every minute a summary line gives each
 stage's done/no_match/failed and what it is doing.
 
