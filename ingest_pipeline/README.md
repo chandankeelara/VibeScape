@@ -114,6 +114,12 @@ row's fault:
   first), a failed COMMIT: raised, nothing landed, nothing parked. The
   stage stops until the cause is fixed.
 
+Reads get the transport retries too (`execute_read` in `base.py`, since
+2026-10-16): a stage's fetch, a pass's cohort query and startup counts, and
+a concurrent stage's look. Until then one HTTP 503 or dropped connection on
+a read ended the run (in review, 22 of 30 concurrent drains survived a
+simulated 8 s outage, and 30 of 30 sequential ones).
+
 Before 2026-10-15 one bad row cost the batch: the GPU work was done, the
 loop aborted, SQLite rolled everything back and the next pass repeated it.
 

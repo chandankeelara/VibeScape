@@ -150,10 +150,11 @@ the stages may write while it runs, and what they score is owed to the
 next one.
 
 An exception that escapes a stage's thread (base.py raises on a transport
-error after its retries, and on a write error that is not one row's fault)
-is logged with the stage's name and stops the run: every other stage
-finishes the batch it is in and exits, an idle one at once, nothing is
-recomputed, exit 1. Ctrl-C does the same, exit 130, as soon as the main
+error, a read's or a write's, once its retries are spent, and on a write
+error that is not one row's fault) is logged with the stage's name and
+stops the run: every other stage finishes the batch it is in and exits, an
+idle one at once, nothing is recomputed, exit 1. Ctrl-C does the same,
+exit 130, as soon as the main
 thread acts on it: within _SUPERVISE_TICK_S, except during a --loop's
 recompute after a drain, which it finishes first (~8 s on production,
 ~0.3 s locally). A second Ctrl-C exits as soon as the main thread runs
@@ -213,7 +214,8 @@ from ingest_pipeline.stage_language import LanguageStage  # noqa: E402
 from ingest_pipeline.stage_librosa import LibrosaStage  # noqa: E402
 from ingest_pipeline.stage_fuse import FuseStage  # noqa: E402
 from ingest_pipeline.base import (  # noqa: E402
-    LEFT_ARMED, STATUS_DONE, STATUS_FAILED, STATUS_NO_MATCH, id_filter, stage_error_status)
+    LEFT_ARMED, STATUS_DONE, STATUS_FAILED, STATUS_NO_MATCH, execute_read, id_filter,
+    stage_error_status)
 import score_recompute  # noqa: E402
 import _target  # noqa: E402
 
@@ -296,8 +298,8 @@ def pending_snapshot(conn, stages: list) -> dict[str, int]:
     if not gated:
         return {}
     cols = ", ".join(f"SUM(CASE WHEN ({s.gate_sql}) THEN 1 ELSE 0 END)" for s in gated)
-    row = conn.execute(f"SELECT {cols} FROM tracks t",
-                       [p for s in gated for p in s.gate_params]).fetchone()
+    (row,) = execute_read(conn, f"SELECT {cols} FROM tracks t",
+                          [p for s in gated for p in s.gate_params], log, "runner")
     return {s.name: int(row[i] or 0) for i, s in enumerate(gated)}
 
 
@@ -347,8 +349,8 @@ def select_cohort(conn, stages: list, batch: int, only_ids=None) -> list[int]:
     ids: set[int] = set()
     gated = _gated(stages)
     if gated:
-        ids.update(int(r[0]) for r in conn.execute(
-            *lowest_ids_query(gated, batch, only_ids)).fetchall())
+        sql, params = lowest_ids_query(gated, batch, only_ids)
+        ids.update(int(r[0]) for r in execute_read(conn, sql, params, log, "runner"))
     for stage in stages:
         if stage not in gated:
             ids.update(int(r["id"]) for r in stage.fetch_pending(conn, batch, only_ids))
@@ -821,7 +823,7 @@ class _ConcurrentRun:
                 w.state = "in a batch"
             return w.stage.run_batch(conn, self.batch, log, only_ids=self.only_ids)
         sql, params = look
-        ids = [int(r[0]) for r in conn.execute(sql, params).fetchall()]
+        ids = [int(r[0]) for r in execute_read(conn, sql, params, log, w.name)]
         if not ids:
             return {}
         if self.stopping.is_set():

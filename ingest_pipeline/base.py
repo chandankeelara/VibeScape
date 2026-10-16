@@ -74,6 +74,11 @@ a constraint judges a row's data, and nothing else a write can hit does.
     COMMIT. None of those is a row's fault, so the stage stops and the
     rows stay pending until the cause is fixed.
 
+Reads get the same retries (execute_read, since 2026-10-16): a stage's
+fetch, and the runner's cohort query, startup counts and concurrent looks.
+A read is idempotent, so trying it again is always safe; one that keeps
+failing is raised, and stops the pass or the stage like a write would.
+
 A finished track is never parked. Stages do run on ingestion_status='done'
 rows (fuse after a language correction, youtube when re-armed), every DJ,
 similar and vibe query requires 'done', and README's invariant is that
@@ -125,22 +130,55 @@ from typing import Any, NamedTuple
 # preview_url still lands.
 _RETRY_DROPPABLE_FIELDS = ("apple_id", "track_view_url", "genre")
 
-# A write that fails transiently (_is_transient) is tried again after each
-# of these pauses, and then the error is raised: 14 s of waiting at most.
-# Tests stub _sleep.
+# A read or write that fails transiently (_is_transient) is tried again
+# after each of these pauses, and then the error is raised: 14 s of waiting
+# at most. Tests stub _sleep.
 _RETRY_SLEEPS_S = (2, 4, 8)
 _sleep = time.sleep
 
+_log = logging.getLogger("vibescape.ingest.base")
+
 
 def _is_transient(e: BaseException) -> bool:
-    """A write error that says nothing about the rows written: the network
-    or the HTTP layer (anything that is not a sqlite3.Error), or a busy or
-    locked database. The same write can succeed a few seconds later."""
+    """An error that says nothing about the rows read or written: the
+    network or the HTTP layer (anything that is not a sqlite3.Error), or a
+    busy or locked database. The same call can succeed a few seconds later."""
     if not isinstance(e, sqlite3.Error):
         return True
     text = (getattr(e, "detail", None) or str(e)).lower()
     return isinstance(e, sqlite3.OperationalError) and any(
         word in text for word in ("locked", "busy", "timeout"))
+
+
+def _with_retries(attempt, log, what: str):
+    """attempt(), tried again after each pause in _RETRY_SLEEPS_S while it
+    fails transiently (_is_transient); then the error is raised. Each retry
+    is logged as `what` failed."""
+    for n, pause in enumerate((*_RETRY_SLEEPS_S, None), start=1):
+        try:
+            return attempt()
+        except Exception as e:
+            if pause is None or not _is_transient(e):
+                raise
+            log.warning("%s failed (%s); retry %d of %d in %ds",
+                        what, e, n, len(_RETRY_SLEEPS_S), pause)
+            _sleep(pause)
+
+
+def execute_read(conn, sql: str, params, log, who: str) -> list:
+    """conn.execute(sql, params).fetchall(), with the retries a write gets.
+
+    A read is idempotent, so trying it again is always safe. Before
+    2026-10-16 only writes were retried, so one HTTP 503, 429 or dropped
+    connection on a read ended the run: in review, against a fake Hrana
+    server with a simulated 8 s outage, 22 of 30 concurrent drains survived
+    and 30 of 30 sequential ones, a concurrent run reading two to three
+    times as often. Used by Stage.fetch_pending, the runner's cohort query
+    and startup counts, and a concurrent stage's look. Not in db_client's
+    _post, which writes go through too: they would be retried twice over.
+    """
+    return _with_retries(lambda: conn.execute(sql, params).fetchall(), log,
+                         f"[{who}] reading")
 
 
 STATUS_PENDING = "pending"
@@ -306,16 +344,17 @@ class Stage(ABC):
         first, at most `limit` of them.
 
         `only_ids` restricts the stage to a cohort so a pass advances the
-        same tracks through every stage. See id_filter().
+        same tracks through every stage. See id_filter(). A transient
+        failure is retried (execute_read).
         """
         if not self.gate_sql:
             raise NotImplementedError(f"{type(self).__name__} declares no gate_sql")
         idf, idp = id_filter(only_ids, "t.")
-        return list(conn.execute(
+        return execute_read(
+            conn,
             f"SELECT {self.fetch_cols} FROM tracks t {self.fetch_join}"
             f"WHERE ({self.gate_sql}) {idf}ORDER BY t.id ASC LIMIT ?",
-            (*self.gate_params, *idp, limit),
-        ).fetchall())
+            (*self.gate_params, *idp, limit), _log, self.name)
 
     @abstractmethod
     def process_row(self, row) -> RowResult:
@@ -429,15 +468,8 @@ class Stage(ABC):
         client gave up on a request the server finished): every statement a
         stage writes is an UPDATE or an upsert of absolute values, and a
         park matches the same row again, so a second run lands the same."""
-        for n, pause in enumerate((*_RETRY_SLEEPS_S, None), start=1):
-            try:
-                return conn.execute_batch(stmts)
-            except Exception as e:
-                if pause is None or not _is_transient(e):
-                    raise
-                log.warning("[%s] writing %d statements failed (%s); retry %d of %d in %ds",
-                            self.name, len(stmts), e, n, len(_RETRY_SLEEPS_S), pause)
-                _sleep(pause)
+        return _with_retries(lambda: conn.execute_batch(stmts), log,
+                             f"[{self.name}] writing {len(stmts)} statements")
 
     @staticmethod
     def _statements(w: RowWrite) -> list:

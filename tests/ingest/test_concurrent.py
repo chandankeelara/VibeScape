@@ -666,6 +666,36 @@ def test_a_stage_that_cannot_connect_stops_the_run(sql, monkeypatch, recomputes)
     assert runner.run_concurrent(list(chain()), 5, mode="loop") == 1
 
 
+def test_a_look_that_drops_twice_is_retried_and_the_run_drains(sql, monkeypatch, recomputes,
+                                                               flaky_reads, pauses, caplog):
+    # One dropped connection or HTTP 503 on a look used to end the run with
+    # exit 1 (only writes were retried). The look is the stage's first read.
+    ids = add(sql, 3, preview_status="pending")
+    stage = Fake("preview", "preview_status", "t.preview_status = 'pending'")
+    real = runner._concurrent_conn
+    monkeypatch.setattr(runner, "_concurrent_conn", lambda: flaky_reads(real()))
+    with caplog.at_level(logging.INFO, logger="vibescape.ingest.orch"):
+        assert runner.run_concurrent([stage], 10, mode="until_drained") == 0
+    assert column(sql, "preview_status", ids) == ["done"] * 3
+    assert pauses == [2, 4] and "[preview] reading failed" in caplog.text
+
+
+def test_a_look_that_keeps_failing_stops_the_run_after_its_third_retry(sql, monkeypatch,
+                                                                       recomputes, flaky_reads,
+                                                                       pauses):
+    add(sql, 1, preview_status="pending")
+    stage = Fake("preview", "preview_status", "t.preview_status = 'pending'")
+    conns = []
+    real = runner._concurrent_conn
+
+    def always_failing():
+        conns.append(flaky_reads(real(), fails=None))
+        return conns[-1]
+    monkeypatch.setattr(runner, "_concurrent_conn", always_failing)
+    assert runner.run_concurrent([stage], 10, mode="until_drained") == 1
+    assert (conns[0].reads, pauses, stage.seen) == (4, [2, 4, 8], [])
+
+
 def test_ctrl_c_stops_every_stage_after_its_current_batch(sql, recomputes, stop_called):
     ids = add(sql, 4, librosa_status="pending")
     in_batch, release = threading.Event(), threading.Event()
