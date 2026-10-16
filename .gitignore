@@ -10,6 +10,9 @@ config.py
 data/audio/
 data/*.db
 data/*.db.*
+# SQLite's WAL sidecars: `run_ingest_v2.py --concurrent` puts the file in WAL mode
+data/*.db-wal
+data/*.db-shm
 data/*.log
 data/*.log.err
 data/recompute_progress.json

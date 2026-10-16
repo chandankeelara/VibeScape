@@ -17,6 +17,9 @@ data/backup*/
 data/recompute_progress.json
 data/vibescape.db.presprint
 data/vibescape.db.pre-user-tracks-*
+# SQLite's WAL sidecars (run_ingest_v2.py --concurrent puts the file in WAL mode)
+data/*.db-wal
+data/*.db-shm
 data/yt_cookies*.txt
 
 ml/
