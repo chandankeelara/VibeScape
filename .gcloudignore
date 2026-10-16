@@ -27,6 +27,8 @@ venv/
 .env
 .env.local
 .env.*.local
+# Production Turso read-write token, for `--target prod` (scripts/_target.py)
+.env.prod
 .claude/
 
 # OS metadata

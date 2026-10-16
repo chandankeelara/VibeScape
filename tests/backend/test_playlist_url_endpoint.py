@@ -4,6 +4,7 @@ The service readers and Spotify search are faked; the job thread,
 _process_track and the database are real.
 """
 import time
+from datetime import datetime, timezone
 
 import pytest
 
@@ -121,6 +122,36 @@ def test_spotify_links_import_by_id_with_no_searches(client, make_user, importer
                                         ("SPID2", "Two", "Bob", "pending", None)]
     links = sql.execute("SELECT COUNT(*), MIN(source) FROM user_tracks WHERE user_id=?", (uid,)).fetchone()
     assert links[0] == 2 and links[1].startswith("spotify:")
+
+
+def drop_column_defaults(sql):
+    """Rebuild tracks the way production's was built: column types only,
+    every DEFAULT gone (ingest_pipeline/base.py). id stays the rowid key."""
+    cols = sql.execute("PRAGMA table_info(tracks)").fetchall()
+    decl = ", ".join(f"{c['name']} {c['type']}" + (" PRIMARY KEY" if c["pk"] else "")
+                     for c in cols)
+    sql.executescript(f"CREATE TABLE tracks_bare ({decl}); "
+                      "INSERT INTO tracks_bare SELECT * FROM tracks; "
+                      "DROP TABLE tracks; ALTER TABLE tracks_bare RENAME TO tracks;")
+
+
+def test_a_new_song_is_stamped_created_at_without_a_column_default(client, make_user,
+                                                                  importer, sql):
+    # Production's tracks has no DEFAULT CURRENT_TIMESTAMP, so rows this
+    # import made there had created_at NULL.
+    _, h = make_user()
+    drop_column_defaults(sql)
+    importer.playlist = P.Playlist("Top", [P.Item(title="One", artist="Ann", spotify_id="NEW1")])
+    before = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
+
+    _, s = run(client, h, url="https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M")
+
+    assert s["queued_for_analysis"] == 1
+    (created,) = sql.execute("SELECT created_at FROM tracks WHERE spotify_id = 'NEW1'").fetchone()
+    assert created is not None, "created_at was left to a DEFAULT production does not have"
+    # The text CURRENT_TIMESTAMP writes, so local and production rows sort alike.
+    stamped = datetime.strptime(created, "%Y-%m-%d %H:%M:%S")
+    assert before <= stamped <= datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def test_songs_the_catalogue_has_cost_no_searches(client, make_user, importer, sql):

@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 
 from .base import (RowResult, Stage, STATUS_DONE, STATUS_FAILED,
-                   STATUS_NO_MATCH, id_filter, iso_now)
+                   STATUS_NO_MATCH, iso_now)
 
 
 log = logging.getLogger("vibescape.ingest.youtube")
@@ -37,49 +37,44 @@ class YoutubeStage(Stage):
     # yt-dlp searches are fairly slow per call (~1-3s); parallelize aggressively.
     max_workers = 6
 
+    gate_sql = (
+        # Armed by embedding, but the gate spells out EVERY upstream
+        # stage rather than relying on transitivity. embedding_status
+        # ='done' alone implies preview -> download -> ml, but NOT
+        # language: that is a parallel branch armed by download, so a
+        # failed language would have slipped past and let a broken
+        # track reach 'done'.
+        #
+        # Spelling it out is also what enforces "last": local rows
+        # carry a stale youtube_status='pending' forced by the Turso
+        # pull, and on its own that would let youtube run before any
+        # audio stage had.
+        "youtube_status = 'pending' "
+        "AND preview_status = 'done' "
+        "AND download_status = 'done' "
+        "AND librosa_status = 'done' "
+        "AND ml_status = 'done' "
+        "AND fuse_status = 'done' "
+        # Language, strictly. It used to be the one stage whose
+        # success was not spelled 'done' — Whisper stopped at
+        # 'whisper_done' and could return 'no_match'. Neither state
+        # has a producer since language became a queue-answered
+        # metadata question (2026-10-10); "no language" is now an
+        # explicit clear that writes language=NULL with
+        # language_status='done'. Redundant with fuse's own gate, and
+        # kept anyway: this gate's whole job is to spell out every
+        # upstream stage rather than trust transitivity.
+        "AND language_status = 'done' "
+        "AND title IS NOT NULL AND title != '' "
+        "AND artist IS NOT NULL AND artist != ''"
+    )
+    fetch_cols = "id, title, artist, youtube_id"
+
     def __init__(self):
         try:
             from yt_dlp import YoutubeDL  # noqa: F401
         except ImportError as e:
             raise SystemExit(f"YoutubeStage requires yt-dlp: {e}")
-
-    def fetch_pending(self, conn, limit: int, only_ids=None) -> list:
-        rows = conn.execute(
-            "SELECT id, title, artist, youtube_id FROM tracks "
-            # Armed by embedding, but the gate spells out EVERY upstream
-            # stage rather than relying on transitivity. embedding_status
-            # ='done' alone implies preview -> download -> ml, but NOT
-            # language: that is a parallel branch armed by download, so a
-            # failed language would have slipped past and let a broken
-            # track reach 'done'.
-            #
-            # Spelling it out is also what enforces "last": local rows
-            # carry a stale youtube_status='pending' forced by the Turso
-            # pull, and on its own that would let youtube run before any
-            # audio stage had.
-            "WHERE youtube_status = 'pending' "
-            "AND preview_status = 'done' "
-            "AND download_status = 'done' "
-            "AND librosa_status = 'done' "
-            "AND ml_status = 'done' "
-            "AND fuse_status = 'done' "
-            # Language, strictly. It used to be the one stage whose
-            # success was not spelled 'done' — Whisper stopped at
-            # 'whisper_done' and could return 'no_match'. Neither state
-            # has a producer since language became a queue-answered
-            # metadata question (2026-10-10); "no language" is now an
-            # explicit clear that writes language=NULL with
-            # language_status='done'. Redundant with fuse's own gate, and
-            # kept anyway: this gate's whole job is to spell out every
-            # upstream stage rather than trust transitivity.
-            "AND language_status = 'done' "
-            "AND title IS NOT NULL AND title != '' "
-            "AND artist IS NOT NULL AND artist != '' "
-            f"{id_filter(only_ids)[0]}"
-            "ORDER BY id ASC LIMIT ?",
-            (*id_filter(only_ids)[1], limit),
-        ).fetchall()
-        return list(rows)
 
     def process_row(self, row) -> RowResult:
         # Already resolved — skip the lookup entirely. Same rule as

@@ -1052,11 +1052,18 @@ def _is_turso() -> bool:
 
 
 def _decode_embedding_cell(val) -> Optional[np.ndarray]:
-    """Turso's HTTP protocol returns F32_BLOB cells in a form our
-    db_client shim decodes to empty bytes. Handle both cases:
-      - Real bytes (local sqlite path): np.frombuffer
+    """Decode an embedding cell in either form the loaders below select:
+      - Real bytes (the raw column): np.frombuffer
       - Text form '[a,b,c,...]' (Turso via vector_extract()): parse
-    Returns None if the cell is empty / invalid."""
+    Returns None if the cell is empty / invalid.
+
+    The text form exists because db_client used to decode a raw F32_BLOB
+    read from Turso to empty bytes whenever its length was not a multiple
+    of 3, every 788-float fused vector included. Fixed 2026-10-15: the
+    probe that day showed the padded decode db_client now does returns a
+    fused blob's 3152 bytes. The Turso loaders still select
+    vector_extract() on purpose until a production run exercises the raw
+    read; then they can drop it."""
     if val is None:
         return None
     if isinstance(val, (bytes, bytearray, memoryview)):
@@ -1081,8 +1088,9 @@ def _load_mert_vec(conn, track_id: int,
     col = _embedding_column_for(model_version)
     if col is None:
         return None
-    # On Turso, F32_BLOB reads back as empty bytes over HTTP — use
-    # vector_extract() to get the text form we can parse.
+    # On Turso, read the text form through vector_extract(). The raw blob
+    # decodes correctly since 2026-10-15 (see _decode_embedding_cell); this
+    # path is kept deliberately until a production run exercises that read.
     if _is_turso():
         row = conn.execute(
             f"SELECT vector_extract({col}) AS emb "
@@ -1117,6 +1125,7 @@ def _load_mert_vecs_bulk(conn, track_ids: list,
     # Chunk to keep SQL param counts sane.
     CHUNK = 400
     turso = _is_turso()
+    # vector_extract() on Turso, kept deliberately: see _decode_embedding_cell.
     select_expr = f"vector_extract({col})" if turso else col
     for i in range(0, len(track_ids), CHUNK):
         chunk = track_ids[i:i + CHUNK]
@@ -3472,11 +3481,14 @@ def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "
     # vibe_score is NOT NULL in the current schema (legacy from the
     # pre-split-ingest era). Insert 0.0 as a placeholder; the offline
     # pipeline's classify stage overwrites it with the real score.
+    # created_at is written here because production's tracks table has no
+    # column defaults; rows made before 2026-10-15 are NULL there (4,844 of
+    # 6,238 that day, backlog 3.11).
     cur = conn.execute(
         "INSERT INTO tracks "
         "(spotify_id, isrc, title, artist, album, artwork_url, preview_url, "
-        " duration_ms, vibe_score, ingestion_status) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0, 'pending')",
+        " duration_ms, vibe_score, ingestion_status, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0, 'pending', CURRENT_TIMESTAMP)",
         (spotify_id, isrc, name, artist_name, album_name,
          artwork_url, preview_url, duration_ms),
     )

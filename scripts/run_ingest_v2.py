@@ -25,7 +25,7 @@ normalises every live row into one unambiguous waiting state,
 `language_status='pending'`. A Claude Code session then queries the
 database for those rows, reads title/artist/album, and writes the tag plus
 the `fuse_status='pending'` cascade (ingest_pipeline/language_tagging.py).
-The next run sees 'done' and proceeds to fuse → youtube.
+The next run sees 'done' and proceeds to fuse -> youtube.
 
 `fuse` gates strictly on language_status='done' — 20% of the fused vector
 is a language one-hot, so fusing early puts a track in the wrong region of
@@ -35,10 +35,14 @@ tagging step load-bearing: untagged tracks never reach the DJ pool.
 for how long.
 
 Usage:
-    # One pass across all four stages, up to 50 rows per stage:
+    # One pass across every stage, up to 50 rows per stage:
     python scripts/run_ingest_v2.py --batch 50
 
-    # Loop with 30 s idle sleep between empty passes:
+    # Pass after pass until nothing is left to do, then exit:
+    python scripts/run_ingest_v2.py --until-drained
+
+    # Run for good (watching a dev DB). Idle sleeps start at --interval and
+    # double up to 10 min; work resets them:
     python scripts/run_ingest_v2.py --loop --interval 30
 
     # Restrict to a subset of stages (comma-separated):
@@ -46,6 +50,21 @@ Usage:
 
     # Only re-run the library-wide score recompute, no stages:
     python scripts/run_ingest_v2.py --recompute-only
+
+    # Re-arm rows parked at <stage>_stage_error (one stage, or all), then run:
+    python scripts/run_ingest_v2.py --retry-failed classify
+
+    # Production Turso instead of the local SQLite file (the default,
+    # --target local). Credentials come from the gitignored .env.prod, see
+    # scripts/_target.py. Back up first: python scripts/backup_prod_db.py
+    python scripts/run_ingest_v2.py --target prod --batch 10
+    python scripts/run_ingest_v2.py --target prod --batch 50 --until-drained
+
+Every log line names the target, so a prod run cannot be mistaken for a
+local one.
+
+Each pass carries one cohort: the lowest --batch ids that at least one of
+the selected stages can act on, by that stage's own gate (select_cohort).
 
 The runner re-runs the library-wide score recompute
 (ingest/score_recompute.py): activation/valence from the librosa features,
@@ -55,13 +74,14 @@ inputs and adds rows to the baseline, classify overwrites the columns it
 owns — so it runs only if one of them finished a track:
 
   * a single pass: once at the end of the pass;
-  * --loop: ONCE WHEN THE LOOP DRAINS (the first pass that processes
-    nothing), not after every scoring pass. Every newly scored track shifts
-    the catalogue mean and std, so nearly every row's activation_relative
-    moves and the skip-unchanged check saves nothing: draining 1,000 tracks
-    at --batch 50 would cost 20 full ~3,800-UPDATE recomputes, about 76,000
-    Turso round trips, instead of one. A failed recompute keeps its pending
-    count and is retried at the next idle point.
+  * --loop and --until-drained: ONCE WHEN THE LOOP DRAINS (the first pass
+    that processes nothing), not after every scoring pass. Every newly
+    scored track shifts the catalogue mean and std, so nearly every row's
+    activation_relative moves and the skip-unchanged check saves nothing:
+    draining 1,000 tracks at --batch 50 would cost 20 full recomputes of
+    ~3,800 UPDATEs each instead of one. A failed recompute keeps its
+    pending count; --loop retries it at the next idle point, and
+    --until-drained exits 1.
 
 Imports used to run it after every sync; a sync only adds unanalysed rows,
 so it moved here (2026-10-13).
@@ -78,6 +98,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "backend"))
+# For _target. Explicit, not left to the script directory being
+# sys.path[0]: that entry is missing under `python -P` / PYTHONSAFEPATH.
+sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 # Appended, not inserted: ingest/db.py must not shadow backend/db.py.
 sys.path.append(str(PROJECT_ROOT / "ingest"))
 
@@ -95,8 +118,10 @@ from ingest_pipeline.stage_youtube import YoutubeStage  # noqa: E402
 from ingest_pipeline.stage_language import LanguageStage  # noqa: E402
 from ingest_pipeline.stage_librosa import LibrosaStage  # noqa: E402
 from ingest_pipeline.stage_fuse import FuseStage  # noqa: E402
-from ingest_pipeline.base import STATUS_DONE  # noqa: E402
+from ingest_pipeline.base import (  # noqa: E402
+    LEFT_ARMED, STATUS_DONE, id_filter, stage_error_status)
 import score_recompute  # noqa: E402
+import _target  # noqa: E402
 
 
 log = logging.getLogger("vibescape.ingest.orch")
@@ -105,81 +130,139 @@ log = logging.getLogger("vibescape.ingest.orch")
 # module docstring; fuse, youtube etc. touch none of its inputs or outputs.
 SCORING_STAGES = ("librosa", "classify")
 
+# An idle --loop sleeps --interval, doubling each idle pass up to this, and
+# drops back to --interval after a pass that did work. Every idle pass is
+# one scan of `tracks` (select_cohort), and Turso bills rows read: at a
+# fixed 30 s that is 2,880 scans a day for a loop nobody is watching; at
+# this cap, 144. --until-drained is what a run that should end uses.
+IDLE_SLEEP_MAX_S = 600
+
+# Every stage, by name, in chain order.
+STAGE_CLASSES: dict[str, type] = {
+    "preview":   PreviewStage,
+    "download":  DownloadStage,
+    "librosa":   LibrosaStage,
+    "classify":  ClassifyStage,
+    "language":  LanguageStage,
+    "fuse":      FuseStage,
+    "youtube":   YoutubeStage,
+}
+
 
 def build_stages(names: list[str]) -> list:
-    all_stages: dict[str, callable] = {
-        "preview":   PreviewStage,
-        "download":  DownloadStage,
-        "librosa":   LibrosaStage,
-        "classify":  ClassifyStage,
-        "language":  LanguageStage,
-        "fuse":      FuseStage,
-        "youtube":   YoutubeStage,
-    }
-    unknown = [n for n in names if n not in all_stages]
+    unknown = [n for n in names if n not in STAGE_CLASSES]
     if unknown:
-        raise SystemExit(f"unknown stages: {unknown}. known: {list(all_stages)}")
-    return [all_stages[n]() for n in names]
+        raise SystemExit(f"unknown stages: {unknown}. known: {list(STAGE_CLASSES)}")
+    return [STAGE_CLASSES[n]() for n in names]
 
 
-def pending_snapshot(conn) -> dict[str, int]:
-    out: dict[str, int] = {}
-    for col in ("preview_status", "download_status", "librosa_status",
-                "ml_status", "language_status", "fuse_status",
-                "youtube_status"):
-        try:
-            n = conn.execute(
-                f"SELECT COUNT(*) FROM tracks WHERE {col} = 'pending'"
-            ).fetchone()[0]
-            out[col] = int(n)
-        except Exception:
-            out[col] = -1
-    return out
+def rearm_failed(conn, which: str) -> dict[str, int]:
+    """Send rows parked at <stage>_stage_error back into the pipeline.
 
+    A row that failed a stage (an exception in process_row, or a write the
+    stage could not make) is parked: ingestion_status='<stage>_stage_error',
+    the stage's own column 'failed', the error in ingestion_error. That
+    keeps it out of every gate until somebody decides the cause is fixed.
+    This undoes exactly that, for one stage or `all`: ingestion_status and
+    the stage's column back to 'pending', ingestion_error cleared, in one
+    transaction. Returns {stage: rows re-armed}.
 
-def select_cohort(conn, batch: int, only_ids=None) -> list[int]:
+    A finished track is never parked (ingest_pipeline/base.py, "Writing a
+    batch"): a failure leaves it 'done' and armed, and the next pass retries
+    it without this flag.
     """
-    Pick the tracks this pass will advance, oldest first.
+    names = list(STAGE_CLASSES) if which == "all" else [which]
+    unknown = [n for n in names if n not in STAGE_CLASSES]
+    if unknown:
+        raise SystemExit(f"--retry-failed: unknown stage {which!r}; "
+                         f"expected all or one of {list(STAGE_CLASSES)}")
+    cursors = conn.execute_batch([
+        (f"UPDATE tracks SET ingestion_status = 'pending', "
+         f"{STAGE_CLASSES[n].status_column} = 'pending', ingestion_error = NULL "
+         "WHERE ingestion_status = ?", (stage_error_status(STAGE_CLASSES[n].name),))
+        for n in names])
+    return {n: max(c.rowcount, 0) for n, c in zip(names, cursors)}
 
-    Two kinds of work qualify:
 
-      1. Tracks still moving through the chain — ingestion_status 'pending'
-         or NULL.
-      2. Tracks that are already 'done' but have had a stage RE-ARMED.
-         Correcting a language tag sets fuse_status='pending' on a finished
-         row; without this clause the orchestrator could not see it and the
-         pass reported processed=0 while the corrections sat unapplied.
+def _gated(stages: list) -> list:
+    """The stages that declare a gate (all real ones; test doubles may only
+    implement fetch_pending)."""
+    return [s for s in stages if getattr(s, "gate_sql", None)]
 
-    Terminal rows with nothing armed are excluded, so a pass never
-    re-touches genuinely finished or parked tracks.
+
+def pending_snapshot(conn, stages: list) -> dict[str, int]:
+    """How many rows each stage's gate accepts now: one query, one scan.
+
+    It used to count `<column> = 'pending'` per status column, which is not
+    what any stage acts on: rows waiting for a language tag showed as
+    language_status 28 / fuse_status 28 and the next pass said drained.
+    Counting by gate makes the startup line and the cohort agree.
     """
-    stage_cols = ("preview_status", "download_status", "librosa_status",
-                  "ml_status", "language_status", "fuse_status",
-                  "youtube_status")
-    armed = " OR ".join(f"{c} = 'pending'" for c in stage_cols)
-    # Legacy term: 'whisper_done' was the retired Whisper stage's terminal
-    # state (no producer since 2026-10-10). Those rows are usually
-    # ingestion_status='done' with nothing else armed, so without this they
-    # could never enter a cohort, LanguageStage could never normalise them
-    # to 'pending', and no tagging session would ever see them — while
-    # fuse, which now requires language_status='done' exactly, would refuse
-    # to re-fuse them. One term keeps them reachable.
-    armed += " OR language_status = 'whisper_done'"
+    gated = _gated(stages)
+    if not gated:
+        return {}
+    cols = ", ".join(f"SUM(CASE WHEN ({s.gate_sql}) THEN 1 ELSE 0 END)" for s in gated)
+    row = conn.execute(f"SELECT {cols} FROM tracks t",
+                       [p for s in gated for p in s.gate_params]).fetchone()
+    return {s.name: int(row[i] or 0) for i, s in enumerate(gated)}
 
-    # --only-ids pins the run to a hand-picked set (a re-ingest of suspect
-    # rows) so it does not also drain whatever else happens to be pending.
-    scope = ""
-    if only_ids is not None:
-        scope = f"AND id IN ({','.join(str(int(i)) for i in only_ids) or 'NULL'}) "
-    rows = conn.execute(
-        "SELECT id FROM tracks "
-        "WHERE (ingestion_status = 'pending' OR ingestion_status IS NULL "
-        f"   OR {armed}) "
-        f"{scope}"
-        "ORDER BY id ASC LIMIT ?",
-        (batch,),
-    ).fetchall()
-    return [int(r[0]) for r in rows]
+
+def select_cohort(conn, stages: list, batch: int, only_ids=None) -> list[int]:
+    """
+    Pick the tracks this pass will advance: the lowest `batch` ids that at
+    least one of `stages` can act on now.
+
+    "Can act on" is each stage's own gate (Stage.gate_sql), which already
+    spells out that stage's real preconditions, so the cohort is the union
+    of what the gates accept, lowest first: ONE ids-only query over tracks
+    that ORs them. That covers a track still moving through the chain, a
+    finished one with a stage re-armed (a corrected language tag sets
+    fuse_status='pending'), and a leftover language_status='whisper_done'
+    row (LanguageStage's gate), and nothing else. Only the stages being run
+    count: with --stages language,fuse a row waiting for preview is not this
+    pass's work.
+
+    One query because an idle --loop runs this every pass: the first
+    version of the union asked each stage's fetch_pending in turn, seven
+    queries of which six scanned tracks and fuse's read a 3 KB MERT blob
+    per row, and Turso bills rows read. Idle now costs one scan of ids.
+
+    It used to be a predicate of its own: ingestion_status 'pending' or
+    NULL, or any stage column 'pending'. Since 2026-10-10 language never
+    writes 'done' (a tagging session does) and fuse waits for it, so every
+    row that had been through classify sat at language_status='pending' +
+    fuse_status='pending' with ingestion_status still 'pending'. Those were
+    the lowest ids, every pass selected them again, no stage could touch
+    them, the pass processed nothing, and the loop declared itself drained
+    while every higher id waited. Live on production: a read-only probe on
+    2026-10-15 found 28 such rows at the head of the id order, ahead of 799
+    pending rows that had never entered the pipeline.
+
+    A pass on a non-empty cohort always acts on something: its lowest id
+    came from some stage's gate, and only an earlier stage acting on the
+    row can move it out of that gate. That counts as processed, except
+    where the stage failed on a finished track and left it armed (base.py,
+    "Writing a batch"): that is not progress, and run_pass leaves it out.
+    So if --batch finished tracks at the head of the id order fail every
+    pass, they fill every cohort and a loop ends as drained while higher
+    ids wait; each such failure is in the log as "left armed".
+
+    `only_ids` (--only-ids) restricts every gate, and so the union; an
+    empty list selects nothing.
+    """
+    ids: set[int] = set()
+    gated = _gated(stages)
+    if gated:
+        where = " OR ".join(f"({s.gate_sql})" for s in gated)
+        idf, idp = id_filter(only_ids, "t.")
+        ids.update(int(r[0]) for r in conn.execute(
+            f"SELECT t.id FROM tracks t WHERE ({where}) {idf}ORDER BY t.id ASC LIMIT ?",
+            (*[p for s in gated for p in s.gate_params], *idp, batch),
+        ).fetchall())
+    for stage in stages:
+        if stage not in gated:
+            ids.update(int(r["id"]) for r in stage.fetch_pending(conn, batch, only_ids))
+    return sorted(ids)[:batch]
 
 
 def run_pass(stages: list, batch: int, only_ids=None) -> tuple[int, int]:
@@ -203,19 +286,24 @@ def run_pass(stages: list, batch: int, only_ids=None) -> tuple[int, int]:
     finished as 'done'). The second says whether a recompute is owed: at the
     end of a single pass, or — accumulated across passes — once the loop
     drains (see the module docstring for why not per pass).
+
+    "Processed" leaves out the finished tracks a stage failed on and left
+    armed (LEFT_ARMED). Counted, one that fails the same way every pass
+    would keep --until-drained passing forever with no sleep, and --loop
+    from ever backing off.
     """
     conn = get_conn()
     total_processed = 0
     scored = 0
     try:
-        cohort = select_cohort(conn, batch, only_ids)
+        cohort = select_cohort(conn, stages, batch, only_ids)
         if not cohort:
             return 0, 0
         log.info("pass cohort: %d tracks (ids %d..%d)",
                  len(cohort), cohort[0], cohort[-1])
         for stage in stages:
             counts = stage.run_batch(conn, batch, log, only_ids=cohort)
-            total_processed += sum(counts.values())
+            total_processed += sum(n for status, n in counts.items() if status != LEFT_ARMED)
             if stage.name in SCORING_STAGES:
                 scored += int(counts.get(STATUS_DONE, 0))
     finally:
@@ -257,30 +345,51 @@ def after_pass(scored: int) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    _target.add_argument(parser)
     parser.add_argument("--batch", type=int, default=50,
                         help="max rows per stage per pass (default 50)")
     parser.add_argument("--stages", type=str,
                         default="preview,download,librosa,classify,language,fuse,youtube",
-                        help="comma-separated stage names (default: all six in order)")
-    parser.add_argument("--loop", action="store_true",
-                        help="keep running; sleep --interval when nothing to do")
+                        help="comma-separated stage names (default: all seven in order)")
+    looping = parser.add_mutually_exclusive_group()
+    looping.add_argument("--until-drained", action="store_true",
+                         help="pass after pass until one finds nothing to do, run the "
+                              "owed score recompute, exit (1 if that failed)")
+    looping.add_argument("--loop", action="store_true",
+                         help="keep running for good (a dev DB); idle sleeps start at "
+                              "--interval and double up to 10 min, work resets them")
     parser.add_argument("--interval", type=int, default=30,
-                        help="seconds to sleep between empty passes (default 30)")
+                        help="--loop's first idle sleep, in seconds (default 30)")
     parser.add_argument("--only-ids", type=str, default=None,
                         help="file of tracks.id, one per line: advance only these "
-                             "rows; with --loop, exit once they are idle")
+                             "rows; a loop exits once they are idle")
     parser.add_argument("--recompute-only", action="store_true",
                         help="run only the library-wide score recompute "
                              "(activation_relative / vibe_score / mood), no stages")
+    parser.add_argument("--retry-failed", choices=[*STAGE_CLASSES, "all"], default=None,
+                        metavar="STAGE|all",
+                        help="first re-arm the rows parked at <STAGE>_stage_error "
+                             "(or at any stage's), then run as usual")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
+    # Before anything connects; exits here if --target prod is not set up.
+    where = _target.apply(args.target)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        format=f"%(asctime)s %(levelname)s target={args.target} %(name)s: %(message)s",
     )
+    log.info("%s", where)
 
     ensure_db()
+    if args.retry_failed:
+        conn = get_conn()
+        try:
+            rearmed = rearm_failed(conn, args.retry_failed)
+        finally:
+            conn.close()
+        log.info("--retry-failed %s: re-armed %d row(s) %s",
+                 args.retry_failed, sum(rearmed.values()), rearmed)
     if args.recompute_only:
         return 0 if recompute_scores() else 1
 
@@ -288,17 +397,17 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = get_conn()
     try:
-        snap = pending_snapshot(conn)
+        snap = pending_snapshot(conn, stages)
     finally:
         conn.close()
-    log.info("startup pending: %s", snap)
+    log.info("startup, rows each stage can act on: %s", snap)
 
     only_ids = None
     if args.only_ids:
         only_ids = [int(x) for x in Path(args.only_ids).read_text().split() if x.strip()]
         log.info("scoped to %d ids from %s", len(only_ids), args.only_ids)
 
-    if not args.loop:
+    if not (args.loop or args.until_drained):
         processed, scored = run_pass(stages, args.batch, only_ids)
         log.info("pass done: processed=%d scored=%d", processed, scored)
         return 0 if after_pass(scored) else 1
@@ -307,10 +416,12 @@ def main(argv: list[str] | None = None) -> int:
     # would rewrite ~every row each time (the mean moves), so it waits for
     # the loop to drain; see the module docstring.
     owed = 0
+    idle_sleep = args.interval
     while True:
         processed, scored = run_pass(stages, args.batch, only_ids)
         owed += scored
         if processed != 0:
+            idle_sleep = args.interval
             continue
         if owed > 0:
             log.info("loop drained; %d rows scored since the last recompute, "
@@ -320,11 +431,12 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 log.warning("score recompute owed for %d rows; retrying at the "
                             "next idle point", owed)
-        if only_ids is not None:
-            log.info("scoped ids idle; done")
+        if args.until_drained or only_ids is not None:
+            log.info("%s; done", "scoped ids idle" if only_ids is not None else "drained")
             return 0 if owed == 0 else 1
-        log.info("all stages idle; sleeping %ds", args.interval)
-        time.sleep(args.interval)
+        log.info("all stages idle; sleeping %ds", idle_sleep)
+        time.sleep(idle_sleep)
+        idle_sleep = min(idle_sleep * 2, max(IDLE_SLEEP_MAX_S, args.interval))
 
 
 if __name__ == "__main__":

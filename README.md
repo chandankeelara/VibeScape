@@ -336,7 +336,7 @@ This replaced a design that leaned on `ALTER TABLE ... DEFAULT 'pending'`. That 
 
 Arming is not *proof* the upstream ran, though: a column also reaches `'pending'` from a migration default or a manual UPDATE. So every gate additionally spells out its real preconditions rather than trusting that it was armed.
 
-Status vocabulary: `pending`, `done`, `no_match`, `failed`. (`whisper_done` was retired with the Whisper language stage on 2026-10-10; `fuse` and `youtube` now require `language_status='done'` exactly.) `no_match` is terminal but non-error — the stage ran and found nothing. On `failed` a stage **arms nothing** and sets `ingestion_status='<stage>_stage_error'`, so the chain stops where it broke and one `GROUP BY ingestion_status` says which stage is failing and how often.
+Status vocabulary: `pending`, `done`, `no_match`, `failed`. (`whisper_done` was retired with the Whisper language stage on 2026-10-10; `fuse` and `youtube` now require `language_status='done'` exactly.) `no_match` is terminal but non-error — the stage ran and found nothing. On `failed` a stage **arms nothing** and sets `ingestion_status='<stage>_stage_error'`, so the chain stops where it broke and one `GROUP BY ingestion_status` says which stage is failing and how often. A finished track is the exception: a stage that fails on one leaves it `'done'` and armed for the next pass (`ingest_pipeline/README.md` § Failure).
 
 There is no promote pass. Each stage settles `ingestion_status` itself:
 
@@ -346,7 +346,7 @@ download no_match  ->  'no_preview'
 youtube  done      ->  'done'        (the finisher)
 ```
 
-**The invariant: `ingestion_status='done'` means every stage reached a successful terminal outcome.** `youtube`'s gate requires every upstream stage, spelled out rather than inferred, so nothing can be promoted past a stage that failed.
+**The invariant: `ingestion_status='done'` means the track completed every stage at least once, and every stage's output is stored.** `youtube`'s gate requires every upstream stage, spelled out rather than inferred, so nothing can be promoted past a stage that failed. It does not mean every stage column reads `'done'` now: a later re-arm (a language correction re-arming fuse, or a stage that failed on a finished track and left it armed) can leave one `'pending'` without demoting the track. Details in `ingest_pipeline/README.md` § The invariant.
 
 Promote also **cascades** audio-availability failures downstream so pending counts stay meaningful:
 
@@ -381,17 +381,23 @@ The app never streams from `audio_path` — the frontend streams directly from `
 # One pass across all seven stages, up to 50 rows per stage per pass:
 python scripts/run_ingest_v2.py --batch 50
 
-# Loop forever with 30 s idle sleep between empty passes:
+# Pass after pass until nothing is left, then exit:
+python scripts/run_ingest_v2.py --until-drained --batch 30
+
+# Loop for good; idle sleeps double from 30 s up to 10 min:
 python scripts/run_ingest_v2.py --loop --batch 30 --interval 30
 
 # Restrict to a subset of stages:
 python scripts/run_ingest_v2.py --stages preview,download,classify
 
-# Only the library-wide score recompute (runs on its own after a scoring pass, or once when --loop drains):
+# Only the library-wide score recompute (runs on its own after a scoring pass, or once when a loop drains):
 python scripts/run_ingest_v2.py --recompute-only
+
+# Against production Turso instead of the local SQLite file (credentials in .env.prod):
+python scripts/run_ingest_v2.py --target prod --batch 50
 ```
 
-The orchestrator is a thin loop over `Stage.run_batch()` calls followed by `promote()`. Stages are stateless — swap in Modal-backed classify/language stages later by changing `ml_backend` mode without touching orchestration.
+The orchestrator is a thin loop over `Stage.run_batch()` calls: each pass picks one cohort (the lowest ids some stage's own gate accepts) and walks it through every stage, and each stage writes its batch in one transaction. Classify always runs MERT in-process on the local GPU; no stage uses Modal.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -552,7 +558,7 @@ Grouped by what they buy you:
 - **Backend-agnostic typed vector columns.** `F32_BLOB(768)` and `F32_BLOB(788)` are typed on libSQL, plain BLOB on SQLite — same bytes on disk. `np.frombuffer(..., dtype=np.float32)` reads both. Only the DB-native `vector_distance_cos()` differs, dispatched by a one-line check on `DB_BACKEND`.
 - **Server-side cosine + query serialization.** `vector_distance_cos(fused_embedding, vector32('[...]'))` runs the full-scan on Turso's side and returns top-K + metadata (~10 KB) instead of all candidate blobs (~4.7 MB). ~500× less egress. Numpy path preserved for local dev.
 - **`sqlite3`-compatible HTTP shim.** `backend/db_client.py` implements a `sqlite3` connection/cursor/row shim over Turso's raw Hrana HTTP pipeline. Every call site keeps its plain `sqlite3` API — `DB_BACKEND=sqlite|turso` switches the whole app between local file and remote DB.
-- **F32_BLOB round-trip quirk.** Turso returns F32_BLOB values as base64-encoded blobs that the HTTP shim doesn't fully decode. Any path that needs the raw vectors (positives/negatives for query-vector construction) uses `vector_extract()` to get the text form and parses it. Wrapped in `_decode_embedding_cell()` — one place to update if libSQL changes the wire format.
+- **F32_BLOB round-trip quirk (fixed in the shim, 2026-10-15).** Turso sends blobs as base64 without padding, and the HTTP shim used to decode any blob whose length is not a multiple of 3, every fused vector included, to empty bytes. It decodes them now: on a production payload that day, the padded decode it uses returned a fused blob's 3152 bytes. The paths that need the raw vectors (positives/negatives for query-vector construction) still read them through `vector_extract()` and parse the text form, deliberately, until a production run exercises the raw read; `_decode_embedding_cell()` handles both forms.
 - **Empirical crop-length audit.** Before committing to a 30 s embedding + 10 s scalar prediction split, we measured drift (`scripts/_predict_crop_length_test.py`, `_regressor_window_compare.py`). 0.960 correlation, ~3 pt MAE, systematic 1.83 pt bias — small enough to keep the split, large enough to justify the `model_version` column that makes it queryable.
 - **Language tagging.** Whisper hallucinated on musical audio (Kannada film songs often mis-tagged as `sa / km / nn`), so it was removed on 2026-10-10 and language is read from title/artist/album instead. The pipeline stops at the language stage with rows at `language_status='pending'`; a Claude Code session queries the database for them and writes the tag plus the `fuse_status='pending'` cascade, which rebuilds the language one-hot in milliseconds with no GPU because the MERT half is already stored. Interface: `ingest_pipeline/README.md` § Tagging languages. Health: `python scripts/language_tags.py --status`.
 
@@ -592,12 +598,12 @@ turso db tokens create vibescape   # → TURSO_AUTH_TOKEN
 
 With `DB_BACKEND=turso` the app talks to remote libSQL and `docker-entrypoint.sh` skips local SQLite seed. Left unset, it defaults to `sqlite` and seeds `data/vibescape.db` from the image on first boot — still used for local dev and VM hosts with persistent volumes.
 
-**Data sync.** `scripts/_turso_pull_to_local.py` and `scripts/_sync_local_to_turso.py` are the reproducible workflow: build the catalog locally against `sqlite` (GPU work runs on a machine that has a GPU), then push metadata + embeddings to Turso when ready to ship.
+**Data.** The offline pipeline runs on a machine with a GPU and writes straight to production: `python scripts/run_ingest_v2.py --target prod`, with credentials in a gitignored `.env.prod` (see `ingest_pipeline/README.md` § Prod). Until 2026-10-15 it ran against a local copy and `scripts/_sync_local_to_turso.py` pushed the results, which made two sources of truth: a push would have overwritten state only prod had (preview URLs, language tags, YouTube ids, measured against the 2026-10-12 backup), so the sync is gone. `scripts/backup_prod_db.py` takes a dated snapshot before a run, and that file is the dev copy of prod.
 
-The push matches on `spotify_id` and `UPDATE`s in place. It never `DROP`s, never `INSERT`s and never writes `tracks.id` — two reasons, both easy to get wrong:
+Any script that writes to prod has two ways to go badly wrong:
 
 - `user_tracks.track_id REFERENCES tracks(id) ON DELETE CASCADE`, and Turso runs with `foreign_keys=1`. Dropping `tracks` deletes every user's library, and a backup covering only `tracks` + `track_embeddings` cannot restore it.
-- Local and prod ids have **diverged**: the pull discards `id` and lets SQLite re-autonumber, so ~58% of tracks carry a different id locally. Writing local ids into prod would silently re-point `user_tracks` at the wrong songs — worse than deletion, because nothing errors.
+- A local DB built by `scripts/_turso_pull_to_local.py` has **diverged** ids: the pull discards `id` and lets SQLite re-autonumber, so ~58% of tracks carry a different id there (a `backup_prod_db.py` snapshot keeps prod's). Writing such ids into prod would silently re-point `user_tracks` at the wrong songs — worse than deletion, because nothing errors.
 
 ### ML → Modal
 
@@ -705,11 +711,12 @@ VibeScape/
 │
 ├── scripts/
 │   ├── run_ingest_v2.py                    # orchestrator: one cohort, all 7 stages
+│   ├── _target.py                          # --target local|prod (prod: .env.prod)
+│   ├── backup_prod_db.py                   # dated prod snapshot, before any prod run
 │   ├── predict_ml.py                       # standalone predict wrapper
 │   ├── prewarm_youtube.py                  # bulk-resolve YouTube IDs
 │   ├── build_cookies_file.py               # yt-dlp cookies helper
 │   ├── _turso_pull_to_local.py             # prod Turso → local sqlite
-│   ├── _sync_local_to_turso.py             # local → prod; UPDATE on spotify_id, no DROP
 │   ├── _dedupe_local_by_isrc.py            # merge same-recording duplicates (local)
 │   ├── _dedupe_turso_by_isrc.py            # ...and on prod; re-points user_tracks first
 │   ├── language_tags.py                    # what is waiting for a language tag; write tags
@@ -780,10 +787,11 @@ uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 
 Open `http://127.0.0.1:8000/`, log in, paste a Spotify playlist URL, watch it ingest.
 
-To drain the offline pipeline in a separate terminal:
+To drain the offline pipeline in a separate terminal (`--loop` instead keeps
+watching for new imports):
 
 ```bash
-python scripts/run_ingest_v2.py --loop --batch 30 --interval 30
+python scripts/run_ingest_v2.py --until-drained --batch 30
 ```
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>

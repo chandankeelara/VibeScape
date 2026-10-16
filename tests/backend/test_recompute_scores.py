@@ -106,6 +106,17 @@ def test_only_the_rows_that_drifted_are_rewritten(sql, app_module):
     assert scores(sql, ids)[1][4] == "sleep"
 
 
+def test_the_writes_go_out_in_batches_not_one_round_trip_each(sql, app_module, batches,
+                                                             monkeypatch):
+    # On Turso each execute() is an HTTPS round trip; each execute_batch()
+    # is one for the whole chunk.
+    ids = add_featured(sql)
+    monkeypatch.setattr(score_recompute, "WRITE_CHUNK", 2)
+    assert recompute(app_module)["written"] == 3
+    assert [len(b) for b in batches] == [2, 1]
+    assert [row[2] for row in scores(sql, ids)] == pytest.approx([e[2] for e in EXPECTED])
+
+
 # --------------------------------------------------------------- the endpoint
 
 def test_a_non_admin_gets_403_and_nothing_is_written(client, sql, make_user, app_module, monkeypatch):

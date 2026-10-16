@@ -65,8 +65,8 @@ _DB = _REPO / "data" / "vibescape.db"
 _IDS_OUT = _REPO / "data" / "_reingest_shared_previews_ids.txt"
 _REPORT_OUT = _REPO / "data" / "_reingest_shared_previews_report.json"
 
-# Everything derived from the audio. Mirrors the librosa + classify groups
-# of scripts/_sync_local_to_turso.py SYNC_COLS.
+# Everything derived from the audio: the tracks columns the librosa and
+# classify stages write.
 _DERIVED = [
     "tempo", "tempo_stability", "onset_rate", "energy_mean", "energy",
     "energy_std", "brightness", "bandwidth", "rolloff", "spectral_contrast",

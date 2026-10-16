@@ -1,11 +1,19 @@
 """scripts/run_ingest_v2.py re-runs the score recompute after a pass that
-scored tracks, and only then (moved out of the import jobs 2026-10-13)."""
+scored tracks, and only then (moved out of the import jobs 2026-10-13); and
+how its loops end or idle."""
+import pytest
+
 import run_ingest_v2 as runner
 
 
 class FakeStage:
     def __init__(self, name, done):
         self.name, self.done = name, done
+
+    def fetch_pending(self, conn, limit, only_ids=None):
+        # The pass's cohort is built from the stages' own gates.
+        return conn.execute("SELECT id FROM tracks WHERE ingestion_status = 'pending' "
+                            "LIMIT ?", (limit,)).fetchall()
 
     def run_batch(self, conn, batch, log, only_ids=None):
         return {"done": self.done, "no_match": 0, "failed": 1}
@@ -50,17 +58,19 @@ def test_recompute_only_writes_scores_and_builds_no_stage(sql, monkeypatch):
 #
 # A loop recomputes ONCE when it drains, not after every scoring pass: each
 # newly scored track moves the catalogue mean, so a per-pass recompute would
-# rewrite ~every row every pass (~76,000 Turso round trips to drain 1,000
-# tracks at --batch 50).
+# rewrite ~every row every pass (20 full recomputes to drain 1,000 tracks at
+# --batch 50, instead of one).
 
 class Idle(Exception):
     """Raised by the fake sleep to stop an otherwise endless --loop."""
 
 
-def drive_loop(monkeypatch, passes, recompute_results=(), argv=("--loop",), sleeps_before_stop=1):
+def drive_loop(monkeypatch, passes, recompute_results=(), argv=("--loop",), sleeps_before_stop=1,
+               slept=None):
     """Run main() in --loop over scripted (processed, scored) passes.
 
-    Returns (recompute call count, main's return value or 'stopped')."""
+    Returns (recompute call count, main's return value or 'stopped'). The
+    sleeps' durations go into `slept` if given."""
     passes = list(passes)
     results = list(recompute_results)
     calls = []
@@ -72,7 +82,7 @@ def drive_loop(monkeypatch, passes, recompute_results=(), argv=("--loop",), slee
         calls.append(1)
         return results.pop(0) if results else True
 
-    slept = []
+    slept = [] if slept is None else slept
 
     def fake_sleep(seconds):
         slept.append(seconds)
@@ -113,3 +123,33 @@ def test_a_failed_recompute_is_retried_at_the_next_idle_point(db, monkeypatch):
     n, rc = drive_loop(monkeypatch, [(50, 50), (0, 0), (0, 0), (0, 0)],
                        recompute_results=(False, True), sleeps_before_stop=3)
     assert (n, rc) == (2, "stopped")
+
+
+# ------------------------------------------------- --until-drained, backoff
+#
+# A forgotten --loop on prod scans `tracks` every idle pass for good, and
+# Turso bills rows read. --until-drained ends; --loop backs off.
+
+def test_until_drained_recomputes_once_and_exits_without_sleeping(db, monkeypatch):
+    slept = []
+    assert drive_loop(monkeypatch, [(50, 50), (50, 10), (0, 0)], argv=("--until-drained",),
+                      slept=slept) == (1, 0)
+    assert slept == []
+
+
+def test_until_drained_exits_1_when_the_owed_recompute_fails(db, monkeypatch):
+    assert drive_loop(monkeypatch, [(5, 5), (0, 0)], recompute_results=(False,),
+                      argv=("--until-drained",)) == (1, 1)
+
+
+def test_an_idle_loop_backs_off_to_ten_minutes_and_work_resets_it(db, monkeypatch):
+    slept = []
+    passes = [(0, 0)] * 7 + [(3, 0)]          # then idle again
+    drive_loop(monkeypatch, passes, argv=("--loop", "--interval", "30"),
+               sleeps_before_stop=9, slept=slept)
+    assert slept == [30, 60, 120, 240, 480, 600, 600, 30, 60]
+
+
+def test_loop_and_until_drained_are_exclusive(db):
+    with pytest.raises(SystemExit):
+        runner.main(["--loop", "--until-drained"])

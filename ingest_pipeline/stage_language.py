@@ -33,9 +33,10 @@ sees it as a weak prior rather than losing it.
 
 It is deliberately NOT normalising every NULL in the table. Rows parked at
 ingestion_status='no_preview' keep their NULL: they can never be analysed,
-so asking about them is work that buys nothing, and promoting them to
-'pending' would make them permanently cohort-eligible and jam the head of
-every pass (see docs/backend-todo.md 3.1).
+so asking about them is work that buys nothing. (It used to add that a
+'pending' row would jam the head of every pass. Since 2026-10-15 the
+runner's cohort only takes rows some stage's gate accepts, so a waiting row
+cannot.)
 
 Three consequences of classifying from metadata rather than audio:
 
@@ -54,8 +55,7 @@ from __future__ import annotations
 import logging
 
 from . import language_tagging as lt
-from .base import (RowResult, Stage, STATUS_PENDING, STATUS_WHISPER_DONE,
-                   id_filter)
+from .base import RowResult, Stage, STATUS_PENDING, STATUS_WHISPER_DONE
 
 
 log = logging.getLogger("vibescape.ingest.language")
@@ -68,29 +68,22 @@ class LanguageStage(Stage):
     arms = ()
     max_workers = 1
 
-    def fetch_pending(self, conn, limit: int, only_ids=None) -> list:
-        """Live rows whose language_status is not yet the waiting spelling.
-
-        No upstream gate: metadata is present from the INSERT. The only
-        preconditions are that the row has a title to read and that it is
-        still worth asking about.
-        """
-        idf, idp = id_filter(only_ids)
-        return list(conn.execute(
-            "SELECT id, spotify_id, title, artist, album, language "
-            "FROM tracks "
-            "WHERE (language_status IS NULL OR language_status = ?) "
-            # Don't promote rows that can never be analysed. A 'no_preview'
-            # row's NULL stays NULL. The whisper_done arm overrides that:
-            # a row in a state nothing recognises is worse than a pointless
-            # question, and it is a handful of rows at most.
-            "AND (ingestion_status = 'pending' OR ingestion_status IS NULL "
-            "     OR language_status = ?) "
-            "AND title IS NOT NULL AND title != '' "
-            f"{idf}"
-            "ORDER BY id ASC LIMIT ?",
-            (STATUS_WHISPER_DONE, STATUS_WHISPER_DONE, *idp, limit),
-        ).fetchall())
+    # Live rows whose language_status is not yet the waiting spelling. No
+    # upstream gate: metadata is present from the INSERT. The only
+    # preconditions are that the row has a title to read and that it is
+    # still worth asking about.
+    gate_sql = (
+        "(language_status IS NULL OR language_status = ?) "
+        # Don't promote rows that can never be analysed. A 'no_preview'
+        # row's NULL stays NULL. The whisper_done arm overrides that:
+        # a row in a state nothing recognises is worse than a pointless
+        # question, and it is a handful of rows at most.
+        "AND (ingestion_status = 'pending' OR ingestion_status IS NULL "
+        "     OR language_status = ?) "
+        "AND title IS NOT NULL AND title != ''"
+    )
+    gate_params = (STATUS_WHISPER_DONE, STATUS_WHISPER_DONE)
+    fetch_cols = "id, spotify_id, title, artist, album, language"
 
     def process_row(self, row) -> RowResult:
         """Normalise to the waiting state. No network, no model, no audio.

@@ -58,7 +58,7 @@ pipeline idled on a full backlog while looking perfectly healthy.
 **Arming is not proof the upstream ran.** A column also reaches `'pending'`
 from a migration default or any manual UPDATE. So every gate additionally
 spells out its real preconditions rather than trusting that it was armed —
-see `stage_fuse.fetch_pending`, which checks the embedding's
+see `FuseStage.gate_sql`, which checks the embedding's
 `model_version` and that language actually finished. Skipping that let fuse
 run before language once, silently bucketing tracks as `'other'`.
 
@@ -67,10 +67,55 @@ run before language once, silently bucketing tracks as `'other'`.
 On `failed`, a stage arms nothing and writes
 `ingestion_status='<stage>_stage_error'` (`preview_stage_error`,
 `classify_stage_error`, …) plus the exception in `ingestion_error`. One
-`GROUP BY ingestion_status` tells you which stage is failing and how often,
-with no log parsing. The row also stops re-entering at `preview`, whose
-gate only matches `'pending'`, while its own column keeps `'failed'` so a
-retry pass knows where to resume.
+`GROUP BY ingestion_status` tells you which stage is failing on tracks in
+flight, and how often, with no log parsing. The row also stops re-entering
+at `preview`, whose gate only matches `'pending'`, while its own column
+keeps `'failed'`.
+
+Once the cause is fixed, `run_ingest_v2.py --retry-failed <stage>` (or
+`all`) sets both back to `'pending'`, clears the error, and runs.
+
+**Except a finished track: it is never parked.** Stages do run on
+`ingestion_status='done'` rows (fuse after a language correction, youtube
+when re-armed), every DJ, similar and vibe query requires `'done'`, and
+`'done'` promises that every stage completed (§ The invariant). So the
+park's UPDATE carries `AND ingestion_status IS NOT 'done'`, and when it
+matches nothing the failure writes nothing at all: the track keeps
+`'done'`, its old values, and its stage column `'pending'`, so it is still
+armed and the next pass tries again. The failure is in the log only (`row
+N is finished; left armed for the next pass`), and the stage's `batch
+done` line counts it under `left_armed`.
+
+The cost of that asymmetry: no `GROUP BY` shows such a row, and nothing
+stops it failing every pass. `left_armed` is not progress, so a loop still
+drains and backs off around one; but if `--batch` of them sit at the head
+of the id order they fill every cohort, and `--until-drained` ends as
+drained while higher ids wait (`select_cohort` in `run_ingest_v2.py`).
+
+A stage writes its whole batch in one transaction (`execute_batch`, one
+round trip on Turso). When that fails, the kind of error decides
+(`base.py`, "Writing a batch"); only a constraint violation can be one
+row's fault:
+
+- **Transport** — the network, an HTTP status, a timeout: tried again up
+  to three times, 2, 4 and 8 s apart (each retry logged), then raised,
+  nothing parked. The outcome is unknown (the server may have committed
+  after the client gave up), which is safe because every statement is an
+  UPDATE or upsert of absolute values: a retry writes the same, and the
+  next pass sees whatever landed.
+- **A constraint violation** — it names its statement, so its row is set
+  aside and the rest written again without it. Then that row alone: a
+  UNIQUE collision on the legacy `apple_id` constraint is retried without
+  `apple_id`, `track_view_url` and `genre`; if it still fails it is parked
+  like a failure above, with `ingestion_error='[<stage>] write failed: …'`
+  (or, if it is finished, left armed).
+- **Any other database error** — a column or table production lacks, a
+  read-only token, a busy or locked database (retried like transport
+  first), a failed COMMIT: raised, nothing landed, nothing parked. The
+  stage stops until the cause is fixed.
+
+Before 2026-10-15 one bad row cost the batch: the GPU work was done, the
+loop aborted, SQLite rolled everything back and the next pass repeated it.
 
 `no_match` is different — the stage ran fine and found nothing. For
 `preview`/`download` that is terminal for the track (`'no_preview'`); for
@@ -78,10 +123,23 @@ retry pass knows where to resume.
 
 ## The invariant
 
-**`ingestion_status='done'` means every stage reached a successful terminal
-outcome.** Nothing errored, nothing is still pending. `youtube` writes it as
-its finishing act, and its gate requires every upstream stage — spelled out,
-not inferred. Readers may rely on this.
+**`ingestion_status='done'` means the track completed every stage at least
+once, and every stage's output is stored:** a preview URL, an audio path
+(to the file the pipeline cached on its own machine), DSP features and
+scalar predictions, a language verdict (a tag, or an explicit none), the
+MERT and fused vectors in `track_embeddings`, and a YouTube video id or a
+recorded miss. That is what makes it servable. `youtube` writes `'done'` as
+its finishing act, and its gate requires every upstream stage — spelled
+out, not inferred — so nothing reaches `'done'` past a stage that failed.
+Readers may rely on this.
+
+**It does not mean every stage column reads `'done'` now.** A later re-arm
+can leave one stage column `'pending'` on a finished track without demoting
+it. Since 2026-10-01 a language correction sets `fuse_status='pending'` to
+rebuild the vector (commit 79b41ba), and a stage that fails on a finished
+track leaves it armed instead of parking it (§ Failure, and "Writing a
+batch" in `base.py`). Until that stage runs again, the track serves its
+previous values: after a correction, its old fused vector.
 
 It used to be looser than that for language: `'whisper_done'` (Whisper ran,
 nothing had verified it) and `'no_match'` counted as finished. Both are gone
@@ -135,9 +193,10 @@ guess. Treat `prior_language` as a weak hint and nothing more — mistrusting
 it is the entire reason this flow exists.
 
 Rows parked at `ingestion_status='no_preview'` are deliberately **not**
-normalised: they can never be analysed, so asking about them buys nothing,
-and promoting them would make them permanently cohort-eligible and jam the
-head of every pass (`docs/backend-todo.md` 3.1).
+normalised: they can never be analysed, so asking about them buys nothing.
+(This used to add that a `'pending'` row would jam the head of every pass.
+Since 2026-10-15 a pass only takes rows some stage can act on; see
+§ Cohorts.)
 
 ### 2. Decide
 
@@ -241,20 +300,31 @@ or all three at once, with a non-zero exit when anything is waiting:
 python scripts/language_tags.py --status
 ```
 
+**On production the wait ages cover only rows that have a `created_at`.** A
+read-only probe on 2026-10-15 found it NULL on 4,844 of 6,238 tracks (789
+of the 827 pending), not only on rows the app inserted: production's
+`tracks` has no column defaults. Rows created from 2026-10-15 on are stamped
+by `_process_track`; the existing ones are not, so `MIN(created_at)` and the
+oldest / median wait from `--status` (which skips NULLs) describe the
+stamped minority until a backfill (`docs/backend-todo.md` 3.11). The counts
+are unaffected.
+
 ### Leftover states
 
 - **`whisper_done`** — no producer. `LanguageStage` normalises it to
-  `'pending'`, and `select_cohort` carries a legacy term for it so those rows
-  (usually `ingestion_status='done'` with nothing else armed) can still enter
-  a cohort and be seen. The local DB has zero of them; production was not
-  checked.
+  `'pending'`, and its gate admits those rows (usually
+  `ingestion_status='done'` with nothing else armed), which is what puts them
+  in a cohort. The local DB has zero of them, and production had none on
+  2026-10-15 (read-only probe).
 - **`no_match`** — no producer either (27 rows locally, all already fused and
-  `ingestion_status='done'`). Left alone on purpose: they have a vector and
-  are in the DJ pool, so re-asking them is an improvement, not an unblock.
-  To re-ask: `UPDATE tracks SET language_status='pending' WHERE
-  language_status='no_match'`.
+  `ingestion_status='done'`; production also had 27 on 2026-10-15). Left
+  alone on purpose: they have a vector and are in the DJ pool, so re-asking
+  them is an improvement, not an unblock. To re-ask: `UPDATE tracks SET
+  language_status='pending' WHERE language_status='no_match'`.
 - **NULL** — normalised to `'pending'` for live rows; left NULL for the 210
-  local rows parked at `'no_preview'`.
+  local rows parked at `'no_preview'`. Production had 1,145 NULL rows on
+  2026-10-15, 799 of them pending rows that had never entered the pipeline,
+  which a pass normalises as its cohorts reach them.
 
 ## Re-runs are cheap
 
@@ -271,6 +341,31 @@ skip only because `SpotifyPreview` happened to sit first in the chain.
 passing `only_ids` so each gate is restricted to those rows. Stages still
 batch internally. Without this each stage ran its own SELECT, so a pass
 could classify one set of tracks and fuse a completely different set.
+
+The cohort is the lowest `--batch` ids that **some selected stage's own
+gate** accepts: the union of what each stage could act on right now. A pass
+on a non-empty cohort therefore always processes something, and a loop only
+reports "drained" when no stage has work.
+
+Each stage spells its gate once, as `gate_sql` (a condition over `tracks t`;
+fuse reaches `track_embeddings` through `EXISTS`). `fetch_pending` selects
+with it, the cohort is **one ids-only query** that ORs the selected stages'
+gates, and the startup line counts rows per gate in one more. An idle pass
+therefore costs one scan of ids and no blobs. (The first version asked each
+stage's `fetch_pending` in turn: seven queries a pass, six scanning
+`tracks` and fuse's reading a MERT blob per row, and Turso bills rows
+read.)
+
+It used to be a predicate of its own (`ingestion_status` pending or NULL, or
+any stage column `'pending'`), and since language stopped writing `'done'`
+that stalled for good: rows through classify sit at
+`language_status='pending'` + `fuse_status='pending'` with
+`ingestion_status='pending'`, which matched, were the lowest ids, and could
+be moved by no stage. Every pass re-selected them, processed nothing, and
+the loop slept while every higher id waited. It was live on production: a
+read-only probe on 2026-10-15 found 28 such rows at the head of the id
+order, ahead of 799 pending rows that had never entered the pipeline.
+`tests/ingest/test_cohort.py` reproduces it.
 
 ## One MERT pass, two outputs
 
@@ -325,18 +420,38 @@ the shared client layer — `ml_backend`, `features`, `scoring`,
 # one pass, 50 tracks per stage
 python scripts/run_ingest_v2.py --batch 50
 
-# keep going until drained
+# pass after pass until nothing is left to do, then exit
+python scripts/run_ingest_v2.py --batch 50 --until-drained
+
+# run for good, watching a dev DB: idle sleeps start at --interval and
+# double up to 10 min; a pass that does work resets them
 python scripts/run_ingest_v2.py --batch 50 --loop --interval 30
 
 # a subset, in order
 python scripts/run_ingest_v2.py --stages preview,download
 
-# local GPU instead of Modal
-VIBESCAPE_ML_MODE=local python scripts/run_ingest_v2.py --batch 50
-
 # only the library-wide score recompute, no stages
 python scripts/run_ingest_v2.py --recompute-only
+
+# re-arm rows parked at <stage>_stage_error (or all of them), then run
+python scripts/run_ingest_v2.py --retry-failed classify
+
+# which database: local (default) or production Turso -- see § Prod
+python scripts/run_ingest_v2.py --target prod --batch 10
 ```
+
+`--target local` is the SQLite file `db_client` opens (`VIBESCAPE_DB_PATH`,
+else `data/vibescape.db`), whatever `DB_BACKEND` says. `--target prod` reads
+the credentials from a gitignored `.env.prod` (§ Prod). Every log line
+carries `target=…`, and the first one names the file or the host.
+
+`classify` always runs MERT in this process, on the local GPU. There is no
+Modal mode for it: `predict_and_embed_from_path` (`ingest/ml_backend.py`)
+loads the local checkpoint whatever `VIBESCAPE_ML_MODE` says, and Modal's
+`predict_from_url` returns no embedding, so it could not serve this stage.
+The mode only decides whether classify warns at startup that no backend is
+available. This used to list `VIBESCAPE_ML_MODE=local` as "local GPU instead
+of Modal", but the stage had already ignored the mode.
 
 ### The score recompute runs here, not in the app
 
@@ -345,20 +460,28 @@ recomputed for the **whole catalogue** by `ingest/score_recompute.py`:
 activation z-scored across every featured track (mean 50, one std = 15). It
 is owed only when `librosa` or `classify` finished a row (librosa adds rows to
 the baseline, classify overwrites the columns the recompute owns). A single
-pass recomputes at its end. **`--loop` recomputes once, when the loop drains**
-(the first pass that processes nothing, including the `--only-ids` exit),
-never per pass: every newly scored track shifts the mean and std, so nearly
-every row moves and the skip below saves nothing. Per pass, draining 1,000
-tracks at `--batch 50` would cost ~76,000 Turso round trips instead of
-~3,800. A failed recompute stays owed and is retried at the next idle point.
-Rows whose stored values already match are not written.
+pass recomputes at its end. **`--loop` and `--until-drained` recompute once,
+when the loop drains** (the first pass that processes nothing, including the
+`--only-ids` exit), never per pass: every newly scored track shifts the mean
+and std, so nearly every row moves and the skip below saves nothing. Per
+pass, draining 1,000 tracks at `--batch 50` would mean 20 full recomputes of
+~3,800 UPDATEs each instead of one. A failed recompute stays owed: `--loop`
+retries it at the next idle point, `--until-drained` exits 1. Rows whose stored values already match are not written, and the
+rest go out through `execute_batch` 200 at a time: one Turso round trip per
+200 rows, where it used to be one per row (until 2026-10-15).
 Import jobs ran it on every sync until 2026-10-13; a sync only adds
 unanalysed `pending` rows, so the baseline cannot move until this pipeline
 has scored them. `POST /api/recompute-scores` still exists, admin-only.
 
-Batch size sets the **commit granularity** — `run_batch` commits once per
-stage per batch. A large batch means a kill loses everything uncommitted;
-`--batch 2500` once lost 42 minutes of preview work.
+Batch size sets the **commit granularity** — `run_batch` writes once per
+stage per batch, after every row is processed: one transaction, and on
+Turso one request. A large batch means a kill loses everything unwritten;
+`--batch 2500` once lost 42 minutes of preview work. It also sizes that
+request: a classify row is ~5.7 KB of JSON and a fuse row ~4.9 KB (the
+vectors), so `--batch 50` sends ~280 KB (measured 2026-10-15). No Turso
+size limit has been hit or measured. A request the server refuses at the
+HTTP level is a transport error, so it is tried three more times and then
+raised with nothing parked (§ Failure); a smaller `--batch` is the fix.
 
 ### Draining a backlog
 
@@ -370,7 +493,7 @@ not the retry count: at 2s spacing the limiter never trips.
 
 ```bash
 VIBESCAPE_ITUNES_MIN_GAP=2 VIBESCAPE_ITUNES_RETRIES=7 VIBESCAPE_ITUNES_BACKOFF=5 \
-  python scripts/run_ingest_v2.py --batch 30 --loop
+  python scripts/run_ingest_v2.py --batch 30 --until-drained
 ```
 
 Distinguish the two failure modes in the logs: `search failed ... 403` is
@@ -400,16 +523,68 @@ The matcher's tests are `tests/ingest/test_preview_matcher.py`.
 
 ## Prod
 
-The pipeline runs locally against `data/vibescape.db`; prod is Turso.
+Production is Turso, and the pipeline runs **against it directly**, from
+the machine with the GPU (decided 2026-10-15):
 
 ```bash
-python scripts/_turso_pull_to_local.py          # prod -> local
-python scripts/_sync_local_to_turso.py --apply  # local -> prod
+python scripts/backup_prod_db.py                                         # 1. a dated snapshot, always first
+python scripts/run_ingest_v2.py --target prod --batch 10                 # 2. one small pass; read the log
+python scripts/run_ingest_v2.py --target prod --batch 50 --until-drained # 3. then drain, and exit
+python scripts/language_tags.py --target prod --status                   # 4. tag what waits, on prod
+python scripts/language_tags.py --target prod --set <spotify_id>=kn --apply
+python scripts/run_ingest_v2.py --target prod --until-drained            # 5. fuse + youtube the tagged rows
+python scripts/run_ingest_v2.py --target prod --recompute-only           # 6. scores, if a run stopped short
 ```
 
-The sync matches on `spotify_id` and UPDATEs in place. It never DROPs,
-never INSERTs and never writes `tracks.id`, because **local and prod ids
-have diverged** — the pull discards `id` and lets SQLite re-autonumber, so
-~58% of tracks carry a different id locally. Writing local ids into prod
-would re-point `user_tracks` at the wrong songs, and dropping `tracks`
-would cascade `user_tracks` to nothing.
+`--until-drained`, not `--loop`, against production: every idle pass scans
+`tracks`, Turso bills rows read, and a loop left running keeps paying
+(`--loop` backs off to one pass per 10 minutes, but never stops). A parked
+row comes back with `--retry-failed <stage>` once its cause is fixed.
+
+`--target prod` reads a gitignored `.env.prod` at the repo root that sets
+`DB_BACKEND=turso`, `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`, all three
+in that file, into that process only (`scripts/_target.py`). Never put them
+in `.env`: uvicorn reads it, and the dev app must not be able to reach
+production by accident. Every log line says `target=prod`, the first one
+the host; the token is never printed.
+
+Until 2026-10-15 the pipeline ran on a local copy and
+`scripts/_sync_local_to_turso.py --apply` pushed the results. That made two
+sources of truth: measured against the 2026-10-12 backup for the decision,
+a push would have nulled `preview_url` on 209 prod tracks in users'
+libraries, regressed 74 language tags that existed only on prod and nulled
+74 `youtube_id`s. The sync is gone; nothing writes a local result into prod
+any more.
+
+**Production on 2026-10-15** (read-only probe, from the owner's session):
+6,238 tracks, `ingestion_status` done 4,882 / pending 827 / no_preview 529.
+Of the 827 pending, 799 had every stage column NULL (never entered the
+pipeline) and 28 were encoded but waiting at `language_status='pending'` +
+`fuse_status='pending'`, at the head of the id order (§ Cohorts).
+`language_status`: NULL 1,145 / done 5,038 / pending 28 / no_match 27.
+`tracks` has no column DEFAULTs, no row with `ingestion_status` NULL and none
+at `'whisper_done'`. `track_embeddings`: 4,910 rows, 4,882 with a fused
+vector. So the first runs work through those 799, and the 28 move as soon as
+they are tagged.
+
+**The dev copy of prod is the backup file.** Copy it and point
+`VIBESCAPE_DB_PATH` at the copy (the snapshot itself stays a restore
+point). It keeps prod's track ids. A DB built by
+`scripts/_turso_pull_to_local.py` does not: the pull discards `id` and lets
+SQLite re-autonumber, so ~58% of tracks carry a different id there, which
+is why tags are keyed on `spotify_id`. Never write such ids into prod (they
+would re-point `user_tracks` at the wrong songs), and never drop `tracks`
+(Turso enforces foreign keys, so `user_tracks` would cascade to nothing).
+
+Against Turso a stage's batch is one transaction in one request, and the
+score recompute writes 200 rows a request (§ Operating it). With every
+stage selected (the default) each status column is read by some gate at the
+start of each pass, so one missing on prod stops the pass with `no such
+column` before anything is written. The retired sync used to add
+`librosa_status` and `fuse_status` when prod lacked them; the 2026-10-15
+probe read every stage column, so they were there then, and
+`PRAGMA table_info(tracks)` on a fresh backup says whether they still are. A
+missing *domain* column (one a stage writes, like `tonnetz_std`) stops the
+run at that stage's write instead, after the batch's work, with nothing
+landed and nothing parked (§ Failure), so the first small pass is where to
+find out.

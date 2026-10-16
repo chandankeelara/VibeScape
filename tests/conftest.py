@@ -8,6 +8,11 @@ developer's data/vibescape.db or production Turso:
     BEFORE the backend is imported.
   * VIBESCAPE_DB_PATH (the only thing db_client reads, see backend/CLAUDE.md)
     is pointed at the per-test file, and `db` asserts the app really opened it.
+  * `--target prod` (scripts/_target.py) reads .env.prod; every test points
+    that at a file that does not exist, so a real one is never loaded.
+  * And whatever a test loads, it cannot send: db_client's one way out to
+    Turso, _HttpConnection._post, raises in every test unless the test gave
+    that connection a fake _post of its own.
 """
 from __future__ import annotations
 
@@ -41,6 +46,45 @@ def _fresh_spotify_guard():
     spotify_guard._reset_for_tests()
     yield
     spotify_guard._reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _no_prod_credentials(monkeypatch):
+    """A developer's real .env.prod holds the production token. No test may
+    load it, even through runner.main(['--target', 'prod'])."""
+    import _target
+    monkeypatch.setattr(_target, "ENV_PROD", REPO / "tests" / ".never-used.env.prod")
+
+
+@pytest.fixture(autouse=True)
+def _no_turso(monkeypatch):
+    """No test may send a request to a real database, however it came by
+    credentials. On 2026-10-15 a check of a new test against the previous
+    commit ran the old backup_prod_db.main(), which read the token from
+    scripts/_load_gcp_secrets.ps1 and may have reached production; nothing
+    here stopped it. The adapter tests set `conn._post` on their own
+    connection, which shadows this."""
+    import db_client
+
+    def refuse(self, requests_list, timeout=30.0):
+        raise AssertionError("a test tried to reach Turso; give the connection a fake _post")
+    monkeypatch.setattr(db_client._HttpConnection, "_post", refuse)
+
+
+@pytest.fixture
+def batches(monkeypatch):
+    """Every execute_batch() on a db_client SQLite connection (what get_conn()
+    returns), recorded as its list of (sql, params) before it runs."""
+    import db_client
+    calls = []
+    real = db_client._SqliteConnection.execute_batch
+
+    def recording(self, stmts):
+        stmts = list(stmts)
+        calls.append(stmts)
+        return real(self, stmts)
+    monkeypatch.setattr(db_client._SqliteConnection, "execute_batch", recording)
+    return calls
 
 FUSED_DIM = 788
 
