@@ -19,7 +19,7 @@ import pytest
 
 import run_ingest_v2 as runner
 from ingest_pipeline import base
-from ingest_pipeline.base import RowResult, Stage, STATUS_DONE, STATUS_NO_MATCH
+from ingest_pipeline.base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, STATUS_NO_MATCH
 from ingest_pipeline.stage_classify import ClassifyStage
 from ingest_pipeline.stage_download import DownloadStage
 from ingest_pipeline.stage_language import LanguageStage
@@ -313,6 +313,33 @@ def test_until_drained_exits_1_when_the_recompute_fails(sql, monkeypatch):
     add(sql, 2, librosa_status="pending")
     monkeypatch.setattr(runner, "recompute_scores", lambda: False)
     assert runner.run_concurrent(list(chain()), 5, mode="until_drained") == 1
+
+
+def test_a_pass_and_a_stage_thread_count_a_batch_the_same_way():
+    # One rule for both: left armed is not progress; a scoring stage's done
+    # rows are owed a recompute.
+    counts = {STATUS_DONE: 2, STATUS_NO_MATCH: 1, STATUS_FAILED: 1, "left_armed": 3}
+    assert runner.batch_progress("classify", counts) == (4, 2)
+    assert runner.batch_progress("fuse", counts) == (4, 0)
+    assert runner.batch_progress("librosa", {"left_armed": 5}) == (0, 0)
+
+
+def test_a_finished_track_left_armed_does_not_keep_a_concurrent_run_busy(sql, recomputes):
+    # A finished track the stage fails on every time is left armed (base.py,
+    # "Writing a batch"): no progress, so the run drains after one batch.
+    # Counted as progress, the stage would look again at once for good; the
+    # work below stops the run after five, should it ever spin.
+    (tid,) = add(sql, 1, ingestion_status="done", fuse_status="pending")
+    stage = Fake("fuse", "fuse_status", "t.fuse_status = 'pending'",
+                 result=lambda t: (STATUS_FAILED, {}))
+    run = runner._ConcurrentRun([stage], 10, None, "until_drained")
+    stage.work = lambda t: run.stop() if len(stage.seen) >= 5 else None
+
+    assert run.run() == 0
+    assert len(stage.written) == 1 and [t for t, _ in stage.seen] == [tid]
+    assert run.workers[0].totals["left_armed"] == 1
+    assert tuple(sql.execute("SELECT ingestion_status, fuse_status FROM tracks WHERE id = ?",
+                             (tid,)).fetchone()) == ("done", "pending")
 
 
 def test_a_loop_recomputes_each_time_it_drains_not_per_batch(sql, monkeypatch):

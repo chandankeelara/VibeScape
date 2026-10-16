@@ -370,14 +370,10 @@ def run_pass(stages: list, batch: int, only_ids=None) -> tuple[int, int]:
     Each stage settles ingestion_status itself; there is no promote pass.
 
     Returns (rows processed across all stages, rows a SCORING_STAGES stage
-    finished as 'done'). The second says whether a recompute is owed: at the
-    end of a single pass, or — accumulated across passes — once the loop
-    drains (see the module docstring for why not per pass).
-
-    "Processed" leaves out the finished tracks a stage failed on and left
-    armed (LEFT_ARMED). Counted, one that fails the same way every pass
-    would keep --until-drained passing forever with no sleep, and --loop
-    from ever backing off.
+    finished as 'done'), each batch counted by batch_progress(). The second
+    says whether a recompute is owed: at the end of a single pass, or —
+    accumulated across passes — once the loop drains (see the module
+    docstring for why not per pass).
     """
     conn = get_conn()
     total_processed = 0
@@ -389,13 +385,29 @@ def run_pass(stages: list, batch: int, only_ids=None) -> tuple[int, int]:
         log.info("pass cohort: %d tracks (ids %d..%d)",
                  len(cohort), cohort[0], cohort[-1])
         for stage in stages:
-            counts = stage.run_batch(conn, batch, log, only_ids=cohort)
-            total_processed += sum(n for status, n in counts.items() if status != LEFT_ARMED)
-            if stage.name in SCORING_STAGES:
-                scored += int(counts.get(STATUS_DONE, 0))
+            processed, owed = batch_progress(
+                stage.name, stage.run_batch(conn, batch, log, only_ids=cohort))
+            total_processed += processed
+            scored += owed
     finally:
         conn.close()
     return total_processed, scored
+
+
+def batch_progress(stage_name: str, counts: dict) -> tuple[int, int]:
+    """What one run_batch result counts for, in a pass and in a concurrent
+    run alike: (rows that are progress, rows owed a score recompute).
+
+    A finished track the stage failed on and left armed (LEFT_ARMED) is not
+    progress. Counted, one that fails the same way every time keeps
+    --until-drained passing forever with no sleep and --loop from backing
+    off, and keeps a concurrent stage looking again at once: in review a
+    stage counting it did 9,110 batches in 3 s and never drained. A
+    SCORING_STAGES stage's 'done' rows are owed a recompute.
+    """
+    processed = sum(n for status, n in counts.items() if status != LEFT_ARMED)
+    owed = int(counts.get(STATUS_DONE, 0)) if stage_name in SCORING_STAGES else 0
+    return processed, owed
 
 
 def recompute_scores() -> bool:
@@ -715,16 +727,14 @@ class _ConcurrentRun:
                 counts = self._look(conn, w, look)
                 if counts is None:               # stopped during the look
                     break
-                # As in run_pass: a finished track left armed is no progress.
-                progressed = sum(n for k, n in counts.items() if k != LEFT_ARMED)
+                progressed, owed = batch_progress(w.name, counts)
                 with self.lock:
                     w.busy = False
                     for k, n in counts.items():
                         w.totals[k] = w.totals.get(k, 0) + n
+                    self.scored += owed
                     if progressed:
                         self.generation += 1
-                        if w.name in SCORING_STAGES:
-                            self.scored += int(counts.get(STATUS_DONE, 0))
                     else:
                         w.looked_at = generation
                         if self.mode == "single" and feeders_stopped:
