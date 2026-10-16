@@ -86,6 +86,45 @@ def batches(monkeypatch):
     monkeypatch.setattr(db_client._SqliteConnection, "execute_batch", recording)
     return calls
 
+
+class FlakyReads:
+    """A connection whose first `fails` reads (an execute() of a SELECT)
+    raise `error` before reaching the database, every one of them if `fails`
+    is None; anything else passes through. `reads` counts the attempts."""
+
+    def __init__(self, conn, error=None, fails=2):
+        import requests
+        self._conn, self._fails = conn, fails
+        self._error = error or requests.exceptions.ConnectionError("connection reset")
+        self.reads = 0
+
+    def execute(self, sql, params=()):
+        if sql.lstrip().upper().startswith("SELECT"):
+            self.reads += 1
+            if self._fails is None or self.reads <= self._fails:
+                raise self._error
+        return self._conn.execute(sql, params)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+@pytest.fixture
+def flaky_reads():
+    """FlakyReads(conn, error=ConnectionError, fails=2): a connection whose
+    reads fail on cue, as a dropped connection or an HTTP 503 would."""
+    return FlakyReads
+
+
+@pytest.fixture
+def pauses(monkeypatch):
+    """The pauses between read and write retries (base._sleep), recorded
+    instead of slept."""
+    from ingest_pipeline import base
+    recorded = []
+    monkeypatch.setattr(base, "_sleep", recorded.append)
+    return recorded
+
 FUSED_DIM = 788
 
 

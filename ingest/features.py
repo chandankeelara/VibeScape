@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 import tempfile
 
 import numpy as np
@@ -37,6 +38,23 @@ def download_preview(preview_url: str) -> str:
     return path
 
 
+def _detached() -> dict:
+    """subprocess kwargs that keep a console Ctrl-C from reaching ffmpeg.
+
+    Windows sends a console Ctrl-C to every process on the console, POSIX to
+    the whole foreground process group, so the runner's own ffmpeg children
+    died mid-decode with it. In a concurrent run the stage then finishes its
+    batch, and the killed rows were written as failed, parked at
+    librosa_stage_error with an error blaming their audio (reproduced
+    2026-10-16 with GenerateConsoleCtrlEvent(CTRL_C_EVENT)). A process group
+    of its own (a session on POSIX) keeps the signal out; imageio_ffmpeg
+    does the same for its children (_utils._popen_kwargs).
+    """
+    if sys.platform == "win32":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
 def _to_wav(src_path: str) -> str:
     if _FFMPEG is None:
         raise RuntimeError("ffmpeg not available; install imageio-ffmpeg or system ffmpeg")
@@ -45,7 +63,7 @@ def _to_wav(src_path: str) -> str:
     subprocess.run(
         [_FFMPEG, "-y", "-loglevel", "error", "-i", src_path,
          "-ac", "1", "-ar", "22050", wav_path],
-        check=True,
+        check=True, **_detached(),
     )
     return wav_path
 

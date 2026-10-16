@@ -114,6 +114,12 @@ row's fault:
   first), a failed COMMIT: raised, nothing landed, nothing parked. The
   stage stops until the cause is fixed.
 
+Reads get the transport retries too (`execute_read` in `base.py`, since
+2026-10-16): a stage's fetch, a pass's cohort query and startup counts, and
+a concurrent stage's look. Until then one HTTP 503 or dropped connection on
+a read ended the run (in review, 22 of 30 concurrent drains survived a
+simulated 8 s outage, and 30 of 30 sequential ones).
+
 Before 2026-10-15 one bad row cost the batch: the GPU work was done, the
 loop aborted, SQLite rolled everything back and the next pass repeated it.
 
@@ -367,6 +373,40 @@ read-only probe on 2026-10-15 found 28 such rows at the head of the id
 order, ahead of 799 pending rows that had never entered the pipeline.
 `tests/ingest/test_cohort.py` reproduces it.
 
+### A concurrent run has no cohort
+
+`run_ingest_v2.py --concurrent` runs every selected stage at once, each in
+a thread of its own with its own connection, each working through its own
+gate: it looks (one ids-only query, the gate's lowest `--batch` ids), runs
+that batch with `run_batch` as a pass would, and looks again. So preview
+queries iTunes while classify runs MERT and fuse fuses, on different rows.
+
+Where two gates accept the same row, the stage **upstream** gets it first: a
+stage's look leaves out the rows that any stage upstream of it in the run
+can still act on. Upstream means its feeders (a selected stage that arms
+it, or one named in its `after`), their feeders, and so on. `language` sits
+beside the chain and overlaps preview and download on production rows; it
+waits for both (`LanguageStage.after`), so a row that turns out to have no
+preview keeps `language_status` NULL, as in a pass. The chain stages
+overlapped too, on a SQLite file built from `schema.sql`: `ml_status`
+defaults to `'pending'` there, so a downloaded row was in librosa's gate and
+classify's at once (checked 2026-10-16), and classify taking it first would
+have run MERT twice. Since then classify's gate requires
+`librosa_status = 'done'`, its real precondition. States a
+`--retry-failed` or a language tag leaves behind can still put one row in
+the gates of two chain stages that are not neighbours, preview and fuse
+say, so the rule follows feeders all the way up, not one step (found in
+review, 2026-10-16). A row therefore goes through the chain stages in a
+pass's order. Language, with only preview and download upstream, may act on
+it while librosa, classify, fuse or youtube does, and so may two stages with
+a `--stages` gap between them.
+
+A feeder also hands off: a batch with `'done'` rows wakes the stages it
+feeds at once, instead of when their back-off runs out. With a subset
+(`--stages preview,fuse`) nothing feeds across the gap. How each mode ends,
+failure, Ctrl-C and SQLite are in the runner's module docstring
+("Concurrent mode"); § Operating it has the commands.
+
 ## One MERT pass, two outputs
 
 `classify` used to run the fine-tuned checkpoint for scalars while a
@@ -436,6 +476,9 @@ python scripts/run_ingest_v2.py --recompute-only
 # re-arm rows parked at <stage>_stage_error (or all of them), then run
 python scripts/run_ingest_v2.py --retry-failed classify
 
+# every stage at once, a thread each (§ Cohorts), until all are idle
+python scripts/run_ingest_v2.py --batch 50 --concurrent --until-drained
+
 # which database: local (default) or production Turso -- see § Prod
 python scripts/run_ingest_v2.py --target prod --batch 10
 ```
@@ -444,6 +487,31 @@ python scripts/run_ingest_v2.py --target prod --batch 10
 else `data/vibescape.db`), whatever `DB_BACKEND` says. `--target prod` reads
 the credentials from a gitignored `.env.prod` (§ Prod). Every log line
 carries `target=…`, and the first one names the file or the host.
+
+`--concurrent` takes every other flag here. `--until-drained` ends the run
+once every stage is idle and none has done work since its last look;
+`--loop` keeps going and recomputes each time it drains. Without either it
+is a single pass of a different kind: each stage works through what its
+gate holds and what is handed to it, and stops once it and the stages
+feeding it have nothing left. So `--batch` sizes each batch but does not
+bound the run; a small first look is a sequential pass. An idle stage whose
+feeder still runs waits for that feeder's hand-off (and looks on its own
+only after 10 minutes); one with no feeder running looks again after 5 s,
+doubling to 60 s, since its rows come from outside the run. A
+failing stage, or Ctrl-C, stops every stage after the batch it is in; a
+Ctrl-C while a `--loop` recomputes after a drain takes effect when the
+recompute returns (~8 s on production, measured 2026-10-16). A second
+Ctrl-C exits without waiting for either. Each log line names its stage (`[preview]`;
+`[runner]` for the main thread), and every minute a summary line gives each
+stage's done/no_match/failed and what it is doing.
+
+The local file stays in SQLite's rollback-journal mode. Every connection
+`db_client` opens waits 30 s for a lock, which short stage batches never
+come near, and which lets a stage's commit wait out a read another
+connection holds open (a dev uvicorn's, say); the measurements are at
+`_SQLITE_LOCK_WAIT_S` in `backend/db_client.py`. WAL would spare that wait
+and is not used: it stays with the file, and a backup that copies the `.db`
+alone then misses whatever is still in the `-wal`.
 
 `classify` always runs MERT in this process, on the local GPU. There is no
 Modal mode for it: `predict_and_embed_from_path` (`ingest/ml_backend.py`)
@@ -541,6 +609,36 @@ python scripts/run_ingest_v2.py --target prod --recompute-only           # 6. sc
 (`--loop` backs off to one pass per 10 minutes, but never stops). A parked
 row comes back with `--retry-failed <stage>` once its cause is fixed.
 
+**`--concurrent` has not been run against production** (as of 2026-10-16).
+Each stage thread has its own Turso connection, so up to seven read and
+write at once, and how libsql-server treats a write batch that finds
+another holding the write lock has not been seen. A "busy" or "locked"
+error is transient to `base.py`, so such a batch is retried three times
+before the run stops.
+
+It also reads more than a pass does. Production's `tracks` has no indexes
+(below), so every look a stage makes is a scan of the table, and Turso bills
+rows read. Measured 2026-10-16 on a production-shaped SQLite file (6,238
+tracks, no indexes, 400 pending rows that never entered the pipeline, the
+real gates and writes, production's per-row timings scaled by 1/10), a
+whole drain read these many `tracks` rows:
+
+| `--batch` | sequential | concurrent, before the feeder wait | concurrent, now |
+|---|---|---|---|
+| 50 | 116,764 | 1,450,576 | 714,492 |
+| 10 | 515,996 | 3,952,014 | 2,766,794 |
+
+The concurrent drain finishes in 14 to 16 minutes, the sequential one in
+21 to 22. "Before the feeder wait": until 2026-10-16 a stage waiting on a
+slower feeder looked on a 5 to 60 s timer, and 134 of 223 looks at
+`--batch 50` were such timer looks; now it waits for the hand-off. What is
+left is one look per stage after each hand-off, a scan that often finds
+nothing (fuse after each classify batch, its rows waiting for a tag); the
+fix for that is indexes on the gate columns, with backlog 1.13's dedupe.
+Idle, a `--concurrent --loop` looks 1.6 times a minute (preview every
+minute, the other six stages every 10), ~10,000 rows a minute at 6,238
+tracks, where the sequential `--loop` reads one scan per 10 minutes.
+
 `--target prod` reads a gitignored `.env.prod` at the repo root that sets
 `DB_BACKEND=turso`, `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`, all three
 in that file, into that process only (`scripts/_target.py`). Never put them
@@ -567,9 +665,47 @@ at `'whisper_done'`. `track_embeddings`: 4,910 rows, 4,882 with a fused
 vector. So the first runs work through those 799, and the 28 move as soon as
 they are tagged.
 
-**The dev copy of prod is the backup file.** Copy it and point
-`VIBESCAPE_DB_PATH` at the copy (the snapshot itself stays a restore
-point). It keeps prod's track ids. A DB built by
+**The first run against production, 2026-10-16 13:18Z** (measured by the
+lead session; not re-checked here), was steps 1 and 2 above: the backup
+(`prod_20261016T130348Z.db`, fused-blob check MATCH), then
+`--target prod --batch 10`. Cohort ids 29..375: preview 8 done / 2 no_match
+(no 403s, genuine misses), download 8, librosa 8 (22 s), classify 8 (30 s,
+25 s of it the one-time MERT load on CUDA), language nothing to normalise
+(28 rows wait for a tag), fuse 8, youtube 8 (short-circuited on their
+existing ids), score recompute 4,918 scored / 4,872 written in 8 s. 71 s in
+all, exit 0, `ingestion_status` done 4,882 → 4,890. `--concurrent` has not
+run against production.
+
+**Production's `tracks` has no indexes** (the same backup, the same
+session): not schema.sql's UNIQUE `idx_tracks_spotify_id` and
+`idx_tracks_apple_id`, not `idx_tracks_ingestion_status`, while every other
+table's indexes are there. Every gate is a full scan, and nothing stops the
+app inserting one track twice: tracks 6465 and 6466 are both spotify_id
+`1NtUkEglWHG26BOqj3rPhQ` (a double submit, 2026-10-15), 73 groups share an
+`apple_id` and 270 an ISRC, and of the 804 pending rows that never entered
+the pipeline 188 share an ISRC with a finished track and 72 with another
+pending one. About a quarter of a full drain is work on songs the catalogue
+already has. `docs/backend-todo.md` 1.13 has the details and the fix sketch
+(dedupe, then the indexes).
+
+**The dev copy of prod is a copy of the backup file, with two indexes added
+first.** Copy it and point `VIBESCAPE_DB_PATH` at the copy (the snapshot
+itself stays a restore point). As it comes, the copy fails in `ensure_db()`
+before any stage runs: schema.sql's `CREATE UNIQUE INDEX IF NOT EXISTS
+idx_tracks_spotify_id` and `idx_tracks_apple_id` meet prod's duplicate rows
+and raise `sqlite3.IntegrityError: UNIQUE constraint failed:
+tracks.spotify_id`. Until production is deduped, create both, non-unique,
+in the copy before its first local run (verified by the lead session,
+2026-10-16), with any SQLite client:
+
+```sql
+CREATE INDEX idx_tracks_spotify_id ON tracks(spotify_id) WHERE spotify_id IS NOT NULL;
+CREATE INDEX idx_tracks_apple_id   ON tracks(apple_id)   WHERE apple_id IS NOT NULL;
+```
+
+`IF NOT EXISTS` checks only the name, so schema.sql then leaves them as they
+are, `ensure_db()` passes, and the copy keeps prod's data exactly,
+duplicates included. It keeps prod's track ids. A DB built by
 `scripts/_turso_pull_to_local.py` does not: the pull discards `id` and lets
 SQLite re-autonumber, so ~58% of tracks carry a different id there, which
 is why tags are keyed on `spotify_id`. Never write such ids into prod (they

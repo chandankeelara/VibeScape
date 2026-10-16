@@ -62,12 +62,21 @@ class ClassifyStage(Stage):
     # never runs on Modal, see the module docstring.)
     max_workers = 1
 
-    # Strict gate on DownloadStage — audio must be cached locally.
-    # No URL fallback here: if download didn't succeed it never armed
-    # ml_status, so this stage simply never sees the row.
+    # Strict gate on DownloadStage — audio must be cached locally. No URL
+    # fallback here.
+    #
+    # And on LibrosaStage, which arms ml_status: its features go into the
+    # fused vector beside this stage's output. Spelled out, not trusted to
+    # arming (README, "How a stage becomes eligible"): a schema.sql database
+    # defaults ml_status to 'pending', so until 2026-10-16 a downloaded row
+    # was in this gate before librosa had run on it. On production, which
+    # has no column defaults, librosa_status 'done' and ml_status 'done' were
+    # both 4,910 rows that day (the lead session's count), so nothing there
+    # changes.
     gate_sql = (
         "ml_status = 'pending' "
         "AND download_status = 'done' "
+        "AND librosa_status = 'done' "
         "AND audio_path IS NOT NULL AND audio_path != ''"
     )
     fetch_cols = "id, spotify_id, title, artist, preview_url, audio_path"

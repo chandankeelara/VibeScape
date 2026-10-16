@@ -17,6 +17,9 @@ data/backup*/
 data/recompute_progress.json
 data/vibescape.db.presprint
 data/vibescape.db.pre-user-tracks-*
+# SQLite's WAL sidecars, should a file ever be put in WAL mode by hand
+data/*.db-wal
+data/*.db-shm
 data/yt_cookies*.txt
 
 ml/
