@@ -590,6 +590,14 @@ in this run and leaves them out of its later cohorts.
 - ~~`scripts/run_ingest_v2.py:9-17` — the module docstring lists four "wired
   stages" and says "youtube is independent".~~ Fixed before 2026-10-15 (it
   lists all seven); the last "all four stages" in its usage went 2026-10-15.
+- `README.md` § "Arming, and the `done` invariant" — right after "There is
+  no promote pass", a paragraph still says "Promote also **cascades**
+  audio-availability failures downstream" (`no_match` copied into the
+  download, ml, language and `embedding_status` columns). Nothing cascades
+  since arming replaced promote: a `no_match` arms nothing, and preview and
+  download settle the track at `'no_preview'` themselves (`arms` and
+  `finalizes` in `ingest_pipeline/base.py`, read 2026-10-15). Delete the
+  paragraph.
 
 ### 4.3 The production image ships a 42 MB copy of the developer's SQLite database
 `Dockerfile:35`, `.gcloudignore:2` and `.gcloudignore:56` (`data/vibescape.db.*` is excluded, the file

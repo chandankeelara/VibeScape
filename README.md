@@ -336,7 +336,7 @@ This replaced a design that leaned on `ALTER TABLE ... DEFAULT 'pending'`. That 
 
 Arming is not *proof* the upstream ran, though: a column also reaches `'pending'` from a migration default or a manual UPDATE. So every gate additionally spells out its real preconditions rather than trusting that it was armed.
 
-Status vocabulary: `pending`, `done`, `no_match`, `failed`. (`whisper_done` was retired with the Whisper language stage on 2026-10-10; `fuse` and `youtube` now require `language_status='done'` exactly.) `no_match` is terminal but non-error — the stage ran and found nothing. On `failed` a stage **arms nothing** and sets `ingestion_status='<stage>_stage_error'`, so the chain stops where it broke and one `GROUP BY ingestion_status` says which stage is failing and how often.
+Status vocabulary: `pending`, `done`, `no_match`, `failed`. (`whisper_done` was retired with the Whisper language stage on 2026-10-10; `fuse` and `youtube` now require `language_status='done'` exactly.) `no_match` is terminal but non-error — the stage ran and found nothing. On `failed` a stage **arms nothing** and sets `ingestion_status='<stage>_stage_error'`, so the chain stops where it broke and one `GROUP BY ingestion_status` says which stage is failing and how often. A finished track is the exception: a stage that fails on one leaves it `'done'` and armed for the next pass (`ingest_pipeline/README.md` § Failure).
 
 There is no promote pass. Each stage settles `ingestion_status` itself:
 
@@ -346,7 +346,7 @@ download no_match  ->  'no_preview'
 youtube  done      ->  'done'        (the finisher)
 ```
 
-**The invariant: `ingestion_status='done'` means every stage reached a successful terminal outcome.** `youtube`'s gate requires every upstream stage, spelled out rather than inferred, so nothing can be promoted past a stage that failed.
+**The invariant: `ingestion_status='done'` means the track completed every stage at least once, and every stage's output is stored.** `youtube`'s gate requires every upstream stage, spelled out rather than inferred, so nothing can be promoted past a stage that failed. It does not mean every stage column reads `'done'` now: a later re-arm (a language correction re-arming fuse, or a stage that failed on a finished track and left it armed) can leave one `'pending'` without demoting the track. Details in `ingest_pipeline/README.md` § The invariant.
 
 Promote also **cascades** audio-availability failures downstream so pending counts stay meaningful:
 

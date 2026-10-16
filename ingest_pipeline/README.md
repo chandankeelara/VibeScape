@@ -68,8 +68,9 @@ On `failed`, a stage arms nothing and writes
 `ingestion_status='<stage>_stage_error'` (`preview_stage_error`,
 `classify_stage_error`, …) plus the exception in `ingestion_error`. One
 `GROUP BY ingestion_status` tells you which stage is failing on tracks in
-flight, and how often, with no log parsing. The row also stops re-entering at `preview`, whose
-gate only matches `'pending'`, while its own column keeps `'failed'`.
+flight, and how often, with no log parsing. The row also stops re-entering
+at `preview`, whose gate only matches `'pending'`, while its own column
+keeps `'failed'`.
 
 Once the cause is fixed, `run_ingest_v2.py --retry-failed <stage>` (or
 `all`) sets both back to `'pending'`, clears the error, and runs.
@@ -77,13 +78,13 @@ Once the cause is fixed, `run_ingest_v2.py --retry-failed <stage>` (or
 **Except a finished track: it is never parked.** Stages do run on
 `ingestion_status='done'` rows (fuse after a language correction, youtube
 when re-armed), every DJ, similar and vibe query requires `'done'`, and
-`'done'` means every stage passed (§ The invariant). So the park's UPDATE
-carries `AND ingestion_status IS NOT 'done'`, and when it matches nothing
-the failure writes nothing at all: the track keeps `'done'`, its old
-values, and its stage column `'pending'`, so it is still armed and the
-next pass tries again. The failure is in the log only (`row N is finished;
-left armed for the next pass`), and the stage's `batch done` line counts it
-under `left_armed`.
+`'done'` promises that every stage completed (§ The invariant). So the
+park's UPDATE carries `AND ingestion_status IS NOT 'done'`, and when it
+matches nothing the failure writes nothing at all: the track keeps
+`'done'`, its old values, and its stage column `'pending'`, so it is still
+armed and the next pass tries again. The failure is in the log only (`row
+N is finished; left armed for the next pass`), and the stage's `batch
+done` line counts it under `left_armed`.
 
 The cost of that asymmetry: no `GROUP BY` shows such a row, and nothing
 stops it failing every pass. `left_armed` is not progress, so a loop still
@@ -122,10 +123,23 @@ loop aborted, SQLite rolled everything back and the next pass repeated it.
 
 ## The invariant
 
-**`ingestion_status='done'` means every stage reached a successful terminal
-outcome.** Nothing errored, nothing is still pending. `youtube` writes it as
-its finishing act, and its gate requires every upstream stage — spelled out,
-not inferred. Readers may rely on this.
+**`ingestion_status='done'` means the track completed every stage at least
+once, and every stage's output is stored:** a preview URL, an audio path
+(to the file the pipeline cached on its own machine), DSP features and
+scalar predictions, a language verdict (a tag, or an explicit none), the
+MERT and fused vectors in `track_embeddings`, and a YouTube video id or a
+recorded miss. That is what makes it servable. `youtube` writes `'done'` as
+its finishing act, and its gate requires every upstream stage — spelled
+out, not inferred — so nothing reaches `'done'` past a stage that failed.
+Readers may rely on this.
+
+**It does not mean every stage column reads `'done'` now.** A later re-arm
+can leave one stage column `'pending'` on a finished track without demoting
+it. Since 2026-10-01 a language correction sets `fuse_status='pending'` to
+rebuild the vector (commit 79b41ba), and a stage that fails on a finished
+track leaves it armed instead of parking it (§ Failure, and "Writing a
+batch" in `base.py`). Until that stage runs again, the track serves its
+previous values: after a correction, its old fused vector.
 
 It used to be looser than that for language: `'whisper_done'` (Whisper ran,
 nothing had verified it) and `'no_match'` counted as finished. Both are gone
