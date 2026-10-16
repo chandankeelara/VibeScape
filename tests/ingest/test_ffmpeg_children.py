@@ -11,7 +11,6 @@ the subprocess call is mocked and its kwargs checked.
 import ast
 import os
 import subprocess
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
