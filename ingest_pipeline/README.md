@@ -597,12 +597,12 @@ write at once, and how libsql-server treats a write batch that finds
 another holding the write lock has not been seen. A "busy" or "locked"
 error is transient to `base.py`, so such a batch is retried three times
 before the run stops. Idle, it costs more than a pass does: each idle stage
-looks once a minute, six of the seven looks scan `tracks`, so an idle
-`--concurrent --loop` would read ~37,000 rows a minute at 6,238 tracks
-(~54M a day; measured on a local file of that size, 2026-10-16) where the
-sequential `--loop` reads one scan per 10 minutes. With `--until-drained`
-the run ends once everything is idle, so that cost lasts only while some
-stage still works.
+looks once a minute (measured on a local file of 6,238 tracks, 2026-10-16),
+and production's `tracks` has no indexes (below), so every look is a scan
+of `tracks`: an idle `--concurrent --loop` would read ~44,000 rows a minute
+at that size (~63M a day), where the sequential `--loop` reads one scan per
+10 minutes. With `--until-drained` the run ends once everything is idle, so
+that cost lasts only while some stage still works.
 
 `--target prod` reads a gitignored `.env.prod` at the repo root that sets
 `DB_BACKEND=turso`, `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`, all three
@@ -630,9 +630,47 @@ at `'whisper_done'`. `track_embeddings`: 4,910 rows, 4,882 with a fused
 vector. So the first runs work through those 799, and the 28 move as soon as
 they are tagged.
 
-**The dev copy of prod is the backup file.** Copy it and point
-`VIBESCAPE_DB_PATH` at the copy (the snapshot itself stays a restore
-point). It keeps prod's track ids. A DB built by
+**The first run against production, 2026-10-16 13:18Z** (measured by the
+lead session; not re-checked here), was steps 1 and 2 above: the backup
+(`prod_20261016T130348Z.db`, fused-blob check MATCH), then
+`--target prod --batch 10`. Cohort ids 29..375: preview 8 done / 2 no_match
+(no 403s, genuine misses), download 8, librosa 8 (22 s), classify 8 (30 s,
+25 s of it the one-time MERT load on CUDA), language nothing to normalise
+(28 rows wait for a tag), fuse 8, youtube 8 (short-circuited on their
+existing ids), score recompute 4,918 scored / 4,872 written in 8 s. 71 s in
+all, exit 0, `ingestion_status` done 4,882 → 4,890. `--concurrent` has not
+run against production.
+
+**Production's `tracks` has no indexes** (the same backup, the same
+session): not schema.sql's UNIQUE `idx_tracks_spotify_id` and
+`idx_tracks_apple_id`, not `idx_tracks_ingestion_status`, while every other
+table's indexes are there. Every gate is a full scan, and nothing stops the
+app inserting one track twice: tracks 6465 and 6466 are both spotify_id
+`1NtUkEglWHG26BOqj3rPhQ` (a double submit, 2026-10-15), 73 groups share an
+`apple_id` and 270 an ISRC, and of the 804 pending rows that never entered
+the pipeline 188 share an ISRC with a finished track and 72 with another
+pending one. About a quarter of a full drain is work on songs the catalogue
+already has. `docs/backend-todo.md` 1.13 has the details and the fix sketch
+(dedupe, then the indexes).
+
+**The dev copy of prod is a copy of the backup file, with two indexes added
+first.** Copy it and point `VIBESCAPE_DB_PATH` at the copy (the snapshot
+itself stays a restore point). As it comes, the copy fails in `ensure_db()`
+before any stage runs: schema.sql's `CREATE UNIQUE INDEX IF NOT EXISTS
+idx_tracks_spotify_id` and `idx_tracks_apple_id` meet prod's duplicate rows
+and raise `sqlite3.IntegrityError: UNIQUE constraint failed:
+tracks.spotify_id`. Until production is deduped, create both, non-unique,
+in the copy before its first local run (verified by the lead session,
+2026-10-16), with any SQLite client:
+
+```sql
+CREATE INDEX idx_tracks_spotify_id ON tracks(spotify_id) WHERE spotify_id IS NOT NULL;
+CREATE INDEX idx_tracks_apple_id   ON tracks(apple_id)   WHERE apple_id IS NOT NULL;
+```
+
+`IF NOT EXISTS` checks only the name, so schema.sql then leaves them as they
+are, `ensure_db()` passes, and the copy keeps prod's data exactly,
+duplicates included. It keeps prod's track ids. A DB built by
 `scripts/_turso_pull_to_local.py` does not: the pull discards `id` and lets
 SQLite re-autonumber, so ~58% of tracks carry a different id there, which
 is why tags are keyed on `spotify_id`. Never write such ids into prod (they

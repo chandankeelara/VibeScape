@@ -215,7 +215,8 @@ version passed all its own checks while orphaning 12 events and 6 stats rows
 survivor first and stats are rebuilt from them (`scripts/_dedupe_history.py`);
 on the copy: 288 duplicates removed, events 3998 → 3998, stats equal a fresh
 rebuild. **Not yet run against Turso, not even dry** — its connection and the
-`--turso` rebuild path are untested.
+`--turso` rebuild path are untested. Production had 270 duplicate ISRC
+groups on 2026-10-16, and new duplicates keep arriving (1.13).
 
 ### 1.10 ~~Clearing a library deleted the caller's listening history~~ — DONE (2026-10-13)
 `backend/app.py` `ingest_clear`
@@ -259,8 +260,50 @@ against the 2026-10-12 backup, a push would have nulled 209 prod
 nulled 74 `youtube_id`s (numbers from the 2026-10-15 decision, not
 re-measured here). The runner and `language_tags.py` now take `--target
 prod` (credentials from a gitignored `.env.prod`) and the sync is gone.
-**Never run against production yet**; see `ingest_pipeline/README.md` § Prod
-for the first run.
+
+**First run against production: 2026-10-16 13:18Z** (measured by the lead
+session from its log and the backup; not re-checked here). The sequential
+`run_ingest_v2.py --target prod --batch 10`, after `backup_prod_db.py`
+(`prod_20261016T130348Z.db`, fused-blob check MATCH). Cohort ids 29..375:
+preview 8 done / 2 no_match (no 403s, genuine misses), download 8, librosa 8
+(22 s), classify 8 (30 s, 25 s of it the one-time MERT load on CUDA),
+language nothing to normalise (28 rows wait for a tag), fuse 8, youtube 8
+(short-circuited on their existing ids), score recompute scored 4,918 and
+wrote 4,872 in 8 s. 71 s in all, exit 0; `ingestion_status` done went 4,882
+→ 4,890. `--concurrent` has not run against production (10.1).
+
+### 1.13 Production's `tracks` has no indexes: every gate scans, and the app can insert a track twice (it has)
+`backend/app.py` `_process_track`, `schema.sql` (`idx_tracks_spotify_id`, `idx_tracks_apple_id`, `idx_tracks_ingestion_status`)
+
+**verified on the 2026-10-16 backup** (`prod_20261016T130348Z.db`; measured
+by the lead session, not re-checked here):
+
+- Production's `tracks` has no index at all: neither of schema.sql's UNIQUE
+  `idx_tracks_spotify_id` and `idx_tracks_apple_id`, nor
+  `idx_tracks_ingestion_status`. The backup carries every other table's
+  indexes, so this is production, not the backup. Every stage gate is a full
+  scan there, and nothing stops `_process_track`'s check-then-insert (a
+  `SELECT ... WHERE spotify_id = ?`, then a plain `INSERT INTO tracks`) from
+  inserting one track twice when two requests race.
+- It has happened: spotify_id `1NtUkEglWHG26BOqj3rPhQ` is tracks 6465 and
+  6466, both pending, same user (12), source 'search', added in the same
+  second (2026-10-15 03:44:10), a double submit. 6466 holds 5 `track_events`
+  rows and 1 `user_track_stats` row.
+- 73 groups share an `apple_id` and 270 share an ISRC. Of the 804 pending rows
+  that never entered the pipeline, 188 share an ISRC with a finished track and
+  72 with another pending one: about a quarter of a full drain would be work
+  on songs the catalogue already has.
+- `scripts/_dedupe_turso_by_isrc.py` (1.9) has never run against Turso.
+
+Fix sketch, not done: run the ISRC dedupe on production (dry first), then a
+one-shot `scripts/_turso_*` script that creates a UNIQUE index on
+`tracks(spotify_id) WHERE spotify_id IS NOT NULL` and a plain
+`idx_tracks_ingestion_status`. With the unique index in place the request
+that loses the race gets an `IntegrityError` from that INSERT, which
+`_process_track` does not catch today (read 2026-10-16), so it needs to
+re-read the winner's row instead of failing. Until production is deduped, a
+backup copy needs two indexes added before its first local run
+(`ingest_pipeline/README.md` § Prod).
 
 ---
 
@@ -1137,17 +1180,18 @@ SQLITE_BUSY at once, has not been seen. `base._is_transient` takes "busy" /
 "locked" as transient, so such a batch is retried 2, 4 and 8 s apart and
 then stops the run with nothing parked: safe, but a run that keeps hitting
 it ends early. Cheapest check: the first concurrent run against production,
-after a backup and the sequential first pass of README § Prod (a concurrent
-run is never small: `--batch` does not bound it), then `grep -E "retry [0-9]
-of 3|locked|busy"` in its log.
+after a backup (the sequential runner's first prod run went through on
+2026-10-16, 1.12; a concurrent run is never small, since `--batch` does not
+bound it), then `grep -E "retry [0-9] of 3|locked|busy"` in its log.
 
-### 10.2 An idle `--concurrent --loop` reads ~54M Turso rows a day
+### 10.2 An idle `--concurrent --loop` reads ~63M Turso rows a day
 `scripts/run_ingest_v2.py` `IDLE_BACKOFF_MAX_S`
 
 **measured on a local file, 2026-10-16.** Each idle stage looks once a
-minute; at 6,238 tracks six of the seven looks scan `tracks` (EXPLAIN QUERY
-PLAN; preview's uses `idx_tracks_ingestion_status`, which production may
-not have), ~37,000 rows a minute. The sequential `--loop` backs off to one
+minute. On a local file of 6,238 tracks six of the seven looks scan `tracks`
+(EXPLAIN QUERY PLAN) and preview's uses `idx_tracks_ingestion_status`;
+production's `tracks` has no indexes (1.13), so there all seven scan:
+~44,000 rows a minute at that size. The sequential `--loop` backs off to one
 scan per 10 minutes. `--until-drained` is what production should use, and
 the docs say so. Candidate fix if a long-running concurrent loop is wanted:
 let a stage whose feeders all run in the process wait for its hand-off
