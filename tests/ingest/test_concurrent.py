@@ -487,6 +487,36 @@ def test_a_stage_given_twice_or_a_circle_of_feeders_is_refused():
         runner._ConcurrentRun([a, b], 50, None, "single")
 
 
+def test_a_row_its_feeder_can_still_act_on_never_reaches_a_stages_batch(sql, recomputes):
+    # Gates that overlap (these two do, by construction): the second row is
+    # in both. Only the look leaves it to the feeder; run_batch's
+    # fetch_pending re-applies the stage's own gate, not the exclusion, so
+    # the guarantee rests on _look handing run_batch exactly the ids it
+    # found. The feeder holds that row until the stage's first batch is
+    # written, so a batch that took it would have done so first.
+    only_down, both = (add(sql, 1, librosa_status="done", ml_status="pending")
+                       + add(sql, 1, librosa_status="pending", ml_status="pending"))
+    first_written = threading.Event()
+
+    def up_work(tid):
+        first_written.wait(10)
+    up = Fake("librosa", "librosa_status", "t.librosa_status = 'pending'",
+              arms=("ml_status",), work=up_work)
+    down = Fake("classify", "ml_status", "t.ml_status = 'pending'")
+    real_run_batch = down.run_batch
+
+    def run_batch(conn, limit, log, only_ids=None):
+        counts = real_run_batch(conn, limit, log, only_ids)
+        first_written.set()
+        return counts
+    down.run_batch = run_batch
+
+    assert runner.run_concurrent([up, down], 10, mode="until_drained") == 0
+
+    assert [t for t, _ in down.seen] == [only_down, both] and len(down.written) == 2
+    assert down.seen[1][1] > up.written[0]           # after its feeder wrote it
+
+
 def test_classify_never_takes_a_row_librosa_can_still_act_on(sql, recomputes):
     # A schema.sql database (a dev checkout, every test) defaults ml_status
     # to 'pending', so a downloaded row is armed for classify before librosa
