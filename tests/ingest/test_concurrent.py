@@ -242,9 +242,9 @@ def two_batches_then_downstream(sql, before_first=None):
 def test_the_next_stage_works_while_the_first_is_inside_its_second_batch(
         sql, monkeypatch, recomputes):
     # Not merely that the totals match: classify processes its first batch
-    # while librosa is inside its second, with one batch written. A back-off
-    # of 30 s means only the hand-off can wake classify in time.
-    monkeypatch.setattr(runner, "IDLE_BACKOFF_FIRST_S", 30)
+    # while librosa is inside its second, with one batch written. Its feeder
+    # running, classify waits for the hand-off with a 600 s safety timer, so
+    # only the hand-off can wake it in time.
     up, down, ids, seen_by_b, up_waited = two_batches_then_downstream(sql)
     t0 = time.perf_counter()
 
@@ -262,11 +262,10 @@ def test_the_next_stage_works_while_the_first_is_inside_its_second_batch(
     assert took < 10
 
 
-def test_a_hand_off_wakes_the_next_stage_long_before_its_back_off(
+def test_a_hand_off_wakes_the_next_stage_long_before_its_timer(
         sql, monkeypatch, recomputes, waits):
-    monkeypatch.setattr(runner, "IDLE_BACKOFF_FIRST_S", 30)
-    # librosa's first batch is held until classify has looked, found
-    # nothing and gone to sleep for its 30 s.
+    # librosa's first batch is held until classify has looked, found nothing
+    # and gone to sleep: for the feeder wait, librosa still running.
     up, down, ids, _, _ = two_batches_then_downstream(
         sql, before_first=lambda: waits.asleep("classify").wait(10))
 
@@ -275,10 +274,34 @@ def test_a_hand_off_wakes_the_next_stage_long_before_its_back_off(
     # The hand-off woke it within a second of librosa's first batch landing.
     first = next(w for w in waits if w[0] == "classify")
     _, timeout, began, ended, woken = first
-    assert (timeout, woken) == (30, True)
+    assert (timeout, woken) == (runner.FEEDER_WAIT_S, True)
     assert began < up.written[0] < ended < up.written[0] + 1.0
     print(f"classify woke {(ended - up.written[0]) * 1000:.1f} ms after librosa's first "
-          "batch was written, 30 s before its back-off would have")
+          "batch was written; its timer had 600 s to go")
+
+
+def test_a_stage_whose_feeder_still_runs_waits_for_its_hand_off_not_a_timer(
+        sql, monkeypatch, recomputes, waits):
+    # In review a concurrent drain on a prod-shaped copy read 13 times the
+    # rows a sequential one did; most of its looks were empty, many of them
+    # timer looks by a stage waiting on a slower feeder (2026-10-16). Such a
+    # stage now waits on its event alone, FEEDER_WAIT_S being only a safety
+    # timer, while a stage with no feeder running keeps the back-off: rows
+    # reach it from outside the run. classify idles between librosa's three
+    # batches here; with the back-off it looked every 20-50 ms.
+    monkeypatch.setattr(runner, "IDLE_BACKOFF_FIRST_S", 0.02)
+    monkeypatch.setattr(runner, "IDLE_BACKOFF_MAX_S", 0.05)
+    ids = add(sql, 6, librosa_status="pending")
+    up, down, _ = chain(librosa=lambda t: time.sleep(0.15))
+
+    assert runner.run_concurrent([up, down], 2, mode="until_drained") == 0
+
+    assert sorted(t for t, _ in down.seen) == ids
+    down_waits = [(timeout, woken) for name, timeout, _, _, woken in waits if name == "classify"]
+    assert down_waits and set(down_waits) == {(runner.FEEDER_WAIT_S, True)}, down_waits
+    assert len(down_waits) <= 5                 # once before each hand-off, once at the end
+    up_waits = [timeout for name, timeout, *_ in waits if name == "librosa"]
+    assert up_waits and max(up_waits) <= 0.05   # no feeder: the back-off
 
 
 # ------------------------------------------------------------- draining

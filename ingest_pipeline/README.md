@@ -494,8 +494,10 @@ once every stage is idle and none has done work since its last look;
 is a single pass of a different kind: each stage works through what its
 gate holds and what is handed to it, and stops once it and the stages
 feeding it have nothing left. So `--batch` sizes each batch but does not
-bound the run; a small first look is a sequential pass. An idle stage looks
-again after 5 s, doubling to 60 s, unless a hand-off wakes it first. A
+bound the run; a small first look is a sequential pass. An idle stage whose
+feeder still runs waits for that feeder's hand-off (and looks on its own
+only after 10 minutes); one with no feeder running looks again after 5 s,
+doubling to 60 s, since its rows come from outside the run. A
 failing stage, or Ctrl-C, stops every stage after the batch it is in; a
 Ctrl-C while a `--loop` recomputes after a drain takes effect when the
 recompute returns (~8 s on production, measured 2026-10-16). A second
@@ -612,13 +614,30 @@ Each stage thread has its own Turso connection, so up to seven read and
 write at once, and how libsql-server treats a write batch that finds
 another holding the write lock has not been seen. A "busy" or "locked"
 error is transient to `base.py`, so such a batch is retried three times
-before the run stops. Idle, it costs more than a pass does: each idle stage
-looks once a minute (measured on a local file of 6,238 tracks, 2026-10-16),
-and production's `tracks` has no indexes (below), so every look is a scan
-of `tracks`: an idle `--concurrent --loop` would read ~44,000 rows a minute
-at that size (~63M a day), where the sequential `--loop` reads one scan per
-10 minutes. With `--until-drained` the run ends once everything is idle, so
-that cost lasts only while some stage still works.
+before the run stops.
+
+It also reads more than a pass does. Production's `tracks` has no indexes
+(below), so every look a stage makes is a scan of the table, and Turso bills
+rows read. Measured 2026-10-16 on a production-shaped SQLite file (6,238
+tracks, no indexes, 400 pending rows that never entered the pipeline, the
+real gates and writes, production's per-row timings scaled by 1/10), a
+whole drain read these many `tracks` rows:
+
+| `--batch` | sequential | concurrent, before the feeder wait | concurrent, now |
+|---|---|---|---|
+| 50 | 116,764 | 1,450,576 | 714,492 |
+| 10 | 515,996 | 3,952,014 | 2,766,794 |
+
+The concurrent drain finishes in 14 to 16 minutes, the sequential one in
+21 to 22. "Before the feeder wait": until 2026-10-16 a stage waiting on a
+slower feeder looked on a 5 to 60 s timer, and 134 of 223 looks at
+`--batch 50` were such timer looks; now it waits for the hand-off. What is
+left is one look per stage after each hand-off, a scan that often finds
+nothing (fuse after each classify batch, its rows waiting for a tag); the
+fix for that is indexes on the gate columns, with backlog 1.13's dedupe.
+Idle, a `--concurrent --loop` looks 1.6 times a minute (preview every
+minute, the other six stages every 10), ~10,000 rows a minute at 6,238
+tracks, where the sequential `--loop` reads one scan per 10 minutes.
 
 `--target prod` reads a gitignored `.env.prod` at the repo root that sets
 `DB_BACKEND=turso`, `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`, all three

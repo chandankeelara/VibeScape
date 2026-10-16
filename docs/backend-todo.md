@@ -1184,20 +1184,31 @@ after a backup (the sequential runner's first prod run went through on
 2026-10-16, 1.12; a concurrent run is never small, since `--batch` does not
 bound it), then `grep -E "retry [0-9] of 3|locked|busy"` in its log.
 
-### 10.2 An idle `--concurrent --loop` reads ~63M Turso rows a day
-`scripts/run_ingest_v2.py` `IDLE_BACKOFF_MAX_S`
+### 10.2 A concurrent drain reads 5 to 6 times the `tracks` rows a sequential one does
+`scripts/run_ingest_v2.py` `_ConcurrentRun._work`, `FEEDER_WAIT_S`
 
-**measured on a local file, 2026-10-16.** Each idle stage looks once a
-minute. On a local file of 6,238 tracks six of the seven looks scan `tracks`
-(EXPLAIN QUERY PLAN) and preview's uses `idx_tracks_ingestion_status`;
-production's `tracks` has no indexes (1.13), so there all seven scan:
-~44,000 rows a minute at that size. The sequential `--loop` backs off to one
-scan per 10 minutes. `--until-drained` is what production should use, and
-the docs say so. Candidate fix if a long-running concurrent loop is wanted:
-let a stage whose feeders all run in the process wait for its hand-off
-alone. In normal use only preview, language and fuse get rows from outside
-a run (the app inserts, a tagging session tags); any other stage gets them
-from a manual re-arm, which a restart would pick up.
+**measured on a production-shaped SQLite file, 2026-10-16**: 6,238 tracks,
+no indexes on `tracks` (as on production, 1.13), 400 pending rows that never
+entered the pipeline, the real gates and writes, production's per-row
+timings, every duration scaled by 1/10. A look is a scan of `tracks` there.
+Rows read by a whole drain:
+
+| `--batch` | sequential | concurrent, timer looks | concurrent, feeder wait |
+|---|---|---|---|
+| 50 | 116,764 | 1,450,576 | 714,492 |
+| 10 | 515,996 | 3,952,014 | 2,766,794 |
+
+Done since: a stage with a feeder still running no longer looks on the 5 to
+60 s back-off but waits for the hand-off, with a 10-minute safety timer.
+At `--batch 50` that took timer looks from 134 to 16 and looks from 223 to
+105, with the drain still 14 minutes (sequential: 21). Idle, a
+`--concurrent --loop` now looks 1.6 times a minute, ~10,000 rows at 6,238
+tracks, against ~44,000 before. What is left is a look per stage after
+each hand-off, often empty (fuse after every classify batch, its rows
+waiting for a tag). The fix for that is indexes on the gate columns, which
+belongs with 1.13's dedupe and unique index, or a hand-off that carries
+its ids so the next stage reads them by key. `--until-drained` is still
+what production should use.
 
 ## Checked and clean
 

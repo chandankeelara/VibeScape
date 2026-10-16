@@ -120,17 +120,29 @@ them and with only preview and download upstream of it, may act on a row
 while librosa, classify, fuse or youtube does, and so may two stages with
 a --stages gap between them (preview,fuse): nothing feeds across it.
 
-An idle stage waits for a hand-off, or for IDLE_BACKOFF_FIRST_S (5 s)
-doubling to IDLE_BACKOFF_MAX_S (60 s), reset by a look that does work. An
-idle look is one ids-only query and nothing else. Measured 2026-10-16 on a
-SQLite file of 6,238 tracks (production's count on 2026-10-15) with nothing
-to do: 28 looks in the first minute (each stage at 0, 5, 15 and 35 s), then
-7 a minute, nothing else sent. By EXPLAIN QUERY PLAN six of them scan
-tracks there and preview's uses idx_tracks_ingestion_status; production's
-tracks has no indexes at all (backlog 1.13), so all seven scan it. Turso
-bills rows read, so an idle --concurrent --loop there reads ~44,000 rows a
-minute at that size, ~63M a day, where the sequential --loop backs off to
-one scan per 10 minutes. Against production, --until-drained.
+An idle stage with a feeder still running waits for that feeder's
+hand-off, looking on its own only after FEEDER_WAIT_S (10 min). One with no
+feeder running (preview, or a stage whose feeders have stopped or are not
+in the run) waits IDLE_BACKOFF_FIRST_S (5 s), doubling to
+IDLE_BACKOFF_MAX_S (60 s) and reset by a look that does work, since its
+rows come from outside the run. A look is one ids-only query, and on
+production, whose tracks has no indexes (backlog 1.13), a scan of tracks;
+Turso bills rows read. Measured 2026-10-16 on a production-shaped SQLite
+file (6,238 tracks, no indexes, 400 pending rows that never entered the
+pipeline, the real gates and writes, production's per-row timings, every
+duration scaled by 1/10), tracks rows read by a whole drain:
+
+    --batch 50   sequential 116,764   concurrent 1,450,576 -> 714,492
+    --batch 10   sequential 515,996   concurrent 3,952,014 -> 2,766,794
+
+before and after the feeder wait, the concurrent drain finishing in 14 to
+16 min where the sequential one takes 21 to 22. Timer looks fell from 134
+to 16 (at --batch 50). What is left is a look after each hand-off, a scan
+that often finds nothing (fuse after each classify batch, its rows waiting
+for a tag). Idle, a --concurrent --loop looks 1.6 times a minute (preview
+every minute, the other six every 10; measured over 30 scaled minutes),
+~10,000 rows a minute at 6,238 tracks, where the sequential --loop backs
+off to one scan per 10 minutes. Against production, --until-drained.
 
 How a run ends:
 
@@ -481,12 +493,20 @@ def after_pass(scored: int) -> bool:
 #
 # "Concurrent mode" in the module docstring says what this does and why.
 
-# An idle stage looks again after this long, doubling after each look that
-# finds nothing up to the cap, and back to the start after one that does
-# work. Its hand-off event usually wakes it first; the back-off is for rows
-# that reach its gate from outside the run (the app, a tagging session).
+# An idle stage with no feeder running (preview; a stage whose feeders have
+# stopped or are not in the run) looks again after this long, doubling after
+# each look that finds nothing up to the cap, and back to the start after
+# one that does work: rows reach it from outside the run (the app, a
+# tagging session), which nothing in the run announces.
 IDLE_BACKOFF_FIRST_S = 5
 IDLE_BACKOFF_MAX_S = 60
+# An idle stage with a feeder still running waits for that feeder's
+# hand-off instead, and looks on its own only after this safety timer. A
+# timer look there scans tracks for rows the slower feeder has not handed
+# on yet: in review, a concurrent --until-drained on a prod-shaped copy
+# read 1,403,166 tracks rows against 107,446 for the sequential drain, 165
+# of its 217 looks empty, 107 of them such timer looks (2026-10-16).
+FEEDER_WAIT_S = 600
 # How often a concurrent run logs what each stage has done and is doing.
 SUMMARY_EVERY_S = 60
 # The main thread waits at most this long at a time, so it acts on a Ctrl-C
@@ -786,8 +806,13 @@ class _ConcurrentRun:
                                      "feeding it had stopped", w.name)
                             w.state = "finished"
                             break
-                        w.state, w.since = "idle", time.monotonic()
-                        w.next_look = w.since + pause
+                        # A feeder still running hands this stage its rows;
+                        # without one, they can only come from outside.
+                        fed_by_running = any(not f.stopped for f in w.feeders)
+                        timeout = FEEDER_WAIT_S if fed_by_running else pause
+                        w.state = "waiting for a hand-off" if fed_by_running else "idle"
+                        w.since = time.monotonic()
+                        w.next_look = w.since + timeout
                         self._check_drained()
                 if progressed:
                     if counts.get(STATUS_DONE):
@@ -800,9 +825,10 @@ class _ConcurrentRun:
                 # stays. Checked here, no stop waits out the back-off.
                 if self.stopping.is_set():
                     break
-                log.debug("[%s] nothing to do; next look within %gs", w.name, pause)
-                _wait_for(w.wake, pause)
-                pause = min(pause * 2, IDLE_BACKOFF_MAX_S)
+                log.debug("[%s] nothing to do; next look within %gs", w.name, timeout)
+                _wait_for(w.wake, timeout)
+                if not fed_by_running:
+                    pause = min(pause * 2, IDLE_BACKOFF_MAX_S)
         except BaseException as e:
             log.exception("[%s] failed; stopping every stage after its current batch", w.name)
             with self.lock:
