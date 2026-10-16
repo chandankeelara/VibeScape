@@ -59,6 +59,7 @@ commit ran the old `backup_prod_db.main()`, which read the token from
 | iTunes preview matcher | `ingest/test_preview_matcher.py` | an album neighbour is never the song, accents and ` - ` / `(From ...)` suffixes, a shared film name is not a match, 8D / slowed / reprise are different recordings, artist overlap, length tolerance |
 | Runner cohort | `ingest/test_cohort.py` | with the real language and fuse stages: a second pass advances the next ids instead of re-selecting rows waiting for a tag, the loop drains only when no stage has work, a tagged row fuses while lower ids still wait, only the selected stages count, `--only-ids` |
 | Gates | `ingest/test_gates.py` | each of the seven real stages' gates accepts exactly its row; the cohort is one ids-only query ORing them; the startup counts are per gate (a row waiting for its tag counts nowhere); an empty cohort matches nothing |
+| `--concurrent` | `ingest/test_concurrent.py` | with real `Stage` subclasses on the test's SQLite file: the next stage works through its first batch while the first is inside its second; a hand-off wakes a stage within a second, not at its 30 s back-off; `--until-drained` waits out a slow upstream whose output arrives batch by batch, then recomputes once, only if a scoring stage finished rows (exit 1 if the recompute fails); a stage in a batch is not idle; `--loop` recomputes per drain, not per batch, and retries a failed one at the next idle look; a single pass takes what the gates hold and what feeders hand on, not what reaches a stage that has stopped, and a stage whose feeder stops without handing off finishes at once; who feeds whom, nothing across a `--stages` gap, a stage given twice or a circle refused; a row in two gates goes to its feeder (classify after librosa on a `schema.sql` file; language after preview and download, so a no-preview row keeps NULL); a feeder gate that is NULL for a row does not hide it; an idle look is one ids-only query for all seven real gates; a failing stage stops the others after their batch (exit 1, bounded), and so does one that cannot connect; Ctrl-C stops every stage after its batch (130), even with a stage thread dead, and a second exits at once; the back-off 5 s to 60 s and its reset; two stage threads write at once beside a reader holding a read open (WAL, 30 s busy timeout); `--only-ids` through `main()`; the summary line; every line names its stage, from inside a batch too. A watchdog presses Ctrl-C after 30 s so no run can hang the suite |
 | Stage writes | `ingest/test_stage_writes.py` | a clean batch is one `execute_batch`; a row that violates a constraint is set aside, costs one more batch, and is parked at `<stage>_stage_error` while the rest land; a schema error raises with nothing parked even when only one row writes the column; a connection error, a timeout or a lock is tried again three times, 2, 4 and 8 s apart, and the batch lands if a retry does, else it raises with nothing parked (a transport error logged "outcome unknown"); an unowned error or a schema error raises at once; a set-aside row's own write is retried too, and a retry after an attempt that did commit lands the same, parks included; the UNIQUE retry drops the droppable fields, also for two collisions side by side; a finished track is never parked: a re-fuse whose write keeps failing, or that fails, leaves it `'done'` and armed (counted `left_armed`) while an in-flight row beside it is parked, and a pass that only left finished tracks armed is no progress for the loop; classify writes its vector in the row's transaction, and fails a row whose model output (a score or the vector) is NaN or infinite; fuse never marks a row done without its vector |
 | `--retry-failed` | `ingest/test_retry_failed.py` | one stage's parked rows are re-armed (its own column, ingestion_status, error cleared) and nothing else; `all`; the flag logs the count, then runs; an unknown stage is refused |
 | `--target` | `ingest/test_target.py` | local forces SQLite whatever `DB_BACKEND` says; prod loads `.env.prod` over `.env`, needs all three keys in that file and `DB_BACKEND=turso`, never prints the token; the runner, `language_tags.py` and `backup_prod_db.py` exit before connecting without the file; both CLIs start under `python -P`. Every test points `.env.prod` at a missing file (`conftest.py`) |
@@ -83,7 +84,11 @@ Each fix above was checked by breaking it on purpose and confirming a test
 fails (2026-10-10). The cohort, stage-write, Turso-adapter, recompute-batch,
 `created_at`, gate, `--retry-failed`, loop and `python -P` tests were run
 against the code before their fix and fail there (2026-10-15). The
-backup-refusal test was not, and must not be (see above).
+backup-refusal test was not, and must not be (see above). For
+`--concurrent` (2026-10-16), 30 pieces of the runner were disabled in
+place, one at a time (the hand-off, the drain rule, stop on failure, the
+Ctrl-C handler, WAL, precedence, COALESCE, ...), and each time a test aimed
+at it failed.
 
 ## Not covered yet
 
@@ -91,8 +96,9 @@ React components beyond `SyncJobProvider` and the `PlayerProvider` paths
 named above; the Turso transport against a real server (the adapter tests
 use a fake that follows the Hrana spec, so a server that departs from it
 would not be caught); the network and GPU stages of the offline pipeline
-(preview, download, librosa, the MERT pass itself, youtube); and the
-Flutter app.
+(preview, download, librosa, the MERT pass itself, youtube); `--concurrent`
+against Turso, where several threads would write at once; and the Flutter
+app.
 
 ## Writing a test
 

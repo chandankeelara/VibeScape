@@ -367,6 +367,32 @@ read-only probe on 2026-10-15 found 28 such rows at the head of the id
 order, ahead of 799 pending rows that had never entered the pipeline.
 `tests/ingest/test_cohort.py` reproduces it.
 
+### A concurrent run has no cohort
+
+`run_ingest_v2.py --concurrent` runs every selected stage at once, each in
+a thread of its own with its own connection, each working through its own
+gate: it looks (one ids-only query, the gate's lowest `--batch` ids), runs
+that batch with `run_batch` as a pass would, and looks again. So preview
+queries iTunes while classify runs MERT and fuse fuses, on different rows.
+
+Where two gates accept the same row, the stage that **feeds** the other gets
+it first: a stage's look leaves out the rows a feeder's gate still accepts.
+A feeder is a selected stage that arms it, or one named in its `after`. They
+do overlap: on a SQLite file built from `schema.sql`, `ml_status` defaults
+to `'pending'`, so a downloaded row is in librosa's gate and classify's at
+once (checked 2026-10-16). Taken by classify first, it would get a second
+MERT pass when librosa re-arms it. Production has no column defaults, so its
+chain stages do not overlap. `language` sits beside the chain and overlaps
+preview and download there; it waits for both (`LanguageStage.after`), so a
+row that turns out to have no preview keeps `language_status` NULL, as in a
+pass. Per row the order is a pass's, without the cohort.
+
+A feeder also hands off: a batch with `'done'` rows wakes the stages it
+feeds at once, instead of when their back-off runs out. With a subset
+(`--stages preview,fuse`) nothing feeds across the gap. How each mode ends,
+failure, Ctrl-C and SQLite are in the runner's module docstring
+("Concurrent mode"); § Operating it has the commands.
+
 ## One MERT pass, two outputs
 
 `classify` used to run the fine-tuned checkpoint for scalars while a
@@ -436,6 +462,9 @@ python scripts/run_ingest_v2.py --recompute-only
 # re-arm rows parked at <stage>_stage_error (or all of them), then run
 python scripts/run_ingest_v2.py --retry-failed classify
 
+# every stage at once, a thread each (§ Cohorts), until all are idle
+python scripts/run_ingest_v2.py --batch 50 --concurrent --until-drained
+
 # which database: local (default) or production Turso -- see § Prod
 python scripts/run_ingest_v2.py --target prod --batch 10
 ```
@@ -444,6 +473,27 @@ python scripts/run_ingest_v2.py --target prod --batch 10
 else `data/vibescape.db`), whatever `DB_BACKEND` says. `--target prod` reads
 the credentials from a gitignored `.env.prod` (§ Prod). Every log line
 carries `target=…`, and the first one names the file or the host.
+
+`--concurrent` takes every other flag here. `--until-drained` ends the run
+once every stage is idle and none has done work since its last look;
+`--loop` keeps going and recomputes each time it drains. Without either it
+is a single pass of a different kind: each stage works through what its
+gate holds and what is handed to it, and stops once it and the stages
+feeding it have nothing left. So `--batch` sizes each batch but does not
+bound the run; a small first look is a sequential pass. An idle stage looks
+again after 5 s, doubling to 60 s, unless a hand-off wakes it first. A
+failing stage, or Ctrl-C, stops every stage after the batch it is in (a
+second Ctrl-C exits at once). Each log line names its stage (`[preview]`;
+`[runner]` for the main thread), and every minute a summary line gives each
+stage's done/no_match/failed and what it is doing.
+
+On the local file the first concurrent run switches SQLite to WAL mode, so
+that a stage's commit never waits for another's read (measured, see
+`_concurrent_conn` in the runner). WAL stays with the file: `-wal` and
+`-shm` files sit beside it while a connection is open, and a copy of the
+`.db` alone can miss the newest writes, so copy it with every connection
+closed. `PRAGMA journal_mode=DELETE`, with nothing else connected, undoes
+it.
 
 `classify` always runs MERT in this process, on the local GPU. There is no
 Modal mode for it: `predict_and_embed_from_path` (`ingest/ml_backend.py`)
@@ -540,6 +590,19 @@ python scripts/run_ingest_v2.py --target prod --recompute-only           # 6. sc
 `tracks`, Turso bills rows read, and a loop left running keeps paying
 (`--loop` backs off to one pass per 10 minutes, but never stops). A parked
 row comes back with `--retry-failed <stage>` once its cause is fixed.
+
+**`--concurrent` has not been run against production** (as of 2026-10-16).
+Each stage thread has its own Turso connection, so up to seven read and
+write at once, and how libsql-server treats a write batch that finds
+another holding the write lock has not been seen. A "busy" or "locked"
+error is transient to `base.py`, so such a batch is retried three times
+before the run stops. Idle, it costs more than a pass does: each idle stage
+looks once a minute, six of the seven looks scan `tracks`, so an idle
+`--concurrent --loop` would read ~37,000 rows a minute at 6,238 tracks
+(~54M a day; measured on a local file of that size, 2026-10-16) where the
+sequential `--loop` reads one scan per 10 minutes. With `--until-drained`
+the run ends once everything is idle, so that cost lasts only while some
+stage still works.
 
 `--target prod` reads a gitignored `.env.prod` at the repo root that sets
 `DB_BACKEND=turso`, `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`, all three

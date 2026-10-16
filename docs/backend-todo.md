@@ -564,6 +564,12 @@ the id order fill every cohort: the run ends as drained while higher ids
 wait. Candidate fix if it ever shows: the runner keeps the ids left armed
 in this run and leaves them out of its later cohorts.
 
+`--concurrent` (2026-10-16) has the same hole one stage at a time: each look
+takes the lowest `--batch` ids of that stage's gate, so `--batch` such tracks
+at the head of it come back on every look and the stage never gets past
+them, while the run counts it idle and drains around it. Same candidate fix,
+kept per stage thread.
+
 ## 4. Cleanup
 
 ### 4.1 Stale file references
@@ -1112,6 +1118,42 @@ knowing that:
 - None of the supported services give ISRCs, so matching is by title +
   artist + duration; misses are listed (`unmatched`), never guessed.
 - Same thread + JOBS-dict machinery as the other imports (backlog 1.5).
+
+## 10. Concurrent pipeline runs — built 2026-10-16, what is left
+
+`scripts/run_ingest_v2.py --concurrent`: every selected stage in its own
+thread with its own connection, each through its own gate, hand-offs by
+event, a 5 s to 60 s back-off, rows in two gates to the feeding stage first
+("Concurrent mode" in the runner's docstring; `tests/ingest/test_concurrent.py`).
+The sequential runner is unchanged and stays the default.
+
+### 10.1 Never run against Turso
+`scripts/run_ingest_v2.py` `_ConcurrentRun`, `backend/db_client.py`
+
+**unverified.** Up to seven `_HttpConnection`s read and write one libsql
+database at once. Whether libsql-server queues a write batch whose first
+UPDATE finds the write lock taken (its BEGIN is deferred), or answers
+SQLITE_BUSY at once, has not been seen. `base._is_transient` takes "busy" /
+"locked" as transient, so such a batch is retried 2, 4 and 8 s apart and
+then stops the run with nothing parked: safe, but a run that keeps hitting
+it ends early. Cheapest check: the first concurrent run against production,
+after a backup and the sequential first pass of README § Prod (a concurrent
+run is never small: `--batch` does not bound it), then `grep -E "retry [0-9]
+of 3|locked|busy"` in its log.
+
+### 10.2 An idle `--concurrent --loop` reads ~54M Turso rows a day
+`scripts/run_ingest_v2.py` `IDLE_BACKOFF_MAX_S`
+
+**measured on a local file, 2026-10-16.** Each idle stage looks once a
+minute; at 6,238 tracks six of the seven looks scan `tracks` (EXPLAIN QUERY
+PLAN; preview's uses `idx_tracks_ingestion_status`, which production may
+not have), ~37,000 rows a minute. The sequential `--loop` backs off to one
+scan per 10 minutes. `--until-drained` is what production should use, and
+the docs say so. Candidate fix if a long-running concurrent loop is wanted:
+let a stage whose feeders all run in the process wait for its hand-off
+alone. In normal use only preview, language and fuse get rows from outside
+a run (the app inserts, a tagging session tags); any other stage gets them
+from a manual re-arm, which a restart would pick up.
 
 ## Checked and clean
 
