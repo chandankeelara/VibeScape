@@ -365,3 +365,48 @@ def test_every_sqlite_connection_waits_30_s_for_a_lock(local):
     # app, the scripts and every stage thread open theirs here.
     assert local.execute("PRAGMA busy_timeout").fetchone()[0] == 30_000
     assert local.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+
+
+# ------------------------------------------- _process_track over the adapter
+
+@pytest.fixture
+def turso_catalogue(turso):
+    """The adapter on schema.sql's tables (unique spotify_id index included,
+    as production will have once 1.13 lands), with users 1 and 2."""
+    from pathlib import Path
+    conn, server = turso
+    server.db.executescript((Path(__file__).resolve().parents[2] / "schema.sql").read_text())
+    server.db.execute("INSERT INTO users (id, display_name) VALUES (1, 'a'), (2, 'b')")
+    server.requests.clear()
+    return conn, server
+
+
+def _sp(cid):
+    return {"id": cid, "name": "Song", "artists": [{"name": "A"}], "external_ids": {"isrc": "X1"}}
+
+
+def test_a_new_track_and_its_link_are_one_turso_request(turso_catalogue, app_module):
+    conn, server = turso_catalogue
+    result, tid = app_module._link_track(conn, _sp("new"), 1, "search")
+    assert result == "queued_for_analysis"
+    # One read, then the row and the link in one batch: nothing to orphan.
+    assert [r[0]["type"] for r in server.requests] == ["execute", "batch"]
+    assert server.db.execute("SELECT id FROM tracks WHERE spotify_id = 'new'").fetchone()[0] == tid
+    assert server.db.execute("SELECT user_id, track_id FROM user_tracks").fetchall() == [(1, tid)]
+
+
+def test_losing_the_insert_race_on_turso_links_the_winner(turso_catalogue, app_module, monkeypatch):
+    conn, server = turso_catalogue
+    _, winner = app_module._link_track(conn, _sp("raced"), 1, "search")
+    real, calls = app_module._find_track, []
+
+    def first_misses(c, *a):
+        calls.append(a)
+        return None if len(calls) == 1 else real(c, *a)
+    monkeypatch.setattr(app_module, "_find_track", first_misses)
+    # The unique index refuses the INSERT; the adapter maps that to
+    # IntegrityError and _link_track falls back to the winner's row.
+    assert app_module._link_track(conn, _sp("raced"), 2, "search") == ("queued_for_analysis", winner)
+    assert server.db.execute("SELECT COUNT(*) FROM tracks").fetchone()[0] == 1
+    assert server.db.execute("SELECT user_id, track_id FROM user_tracks ORDER BY user_id").fetchall() \
+        == [(1, winner), (2, winner)]

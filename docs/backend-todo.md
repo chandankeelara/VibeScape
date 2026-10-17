@@ -272,8 +272,47 @@ language nothing to normalise (28 rows wait for a tag), fuse 8, youtube 8
 wrote 4,872 in 8 s. 71 s in all, exit 0; `ingestion_status` done went 4,882
 → 4,890. `--concurrent` has not run against production (10.1).
 
-### 1.13 Production's `tracks` has no indexes: every gate scans, and the app can insert a track twice (it has)
-`backend/app.py` `_process_track`, `schema.sql` (`idx_tracks_spotify_id`, `idx_tracks_apple_id`, `idx_tracks_ingestion_status`)
+### 1.13 Production's `tracks` has no indexes: every gate scans, and the app can insert a track twice (it has) — app side DONE (2026-10-17), prod dedupe and indexes pending
+`backend/app.py` `_process_track` / `_find_track` / `_link_track`, `schema.sql` (`idx_tracks_spotify_id`, `idx_tracks_apple_id`, `idx_tracks_ingestion_status`, `idx_tracks_isrc`)
+
+**App side, done 2026-10-17** (branch `backend/ingest-dedupe`,
+`tests/backend/test_process_track.py` and the `_process_track` tests at the
+end of `tests/database/test_turso_adapter.py`; nothing run against
+production):
+
+- A track whose spotify_id is new but whose ISRC is already in the
+  catalogue now links the user to that row (exact spotify_id first, then
+  `done` over pending, then lowest id) instead of inserting another.
+  "Already in library" counts an ISRC match too.
+- The two lookups (the "already linked" join, then the global
+  `spotify_id` lookup) are one: `spotify_id = ? OR isrc = ?` with an
+  `EXISTS` on `user_tracks`. Per track: 2 reads before, 1 after; new rows
+  2 reads + 2 write requests before, 1 read + 1 batch after. On prod each
+  read is still a scan until the indexes exist. schema.sql gains a plain
+  `idx_tracks_isrc` so the OR stays two index lookups locally; the prod
+  index script should create it too.
+- The INSERT that loses the race to the unique index (`IntegrityError` on
+  both backends) re-reads and links the winner's row; a same-user double
+  submit returns `already_in_library`. The `apple_id` index cannot fire
+  here: this INSERT never sets `apple_id`. **Prod has no unique index yet,
+  so there the race still inserts twice** — the index script below closes
+  it, and the handling is ready for it.
+- Two ISRC-blind call sites fixed with it: `/api/ingest/single` read the
+  row back by spotify_id (an ISRC-reused row would have been HTTP 500
+  `post_ingest_missing`), and `/api/spotify/search`'s `in_library` now
+  counts an ISRC match. **[frontend contract]** `/api/ingest/single` can
+  return a track whose `spotify_id` differs from the one requested.
+- Still keyed by spotify_id alone, left as is: `_playable_first` (only
+  orders a sync page, an ISRC-reused `done` row is sorted with the pending
+  ones), and the frontend's `markInLibrary` in
+  `frontend-next/src/features/search/SearchBar.jsx`, which checks the
+  cached library by the requested spotify_id and so prepends a second copy
+  of a reused row to its cache until the next refetch (a frontend change:
+  compare by `track.id`). Two different spotify_ids with the same ISRC
+  added at the same instant still both insert: ISRC has no unique index,
+  deliberately.
+
+What remains is the production half:
 
 **verified on the 2026-10-16 backup** (`prod_20261016T130348Z.db`; measured
 by the lead session, not re-checked here):
@@ -297,11 +336,11 @@ by the lead session, not re-checked here):
 
 Fix sketch, not done: run the ISRC dedupe on production (dry first), then a
 one-shot `scripts/_turso_*` script that creates a UNIQUE index on
-`tracks(spotify_id) WHERE spotify_id IS NOT NULL` and a plain
-`idx_tracks_ingestion_status`. With the unique index in place the request
-that loses the race gets an `IntegrityError` from that INSERT, which
-`_process_track` does not catch today (read 2026-10-16), so it needs to
-re-read the winner's row instead of failing. Until production is deduped, a
+`tracks(spotify_id) WHERE spotify_id IS NOT NULL`, a plain
+`idx_tracks_ingestion_status` and a plain `idx_tracks_isrc`. With the
+unique index in place the request that loses the race gets an
+`IntegrityError` from that INSERT, which `_link_track` now catches (above).
+Until production is deduped, a
 backup copy needs two indexes added before its first local run
 (`ingest_pipeline/README.md` § Prod).
 
@@ -348,8 +387,14 @@ items 1.6 and the `_is_turso()` branches at `backend/app.py:1003` and
 bare `except Exception: return b""` should log — it is the reason this cost a
 confident, wrong "production embeddings are empty" report.
 
-### 2.2 ~~Turso has no transactions at all, and `commit()`'s docstring says otherwise~~ — CHANGED (2026-10-15)
+### 2.2 ~~Turso has no transactions at all, and `commit()`'s docstring says otherwise~~ — CHANGED (2026-10-15), `_process_track` DONE (2026-10-17)
 `backend/db_client.py` `execute_batch`
+
+`_process_track` (now `_link_track`) writes a new row and its user link in
+one `execute_batch`, the link taking `last_insert_rowid()` from the batch's
+own INSERT (covered against the fake Hrana server in
+`tests/database/test_turso_adapter.py`; not run against a real libsql
+server). The dedupe script below is still two commits.
 
 `conn.execute_batch([(sql, params), ...])` is now one transaction on both
 backends, and on Turso one request (a Hrana `batch`: BEGIN, each statement
@@ -618,9 +663,8 @@ kept per stage thread.
 ### 4.1 Stale file references
 **verified**, all four:
 
-- `backend/app.py:2687` — `_process_track`'s docstring sends the reader to
-  `scripts/run_ingest_worker.py`. The file does not exist; the runner is
-  `scripts/run_ingest_v2.py`.
+- ~~`backend/app.py:2687` — `_process_track`'s docstring sends the reader to
+  `scripts/run_ingest_worker.py`.~~ Fixed 2026-10-17 (1.13).
 - `schema.sql:111` — same dead reference, in the two-phase ingestion comment.
 - `backend/db.py:926` — `ensure_db` says the Turso schema is managed by
   `scripts/migrate_to_turso_http.py`. That file does not exist, so the
@@ -632,10 +676,8 @@ kept per stage thread.
 ### 4.2 Stale docstrings that describe a pipeline that no longer exists
 **verified:**
 
-- `backend/app.py:3068` — `/api/ingest/single` claims it "Reuses the
-  `_process_track` pipeline (Modal ML → librosa fallback → iTunes preview
-  lookup) so features/audio path are populated". `_process_track` has written
-  metadata only since `1be1c59`.
+- ~~`backend/app.py:3068` — `/api/ingest/single` claims it "Reuses the
+  `_process_track` pipeline (Modal ML → ...)".~~ Fixed 2026-10-17 (1.13).
 - ~~`scripts/run_ingest_v2.py:9-17` — the module docstring lists four "wired
   stages" and says "youtube is independent".~~ Fixed before 2026-10-15 (it
   lists all seven); the last "all four stages" in its usage went 2026-10-15.

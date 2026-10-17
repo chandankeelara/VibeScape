@@ -129,6 +129,10 @@ CREATE INDEX IF NOT EXISTS idx_tracks_activation     ON tracks(activation);
 CREATE INDEX IF NOT EXISTS idx_tracks_activation_rel ON tracks(activation_relative);
 CREATE INDEX IF NOT EXISTS idx_tracks_language       ON tracks(language);
 CREATE INDEX IF NOT EXISTS idx_tracks_ingestion_status ON tracks(ingestion_status);
+-- Not unique: every release of a recording shares its ISRC. _find_track in
+-- backend/app.py matches on spotify_id OR isrc and needs both indexed to
+-- avoid a scan.
+CREATE INDEX IF NOT EXISTS idx_tracks_isrc ON tracks(isrc);
 
 CREATE TABLE IF NOT EXISTS user_tracks (
     user_id     INTEGER NOT NULL REFERENCES users(id)  ON DELETE CASCADE,
