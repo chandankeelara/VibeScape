@@ -3231,7 +3231,9 @@ def spotify_search(
     """
     Search the Spotify catalog on behalf of the signed-in user. Returns a
     trimmed list of tracks with an `in_library` flag indicating whether
-    the caller has already ingested that spotify_id.
+    the caller has already ingested that spotify_id, or another release of
+    the same recording (same ISRC), which is what /api/ingest/single would
+    link them to.
     """
     token = _extract_bearer(spotify_authorization)
     if not token:
@@ -3253,33 +3255,38 @@ def spotify_search(
 
     items = ((data.get("tracks") or {}).get("items")) or []
     spotify_ids = [it.get("id") for it in items if isinstance(it, dict) and it.get("id")]
+    isrcs = [_isrc_of(it) for it in items if isinstance(it, dict) and _isrc_of(it)]
 
     # For each Spotify id we recognise: pull vibe + mood so the frontend can
     # render "vibe NN" alongside the badge without a second round-trip.
     lib_meta: dict[str, dict] = {}
+    lib_by_isrc: dict[str, dict] = {}
     if spotify_ids:
         placeholders = ",".join("?" * len(spotify_ids))
+        isrc_ph = ",".join("?" * len(isrcs))
         conn = get_conn()
         try:
             rows = conn.execute(
-                f"SELECT t.spotify_id, t.vibe_score, t.vibe_score_ml, "
+                f"SELECT t.spotify_id, t.isrc, t.vibe_score, t.vibe_score_ml, "
                 f"       t.mood, t.language, t.language_confidence "
                 f"FROM tracks t "
                 f"JOIN user_tracks ut ON ut.track_id = t.id "
-                f"WHERE ut.user_id = ? AND t.spotify_id IN ({placeholders})",
-                [sess["user_id"], *spotify_ids],
+                f"WHERE ut.user_id = ? AND (t.spotify_id IN ({placeholders})"
+                f"{f' OR t.isrc IN ({isrc_ph})' if isrcs else ''})",
+                [sess["user_id"], *spotify_ids, *isrcs],
             ).fetchall()
             for r in rows:
-                sid = r["spotify_id"]
-                if not sid:
-                    continue
-                lib_meta[sid] = {
+                meta = {
                     "vibe_score": r["vibe_score"],
                     "vibe_score_ml": r["vibe_score_ml"],
                     "mood": r["mood"],
                     "language": r["language"],
                     "language_confidence": r["language_confidence"],
                 }
+                if r["spotify_id"]:
+                    lib_meta[r["spotify_id"]] = meta
+                if r["isrc"]:
+                    lib_by_isrc[r["isrc"]] = meta
         finally:
             conn.close()
 
@@ -3295,7 +3302,7 @@ def spotify_search(
         album = it.get("album") or {}
         images = album.get("images") or []
         artwork_url = images[-1].get("url") if images and isinstance(images[-1], dict) else None
-        meta = lib_meta.get(sid) or {}
+        meta = lib_meta.get(sid) or lib_by_isrc.get(_isrc_of(it)) or {}
         out.append({
             "spotify_id": sid,
             "title": it.get("name") or "",
@@ -3304,7 +3311,7 @@ def spotify_search(
             "artwork_url": artwork_url,
             "preview_url": it.get("preview_url"),
             "duration_ms": it.get("duration_ms"),
-            "in_library": sid in lib_meta,
+            "in_library": bool(meta),
             "vibe_score": meta.get("vibe_score"),
             "vibe_score_ml": meta.get("vibe_score_ml"),
             "mood": meta.get("mood"),
@@ -3420,21 +3427,97 @@ def _itunes_lookup_by_isrc(isrc: str) -> Optional[dict]:
 def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "manual") -> str:
     """
     Online fast path used by all /api/ingest/* endpoints. Writes metadata
-    only — the preview cascade, ML scoring, and Whisper language detection
-    all happen later, offline, in scripts/run_ingest_worker.py.
+    only — the preview cascade, ML scoring and language tagging all happen
+    later, offline, in ingest_pipeline/ (scripts/run_ingest_v2.py).
 
     Returns one of the sync-modal bucket names:
       - added_to_library     — track was already fully ingested globally,
                                user_tracks link created (playable now)
-      - already_in_library   — user already had this track linked (no-op)
+      - already_in_library   — user already had this track linked (no-op),
+                               under this spotify_id or another release of
+                               the same recording (same ISRC)
       - queued_for_analysis  — new metadata row (or existing pending row)
                                linked to the user, will appear in library
                                once the offline worker finishes it
       - skip:no_id           — track missing spotify_id
     """
+    name = track.get("name") or "?"
+    artists = track.get("artists") or []
+    artist_name = (artists[0].get("name") if artists and isinstance(artists[0], dict) else "?") or "?"
+    _update_job(job_id, current_track=f"{name} - {artist_name}")
+    return _link_track(conn, track, user_id, source)[0]
+
+
+def _isrc_of(track: dict) -> Optional[str]:
+    """A Spotify track's ISRC, None when it has none (or an empty one)."""
+    return (track.get("external_ids") or {}).get("isrc") or None
+
+
+# The rows a Spotify track may use: its own spotify_id, or any release of
+# the same recording (same ISRC). A NULL ISRC matches nothing. Params:
+# (spotify_id, isrc).
+_TRACK_MATCH = "(t.spotify_id = ? OR t.isrc = ?)"
+# Which of them: the one the user already has, else the exact spotify_id,
+# else a finished row over a pending one, else the lowest id. Params:
+# (user_id, spotify_id).
+_TRACK_PICK = (
+    "ORDER BY EXISTS (SELECT 1 FROM user_tracks ut "
+    "                 WHERE ut.track_id = t.id AND ut.user_id = ?) DESC, "
+    "         (t.spotify_id IS ?) DESC, "
+    "         (COALESCE(t.ingestion_status, 'done') = 'done') DESC, "
+    "         t.id "
+    "LIMIT 1"
+)
+
+
+def _link_track(conn, track: dict, user_id: int, source: str) -> tuple[str, Optional[int]]:
+    """_process_track's work: (bucket, tracks.id the user is linked to).
+
+    The id is None only for skip:no_id. It may be a row whose spotify_id
+    differs from the track's: a single, album, deluxe and regional release
+    of one recording share an ISRC but not a Spotify id, and matching the
+    id alone put the same song in the catalogue once per release (on the
+    2026-10-16 backup 270 ISRCs had more than one row, and 260 of the 804
+    rows still pending were songs already there). A caller that reads the
+    row back must read it by this id, not by spotify_id.
+
+    One execute_batch, three statements:
+      1. insert a pending metadata row unless some row matches
+         (_TRACK_MATCH);
+      2. link the user to the row _TRACK_PICK chooses, INSERT OR IGNORE;
+      3. read that row's id and status back.
+    A user who already had any matching row has it ranked first by
+    _TRACK_PICK, so step 2 is ignored and its rowcount of 0 is the
+    "already in library" answer; no read of the "before" state is needed.
+
+    The batch is one transaction on both backends (read 2026-10-17 in
+    backend/db_client.py): `_SqliteConnection.execute_batch` sends BEGIN,
+    runs each statement on the one connection, COMMITs, and ROLLBACKs on
+    any error; `_HttpConnection.execute_batch` sends one Hrana `batch` on
+    one stream whose steps are BEGIN, each statement conditioned on the one
+    before, COMMIT, and ROLLBACK unless the COMMIT succeeded. BEGIN and
+    COMMIT are real statements on that stream's connection there too.
+
+    Why a double submit cannot insert twice, even on production where
+    `tracks` has no unique index (1.13): step 1 is a write, so SQLite takes
+    the write lock as that statement starts, before its NOT EXISTS reads.
+    A second batch waits for the lock until the first commits (locally the
+    30 s busy timeout), then sees the first's row. Keep every read AFTER
+    step 1: a batch that reads first holds a read snapshot and must
+    upgrade it, which fails with "database is locked" under contention
+    instead of waiting. Tested locally with a write lock held and no unique
+    index (tests/backend/test_process_track.py). NOT verified on a real
+    libsql server: that it serialises writers is SQLite's design, but it
+    may answer a contended batch with SQLITE_BUSY rather than waiting,
+    which fails the request without a duplicate.
+
+    Cost: three statements that each scan `tracks` on production (no
+    index there), in one request, whatever the case. Locally they are
+    index lookups (idx_tracks_spotify_id, idx_tracks_isrc).
+    """
     spotify_id = track.get("id")
     if not spotify_id:
-        return "skip:no_id"
+        return "skip:no_id", None
 
     name = track.get("name") or "?"
     artists = track.get("artists") or []
@@ -3444,64 +3527,49 @@ def _process_track(conn, track: dict, job_id: str, user_id: int, source: str = "
     images = album_obj.get("images") or []
     artwork_url = images[0].get("url") if images and isinstance(images[0], dict) else None
     duration_ms = track.get("duration_ms")
-    ext_ids = track.get("external_ids") or {}
-    isrc = ext_ids.get("isrc")
+    isrc = _isrc_of(track)
     preview_url = track.get("preview_url")
 
-    _update_job(job_id, current_track=f"{name} - {artist_name}")
-
-    # 1) User already has this track linked → no-op.
-    existing_link = conn.execute(
-        "SELECT 1 FROM tracks t "
-        "JOIN user_tracks ut ON ut.track_id = t.id "
-        "WHERE t.spotify_id = ? AND ut.user_id = ?",
-        (spotify_id, user_id),
-    ).fetchone()
-    if existing_link:
-        return "already_in_library"
-
-    # 2) Track exists globally → reuse and just add the user_tracks link.
-    existing_global = conn.execute(
-        "SELECT id, ingestion_status FROM tracks WHERE spotify_id = ?",
-        (spotify_id,),
-    ).fetchone()
-    if existing_global:
-        conn.execute(
-            "INSERT OR IGNORE INTO user_tracks (user_id, track_id, source) "
-            "VALUES (?, ?, ?)",
-            (user_id, int(existing_global["id"]), source),
-        )
-        conn.commit()
-        status = (existing_global["ingestion_status"] or "done")
-        return "added_to_library" if status == "done" else "queued_for_analysis"
-
-    # 3) Brand new to the whole DB: insert metadata-only row with
-    #    ingestion_status='pending'. The offline worker will fill in the
-    #    preview URL cascade + activation/valence/mood + ML + language later.
+    match = (spotify_id, isrc)
+    pick = (user_id, spotify_id)
     # vibe_score is NOT NULL in the current schema (legacy from the
     # pre-split-ingest era). Insert 0.0 as a placeholder; the offline
     # pipeline's classify stage overwrites it with the real score.
     # created_at is written here because production's tracks table has no
     # column defaults; rows made before 2026-10-15 are NULL there (4,844 of
     # 6,238 that day, backlog 3.11).
-    cur = conn.execute(
-        "INSERT INTO tracks "
-        "(spotify_id, isrc, title, artist, album, artwork_url, preview_url, "
-        " duration_ms, vibe_score, ingestion_status, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0, 'pending', CURRENT_TIMESTAMP)",
-        (spotify_id, isrc, name, artist_name, album_name,
-         artwork_url, preview_url, duration_ms),
-    )
-    track_id = int(cur.lastrowid)
-    conn.execute(
-        "INSERT OR IGNORE INTO user_tracks (user_id, track_id, source) "
-        "VALUES (?, ?, ?)",
-        (user_id, track_id, source),
-    )
-    conn.commit()
-    log.info("[ingest] user=%s queued %r - %r (spotify_id=%s)",
-             user_id, name, artist_name, spotify_id)
-    return "queued_for_analysis"
+    stmts = [
+        ("INSERT INTO tracks "
+         "(spotify_id, isrc, title, artist, album, artwork_url, preview_url, "
+         " duration_ms, vibe_score, ingestion_status, created_at) "
+         "SELECT ?, ?, ?, ?, ?, ?, ?, ?, 0.0, 'pending', CURRENT_TIMESTAMP "
+         f"WHERE NOT EXISTS (SELECT 1 FROM tracks t WHERE {_TRACK_MATCH})",
+         (spotify_id, isrc, name, artist_name, album_name,
+          artwork_url, preview_url, duration_ms, *match)),
+        ("INSERT OR IGNORE INTO user_tracks (user_id, track_id, source) "
+         f"SELECT ?, t.id, ? FROM tracks t WHERE {_TRACK_MATCH} {_TRACK_PICK}",
+         (user_id, source, *match, *pick)),
+        (f"SELECT t.id, t.ingestion_status FROM tracks t WHERE {_TRACK_MATCH} {_TRACK_PICK}",
+         (*match, *pick)),
+    ]
+    try:
+        cursors = conn.execute_batch(stmts)
+    except sqlite3.IntegrityError:
+        # Two connections collided on the local unique spotify_id index
+        # anyway. Nothing of ours was written; once more, and step 1's NOT
+        # EXISTS sees the winner's row.
+        cursors = conn.execute_batch(stmts)
+    inserted, linked, chosen = cursors
+    row = chosen.fetchone()
+    if row is None:  # step 1 guarantees a match; this would be a bug
+        raise RuntimeError(f"no tracks row for spotify_id={spotify_id} after its insert")
+    if inserted.rowcount == 1:
+        log.info("[ingest] user=%s queued %r - %r (spotify_id=%s)",
+                 user_id, name, artist_name, spotify_id)
+    if linked.rowcount == 0:
+        return "already_in_library", int(row["id"])
+    status = row["ingestion_status"] or "done"
+    return ("added_to_library" if status == "done" else "queued_for_analysis"), int(row["id"])
 
 
 # _upsert() and the synchronous ingest worker that used to live here are
@@ -3792,9 +3860,9 @@ async def ingest_single(
     """
     Ingest a single Spotify track into the caller's library. Idempotent:
     if the caller already has this track, returns the existing row.
-    Reuses the _process_track pipeline (Modal ML → librosa fallback →
-    iTunes preview lookup) so features/audio path are populated the same
-    way as playlist/liked ingest.
+    Links through _link_track, the same path as playlist/liked ingest, so
+    the track may come back as another release of the same recording (same
+    ISRC) with a different spotify_id.
     """
     spotify_id = (req.spotify_id or "").strip()
     if not spotify_id:
@@ -3836,50 +3904,30 @@ async def ingest_single(
     if not isinstance(track_obj, dict) or not track_obj.get("id"):
         raise HTTPException(status_code=404, detail={"error": "track_not_found"})
 
-    job_id = f"single:{uuid.uuid4().hex}"
-    with JOBS_LOCK:
-        JOBS[job_id] = {
-            "status": "running",
-            "user_id": user_id,
-            "current_track": None,
-            "total": 1,
-            "processed": 0,
-            # Four mutually exclusive buckets (sum == processed) matching
-            # the new two-phase ingest flow. See _process_track docstring.
-            "added_to_library": 0,     # global row already done, just linked
-            "already_in_library": 0,   # user already had this exact link
-            "queued_for_analysis": 0,  # new/pending row, worker will finish it
-            "skipped": 0,              # skip:no_id or exceptions
-            "cancel_requested": False,
-            "error_message": None,
-        }
     try:
-        def _do_process() -> str:
+        def _do_process() -> tuple[str, Optional[int]]:
             conn = get_conn()
             try:
-                return _process_track(conn, track_obj, job_id, user_id, source="search")
+                return _link_track(conn, track_obj, user_id, source="search")
             finally:
                 conn.close()
-        result = await run_in_threadpool(_do_process)
+        result, track_id = await run_in_threadpool(_do_process)
     except Exception as e:
         log.exception("single ingest failed for %s: %s", spotify_id, e)
-        with JOBS_LOCK:
-            JOBS.pop(job_id, None)
         raise HTTPException(status_code=500, detail={"error": "ingest_failed", "message": str(e)})
-    finally:
-        with JOBS_LOCK:
-            JOBS.pop(job_id, None)
 
     if result.startswith("skip:no_id"):
         raise HTTPException(status_code=422, detail={"error": "invalid_track", "result": result})
 
+    # By id: the row may be another release of the same recording, whose
+    # spotify_id is not the one asked for (_link_track).
     conn = get_conn()
     try:
         row = conn.execute(
             f"SELECT {', '.join('t.' + c for c in TRACK_COLUMNS)} FROM tracks t "
             f"JOIN user_tracks ut ON ut.track_id = t.id "
-            f"WHERE t.spotify_id = ? AND ut.user_id = ?",
-            (spotify_id, user_id),
+            f"WHERE t.id = ? AND ut.user_id = ?",
+            (track_id, user_id),
         ).fetchone()
     finally:
         conn.close()

@@ -365,3 +365,63 @@ def test_every_sqlite_connection_waits_30_s_for_a_lock(local):
     # app, the scripts and every stage thread open theirs here.
     assert local.execute("PRAGMA busy_timeout").fetchone()[0] == 30_000
     assert local.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+
+
+# ------------------------------------------- _process_track over the adapter
+
+@pytest.fixture
+def turso_catalogue(turso):
+    """The adapter on schema.sql's tables (unique spotify_id index included,
+    as production will have once 1.13 lands), with users 1 and 2."""
+    from pathlib import Path
+    conn, server = turso
+    server.db.executescript((Path(__file__).resolve().parents[2] / "schema.sql").read_text())
+    server.db.execute("INSERT INTO users (id, display_name) VALUES (1, 'a'), (2, 'b')")
+    server.requests.clear()
+    return conn, server
+
+
+def _sp(cid):
+    return {"id": cid, "name": "Song", "artists": [{"name": "A"}], "external_ids": {"isrc": "X1"}}
+
+
+def test_a_new_track_and_its_link_are_one_turso_request(turso_catalogue, app_module):
+    conn, server = turso_catalogue
+    result, tid = app_module._link_track(conn, _sp("new"), 1, "search")
+    assert result == "queued_for_analysis"
+    # Check, insert, link and read back in one transactional batch.
+    assert [[r["type"] for r in req] for req in server.requests] == [["batch", "close"]]
+    steps = [st["stmt"]["sql"] for st in server.requests[0][0]["batch"]["steps"]]
+    assert steps[0] == "BEGIN" and steps[-2:] == ["COMMIT", "ROLLBACK"] and len(steps) == 6
+    assert server.db.execute("SELECT id FROM tracks WHERE spotify_id = 'new'").fetchone()[0] == tid
+    assert server.db.execute("SELECT user_id, track_id FROM user_tracks").fetchall() == [(1, tid)]
+    # The link's rowcount is what says "already": 0 on the second add.
+    assert app_module._link_track(conn, _sp("new"), 1, "search") == ("already_in_library", tid)
+    assert server.db.execute("SELECT COUNT(*) FROM tracks").fetchone()[0] == 1
+
+
+def test_losing_on_the_unique_index_on_turso_retries_onto_the_winner(turso_catalogue, app_module):
+    conn, server = turso_catalogue
+    real = server.post
+
+    def collides_once(requests_list, timeout=30.0):
+        if len(server.requests) == 0:
+            # Another request's row lands first; ours then breaks the index.
+            server.db.execute("INSERT INTO tracks (title, artist, spotify_id, ingestion_status, "
+                              "vibe_score) VALUES ('Song', 'A', 'raced', 'pending', 0)")
+            server.requests.append(requests_list)
+            return {"baton": None, "base_url": None, "results": [
+                {"type": "ok", "response": {"type": "batch", "result": {
+                    "step_results": [{}, None, None, None, None, {}],
+                    "step_errors": [None, {"message": "UNIQUE constraint failed: tracks.spotify_id",
+                                           "code": "SQLITE_CONSTRAINT_UNIQUE"},
+                                    None, None, None, None]}}},
+                {"type": "ok", "response": {"type": "close"}}]}
+        return real(requests_list, timeout)
+    conn._post = collides_once
+    result, tid = app_module._link_track(conn, _sp("raced"), 2, "search")
+    assert len(server.requests) == 2
+    assert server.db.execute("SELECT COUNT(*) FROM tracks").fetchone()[0] == 1
+    winner = server.db.execute("SELECT id FROM tracks").fetchone()[0]
+    assert (result, tid) == ("queued_for_analysis", winner)
+    assert server.db.execute("SELECT user_id, track_id FROM user_tracks").fetchall() == [(2, winner)]
