@@ -101,16 +101,33 @@ def test_no_isrc_never_matches_rows_without_one(sql, make_user, add_track, proce
     assert row["isrc"] is None and row["ingestion_status"] == "pending"
 
 
-# ------------------------------------------------------------ query budget
+def test_a_user_with_any_release_gets_no_second_link(sql, make_user, add_track, process):
+    """The exact spotify_id row exists, but the user already has another
+    release of it: that counts, and the exact row is not linked too."""
+    uid, _ = make_user()
+    add_track("exact-id", isrc="X1")
+    theirs = add_track("other-release", isrc="X1", user=uid)
+    assert process(sp("exact-id", isrc="X1"), uid) == "already_in_library"
+    assert links(sql, uid) == [theirs]
+
+
+def test_adding_the_same_song_twice_is_one_row(sql, make_user, process):
+    uid, _ = make_user()
+    assert process(sp("song", isrc="X1"), uid) == "queued_for_analysis"
+    assert process(sp("song", isrc="X1"), uid) == "already_in_library"
+    assert track_count(sql) == 1 and len(links(sql, uid)) == 1
+
+
+# ------------------------------------------------------- one request per track
 
 class CountingConn:
     """Records every statement sent through execute() and execute_batch()."""
 
     def __init__(self, conn):
-        self._conn, self.reads, self.writes, self.batches = conn, [], [], []
+        self._conn, self.executes, self.batches = conn, [], []
 
     def execute(self, sql, params=()):
-        (self.reads if sql.lstrip().upper().startswith("SELECT") else self.writes).append(sql)
+        self.executes.append(sql)
         return self._conn.execute(sql, params)
 
     def execute_batch(self, stmts):
@@ -133,30 +150,22 @@ def counted(app_module, db):
     return _run
 
 
-def test_each_case_reads_tracks_once(sql, make_user, add_track, counted):
-    """Production's `tracks` has no index (backlog 1.13): every read is a scan
-    Turso bills. It used to be two reads before any write."""
+def test_every_case_is_one_batch_and_nothing_else(sql, make_user, add_track, counted):
+    """Check, insert, link and read back are one transaction (backlog 2.2:
+    on Turso each execute() autocommits, and a crash between the INSERT
+    and the link used to orphan the row for good)."""
     uid, _ = make_user()
     add_track("known", isrc="X1")
-    for track in (sp("known"), sp("other-release", isrc="X1"), sp("brand-new", isrc="Y1")):
-        _, conn = counted(track, uid)
-        assert len(conn.reads) == 1, conn.reads
-    _, conn = counted(sp("known"), uid)          # now linked
-    assert len(conn.reads) == 1 and not conn.writes and not conn.batches
-
-
-# ------------------------------------------------- one write for row + link
-
-def test_a_new_row_and_its_link_are_one_batch(sql, make_user, counted):
-    """On Turso each execute() autocommits; a crash between the INSERT and
-    the link used to orphan the row for good (backlog 2.2)."""
-    uid, _ = make_user()
-    result, conn = counted(sp("brand-new", isrc="Y1"), uid)
-    assert result == "queued_for_analysis"
-    assert not conn.writes
-    assert len(conn.batches) == 1 and len(conn.batches[0]) == 2
-    tid = sql.execute("SELECT id FROM tracks WHERE spotify_id = 'brand-new'").fetchone()[0]
-    assert links(sql, uid) == [tid]
+    cases = [(sp("known"), "added_to_library"),
+             (sp("other-release", isrc="X1"), "already_in_library"),
+             (sp("brand-new", isrc="Y1"), "queued_for_analysis"),
+             (sp("brand-new", isrc="Y1"), "already_in_library")]
+    for track, bucket in cases:
+        result, conn = counted(track, uid)
+        assert result == bucket
+        assert not conn.executes, conn.executes
+        assert len(conn.batches) == 1 and len(conn.batches[0]) == 3
+    assert track_count(sql) == 2
 
 
 def test_a_failed_link_leaves_no_row(sql, make_user, process):
@@ -171,33 +180,77 @@ def test_a_failed_link_leaves_no_row(sql, make_user, process):
 
 # ------------------------------------------------------------------- the race
 
-@pytest.fixture
-def lost_race(app_module, monkeypatch):
-    """The first lookup misses, as when another request inserts the same
-    spotify_id between our read and our INSERT. Returns the lookups made."""
-    real = app_module._find_track
-    calls = []
-
-    def first_misses(conn, *a):
-        calls.append(a)
-        return None if len(calls) == 1 else real(conn, *a)
-    monkeypatch.setattr(app_module, "_find_track", first_misses)
-    return calls
-
-
-def test_losing_the_insert_race_links_the_winners_row(sql, make_user, add_track, process, lost_race):
+def test_a_double_submit_inserts_once_with_no_unique_index(sql, make_user, app_module):
+    """Production's tracks has no unique index (1.13), so only the batch's
+    own transaction can stop a double submit: tracks 6465 and 6466 on prod.
+    The other request holds the write lock with its row uncommitted; ours
+    must wait for it and then see that row, not check before it commits."""
+    import threading
+    import time
     uid, _ = make_user()
-    winner = add_track("raced", status="pending")
-    assert process(sp("raced"), uid) == "queued_for_analysis"
-    assert track_count(sql) == 1 and links(sql, uid) == [winner]
-    assert len(lost_race) == 2
+    conn = app_module.get_conn()            # runs ensure_db(), which makes the index
+    sql.execute("DROP INDEX idx_tracks_spotify_id")
+    sql.commit()
+    sql.execute("INSERT INTO tracks (title, artist, spotify_id, isrc, ingestion_status, vibe_score) "
+                "VALUES ('Song', 'Artist', 'raced', 'X1', 'pending', 0)")   # uncommitted
+    out = {}
+
+    def ours():
+        try:
+            out["result"] = app_module._process_track(conn, sp("raced", isrc="X1"), "no-job", uid)
+        except Exception as e:  # surfaced by the asserts below
+            out["error"] = e
+    t = threading.Thread(target=ours)
+    t.start()
+    time.sleep(1.0)                         # ours is now waiting on the lock
+    sql.commit()
+    t.join(30)
+    conn.close()
+    assert "error" not in out, out
+    assert out["result"] == "queued_for_analysis"
+    assert track_count(sql) == 1
+    winner = sql.execute("SELECT id FROM tracks").fetchone()[0]
+    assert links(sql, uid) == [winner]
 
 
-def test_a_double_submit_is_already_in_library(sql, make_user, add_track, process, lost_race):
+class CollidesOnce:
+    """The first execute_batch loses to another connection on the unique
+    index: that connection's row lands and IntegrityError is raised, as
+    SQLite would."""
+
+    def __init__(self, conn, db_path, user_id=None):
+        self._conn, self._db, self._user, self.batches = conn, db_path, user_id, 0
+
+    def execute_batch(self, stmts):
+        self.batches += 1
+        if self.batches == 1:
+            other = sqlite3.connect(self._db)
+            cur = other.execute("INSERT INTO tracks (title, artist, spotify_id, ingestion_status, "
+                                "vibe_score) VALUES ('Song', 'Artist', 'raced', 'pending', 0)")
+            if self._user is not None:
+                other.execute("INSERT INTO user_tracks (user_id, track_id) VALUES (?, ?)",
+                              (self._user, cur.lastrowid))
+            other.commit()
+            other.close()
+            raise sqlite3.IntegrityError("UNIQUE constraint failed: tracks.spotify_id")
+        return self._conn.execute_batch(stmts)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+@pytest.mark.parametrize("same_user, bucket", [(False, "queued_for_analysis"),
+                                               (True, "already_in_library")])
+def test_losing_on_the_unique_index_retries_onto_the_winner(sql, make_user, app_module, db,
+                                                            same_user, bucket):
     uid, _ = make_user()
-    winner = add_track("raced", status="pending", user=uid)
-    assert process(sp("raced"), uid) == "already_in_library"
-    assert track_count(sql) == 1 and links(sql, uid) == [winner]
+    conn = CollidesOnce(app_module.get_conn(), db, uid if same_user else None)
+    try:
+        assert app_module._process_track(conn, sp("raced"), "no-job", uid) == bucket
+    finally:
+        conn.close()
+    assert conn.batches == 2 and track_count(sql) == 1
+    assert links(sql, uid) == [sql.execute("SELECT id FROM tracks").fetchone()[0]]
 
 
 # ---------------------------------------------------------------- endpoints

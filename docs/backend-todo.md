@@ -273,7 +273,7 @@ wrote 4,872 in 8 s. 71 s in all, exit 0; `ingestion_status` done went 4,882
 → 4,890. `--concurrent` has not run against production (10.1).
 
 ### 1.13 Production's `tracks` has no indexes: every gate scans, and the app can insert a track twice (it has) — app side DONE (2026-10-17), prod dedupe and indexes pending
-`backend/app.py` `_process_track` / `_find_track` / `_link_track`, `schema.sql` (`idx_tracks_spotify_id`, `idx_tracks_apple_id`, `idx_tracks_ingestion_status`, `idx_tracks_isrc`)
+`backend/app.py` `_process_track` / `_link_track`, `schema.sql` (`idx_tracks_spotify_id`, `idx_tracks_apple_id`, `idx_tracks_ingestion_status`, `idx_tracks_isrc`)
 
 **App side, done 2026-10-17** (branch `backend/ingest-dedupe`,
 `tests/backend/test_process_track.py` and the `_process_track` tests at the
@@ -284,19 +284,27 @@ production):
   catalogue now links the user to that row (exact spotify_id first, then
   `done` over pending, then lowest id) instead of inserting another.
   "Already in library" counts an ISRC match too.
-- The two lookups (the "already linked" join, then the global
-  `spotify_id` lookup) are one: `spotify_id = ? OR isrc = ?` with an
-  `EXISTS` on `user_tracks`. Per track: 2 reads before, 1 after; new rows
-  2 reads + 2 write requests before, 1 read + 1 batch after. On prod each
-  read is still a scan until the indexes exist. schema.sql gains a plain
-  `idx_tracks_isrc` so the OR stays two index lookups locally; the prod
-  index script should create it too.
-- The INSERT that loses the race to the unique index (`IntegrityError` on
-  both backends) re-reads and links the winner's row; a same-user double
-  submit returns `already_in_library`. The `apple_id` index cannot fire
-  here: this INSERT never sets `apple_id`. **Prod has no unique index yet,
-  so there the race still inserts twice** — the index script below closes
-  it, and the handling is ready for it.
+- Check, insert, link and read back are ONE `execute_batch` (one
+  transaction, one request): `INSERT ... WHERE NOT EXISTS (match)`, then
+  `INSERT OR IGNORE INTO user_tracks ... ORDER BY <pick> LIMIT 1`, then a
+  SELECT of the chosen row. The user's own matching row ranks first, so the
+  link's rowcount of 0 is "already in library". Because the write comes
+  first, SQLite takes the write lock before the NOT EXISTS reads, and a
+  double submit waits and then sees the first row: **no duplicate even
+  without a unique index**, so on prod too (tested locally with the index
+  dropped and the lock held; reasoned, not run, for libsql, which may
+  answer a contended batch with SQLITE_BUSY instead of waiting, failing
+  the request without a duplicate). Requests per track: 2 reads + up to 2
+  writes before, 1 batch after. Prod `tracks` scans per track, before →
+  after: already linked 1 → 3, exists unlinked 2 → 3, new 2 → 3 (the
+  "already linked" read on main drove from `user_tracks` and may have cost
+  the user's library size rather than a scan). Locally all index lookups;
+  schema.sql gains a plain `idx_tracks_isrc` for that, and the prod index
+  script should create it too, which makes the 3 cheap there as well.
+- An `IntegrityError` from the batch (two connections colliding on the
+  local unique index) re-runs it once; its NOT EXISTS then sees the
+  winner's row. The `apple_id` index cannot fire: the INSERT never sets
+  `apple_id`.
 - Two ISRC-blind call sites fixed with it: `/api/ingest/single` read the
   row back by spotify_id (an ISRC-reused row would have been HTTP 500
   `post_ingest_missing`), and `/api/spotify/search`'s `in_library` now
@@ -321,9 +329,9 @@ by the lead session, not re-checked here):
   `idx_tracks_spotify_id` and `idx_tracks_apple_id`, nor
   `idx_tracks_ingestion_status`. The backup carries every other table's
   indexes, so this is production, not the backup. Every stage gate is a full
-  scan there, and nothing stops `_process_track`'s check-then-insert (a
+  scan there, and nothing stopped `_process_track`'s check-then-insert (a
   `SELECT ... WHERE spotify_id = ?`, then a plain `INSERT INTO tracks`) from
-  inserting one track twice when two requests race.
+  inserting one track twice when two requests race (fixed app-side above).
 - It has happened: spotify_id `1NtUkEglWHG26BOqj3rPhQ` is tracks 6465 and
   6466, both pending, same user (12), source 'search', added in the same
   second (2026-10-15 03:44:10), a double submit. 6466 holds 5 `track_events`
@@ -337,9 +345,9 @@ by the lead session, not re-checked here):
 Fix sketch, not done: run the ISRC dedupe on production (dry first), then a
 one-shot `scripts/_turso_*` script that creates a UNIQUE index on
 `tracks(spotify_id) WHERE spotify_id IS NOT NULL`, a plain
-`idx_tracks_ingestion_status` and a plain `idx_tracks_isrc`. With the
-unique index in place the request that loses the race gets an
-`IntegrityError` from that INSERT, which `_link_track` now catches (above).
+`idx_tracks_ingestion_status` and a plain `idx_tracks_isrc`. The app no
+longer needs the unique index to avoid duplicates (above); it and the isrc
+index turn `_link_track`'s three scans per track into index lookups.
 Until production is deduped, a
 backup copy needs two indexes added before its first local run
 (`ingest_pipeline/README.md` § Prod).
@@ -390,9 +398,8 @@ confident, wrong "production embeddings are empty" report.
 ### 2.2 ~~Turso has no transactions at all, and `commit()`'s docstring says otherwise~~ — CHANGED (2026-10-15), `_process_track` DONE (2026-10-17)
 `backend/db_client.py` `execute_batch`
 
-`_process_track` (now `_link_track`) writes a new row and its user link in
-one `execute_batch`, the link taking `last_insert_rowid()` from the batch's
-own INSERT (covered against the fake Hrana server in
+`_process_track` (now `_link_track`) checks, inserts, links and reads back
+in one `execute_batch` (covered against the fake Hrana server in
 `tests/database/test_turso_adapter.py`; not run against a real libsql
 server). The dedupe script below is still two commits.
 

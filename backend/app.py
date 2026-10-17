@@ -3453,44 +3453,67 @@ def _isrc_of(track: dict) -> Optional[str]:
     return (track.get("external_ids") or {}).get("isrc") or None
 
 
-def _find_track(conn, spotify_id: str, isrc: Optional[str], user_id: int):
-    """The catalogue row a Spotify track should use, in ONE read, or None.
-
-    The row (id, spotify_id, ingestion_status, linked) is the user's own
-    when they already have any row with this spotify_id or ISRC (`linked`
-    is 1), else the row to link them to. A single, album, deluxe and
-    regional release of one recording share an ISRC but not a Spotify id,
-    so matching the id alone put the same song in the catalogue once per
-    release: on the 2026-10-16 backup 270 ISRCs had more than one row, and
-    260 of the 804 rows still pending were songs already there.
-
-    Otherwise it is the exact spotify_id when there is one, then a finished
-    row over a pending one, then the lowest id, so every release of a song
-    lands on the same row. One query because production's `tracks` has no
-    index (backlog 1.13) and Turso bills rows read: each lookup there is a
-    scan of the table. It replaced two (the "already linked" join and the
-    global lookup).
-    """
-    rows = conn.execute(
-        "SELECT t.id, t.spotify_id, t.ingestion_status, "
-        "       EXISTS (SELECT 1 FROM user_tracks ut "
-        "               WHERE ut.track_id = t.id AND ut.user_id = ?) AS linked "
-        "FROM tracks t WHERE t.spotify_id = ? OR t.isrc = ?",
-        (user_id, spotify_id, isrc),
-    ).fetchall()
-    return min(rows, default=None,
-               key=lambda r: (not r["linked"],
-                              r["spotify_id"] != spotify_id,
-                              (r["ingestion_status"] or "done") != "done",
-                              int(r["id"])))
+# The rows a Spotify track may use: its own spotify_id, or any release of
+# the same recording (same ISRC). A NULL ISRC matches nothing. Params:
+# (spotify_id, isrc).
+_TRACK_MATCH = "(t.spotify_id = ? OR t.isrc = ?)"
+# Which of them: the one the user already has, else the exact spotify_id,
+# else a finished row over a pending one, else the lowest id. Params:
+# (user_id, spotify_id).
+_TRACK_PICK = (
+    "ORDER BY EXISTS (SELECT 1 FROM user_tracks ut "
+    "                 WHERE ut.track_id = t.id AND ut.user_id = ?) DESC, "
+    "         (t.spotify_id IS ?) DESC, "
+    "         (COALESCE(t.ingestion_status, 'done') = 'done') DESC, "
+    "         t.id "
+    "LIMIT 1"
+)
 
 
 def _link_track(conn, track: dict, user_id: int, source: str) -> tuple[str, Optional[int]]:
     """_process_track's work: (bucket, tracks.id the user is linked to).
 
     The id is None only for skip:no_id. It may be a row whose spotify_id
-    differs from the track's (same ISRC, see _find_track), so a caller that
-    reads the row back must read it by this id, not by spotify_id.
+    differs from the track's: a single, album, deluxe and regional release
+    of one recording share an ISRC but not a Spotify id, and matching the
+    id alone put the same song in the catalogue once per release (on the
+    2026-10-16 backup 270 ISRCs had more than one row, and 260 of the 804
+    rows still pending were songs already there). A caller that reads the
+    row back must read it by this id, not by spotify_id.
+
+    One execute_batch, three statements:
+      1. insert a pending metadata row unless some row matches
+         (_TRACK_MATCH);
+      2. link the user to the row _TRACK_PICK chooses, INSERT OR IGNORE;
+      3. read that row's id and status back.
+    A user who already had any matching row has it ranked first by
+    _TRACK_PICK, so step 2 is ignored and its rowcount of 0 is the
+    "already in library" answer; no read of the "before" state is needed.
+
+    The batch is one transaction on both backends (read 2026-10-17 in
+    backend/db_client.py): `_SqliteConnection.execute_batch` sends BEGIN,
+    runs each statement on the one connection, COMMITs, and ROLLBACKs on
+    any error; `_HttpConnection.execute_batch` sends one Hrana `batch` on
+    one stream whose steps are BEGIN, each statement conditioned on the one
+    before, COMMIT, and ROLLBACK unless the COMMIT succeeded. BEGIN and
+    COMMIT are real statements on that stream's connection there too.
+
+    Why a double submit cannot insert twice, even on production where
+    `tracks` has no unique index (1.13): step 1 is a write, so SQLite takes
+    the write lock as that statement starts, before its NOT EXISTS reads.
+    A second batch waits for the lock until the first commits (locally the
+    30 s busy timeout), then sees the first's row. Keep every read AFTER
+    step 1: a batch that reads first holds a read snapshot and must
+    upgrade it, which fails with "database is locked" under contention
+    instead of waiting. Tested locally with a write lock held and no unique
+    index (tests/backend/test_process_track.py). NOT verified on a real
+    libsql server: that it serialises writers is SQLite's design, but it
+    may answer a contended batch with SQLITE_BUSY rather than waiting,
+    which fails the request without a duplicate.
+
+    Cost: three statements that each scan `tracks` on production (no
+    index there), in one request, whatever the case. Locally they are
+    index lookups (idx_tracks_spotify_id, idx_tracks_isrc).
     """
     spotify_id = track.get("id")
     if not spotify_id:
@@ -3507,65 +3530,46 @@ def _link_track(conn, track: dict, user_id: int, source: str) -> tuple[str, Opti
     isrc = _isrc_of(track)
     preview_url = track.get("preview_url")
 
-    def link_existing():
-        row = _find_track(conn, spotify_id, isrc, user_id)
-        if row is None:
-            return None
-        if row["linked"]:
-            return "already_in_library", int(row["id"])
-        conn.execute(
-            "INSERT OR IGNORE INTO user_tracks (user_id, track_id, source) "
-            "VALUES (?, ?, ?)",
-            (user_id, int(row["id"]), source),
-        )
-        conn.commit()
-        status = (row["ingestion_status"] or "done")
-        return ("added_to_library" if status == "done" else "queued_for_analysis",
-                int(row["id"]))
-
-    # 1) The user has it already, or the catalogue does → link and return.
-    found = link_existing()
-    if found is not None:
-        return found
-
-    # 2) Brand new to the whole DB: insert metadata-only row with
-    #    ingestion_status='pending'. The offline worker will fill in the
-    #    preview URL cascade + activation/valence/mood + ML + language later.
+    match = (spotify_id, isrc)
+    pick = (user_id, spotify_id)
     # vibe_score is NOT NULL in the current schema (legacy from the
     # pre-split-ingest era). Insert 0.0 as a placeholder; the offline
     # pipeline's classify stage overwrites it with the real score.
     # created_at is written here because production's tracks table has no
     # column defaults; rows made before 2026-10-15 are NULL there (4,844 of
     # 6,238 that day, backlog 3.11).
-    # The row and the user's link are one execute_batch: on Turso each
-    # execute() is its own autocommit, and a crash between two of them left
-    # a row no user references (backlog 2.2). last_insert_rowid() is this
-    # batch's own INSERT (one connection locally, one Hrana stream on Turso).
+    stmts = [
+        ("INSERT INTO tracks "
+         "(spotify_id, isrc, title, artist, album, artwork_url, preview_url, "
+         " duration_ms, vibe_score, ingestion_status, created_at) "
+         "SELECT ?, ?, ?, ?, ?, ?, ?, ?, 0.0, 'pending', CURRENT_TIMESTAMP "
+         f"WHERE NOT EXISTS (SELECT 1 FROM tracks t WHERE {_TRACK_MATCH})",
+         (spotify_id, isrc, name, artist_name, album_name,
+          artwork_url, preview_url, duration_ms, *match)),
+        ("INSERT OR IGNORE INTO user_tracks (user_id, track_id, source) "
+         f"SELECT ?, t.id, ? FROM tracks t WHERE {_TRACK_MATCH} {_TRACK_PICK}",
+         (user_id, source, *match, *pick)),
+        (f"SELECT t.id, t.ingestion_status FROM tracks t WHERE {_TRACK_MATCH} {_TRACK_PICK}",
+         (*match, *pick)),
+    ]
     try:
-        cursors = conn.execute_batch([
-            ("INSERT INTO tracks "
-             "(spotify_id, isrc, title, artist, album, artwork_url, preview_url, "
-             " duration_ms, vibe_score, ingestion_status, created_at) "
-             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0, 'pending', CURRENT_TIMESTAMP)",
-             (spotify_id, isrc, name, artist_name, album_name,
-              artwork_url, preview_url, duration_ms)),
-            ("INSERT OR IGNORE INTO user_tracks (user_id, track_id, source) "
-             "VALUES (?, last_insert_rowid(), ?)",
-             (user_id, source)),
-        ])
+        cursors = conn.execute_batch(stmts)
     except sqlite3.IntegrityError:
-        # Another request inserted this spotify_id between our read and our
-        # INSERT (a double submit did, on production: tracks 6465 and 6466)
-        # and the unique index refused ours. Nothing of ours was written;
-        # use the winner's row. No unique index on production yet (1.13),
-        # so there the race still inserts twice.
-        found = link_existing()
-        if found is None:
-            raise
-        return found
-    log.info("[ingest] user=%s queued %r - %r (spotify_id=%s)",
-             user_id, name, artist_name, spotify_id)
-    return "queued_for_analysis", int(cursors[0].lastrowid)
+        # Two connections collided on the local unique spotify_id index
+        # anyway. Nothing of ours was written; once more, and step 1's NOT
+        # EXISTS sees the winner's row.
+        cursors = conn.execute_batch(stmts)
+    inserted, linked, chosen = cursors
+    row = chosen.fetchone()
+    if row is None:  # step 1 guarantees a match; this would be a bug
+        raise RuntimeError(f"no tracks row for spotify_id={spotify_id} after its insert")
+    if inserted.rowcount == 1:
+        log.info("[ingest] user=%s queued %r - %r (spotify_id=%s)",
+                 user_id, name, artist_name, spotify_id)
+    if linked.rowcount == 0:
+        return "already_in_library", int(row["id"])
+    status = row["ingestion_status"] or "done"
+    return ("added_to_library" if status == "done" else "queued_for_analysis"), int(row["id"])
 
 
 # _upsert() and the synchronous ingest worker that used to live here are
@@ -3916,7 +3920,7 @@ async def ingest_single(
         raise HTTPException(status_code=422, detail={"error": "invalid_track", "result": result})
 
     # By id: the row may be another release of the same recording, whose
-    # spotify_id is not the one asked for (_find_track).
+    # spotify_id is not the one asked for (_link_track).
     conn = get_conn()
     try:
         row = conn.execute(
