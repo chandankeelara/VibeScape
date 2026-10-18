@@ -717,8 +717,8 @@ VibeScape/
 │   ├── prewarm_youtube.py                  # bulk-resolve YouTube IDs
 │   ├── build_cookies_file.py               # yt-dlp cookies helper
 │   ├── _turso_pull_to_local.py             # prod Turso → local sqlite
-│   ├── _dedupe_local_by_isrc.py            # merge same-recording duplicates (local)
-│   ├── _dedupe_turso_by_isrc.py            # ...and on prod; re-points user_tracks first
+│   ├── _dedupe_tracks.py                   # merge duplicate tracks (--target local|prod)
+│   ├── _turso_create_track_indexes.py      # schema.sql's tracks indexes, after the merge
 │   ├── language_tags.py                    # what is waiting for a language tag; write tags
 │   ├── _llm_verify_export.py               # SUPERSEDED (hand-driven whisper_done review)
 │   ├── _llm_verify_apply.py                # SUPERSEDED (hand-driven language corrections)

@@ -253,3 +253,14 @@ def test_a_split_db_with_a_dead_user_id_column_survives_bootstrap(prodlike, sql,
     cols = [r[1] for r in sql.execute("PRAGMA table_info(tracks)")]
     assert "language" in cols and "fuse_status" in cols
     assert [tuple(r) for r in sql.execute("SELECT spotify_id, isrc FROM tracks")] == [("a", "X")]
+
+
+def test_each_group_is_one_batch(scene, batches, sql):
+    """Locally an exception before COMMIT rolls back anyway; on Turso every
+    execute() autocommits, so only execute_batch keeps a group whole."""
+    s = scene
+    assert dd.main(["--apply"]) == 0
+    assert [len(b) for b in batches] == [len(dd.group_statements(1, [2]))] * 2 + [1]
+    assert any(f"IN ({s['l2']})" in q for q, _ in batches[0])
+    assert any(f"IN ({s['l4']})" in q for q, _ in batches[1])
+    assert batches[2][0][0].startswith("UPDATE tracks SET apple_id = NULL")

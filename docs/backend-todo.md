@@ -204,8 +204,8 @@ the vibe queues until the offline runners re-ingest them. **Runners must
 have this matcher and must not hold a cached `data/audio/<spotify_id>.*` for
 them** — the download stage reuses any cached file.
 
-### 1.9 ~~The ISRC dedupe scripts delete listening history~~ — DONE (2026-10-12), prod run pending
-`scripts/_dedupe_local_by_isrc.py`, `scripts/_dedupe_turso_by_isrc.py`
+### 1.9 ~~The ISRC dedupe scripts delete listening history~~ — DONE (2026-10-12), superseded 2026-10-18 by `scripts/_dedupe_tracks.py` (1.13)
+`scripts/_dedupe_local_by_isrc.py`, `scripts/_dedupe_turso_by_isrc.py` (both deleted 2026-10-18)
 
 **verified by running both versions on a copy of the 2026-10-12 prod
 backup.** They re-pointed `user_tracks` only, but `track_events` and
@@ -272,7 +272,7 @@ language nothing to normalise (28 rows wait for a tag), fuse 8, youtube 8
 wrote 4,872 in 8 s. 71 s in all, exit 0; `ingestion_status` done went 4,882
 → 4,890. `--concurrent` has not run against production (10.1).
 
-### 1.13 Production's `tracks` has no indexes: every gate scans, and the app can insert a track twice (it has) — app side DONE (2026-10-17), prod dedupe and indexes pending
+### 1.13 Production's `tracks` has no indexes: every gate scans, and the app can insert a track twice (it has) — app side DONE (2026-10-17), prod scripts ready and dry-run (2026-10-18), prod run pending approval
 `backend/app.py` `_process_track` / `_link_track`, `schema.sql` (`idx_tracks_spotify_id`, `idx_tracks_apple_id`, `idx_tracks_ingestion_status`, `idx_tracks_isrc`)
 
 **App side, done 2026-10-17** (branch `backend/ingest-dedupe`,
@@ -320,7 +320,7 @@ production):
   added at the same instant still both insert: ISRC has no unique index,
   deliberately.
 
-What remains is the production half:
+The original finding:
 
 **verified on the 2026-10-16 backup** (`prod_20261016T130348Z.db`; measured
 by the lead session, not re-checked here):
@@ -340,17 +340,59 @@ by the lead session, not re-checked here):
   that never entered the pipeline, 188 share an ISRC with a finished track and
   72 with another pending one: about a quarter of a full drain would be work
   on songs the catalogue already has.
-- `scripts/_dedupe_turso_by_isrc.py` (1.9) has never run against Turso.
 
-Fix sketch, not done: run the ISRC dedupe on production (dry first), then a
-one-shot `scripts/_turso_*` script that creates a UNIQUE index on
-`tracks(spotify_id) WHERE spotify_id IS NOT NULL`, a plain
-`idx_tracks_ingestion_status` and a plain `idx_tracks_isrc`. The app no
-longer needs the unique index to avoid duplicates (above); it and the isrc
-index turn `_link_track`'s three scans per track into index lookups.
-Until production is deduped, a
-backup copy needs two indexes added before its first local run
-(`ingest_pipeline/README.md` § Prod).
+**Production half: scripts written and dry-run on a copy (2026-10-18), not
+run on production.** `scripts/_dedupe_tracks.py` (replaces the three ISRC
+scripts) and `scripts/_turso_create_track_indexes.py`, both `--target
+local|prod` and dry-run by default; tests in
+`tests/database/test_dedupe_tracks.py`. Measured on the 2026-10-18 backup
+(`prod_20261018T215238Z.db`, 6,262 tracks), working on a copy:
+
+- spotify_id: 1 group, 1 extra row (6465/6466). ISRC: 271 groups, 292
+  extra rows (252 pairs, 17 triples, 2 quads). Every spotify_id duplicate
+  sits inside an ISRC group, so the union (spotify_id or ISRC,
+  transitive) is the same 271 groups and 292 deletions. Keeper:
+  `done` first, then the lowest id (`_TRACK_PICK`'s order); 5 groups have
+  no finished row and keep their lowest pending one.
+- ISRC groups are the same recording: every group's durations within 5 s;
+  5 differ in title, all spellings ("Neene Yendigu" / "Neene Yendiga",
+  "Taja" / "Tajaa Samachara"); 57 differ in the credited artist (a
+  composer vs a singer on the film release).
+- apple_id: 211 groups, 233 extra rows, and NOT a merge key: after the
+  merge 47 rows still share an apple_id with a different recording (Save
+  Your Tears 215 s album cut vs 249 s video edit, Starboy likewise, Kannada
+  singles vs their film releases with their own ISRCs), because the iTunes
+  matcher gave both the same match. Those 47 get `apple_id = NULL`, as the
+  pipeline's own collision retry does locally (`_RETRY_DROPPABLE_FIELDS`);
+  their audio and vectors stay. They are the 3.9 problem (the DJ can
+  recommend both), not a merge.
+- References: `user_tracks` 557 rows on losers, 76 re-pointed and 481
+  folded into a row the same user already had (user 12: 202, 13: 266, 19:
+  13; earliest `added_at` kept). `track_events` 200 moved.
+  `user_track_stats` 71 rows on losers deleted and the keeper's rebuilt from
+  the moved events (12 lost 47 rows, 13 lost 1, by folding).
+  `track_embeddings` 261 deleted with their rows.
+- After `--apply` on the copy: 5,970 tracks, no spotify_id / ISRC /
+  apple_id duplicate, no orphan in any of the four tables, per-user event
+  counts unchanged (8,091), no user lost a recording, `user_track_stats`
+  equal to `rebuild_user_track_stats.py` (0 missing / differing / stale),
+  a re-run finds nothing. `_turso_create_track_indexes.py --apply` then
+  built all four indexes (and refuses, creating none, on the raw copy).
+- Cost on prod: one scan of `tracks`, then per group a scan of
+  `track_events` and `user_track_stats` (no index leads with track_id
+  there): about 3.5M rows read in total, once.
+- Found on the way, fixed in the same PR: once the unique indexes exist,
+  `ensure_db()` on a prod copy rebuilt `tracks` into the pre-split legacy
+  shape (prod's `tracks` has an unused `user_id` column, which with a
+  unique spotify_id index looked legacy), dropping `language` and every
+  later column, then failed on schema.sql's language index. Local only;
+  `ensure_db` no-ops on Turso. Gated on `user_tracks` not existing.
+- Not fixed: `scripts/rebuild_user_track_stats.py --turso` still reads
+  `scripts/_load_gcp_secrets.ps1`. The dedupe no longer calls it.
+
+Until production is deduped and indexed, a backup copy still needs two
+indexes added before its first local run (`ingest_pipeline/README.md`
+§ Prod); after, a plain copy bootstraps.
 
 ---
 
@@ -423,8 +465,9 @@ against no transaction and swallows the error. Concretely, on Turso:
   between them leaves a catalogue row no user references and the user without
   the track — permanently, since `_process_track` short-circuits on
   `SELECT … FROM tracks WHERE spotify_id = ?` on the next attempt.
-- `scripts/_dedupe_turso_by_isrc.py:219-220` deletes a track's embeddings and
-  then the track as two separate commits.
+- ~~`scripts/_dedupe_turso_by_isrc.py:219-220` deletes a track's embeddings and
+  then the track as two separate commits.~~ Replaced 2026-10-18 by
+  `scripts/_dedupe_tracks.py`, one `execute_batch` per group (1.13).
 
 Fix is either Hrana batch requests (several statements in one pipeline POST,
 which also fixes the round-trip cost left over from 1.1) or baton reuse. Either way,
@@ -849,12 +892,9 @@ one reader, `backend/app.py`'s `/api/admin/users/{id}/tracks`, now LEFT JOINs
 `user_track_stats` instead and additionally returns `last_played`.
 **[frontend contract]** — additive field on an admin-only response.
 
-Left in place, worth doing: delete the two `user_tracks` columns, and teach
-`scripts/_dedupe_local_by_isrc.py` / `_dedupe_turso_by_isrc.py` to fold
-`user_track_stats` and `track_events` onto the surviving track id. Today they
-merge `user_tracks.play_count`, which is the dead copy — so deduping after
-telemetry is live silently strands a track's listening history on the
-dropped row.
+Left in place, worth doing: delete the two `user_tracks` columns. (The
+dedupe now moves `track_events` and rebuilds `user_track_stats`:
+`scripts/_dedupe_tracks.py`, 1.13.)
 
 ### What the next person has to do
 
@@ -1273,7 +1313,7 @@ Recorded so the next audit does not redo them.
   only instance** of the `_update_job` / `_bump` / `_is_cancelled` failure
   mode, and it is repaired at `backend/app.py:2332-2354`.
 - **Operational scripts default to dry-run.**
-  `_dedupe_turso_by_isrc.py`, `_fix_language_tags.py`, `_llm_verify_apply.py`
+  `_dedupe_tracks.py`, `_turso_create_track_indexes.py`, `_fix_language_tags.py`, `_llm_verify_apply.py`
   and `language_tags.py` all require an explicit `--apply` and print
   "dry-run — nothing was modified" otherwise. (`run_ingest_v2.py` is not a
   dry-run script; `--target local` is its default.)
