@@ -1334,6 +1334,55 @@ behind. Harmless (a cache, keyed by an id nothing will look up again), but
 the keeper does not inherit the loser's lyrics either and is fetched anew.
 Add the table to the dedupe script's list if that ever costs anything.
 
+## 12. DJ language — built 2026-10-19 (branch `backend/dj-language`), what is left
+
+The fused space is now `fused_v2`: untagged tracks get an all-zero language
+block, the slots are every language with 25+ finished tracks (ml, es, fr in;
+sa, ur, km out), and `backend/dj_language.py` re-ranks the candidate pool by
+the session's language mix on both ranking paths. Measured offline with
+`scripts/dj_eval/replay_bench.py`; the PR has the tables.
+
+### 12.1 Production needs the re-fuse, and the order matters
+`scripts/refuse_vectors.py`, `deploy/cloud-run/deploy.ps1`
+
+**verified on the local copy only.** Until `refuse_vectors.py --target prod
+--apply` has run, production's vectors are fused_v1. The code reads either
+(the width is still 788), so nothing errors: the DJ just ranks in the old
+space. Run it after `backup_prod_db.py` and before the deploy, so the
+restart drops the means the old instances hold in memory. It reads every
+fused row's MERT and fused blobs raw (about 5.3k rows, 200 a query); the raw
+fused read is the decode verified on prod 2026-10-15, the raw MERT read is
+what FuseStage does on every prod run.
+
+### 12.2 `ar` is one track short of a slot, and `ur` / `sa` lost theirs
+`ingest_pipeline/fused_vector.py` TOP_LANGS
+
+**verified.** With 25 as the cut, Arabic (24 tracks), Sanskrit (19) and
+Urdu (12) share 'other' with every rare language. Stage A alone dropped
+`ur` single-seed precision@10 from 0.84 to 0.10 and `sa` from 0.82 to 0.65;
+the re-rank brings them to 0.61 and 0.93 (it matches exact codes, and
+`ur` gets half credit from `hi`). Re-deriving the list as the catalogue
+grows is a space change (version bump + re-fuse); an 11th slot also widens
+the vector to 789, production's `F32_BLOB(788)` column with it.
+
+### 12.3 What the language work saw for the out-of-scope items
+`scripts/dj_eval/replay_bench.py`
+
+- **Duplicates.** Near-duplicates of a track already seen this session
+  (same cleaned title and primary artist) are in the top 10 at 4.5% of
+  listener moments in v1 and 4.9% with the language re-rank: pulling
+  same-language tracks up pulls their other releases up too. Duplicates of
+  a *skipped* track: 0.4% before and after.
+- **Untagged / ambient.** Language-neutral untagged tracks, without the
+  re-rank, rose from 0.5% to 3.8% of the top 10 in tagged-language listener
+  sessions; with it, 0.0%. The 19 binaural sleep-tone tracks are untagged,
+  so an instrumental session still meets them: the eligibility gate is
+  still needed.
+- **Real-user AUC is low.** Finished-vs-skipped AUC on the real users'
+  `track_events` is 0.59-0.61 in every configuration, against the 0.83 the
+  2026-10-10 replay measured on a smaller, older local log. Not
+  investigated; the item-level skip negatives may be where it is.
+
 ## Checked and clean
 
 Recorded so the next audit does not redo them.

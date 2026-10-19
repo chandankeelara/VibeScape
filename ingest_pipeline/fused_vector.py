@@ -14,10 +14,35 @@ Layout (788 dims):
     [777:788]  language one-hot over TOP_LANGS + 'other', x W_LANG
 then the whole vector is L2-normalised, so cosine is the metric.
 
+The language block (fused_v2, 2026-10-19). A tagged language in TOP_LANGS
+gets its own slot; any other tagged language gets 'other'; an untagged or
+instrumental track (language NULL) gets an ALL-ZERO block, so it is
+language-neutral: no closer to any language than to another. In fused_v1
+NULL shared the 'other' slot with every rare language, and the DJ eval on a
+copy of prod_20261019T024426Z (scripts/dj_eval) measured what that did:
+Malayalam, Spanish, French, Korean and Arabic seeds scored precision@10 of
+0.06-0.26, leaking 74-94% of their recommendations into untagged tracks and
+into each other, while slotted languages scored 0.97-1.00.
+
+TOP_LANGS is every language with at least LANG_SLOT_MIN_TRACKS finished
+tracks, most first, counted on that backup by
+`python scripts/language_slots.py --db <copy>` (which prints the counts and
+the list it derives). It is frozen here rather than derived at fuse time:
+the list defines the space, so it changes only together with a version
+bump and a re-fuse (scripts/refuse_vectors.py). On 2026-10-19 the cut gave
+exactly ten languages (ar was next, at 24), so the block stayed 11 wide and
+FUSED_DIM stayed 788 -- which keeps production's F32_BLOB(788) column. A
+list of another length changes FUSED_DIM, backend/app.py's
+FUSED_LANG_DIMS, and that column type. 'km' (Khmer) is gone: it only ever
+came from Whisper mis-tags, and no track carries it today.
+
 Changing SCALAR_COLS, TOP_LANGS or the weights changes the vector SPACE:
 every stored vector must be rebuilt, and cosine against un-rebuilt rows is
-meaningless. Rebuilding is cheap — set fuse_status='pending', no GPU
-needed, since the MERT half is already stored — but it is not optional.
+meaningless. Rebuilding is cheap — no GPU, since the MERT half is already
+stored — but it is not optional: bump FUSED_MODEL_VERSION (and
+backend/app.py's copy, which keys the user_embedding_mean cache on it), then
+run scripts/refuse_vectors.py, which rewrites every fused vector and drops
+every cached mean.
 """
 from __future__ import annotations
 
@@ -31,7 +56,7 @@ SAMPLE_RATE = 24_000
 MAX_DURATION_S = 30
 MERT_DIM = 768
 MERT_MODEL_VERSION = "mert_v1_95m_fp32_30s"
-FUSED_MODEL_VERSION = "fused_v1_mert_scalar_lang"
+FUSED_MODEL_VERSION = "fused_v2_mert_scalar_lang"
 
 SCALAR_COLS = [
     "energy_pred", "danceability_pred", "valence_pred",
@@ -49,7 +74,8 @@ SCALAR_RANGE = {
     "tempo":             (40.0, 220.0),
     "brightness":        (0.0, 8000.0),
 }
-TOP_LANGS = ["en", "kn", "te", "hi", "pa", "sa", "ta", "ur", "km", "pt"]
+LANG_SLOT_MIN_TRACKS = 25
+TOP_LANGS = ["en", "hi", "kn", "te", "ta", "pa", "ml", "es", "fr", "pt"]
 LANG_DIMS = len(TOP_LANGS) + 1
 W_MERT, W_SCALAR, W_LANG = 0.55, 0.25, 0.20
 FUSED_DIM = MERT_DIM + len(SCALAR_COLS) + LANG_DIMS
@@ -73,25 +99,31 @@ def _norm_scalar(name: str, val) -> float:
     return max(0.0, min(1.0, x))
 
 
-def _lang_onehot(language: Optional[str]) -> np.ndarray:
-    v = np.zeros(LANG_DIMS, dtype=np.float32)
-    if language:
-        code = str(language).lower()
-        v[TOP_LANGS.index(code) if code in TOP_LANGS else LANG_DIMS - 1] = 1.0
-    else:
-        v[-1] = 1.0
+def _lang_onehot(language: Optional[str], langs=None) -> np.ndarray:
+    """One-hot over `langs` (default TOP_LANGS) + 'other'; all zeros for an
+    untagged track. `langs` exists for the offline benchmark."""
+    langs = TOP_LANGS if langs is None else langs
+    v = np.zeros(len(langs) + 1, dtype=np.float32)
+    code = str(language or "").strip().lower()
+    if code:
+        v[langs.index(code) if code in langs else len(langs)] = 1.0
     return v
 
 
-def _build_fused(row_dict: dict, mert_vec: np.ndarray) -> np.ndarray:
+def _build_fused(row_dict: dict, mert_vec: np.ndarray,
+                 langs=None, weights=None) -> np.ndarray:
+    """The fused vector for one row. `langs` and `weights` (W_MERT,
+    W_SCALAR, W_LANG) default to the current recipe; the offline benchmark
+    (scripts/dj_eval/replay_bench.py) passes others to compare spaces."""
+    w_mert, w_scalar, w_lang = (W_MERT, W_SCALAR, W_LANG) if weights is None else weights
     scalars = np.array(
         [_norm_scalar(c, row_dict.get(c)) for c in SCALAR_COLS],
         dtype=np.float32,
     )
-    lang = _lang_onehot(row_dict.get("language"))
+    lang = _lang_onehot(row_dict.get("language"), langs)
     fused = np.concatenate([
-        W_MERT   * _l2(mert_vec),
-        W_SCALAR * _l2(scalars),
-        W_LANG   * lang,
+        w_mert   * _l2(mert_vec),
+        w_scalar * _l2(scalars),
+        w_lang   * lang,
     ])
     return _l2(fused)

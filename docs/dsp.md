@@ -274,8 +274,9 @@ audio.
 
 ## 5. DSP inside the fused embedding
 
-The fused 788-d embedding (`FUSED_MODEL_VERSION = "fused_v1_mert_scalar_lang"`)
-is:
+The fused 788-d embedding (`FUSED_MODEL_VERSION = "fused_v2_mert_scalar_lang"`;
+an untagged track's language block is all zeros, see
+`ingest_pipeline/fused_vector.py`) is:
 
 ```
 fused = L2( [ 0.55 · L2(MERT_768)

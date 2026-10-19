@@ -438,7 +438,11 @@ language tag needs a `fuse` re-run (milliseconds) and never a GPU re-encode
 Changing `SCALAR_COLS`, `TOP_LANGS` or the weights changes the vector
 **space**. Cosine across two spaces is meaningless, so every stored vector
 must be rebuilt, and `backend/app.py`'s `MERT_DIM`/`FUSED_DIM` must move in
-step or `/similar` silently returns nothing.
+step or `/similar` silently returns nothing. Bump `FUSED_MODEL_VERSION` in
+both files (it keys the `user_embedding_mean` cache), then run
+`scripts/refuse_vectors.py` (dry-run by default; `--target prod --apply`
+after a backup), which rewrites every fused vector and drops the cached
+means. `TOP_LANGS` itself comes from `scripts/language_slots.py --db <copy>`.
 
 ## Files
 

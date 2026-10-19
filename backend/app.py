@@ -37,6 +37,7 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, Redirec
 from pydantic import BaseModel
 
 from db import ensure_db, get_conn
+import dj_language as _dj_language
 from dj_replay import library_mean as _dj_mean_of
 from dj_replay import parse_events as _dj_parse_events
 from dj_replay import replay as _dj_replay
@@ -975,9 +976,12 @@ def search_tracks(
 MERT_MODEL_VERSION = "mert_v1_95m_fp32_30s"
 MERT_DIM = 768
 
-# Fused variant: MERT (768) + scalar features (9) + language one-hot (10 langs + 'other')
-# Recipe defined in scripts/_recommender_feasibility.py + scripts/_backfill_fused_embeddings.py.
-FUSED_MODEL_VERSION = "fused_v1_mert_scalar_lang"
+# Fused variant: MERT (768) + scalar features (9) + language one-hot (10 langs
+# + 'other'; untagged is all zeros). The recipe is ingest_pipeline/
+# fused_vector.py, and these must match it (tests/backend/test_dj_language.py
+# checks). The version keys the user_embedding_mean cache, so bumping it with
+# the recipe is what stops a mean of old-space vectors being reused.
+FUSED_MODEL_VERSION = "fused_v2_mert_scalar_lang"
 FUSED_SCALAR_DIMS = 9
 FUSED_LANG_DIMS = 11
 FUSED_DIM = MERT_DIM + FUSED_SCALAR_DIMS + FUSED_LANG_DIMS  # 788
@@ -1403,12 +1407,16 @@ class _RecencyCandidate:
     cosine similarity; _similar_vibe passes -distance. Nothing below knows
     which.
     """
-    __slots__ = ("score", "payload", "last_played", "last_skipped_at",
+    __slots__ = ("score", "sim", "lang", "payload", "last_played", "last_skipped_at",
                  "skip_count", "skip_pos_sum", "duration_ms")
 
     def __init__(self, score, payload, last_played=None, last_skipped_at=None,
-                 skip_count=0, skip_pos_sum=0, duration_ms=None):
+                 skip_count=0, skip_pos_sum=0, duration_ms=None, lang=None):
         self.score = float(score)
+        # The raw similarity, kept when the language re-rank moves `score`:
+        # the response's `score` field is this, never the adjusted value.
+        self.sim = self.score
+        self.lang = lang
         self.payload = payload
         self.last_played = last_played
         self.last_skipped_at = last_skipped_at
@@ -1445,7 +1453,8 @@ def _rerank_by_recency(cands, limit, now=None, explain=False, halflife_h=None):
         for i, c in enumerate(cands[:limit]):
             ex = None
             if explain:
-                ex = {"sim": c.score, "lambda": 0.0, "p_play": 0.0, "p_skip": 0.0,
+                ex = {"sim": c.sim, "lang_bonus": c.score - c.sim,
+                      "lambda": 0.0, "p_play": 0.0, "p_skip": 0.0,
                       "penalty": 0.0, "final": c.score,
                       "rank_before": i + 1, "rank_after": i + 1,
                       "degenerate_window": True,
@@ -1475,7 +1484,8 @@ def _rerank_by_recency(cands, limit, now=None, explain=False, halflife_h=None):
         block = None
         if explain:
             block = {
-                "sim": c.score,
+                "sim": c.sim,
+                "lang_bonus": c.score - c.sim,
                 "lambda": lam,
                 "p_play": ex["p_play"],
                 "p_skip": ex["p_skip"],
@@ -1923,7 +1933,81 @@ def _dj_events_query(conn, raw_events, user_id, seed_vec, model_version: str, di
         mu = np.zeros(dim, dtype=np.float64)
     res = _dj_replay(resolved, vecs, mu, seed_vec)
     q = res.query.astype(np.float32) if res.query is not None else None
-    return q, res
+    return q, res, resolved
+
+
+# ---------------------------------------------------------------------------
+# DJ language re-rank (backend/dj_language.py). After the candidate fetch, on
+# both ranking paths, before the recency re-rank: cosine + a bonus for the
+# languages this session accepted, blended with the user's library mix.
+# DJ_LANG_WEIGHT=0 turns it off (no extra query is issued then).
+# ---------------------------------------------------------------------------
+_DJ_LANG_WEIGHT = _env_float("DJ_LANG_WEIGHT", _dj_language.WEIGHT)
+_DJ_LANG_RECHECK_S = 600.0
+_dj_lang_cache: dict = {}  # user_id -> (counts, checked_at)
+
+
+def _dj_library_languages(conn, user_id) -> dict:
+    """{language: analysed tracks} in the user's library: the prior of the
+    language mix. One GROUP BY, kept in process memory for
+    _DJ_LANG_RECHECK_S like the library mean, because on Turso it reads the
+    whole library."""
+    uid = int(user_id or 0)
+    now = datetime.now(timezone.utc).timestamp()
+    hit = _dj_lang_cache.get(uid)
+    if hit and now - hit[1] < _DJ_LANG_RECHECK_S:
+        return hit[0]
+    rows = conn.execute(
+        "SELECT t.language AS language, COUNT(*) AS n FROM user_tracks ut "
+        "JOIN tracks t ON t.id = ut.track_id "
+        "WHERE ut.user_id = ? AND t.ingestion_status = 'done' "
+        "GROUP BY t.language", (uid,)).fetchall()
+    counts = {}
+    for r in rows:
+        k = _dj_language.lang_key(r["language"])
+        counts[k] = counts.get(k, 0) + int(r["n"] or 0)
+    _dj_lang_cache[uid] = (counts, now)
+    return counts
+
+
+def _dj_language_mix(conn, user_id, resolved) -> Optional[dict]:
+    """The session's language mix, or None when the re-rank is off or
+    cannot be computed. Never fails the request: without it the DJ ranks
+    exactly as it did before the re-rank existed."""
+    if _DJ_LANG_WEIGHT <= 0:
+        return None
+    try:
+        ids = sorted({int(e["id"]) for e in resolved
+                      if e["action"] in _dj_language.POSITIVE})
+        lang_of = {}
+        if ids:
+            ph = ",".join("?" * len(ids))
+            for r in conn.execute(f"SELECT id, language FROM tracks WHERE id IN ({ph})",
+                                  ids).fetchall():
+                lang_of[int(r["id"])] = r["language"]
+        counts = _dj_language.session_languages(resolved, lang_of)
+        mix = _dj_language.language_mix(counts, _dj_library_languages(conn, user_id))
+    except Exception as e:
+        log.warning("[dj] language mix unavailable (%s); ranking without it", e)
+        return None
+    return mix or None
+
+
+def _dj_rerank_language(cands, mix, limit):
+    """Re-order a cosine-sorted pool of _RecencyCandidate by
+    dj_language.rerank. `score` becomes the adjusted value the recency
+    re-rank then works on; `sim` keeps the cosine. Both ranking paths call
+    this on the same (cosine, language) pairs, so they agree."""
+    if not mix:
+        return cands
+    order = _dj_language.rerank([(c.score, c.lang) for c in cands], mix, limit,
+                                _DJ_LANG_WEIGHT)
+    out = []
+    for i, adjusted in order:
+        c = cands[i]
+        c.score = adjusted
+        out.append(c)
+    return out
 
 
 def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
@@ -1941,7 +2025,6 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
     limit = max(1, min(int(limit), 25))
     rerank = _dj_recency_enabled(display_name)
     explain = bool(getattr(body, "explain", False))
-    pool = _dj_recency_pool(limit) if rerank else limit
 
     requested_variant = (body.variant or _DJ_VARIANT_DEFAULT).strip().lower()
     if requested_variant not in ("fused", "mert"):
@@ -1982,6 +2065,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
     # throws the whole session away.
     use_events = body.events is not None
     replay_res = None
+    lang_mix = None
 
     if seed_vec is None and not use_events:
         conn.close()
@@ -1998,7 +2082,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
             # OWN events count — a search-and-play is the seed, and dropping
             # it (as the weighted path below does) threw away the strongest
             # signal there is. The seed is still excluded from candidates.
-            query_vec, replay_res = _dj_events_query(
+            query_vec, replay_res, resolved = _dj_events_query(
                 conn, body.events, user_id, seed_vec, model_version, dim)
             if query_vec is None:
                 # No usable event AND a seed with no vector: nothing to
@@ -2008,6 +2092,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
                 resp["mode_used"] = "vibe_fallback_no_signal"
                 resp["variant_used"] = None
                 return resp
+            lang_mix = _dj_language_mix(conn, user_id, resolved)
         else:
             # Legacy weighted path, kept byte-for-byte for clients that still
             # send positive_ids / negative_ids.
@@ -2108,6 +2193,8 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
         mode_used = f"dj_replay_{variant_used}" if use_events else f"dj_{variant_used}"
         if replay_res is not None and replay_res.from_seed:
             mode_used += "_from_seed"
+        # Either re-rank needs a pool deeper than `limit` to pull from.
+        pool = _dj_recency_pool(limit) if (rerank or lang_mix) else limit
 
         # ------------------------------------------------------------------
         # Ranking backend: on Turso we push the cosine computation into the
@@ -2169,7 +2256,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
                     dist = float(r["distance"]) if r["distance"] is not None else 1.0
                     return 1.0 - dist
 
-                if not rerank:
+                if not rerank and not lang_mix:
                     for r in rows[:limit]:
                         d = _row_to_dict(r)
                         d["score"] = _sim(r)
@@ -2179,19 +2266,22 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
                         _RecencyCandidate(
                             score=_sim(r),
                             payload=r,
-                            last_played=r["uts_last_played"],
-                            last_skipped_at=r["uts_last_skipped_at"],
-                            skip_count=r["uts_skip_count"],
-                            skip_pos_sum=r["uts_skip_pos_sum"],
+                            last_played=r["uts_last_played"] if rerank else None,
+                            last_skipped_at=r["uts_last_skipped_at"] if rerank else None,
+                            skip_count=r["uts_skip_count"] if rerank else 0,
+                            skip_pos_sum=r["uts_skip_pos_sum"] if rerank else 0,
                             duration_ms=r["duration_ms"],
+                            lang=r["language"],
                         )
                         for r in rows
                     ]
-                    for c, final, block in _rerank_by_recency(
-                            cands, limit, explain=explain,
-                            halflife_h=h_user):
+                    cands = _dj_rerank_language(cands, lang_mix, limit)
+                    ranked = (_rerank_by_recency(cands, limit, explain=explain,
+                                                 halflife_h=h_user)
+                              if rerank else [(c, c.score, None) for c in cands[:limit]])
+                    for c, final, block in ranked:
                         d = _row_to_dict(c.payload)
-                        d["score"] = c.score
+                        d["score"] = c.sim
                         d["final_score"] = final
                         if block is not None:
                             d["explain"] = block
@@ -2211,7 +2301,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
 
         # -------- numpy fallback (local dev / cold-start / turso error) --------
         cand_rows = conn.execute(
-            "SELECT t.id, t.duration_ms FROM tracks t "
+            "SELECT t.id, t.duration_ms, t.language FROM tracks t "
             "JOIN user_tracks ut ON ut.track_id = t.id "
             "JOIN track_embeddings te ON te.track_id = t.id "
             "WHERE ut.user_id = ? "
@@ -2223,6 +2313,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
         # the denominator of the skip-depth term and the full track rows are
         # not fetched until after re-ranking on this path.
         cand_duration = {int(r["id"]): r["duration_ms"] for r in cand_rows}
+        cand_lang = {int(r["id"]): r["language"] for r in cand_rows}
         cand_ids = [int(r["id"]) for r in cand_rows if int(r["id"]) not in exclude_ids]
         if not cand_ids:
             anchor_out = {
@@ -2259,6 +2350,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
                 skip_count=st[2] if st else 0,
                 skip_pos_sum=st[3] if st else 0,
                 duration_ms=cand_duration.get(tid),
+                lang=cand_lang.get(tid),
             )
 
         explains: dict = {}
@@ -2296,7 +2388,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
             norms[norms < 1e-12] = 1.0
             mat_n = mat / norms
             sims = mat_n @ query_vec.astype(np.float32)
-            if not rerank:
+            if not rerank and not lang_mix:
                 order = np.argsort(-sims)[:limit]
                 top_ids = [int(ids_arr[i]) for i in order]
                 top_scores = {int(ids_arr[i]): float(sims[i]) for i in order}
@@ -2306,14 +2398,16 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
                 # behaviour would not predict production's.
                 order = np.argsort(-sims)[:pool]
                 cands = [_mk_cand(int(ids_arr[i]), float(sims[i])) for i in order]
+                cands = _dj_rerank_language(cands, lang_mix, limit)
+                ranked = (_rerank_by_recency(cands, limit, explain=explain,
+                                             halflife_h=h_user)
+                          if rerank else [(c, c.score, None) for c in cands[:limit]])
                 top_ids = []
                 top_scores = {}
-                for c, final, block in _rerank_by_recency(
-                        cands, limit, explain=explain,
-                        halflife_h=h_user):
+                for c, final, block in ranked:
                     tid = int(c.payload)
                     top_ids.append(tid)
-                    top_scores[tid] = c.score
+                    top_scores[tid] = c.sim
                     finals[tid] = final
                     if block is not None:
                         explains[tid] = block
