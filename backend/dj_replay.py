@@ -26,7 +26,22 @@ The centred query works with the existing cosine SQL unchanged: stored
 vectors are unit length (verified, same date), so ranking by
 cos(candidate, q) equals ranking by the centred dot product.
 
-Offline evidence for the constants (.claude/tmp/dj-compare/harness.py,
+The skip term is the DJ's main lever, language included (2026-10-19,
+scripts/dj_eval/replay_bench.py on a copy of prod_20261019T024426Z, fused_v2
+with the language block at 0.40). NEG_WEIGHT 0.6 -> 1.0, M_STEP 0.25 -> 0.5
+and the cap on m 1.0 -> 2.0 took real-user finished-vs-skipped AUC from 0.612
+to 0.747 over 3,291 DJ / autoplay starts; the cap alone, 1.5 -> 2.0, was
++0.013 (block bootstrap 95% CI +0.005..+0.022). Three skips of one language
+then clear it from the top 10, one stray skip after three accepts does not
+move it, and a mixed run of skips (three tracks that sound unlike each
+other) takes their neighbourhoods from 0.31 of the top 10 to under 0.01. The
+cost: the avoid term may now outweigh S (up to twice), so a long skip run
+steers mostly by what was rejected. Stronger still (NEG_WEIGHT 1.5) lost
+language@10 (0.878) for no AUC. A nearest-skip penalty (max cosine to any
+skipped track) was measured too and lost to this on real-user AUC
+(0.645 at best).
+
+Offline evidence for the original constants (.claude/tmp/dj-compare/harness.py,
 local track_events 2026-10-02..09, 241 DJ-served tracks): finished-vs-
 skipped AUC 0.83 vs 0.64 for the previous weighted-sum query; after a
 search, 5.5 of the top 10 sit in the searched track's neighbourhood vs
@@ -41,7 +56,7 @@ from typing import Optional
 import numpy as np
 
 MAX_EVENTS = 30          # server-side cap; the client keeps 50, sends 30
-NEG_WEIGHT = 0.6         # |avoid term| can never exceed 0.6 of |S|
+NEG_WEIGHT = 1.0         # |avoid term| can never exceed NEG_WEIGHT * M_MAX = 2 x |S|
 
 ETA_SEARCHED = 0.8       # "I want this, now"
 ETA_QUEUED = 0.6         # queue-add or a pick off a list
@@ -58,7 +73,8 @@ PRIME_STEP = 0.15        # PRIME_BASE + PRIME_STEP * k ...
 PRIME_MAX = 0.8          # ... up to 0.8
 N_BETA_STEP = 0.3        # N's own EMA rate: 0.3 * amp, capped
 N_BETA_MAX = 0.8
-M_STEP = 0.25            # confidence gained per skip: 0.25 * depth * amp
+M_STEP = 0.5             # confidence gained per skip: 0.5 * depth * amp
+M_MAX = 2.0              # ... capped here
 M_FADE = 0.7             # confidence kept after each positive
 
 POSITIVE = frozenset({"searched", "queued", "picked", "completed"})
@@ -128,7 +144,7 @@ def replay(events: list[dict], vecs: dict, mu: np.ndarray,
             amp = min(STREAK_AMP_MAX, 1.0 + STREAK_AMP_STEP * (k - 1))
             beta = min(N_BETA_MAX, N_BETA_STEP * amp)
             N = x if N is None else _unit((1 - beta) * N + beta * x)
-            m = min(1.0, m + M_STEP * (1.0 - (ratio or 0.0)) * amp)
+            m = min(M_MAX, m + M_STEP * (1.0 - (ratio or 0.0)) * amp)
             continue
 
         if a == "next":

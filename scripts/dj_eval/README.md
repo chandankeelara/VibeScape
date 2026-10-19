@@ -34,7 +34,8 @@ python scripts/dj_eval/report.py                                                
 | `listener.py` | the CLI a listener agent drives; prints only handle, title, artist, album |
 | `personas.json` | the ten personas |
 | `report.py` | per-persona transcripts, acceptance by DJ step, reviews, side by side |
-| `replay_bench.py` | replays the recorded listener sessions and the real users' `track_events` through `dj_replay` + `dj_language`, in vector spaces it rebuilds in memory; finished-vs-skipped AUC, language match, duplicates, and the 'single' scenario's group precision offline |
+| `replay_bench.py` | replays the recorded listener sessions and the real users' `track_events` through `dj_replay`, in vector spaces it rebuilds in memory; finished-vs-skipped AUC, language match, duplicates, the 'single' scenario's group precision offline, and synthetic scenarios (a 70/30 library, skips, a language switch, mixed skips, another release of a skipped track). `--final` is the PR #21 table |
+| `language_rerank.py` | the session language re-rank that was measured against the vector-only DJ and not shipped; kept so the comparison reproduces |
 | `dj-listener.agent.md` | the agent definition |
 
 **Install the agent** (`.claude/agents/` is gitignored, so a clone has none):
@@ -56,7 +57,7 @@ The copy runs on SQLite, so the DJ ranks with the numpy path, not the
 `vector_distance_cos` SQL production uses on Turso.
 
 The replay benchmark ranks with the same pure functions the endpoint calls
-(`backend/dj_replay.py`, `backend/dj_language.py`) and the endpoint's pool
+(`backend/dj_replay.py`) and the endpoint's pool
 size, so it judges a change without the server or an LLM. On the baseline it
 reproduces run_eval.py's language precision to within 0.01 and ranks every
 DJ-served listener track inside its top 8 (the `top8` column). It does not

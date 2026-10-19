@@ -1338,65 +1338,69 @@ Add the table to the dedupe script's list if that ever costs anything.
 
 The fused space is now `fused_v2`: untagged tracks get an all-zero language
 block, the slots are every language with 25+ finished tracks (ml, es, fr in;
-sa, ur, km out), and `backend/dj_language.py` re-ranks the candidate pool by
-this session's languages only (recency-decayed accepts, skips against their
-language, the seed's language at cold start) on both ranking paths.
-Measured offline with `scripts/dj_eval/replay_bench.py`; the PR has the
-tables.
+sa, ur, km out), and the language block weighs 0.40 (was 0.20). Language
+and skips come from the taste vector alone: dj_replay's avoid term is
+stronger (NEG_WEIGHT 1.0, M_STEP 0.5, cap 2.0). A separate session language
+re-rank was built and measured, and lost (`scripts/dj_eval/
+language_rerank.py`). Measured offline with `scripts/dj_eval/replay_bench.py
+--final`; the PR has the tables.
 
 ### 12.1 Production needs the re-fuse, and the order matters
 `scripts/refuse_vectors.py`, `deploy/cloud-run/deploy.ps1`
 
 **verified on the local copy only.** Until `refuse_vectors.py --target prod
 --apply` has run, production's vectors are fused_v1. The code reads either
-(the width is still 788), so nothing errors: the DJ just ranks in the old
-space. Run it after `backup_prod_db.py` and before the deploy, so the
-restart drops the means the old instances hold in memory. It reads every
-fused row's MERT and fused blobs raw (about 5.3k rows, 200 a query); the raw
-fused read is the decode verified on prod 2026-10-15, the raw MERT read is
-what FuseStage does on every prod run.
+(the width is still 788), so nothing errors: the DJ ranks in the old space,
+with the new, stronger skip term. Run it after `backup_prod_db.py` and
+before the deploy, so the restart drops the means the old instances hold in
+memory. It reads every fused row's MERT and fused blobs raw (about 5.3k
+rows, 200 a query); the raw fused read is the decode verified on prod
+2026-10-15, the raw MERT read is what FuseStage does on every prod run.
 
-### 12.2 `ar` is one track short of a slot, and `ur` / `sa` lost theirs
+### 12.2 Languages without a slot are weak: `ar`, `ko`, `ur`, `sa` — a decision is pending
 `ingest_pipeline/fused_vector.py` TOP_LANGS
 
-**verified.** With 25 as the cut, Arabic (24 tracks), Sanskrit (19) and
-Urdu (12) share 'other' with every rare language. Stage A alone dropped
-`ur` single-seed precision@10 from 0.84 to 0.10 and `sa` from 0.82 to 0.65;
-the re-rank brings them to 0.61 and 0.93 (it matches exact codes, and
-`ur` gets half credit from `hi`). Re-deriving the list as the catalogue
-grows is a space change (version bump + re-fuse); an 11th slot also widens
-the vector to 789, production's `F32_BLOB(788)` column with it.
+**verified offline.** They share 'other'. Single-seed precision@10 with
+the shipped recipe: ar 0.46, ko 0.16, sa 0.74, ur 0.09 (v1: 0.11, 0.06,
+0.82, 0.83; every slotted language is 1.00). The measured re-rank held them
+at 0.99 / 0.86 / 1.00 / 0.87 by matching exact codes, which is the one
+place it beat the vector. Giving them slots widens the vector past 788:
+production's `F32_BLOB(788)` column, `FUSED_LANG_DIMS`, a version bump and a
+re-fuse.
 
-### 12.3 Two skips do not clear a language that fills the neighbourhood
-`backend/dj_language.py` (DEMOTE, `demoting`), `backend/app.py` `_similar_dj` pool
+### 12.3 Two skips of one sound take its language with it
+`backend/dj_replay.py` (NEG_WEIGHT, M_STEP, M_MAX)
 
-**verified offline.** After three Kannada songs and two Kannada skips,
-Kannada still holds 0.69 of the top 10 (three skips: 0.15), at any demotion
-strength: the pool, widened to 300 while a language is demoted, holds too
-few other tracks. A 600-track pool took three skips to 0.00 and lifted
-real-user AUC further (0.687 -> 0.714 at demotion 12), but every pool row
-is streamed from Turso. Options: a deeper fetch only while demoting, or
-excluding a fully demoted language in the candidate SQL (needs a guard for
-one-language libraries).
+**verified on synthetic vectors.** Four Kannada songs of one sound, then
+two Kannada songs of another sound skipped (a mood skip): the top 10 turns
+Hindi. The skipped tracks share sound and language, and the avoid direction
+carries both. The session re-rank did the same (its Kannada score went
+negative). On the recorded listener sessions, whose skips are mostly about
+mood, language@10 is 0.952 (0.983 in v1), so it bites rarely, but a
+listener who skips two songs in their own language can lose it.
 
-### 12.4 What the language work saw for the out-of-scope items
+### 12.4 A skipped track's other release can stay
+`scripts/dj_eval/replay_bench.py` (scenario `twin`)
+
+**verified offline.** Search a track and skip it: its other release (same
+cleaned title and primary artist) is in the top 10 in 0.68 of draws before
+and after. With only that one track in the session S and N point the same
+way and the avoid term only shrinks the query. A nearest-skip penalty took
+it to 0.33 but lost on real-user AUC (0.644). Belongs with the duplicate
+filtering work.
+
+### 12.5 What the language work saw for the out-of-scope items
 `scripts/dj_eval/replay_bench.py`
 
-- **Duplicates.** Near-duplicates of a track already seen this session
-  (same cleaned title and primary artist) are in the top 10 at 4.5% of
-  listener moments in v1, 4.9% with the first (library-prior) re-rank and
-  3.7% with the session-only one, which demotes a skipped language and its
-  other releases with it. Duplicates of a *skipped* track: 0.4% throughout.
-- **Untagged / ambient.** Language-neutral untagged tracks, without the
-  re-rank, rose from 0.5% to 3.8% of the top 10 in tagged-language listener
-  sessions; with it, 0.0%. The 19 binaural sleep-tone tracks are untagged,
-  so an instrumental session still meets them: the eligibility gate is
-  still needed.
-- **Real-user AUC and skips.** Finished-vs-skipped AUC on the real users'
-  `track_events` was 0.59-0.61 for every vector space, against the 0.83 the
-  2026-10-10 replay measured on a smaller, older local log. Counting skips
-  against their *language* alone took it to 0.69, so skips carry signal the
-  replay's avoid term does not use; item-level skip negatives are the
+- **Duplicates.** Near-duplicates of a track already seen this session are
+  in the top 10 at 4.5% of listener moments with the shipped design, as in
+  v1. Duplicates of a *skipped* track: 0.4% throughout.
+- **Untagged / ambient.** Untagged tracks are 0.2% of the top 10 in
+  tagged-language listener sessions (v1: 0.5%). The 19 binaural sleep-tone
+  tracks are untagged, so an instrumental session still meets them: the
+  eligibility gate is still needed.
+- **Skips are most of the signal.** Real-user finished-vs-skipped AUC went
+  0.61 -> 0.75 from the avoid term alone. Item-level skip negatives are the
   obvious next measurement.
 
 ## Checked and clean

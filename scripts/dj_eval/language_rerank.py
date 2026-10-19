@@ -1,11 +1,13 @@
-"""DJ language re-rank: which languages this session wants right now.
+"""A session language re-rank for the DJ -- MEASURED AND NOT SHIPPED.
 
-Pure (no DB, no clock, no numpy), like dj_replay.py, so the endpoint and the
-offline benchmark (scripts/dj_eval/replay_bench.py) run the same code. It runs
-after the candidate fetch and before the recency re-rank, on BOTH ranking
-paths: the numpy path (SQLite) and the vector_distance_cos path (Turso) hand
-it the same (cosine, language) pool, so the order cannot depend on which
-database answered.
+Kept so scripts/dj_eval/replay_bench.py can reproduce the comparison that
+retired it. It was backend/dj_language.py in PR #21 until 2026-10-19: a pure
+re-rank run after the candidate fetch on both ranking paths. The vector did
+better without it: with the language block at 0.40 of the fused recipe and a
+stronger skip term in dj_replay, real-user finished-vs-skipped AUC was 0.747
+against this re-rank's 0.688 (+0.061, 95% CI +0.035..+0.084), listener
+language@10 0.952 (this: 0.981), and three Kannada skips cleared Kannada
+from the top 10 (this: 0.15 left). See the PR for the tables.
 
     s(l)        = sum over the session's tracks in language l of
                   value(track) * 0.5 ** (age / HALF_LIFE)
@@ -23,8 +25,10 @@ Only this session counts: the language follows what the listener wants
 now, not their library. Recency is the decay, so a Kannada session that
 switches to Hindi follows Hindi within a few songs. Skips count against
 their language, and a language whose score goes negative is demoted below
-every neutral one. With no positive event yet (cold start), the seed's
-language is the session's one signal, unless the seed itself was skipped.
+every neutral one. The seed's language is used exactly as dj_replay uses
+the seed vector: only when the log holds no positive event at all (no
+search, queue, pick, finish or 'next'); then it counts as one accepted
+song. Any positive event and the seed has no influence.
 Untagged tracks are a language of their own ('' below): an instrumental
 session asks for more instrumentals.
 
@@ -106,10 +110,12 @@ def session_scores(events, lang_of, seed=None, half_life: float = HALF_LIFE,
     then a skip is a skip, a search then a finish is one accept. Tracks
     missing from `lang_of` are ignored."""
     last: dict = {}                       # tid -> (index of last event, value)
+    positive = False                      # dj_replay's "S is not None"
     for i, e in enumerate(events or []):
         tid, a = e.get("id"), e.get("action")
         if tid not in lang_of:
             continue
+        positive = positive or a in _VALUE
         if a == "skipped":
             last[tid] = (i, -skip_penalty)
         elif a in _VALUE:
@@ -123,8 +129,7 @@ def session_scores(events, lang_of, seed=None, half_life: float = HALF_LIFE,
     for age, (tid, (_i, v)) in enumerate(order):
         k = lang_key(lang_of[tid])
         out[k] = out.get(k, 0.0) + v * 0.5 ** (age / half_life)
-    if not any(v > 0 for _i, v in last.values()) and seed in lang_of and \
-            not (seed in last and last[seed][1] < 0):
+    if not positive and seed in lang_of:
         k = lang_key(lang_of[seed])
         out[k] = out.get(k, 0.0) + 1.0
     return out

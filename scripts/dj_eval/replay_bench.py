@@ -73,7 +73,8 @@ sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / "backend"))
 sys.path.insert(0, str(_REPO / "scripts"))
 
-import dj_language  # noqa: E402
+from dj_eval import language_rerank as dj_language  # noqa: E402  (measured, not shipped)
+import dj_replay  # noqa: E402
 from dj_replay import MAX_EVENTS, library_mean, parse_events, replay  # noqa: E402
 from dj_eval.client import classify  # noqa: E402
 from dj_eval.groups import (  # noqa: E402
@@ -260,7 +261,7 @@ def group_moments(rows):
     return out
 
 
-def scenario_moments(rows):
+def scenario_moments(rows, mert=None, dup_key=None):
     """Synthetic sessions on real tracks, 30 draws each. Every moment says
     which language's share of the top 10 it measures, and which library it
     runs in ('kn70': all Kannada tracks plus 30% Hindi; None: everything).
@@ -268,6 +269,13 @@ def scenario_moments(rows):
       lib70    library 70% kn / 30% hi, three Hindi songs finished: hi@10
       skip<j>  three Kannada songs finished, then j Kannada skips: kn@10
       switch<k> five Kannada finished, then k Hindi finished: hi@10
+      mixed    one track searched, then three of its neighbours that sound
+               least alike (by MERT) skipped: the share of the top 10 in
+               those three tracks' own 15 nearest neighbours, without the
+               skips ("before") and with them ("after")
+      twin     a track with another release (same cleaned title and primary
+               artist) is searched: is the other release in the top 10, and
+               is it still there once the searched one is skipped
     """
     rng = np.random.default_rng(20261019)
     kn = [r["id"] for r in rows if r["language"] == "kn"]
@@ -294,7 +302,63 @@ def scenario_moments(rows):
         h4 = rng.choice(hi, 4, replace=False).tolist()
         for j in range(5):
             out.append(moment(f"switch{j}: hi@10", [done(t) for t in k5 + h4[:j]], "hi", None))
+    if mert is not None:
+        out += _type_moments(rows, mert, dup_key, rng)
     return out, set(kn) | set(hi70)
+
+
+def _type_moments(rows, mert, dup_key, rng):
+    ids = np.array([r["id"] for r in rows])
+    M = mert / np.linalg.norm(mert, axis=1, keepdims=True)
+    M = M - M.mean(axis=0)
+    M /= np.linalg.norm(M, axis=1, keepdims=True)
+
+    def near(i, n, skip=()):
+        sims = M @ M[i]
+        out = []
+        for j in np.argsort(-sims):
+            if j != i and j not in skip and dup_key[ids[j]] != dup_key[ids[i]]:
+                out.append(j)
+            if len(out) >= n:
+                break
+        return out
+
+    def ev(t, a):
+        return {"id": int(t), "action": a, "played_ratio": 1.0 if a == "completed" else
+                (0.1 if a == "skipped" else None)}
+    out = []
+    en = [i for i, r in enumerate(rows) if r["language"] == "en"]
+    for _ in range(30):
+        x = int(rng.choice(en))
+        cand = near(x, 60)
+        picks = [int(rng.choice(cand))]
+        for _k in range(2):
+            rest = [c for c in cand if c not in picks]
+            picks.append(min(rest, key=lambda c: max(M[c] @ M[p] for p in picks)))
+        members = set()
+        for pk in picks:
+            members |= {int(ids[j]) for j in near(pk, 15, skip={x})}
+        members -= {int(ids[x])} | {int(ids[p]) for p in picks}
+        base = [ev(ids[x], "searched")]
+        skips = [ev(ids[p], "skipped") for p in picks]
+        excl = {int(ids[x])} | {int(ids[p]) for p in picks}
+        for name, events in (("mixed3: before", base), ("mixed3: after", base + skips)):
+            out.append({"src": "scenario", "scenario": name, "members": members,
+                        "metric": "share", "events": events, "seed": int(ids[x]),
+                        "exclude": excl, "user": None})
+    by_key = defaultdict(list)
+    for i, r in enumerate(rows):
+        by_key[dup_key[r["id"]]].append(i)
+    pairs = [v[:2] for k, v in sorted(by_key.items()) if len(v) >= 2 and k[0]]
+    for a_, b_ in [pairs[i] for i in rng.permutation(len(pairs))[:40]]:
+        excl = {int(ids[a_])}
+        base = [ev(ids[a_], "searched")]
+        for name, events in (("twin: before", base),
+                             ("twin: after skip", base + [ev(ids[a_], "skipped")])):
+            out.append({"src": "scenario", "scenario": name, "members": {int(ids[b_])},
+                        "metric": "present", "events": events, "seed": events[-1]["id"],
+                        "exclude": excl, "user": None})
+    return out
 
 
 # ------------------------------------------------------------- the ranker
@@ -313,10 +377,23 @@ class Ranker:
         self.library = Counter(dj_language.lang_key(lang_of[int(t)]) for t in ids)
         self.vecs = {int(t): X[i] for i, t in enumerate(ids)}
 
-    def pool(self, m):
+    def pool(self, m, center="full", replay_kw=None):
+        """center 'nolang': the library mean without its language block, so
+        the language dims stay raw (shares, not rarity-weighted). replay_kw
+        overrides dj_replay's NEG_WEIGHT / M_STEP / M_MAX for this call."""
         events = parse_events(m["events"])
         seed = self.vecs.get(m["seed"])
-        res = replay(events, self.vecs, self.mu, seed)
+        mu = self.mu.copy()
+        if center == "nolang":
+            mu[fv.MERT_DIM + len(fv.SCALAR_COLS):] = 0.0
+        saved = {k: getattr(dj_replay, k) for k in (replay_kw or {})}
+        try:
+            for k, v in (replay_kw or {}).items():
+                setattr(dj_replay, k, v)
+            res = replay(events, self.vecs, mu, seed)
+        finally:
+            for k, v in saved.items():
+                setattr(dj_replay, k, v)
         if res.query is None:
             return None
         sims = self.X @ res.query
@@ -330,21 +407,52 @@ class Ranker:
         rank = np.empty(len(self.ids), dtype=np.int64)
         rank[order] = np.arange(len(order))
         top = order[:POOL_MAX]
-        return {"events": events, "order": order, "rank": rank, "n": len(order),
+        return {"events": events, "order": order, "rank": rank, "n": len(order), "mu": mu,
                 "pool": [(float(sims[i]), self.lang_of[int(self.ids[i])]) for i in top],
-                "pool_ids": [int(self.ids[i]) for i in top]}
+                "pool_ids": [int(self.ids[i]) for i in top], "pool_idx": top}
 
-    def final(self, m, P, rr):
-        """Final order: (list of top-K ids, rank function)."""
+    def final(self, m, P, rr, nearest=None):
+        """Final order: (list of top-K ids, rank function). `nearest`
+        {"w", "h"}: subtract w * max over the session's skipped tracks of
+        decay * centred cosine(skip, candidate), decay 0.5 ** (age / h)
+        (h None: no decay). Pool 300 while there is a skip, else 150."""
+        cands = P["pool"]
+        n = POOL
+        if nearest is not None:
+            skips = _skipped(P["events"])
+            if skips:
+                n = POOL_MAX
+                mu = P["mu"]
+                S = []
+                for tid, age in skips:
+                    v = self.vecs.get(tid)
+                    if v is None:
+                        continue
+                    sv = v / np.linalg.norm(v) - mu
+                    d = 1.0 if nearest.get("h") is None else 0.5 ** (age / nearest["h"])
+                    S.append(d * sv / np.linalg.norm(sv))
+                if S:
+                    Xp = self.X[P["pool_idx"][:n]] - mu
+                    Xp /= np.linalg.norm(Xp, axis=1, keepdims=True)
+                    pen = (Xp @ np.array(S).T).max(axis=1)
+                    cands = [(c - nearest["w"] * float(p), lang)
+                             for (c, lang), p in zip(cands[:n], pen)]
+        idx = list(range(min(n, len(cands))))
+        if nearest is not None:
+            idx.sort(key=lambda i: -cands[i][0])
         if rr is None:
-            perm = list(range(POOL))
+            perm = idx
         else:
             scores = language_scores(rr, P["events"], self.lang_of, m["seed"], self.library)
             # The endpoint fetches the deeper pool only while the session is
             # demoting a language (dj_language.demoting).
-            n = POOL_MAX if dj_language.demoting(scores) else POOL
-            perm = [i for i, _ in dj_language.rerank(P["pool"][:n], scores, K, rr["weight"],
-                                                     rr["close"], rr.get("demote", rr["weight"]))]
+            if dj_language.demoting(scores):
+                n = POOL_MAX
+                if nearest is None:
+                    idx = list(range(min(n, len(cands))))
+            sub = [cands[i] for i in idx]
+            perm = [idx[i] for i, _ in dj_language.rerank(sub, scores, K, rr["weight"],
+                                                          rr["close"], rr.get("demote", rr["weight"]))]
         new_pool = [P["pool_ids"][i] for i in perm]
         pool_rank = {t: j for j, t in enumerate(new_pool)}
 
@@ -354,6 +462,17 @@ class Ranker:
             i = self.pos.get(t)
             return None if i is None else int(P["rank"][i])
         return new_pool[:K], rank_of
+
+
+def _skipped(events):
+    """[(track id, age in tracks)] for the tracks whose last verdict in the
+    log is a skip; age 0 = the latest track."""
+    last = {}
+    for i, e in enumerate(events):
+        if e["action"] in ("searched", "queued", "picked", "completed", "next", "skipped"):
+            last[e["id"]] = (i, e["action"])
+    order = sorted(last.items(), key=lambda kv: -kv[1][0])
+    return [(tid, age) for age, (tid, (_i, a)) in enumerate(order) if a == "skipped"]
 
 
 def language_scores(rr, events, lang_of, seed, library):
@@ -388,7 +507,7 @@ def auc(pairs):
     return float((c[:, None] < s[None, :]).mean() + 0.5 * (c[:, None] == s[None, :]).mean())
 
 
-def evaluate(rankers, moments, pools, rr, meta):
+def evaluate(rankers, moments, pools, rr, meta, nearest=None):
     lang_of, dup_key = meta["lang_of"], meta["dup_key"]
     served = defaultdict(list)
     fut, lang_hit, untag, dup_skip, dup_seen, top8, offered = [], [], [], [], [], [], []
@@ -398,9 +517,14 @@ def evaluate(rankers, moments, pools, rr, meta):
         if P is None:
             continue
         rk = rankers[m["user"]]
-        top, rank_of = rk.final(m, P, rr)
+        top, rank_of = rk.final(m, P, rr, nearest)
         if m["src"] == "scenario":
-            scen[m["scenario"]].append(sum(lang_of[t] == m["lang"] for t in top) / K)
+            if m.get("metric") == "present":
+                scen[m["scenario"]].append(float(any(t in m["members"] for t in top)))
+            elif m.get("metric") == "share":
+                scen[m["scenario"]].append(sum(t in m["members"] for t in top) / K)
+            else:
+                scen[m["scenario"]].append(sum(lang_of[t] == m["lang"] for t in top) / K)
             continue
         if m["src"] == "group":
             key = m["group"] if m["family"] == "lang" else "band:" + m["group"]
@@ -459,10 +583,67 @@ SPACES = {
     # name: (langs, weights, v1)
     "v1_stored": None,
     "v1_rebuilt": (V1_LANGS, None, True),
-    "A": (fv.TOP_LANGS, (fv.W_MERT, fv.W_SCALAR, fv.W_LANG), False),
-    "C_lang0.10": (fv.TOP_LANGS, (fv.W_MERT, fv.W_SCALAR, 0.10), False),
-    "C_lang0": (fv.TOP_LANGS, (fv.W_MERT, fv.W_SCALAR, 0.0), False),
+    "A": (fv.TOP_LANGS, (fv.W_MERT, fv.W_SCALAR, fv.W_LANG), False),   # the current recipe
+    "W20": (fv.TOP_LANGS, (0.55, 0.25, 0.20), False),                    # fused_v2's first weights
+    "C_lang0.10": (fv.TOP_LANGS, (0.55, 0.25, 0.10), False),
+    "C_lang0": (fv.TOP_LANGS, (0.55, 0.25, 0.0), False),
 }
+# dj_replay's avoid constants before 2026-10-19, for the comparisons.
+LEGACY_REPLAY = {"NEG_WEIGHT": 0.6, "M_STEP": 0.25, "M_MAX": 1.0}
+# Language block raised; MERT and scalars keep their 0.55 : 0.25 ratio and
+# share what is left, so the three still sum to 1 (only ratios matter: the
+# vector is L2-normalised).
+for _w in (0.30, 0.40, 0.50):
+    _k = (1.0 - _w) / (0.55 + 0.25)
+    SPACES[f"W{int(_w * 100)}"] = (fv.TOP_LANGS, (0.55 * _k, 0.25 * _k, _w), False)
+
+
+def final_table():
+    """The rows the PR reports (2026-10-19). Every row names its avoid
+    constants, since dj_replay's defaults changed with this work."""
+    rr = {"weight": 3.0, "half_life": 3.0, "skip_penalty": 1.25, "demote": 12.0,
+          "close": dj_language.CLOSE}
+    return [
+        {"space": "v1_stored", "replay": LEGACY_REPLAY},
+        {"space": "W20", "replay": LEGACY_REPLAY},
+        {"space": "W20", "replay": LEGACY_REPLAY, "rr": rr},
+        {"space": "W20", "replay": LEGACY_REPLAY, "nearest": {"w": 0.4, "h": 3.0}},
+        {"space": "W40", "replay": LEGACY_REPLAY, "nearest": {"w": 0.4, "h": 3.0}},
+        {"space": "W20", "replay": {}},
+        {"space": "A", "replay": LEGACY_REPLAY},
+        {"space": "A", "replay": {}},
+    ]
+
+
+def vector_grid2():
+    """Round 2: past the edge of round 1's best avoid setting."""
+    out = []
+    for sp in ("W20", "W40"):
+        for nw, ms, mx in ((1.0, 0.5, 1.5), (1.0, 0.5, 2.0), (1.0, 0.75, 1.5),
+                           (1.25, 0.5, 1.5), (1.5, 0.5, 2.0)):
+            out.append({"space": sp, "center": "full",
+                        "replay": {"NEG_WEIGHT": nw, "M_STEP": ms, "M_MAX": mx}})
+    return out
+
+
+def vector_grid():
+    """The vector-only configurations (no dj_language re-rank), 2026-10-19:
+    can language and skips come from the taste vector alone?"""
+    out = []
+    for sp in ("W20", "W30", "W40", "W50"):
+        for c in ("full", "nolang"):
+            out.append({"space": sp, "center": c, "replay": LEGACY_REPLAY})
+    for sp in ("W30", "W40", "W50"):
+        for c in ("full", "nolang"):
+            for nw, ms, mx in ((0.8, 0.25, 1.0), (1.0, 0.25, 1.0), (1.0, 0.5, 1.0),
+                               (1.0, 0.5, 1.5)):
+                out.append({"space": sp, "center": c,
+                            "replay": {"NEG_WEIGHT": nw, "M_STEP": ms, "M_MAX": mx}})
+            for w in (0.1, 0.2, 0.4):
+                for h in (None, 3.0):
+                    out.append({"space": sp, "center": c, "replay": LEGACY_REPLAY,
+                            "nearest": {"w": w, "h": h}})
+    return out
 
 
 def main(argv=None) -> int:
@@ -478,6 +659,12 @@ def main(argv=None) -> int:
     ap.add_argument("--demotes", default="3", help="DEMOTE grid")
     ap.add_argument("--legacy-b", action="store_true",
                     help="also run PR #21's first re-rank (library prior, skips ignored)")
+    ap.add_argument("--vector-grid", action="store_true",
+                    help="also run vector_grid(): no re-rank, language and skips from the vector")
+    ap.add_argument("--vector-grid2", action="store_true", help="also run vector_grid2()")
+    ap.add_argument("--final", action="store_true", help="only the rows of final_table()")
+    ap.add_argument("--only-vector-grid", action="store_true",
+                    help="run vector_grid() and the session re-rank on A as the reference")
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     a = ap.parse_args(argv)
 
@@ -493,7 +680,7 @@ def main(argv=None) -> int:
         own = {int(r[0]) for r in conn.execute(
             "SELECT track_id FROM user_tracks WHERE user_id = ?", (uid,))}
         libs[uid] = [t for t in ids if t in own]
-    scen, kn70 = scenario_moments(rows)
+    scen, kn70 = scenario_moments(rows, mert, dup_key)
     libs["kn70"] = [t for t in ids if t in kn70]
     moments = (listener_moments(a.listeners.glob("*.json"))
                + real_moments(conn, dur_of) + group_moments(rows) + scen)
@@ -509,9 +696,20 @@ def main(argv=None) -> int:
                      for b in floats(a.skip_penalties) for d in floats(a.demotes)]
     if a.legacy_b:
         grid.append({"mode": "b", "weight": 3.0, "close": dj_language.CLOSE})
+    cfgs = []
+    if not a.only_vector_grid:
+        cfgs += [{"space": sp, "rr": rr} for sp in a.spaces.split(",") for rr in grid]
+    else:
+        cfgs += [{"space": "W20", "replay": LEGACY_REPLAY, "rr": rr} for rr in grid]
+    if a.vector_grid or a.only_vector_grid:
+        cfgs += vector_grid()
+    if a.vector_grid2:
+        cfgs += vector_grid2()
+    if a.final:
+        cfgs = final_table()
     meta = {"lang_of": lang_of, "dup_key": dup_key}
     results = []
-    for name in a.spaces.split(","):
+    for name in dict.fromkeys(c["space"] for c in cfgs):
         spec = SPACES[name]
         X = stored if spec is None else build_space(rows, mert, spec[0], spec[1], spec[2])
         X = X / np.linalg.norm(X, axis=1, keepdims=True)
@@ -522,14 +720,26 @@ def main(argv=None) -> int:
             if uid not in (None, "kn70") and len(lib) < MIN_LIBRARY:
                 rk.mu = library_mean(X)  # the global mean, as _dj_library_mean does
             rankers[uid] = rk
-        pools = [rankers[m["user"]].pool(m) for m in moments]
-        for rr in grid:
-            r = evaluate(rankers, moments, pools, rr, meta)
-            r["space"] = name
-            r["rerank"] = None if rr is None else {
-                k: (bool(v) if k == "close" else v) for k, v in rr.items()}
-            results.append(r)
-        print(f"  space {name} done ({time.time() - t0:.0f} s)", flush=True)
+        mine = [c for c in cfgs if c["space"] == name]
+        keys = dict.fromkeys((c.get("center", "full"), tuple(sorted((c.get("replay") or {}).items())))
+                             for c in mine)
+        for center, rkw in keys:
+            pools = [rankers[m["user"]].pool(m, center, dict(rkw)) for m in moments]
+            for c in mine:
+                if (c.get("center", "full"), tuple(sorted((c.get("replay") or {}).items()))) \
+                        != (center, rkw):
+                    continue
+                rr = c.get("rr")
+                r = evaluate(rankers, moments, pools, rr, meta, c.get("nearest"))
+                r["space"] = name
+                r["center"] = center
+                r["replay"] = dict(rkw)
+                r["nearest"] = c.get("nearest")
+                r["rerank"] = None if rr is None else {
+                    k: (bool(v) if k == "close" else v) for k, v in rr.items()}
+                results.append(r)
+            print(f"  space {name} centre {center} {dict(rkw) or ''} done "
+                  f"({time.time() - t0:.0f} s)", flush=True)
 
     _print(results)
     a.out.mkdir(parents=True, exist_ok=True)
@@ -546,8 +756,16 @@ SLOTTED = ("en", "hi", "kn", "te", "ta", "pa")
 
 def _label(r):
     rr = r["rerank"]
+    extra = ""
+    if r.get("center", "full") != "full":
+        extra += " centre=no-lang"
+    if r.get("replay"):
+        extra += " " + " ".join(f"{k}={v:g}" for k, v in sorted(r["replay"].items()))
+    if r.get("nearest"):
+        nn = r["nearest"]
+        extra += f" nearest-skip w={nn['w']:g}" + (f" h={nn['h']:g}" if nn.get("h") else "")
     if rr is None:
-        return f"{r['space']}"
+        return f"{r['space']}{extra}"
     if rr.get("mode") == "b":
         return f"{r['space']} +rr(b: library prior, no skips) w={rr['weight']:g}"
     return (f"{r['space']} +rr w={rr['weight']:g} half-life={rr['half_life']:g} "

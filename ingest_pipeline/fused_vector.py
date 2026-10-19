@@ -36,6 +36,14 @@ list of another length changes FUSED_DIM, backend/app.py's
 FUSED_LANG_DIMS, and that column type. 'km' (Khmer) is gone: it only ever
 came from Whisper mis-tags, and no track carries it today.
 
+W_LANG is 0.40 (fused_v1: 0.20), the rest rescaled to keep MERT : scalars at
+0.55 : 0.25. Language comes from the vector alone: a separate session
+language re-rank was built, measured and dropped (scripts/dj_eval/
+language_rerank.py). On the replay benchmark (scripts/dj_eval/
+replay_bench.py, 2026-10-19), with dj_replay's stronger skip term, 0.20 left
+listener language@10 at 0.868 and 0.40 brought it to 0.952; 0.30 and 0.50
+scored within 0.02 of 0.40 on language and the same on real-user AUC.
+
 Changing SCALAR_COLS, TOP_LANGS or the weights changes the vector SPACE:
 every stored vector must be rebuilt, and cosine against un-rebuilt rows is
 meaningless. Rebuilding is cheap — no GPU, since the MERT half is already
@@ -77,7 +85,9 @@ SCALAR_RANGE = {
 LANG_SLOT_MIN_TRACKS = 25
 TOP_LANGS = ["en", "hi", "kn", "te", "ta", "pa", "ml", "es", "fr", "pt"]
 LANG_DIMS = len(TOP_LANGS) + 1
-W_MERT, W_SCALAR, W_LANG = 0.55, 0.25, 0.20
+# MERT and scalars keep fused_v1's 0.55 : 0.25 ratio and share what the
+# language block leaves (see "The language block" above for why 0.40).
+W_MERT, W_SCALAR, W_LANG = 0.4125, 0.1875, 0.40
 FUSED_DIM = MERT_DIM + len(SCALAR_COLS) + LANG_DIMS
 
 
