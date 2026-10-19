@@ -587,9 +587,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # NOT "ADD COLUMN user_id" (removed 2026-10-10). Adding it to a fresh
         # schema.sql database flipped it onto the legacy per-user path below,
         # which rebuilt `tracks` without `language`, so the third get_conn()
-        # died on schema.sql's language index. Production (Turso) has no
-        # tracks.user_id and runs fine. A DB that already has the column
-        # (every existing dev DB) is unaffected. tests/database covers this.
+        # died on schema.sql's language index. Production DOES have
+        # tracks.user_id (unused; the 2026-10-18 backup's DDL), so a copy of
+        # it reaches that path too; the rebuild is now limited to databases
+        # not yet split into user_tracks. tests/database covers both.
         "ALTER TABLE tracks ADD COLUMN youtube_id TEXT",
         "ALTER TABLE tracks ADD COLUMN youtube_queried_at TIMESTAMP",
         "ALTER TABLE tracks ADD COLUMN energy_pred REAL",
@@ -671,7 +672,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
         conn.commit()
 
-        if _needs_rebuild(conn) or _has_global_track_uniqueness(conn):
+        # Legacy means not split yet. A split database (user_tracks exists)
+        # with a unique spotify_id or apple_id index is the modern shape:
+        # a copy of production carries the dead tracks.user_id column, and
+        # once its duplicates were merged and schema.sql's unique indexes
+        # built (scripts/_dedupe_tracks.py, 2026-10-18), this rebuilt
+        # `tracks` into the legacy shape, dropped `language` and every
+        # later column, and schema.sql's language index then failed.
+        if not _table_exists(conn, "user_tracks") and (
+                _needs_rebuild(conn) or _has_global_track_uniqueness(conn)):
             _rebuild_tracks_legacy_composite(conn)
             conn.execute(
                 "UPDATE tracks SET user_id = ? WHERE user_id IS NULL",
