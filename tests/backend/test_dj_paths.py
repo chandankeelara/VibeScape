@@ -167,3 +167,57 @@ def test_both_ranking_paths_return_the_same_order(client, library, app_module, d
     assert [t["id"] for t in turso["tracks"]] == [t["id"] for t in local["tracks"]]
     for a, b in zip(turso["tracks"], local["tracks"]):
         assert a["score"] == pytest.approx(b["score"], abs=1e-5)
+
+
+def test_before_the_migration_the_dj_ranks_fused_v1_instead_of_failing(
+        client, library, app_module, db, sql, monkeypatch, caplog):
+    """A deploy that lands before scripts/refuse_vectors.py: production's
+    shape, no fused_v2 column, fused_v1 vectors in fused_embedding. Turso-
+    shaped (no ensure_db, which would add the column on SQLite). Without the
+    fallback every request is a 500 (no such column)."""
+    import logging
+    import db_client
+    h, L = library
+    # fused_v1 vectors: the same MERT and scalars, the 11-slot language block
+    ten = ["en", "hi", "kn", "te", "ta", "pa", "ml", "es", "fr", "pt"]
+    for tid, lang, blob in sql.execute(
+            f"SELECT te.track_id, t.language, te.{fv.FUSED_COLUMN} FROM track_embeddings te "
+            f"JOIN tracks t ON t.id = te.track_id").fetchall():
+        v2 = np.frombuffer(blob, dtype=np.float32)
+        head = v2[:fv.MERT_DIM + len(fv.SCALAR_COLS)]
+        onehot = np.zeros(11, dtype=np.float32)
+        onehot[ten.index(lang)] = 0.2
+        v1 = np.concatenate([head, onehot])
+        sql.execute("UPDATE track_embeddings SET fused_embedding = ? WHERE track_id = ?",
+                    ((v1 / np.linalg.norm(v1)).astype(np.float32).tobytes(), tid))
+    sql.execute(f"ALTER TABLE track_embeddings DROP COLUMN {fv.FUSED_COLUMN}")
+    sql.commit()
+
+    def turso_shaped():
+        conn = sqlite3.connect(str(db), check_same_thread=False,
+                               factory=db_client._SqliteConnection)
+        conn.row_factory = sqlite3.Row
+        _register_turso_functions(conn)
+        return conn
+    monkeypatch.setattr(app_module, "get_conn", turso_shaped)
+    monkeypatch.setenv("DB_BACKEND", "turso")
+    caplog.set_level(logging.WARNING, logger="vibescape")
+
+    played = L["hi"][:3]
+    body = {"events": [done(t) for t in played], "exclude_ids": played}
+    for _ in range(2):
+        out = _post(client, h, played[-1], body)
+        assert out["mode_used"] == "dj_replay_fused_turso"
+        assert _share(out, L["hi"]) >= 0.9
+    warnings = [r for r in caplog.records if fv.FUSED_COLUMN in r.getMessage()]
+    assert len(warnings) == 1
+
+    # The migration adds the column: picked up at the next check, no restart.
+    sql.execute(f"ALTER TABLE track_embeddings ADD COLUMN {fv.FUSED_COLUMN} F32_BLOB({fv.FUSED_DIM})")
+    sql.commit()
+    app_module._fused_v2_state["checked_at"] = 0.0
+    conn = turso_shaped()
+    try:
+        assert app_module._variant_spec("fused", conn) == (fv.FUSED_MODEL_VERSION, fv.FUSED_DIM)
+    finally:
+        conn.close()

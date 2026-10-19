@@ -154,6 +154,7 @@ def db(tmp_path, monkeypatch, app_module):
     path = tmp_path / "test.db"
     monkeypatch.setenv("VIBESCAPE_DB_PATH", str(path))
     app_module._dj_mean_cache.clear()
+    app_module._fused_v2_state.update(ready=None, checked_at=0.0, warned=False)
     conn = app_module.get_conn()  # runs ensure_db() -> schema.sql + migrations
     opened = conn.execute("PRAGMA database_list").fetchall()[0][2]
     conn.close()

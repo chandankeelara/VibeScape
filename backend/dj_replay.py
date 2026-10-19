@@ -124,10 +124,17 @@ class ReplayResult:
 
 
 def replay(events: list[dict], vecs: dict, mu: np.ndarray,
-           seed_vec: Optional[np.ndarray] = None) -> ReplayResult:
+           seed_vec: Optional[np.ndarray] = None, *, neg_weight: Optional[float] = None,
+           m_step: Optional[float] = None, m_max: Optional[float] = None) -> ReplayResult:
     """Replay `events` (already resolved: e["id"] is an internal int) over
     `vecs` {track_id: raw vector}. Tracks with no vector still count toward
-    the skip streak but contribute no direction."""
+    the skip streak but contribute no direction. neg_weight / m_step / m_max
+    default to NEG_WEIGHT / M_STEP / M_MAX; the app passes the pre-fused_v2
+    values when it has to rank fused_v1 vectors (backend/app.py
+    _fused_v2_ready)."""
+    neg_weight = NEG_WEIGHT if neg_weight is None else neg_weight
+    m_step = M_STEP if m_step is None else m_step
+    m_max = M_MAX if m_max is None else m_max
     S = N = None
     m, k, primed = 0.0, 0, 0.0
     for e in events:
@@ -144,7 +151,7 @@ def replay(events: list[dict], vecs: dict, mu: np.ndarray,
             amp = min(STREAK_AMP_MAX, 1.0 + STREAK_AMP_STEP * (k - 1))
             beta = min(N_BETA_MAX, N_BETA_STEP * amp)
             N = x if N is None else _unit((1 - beta) * N + beta * x)
-            m = min(M_MAX, m + M_STEP * (1.0 - (ratio or 0.0)) * amp)
+            m = min(m_max, m + m_step * (1.0 - (ratio or 0.0)) * amp)
             continue
 
         if a == "next":
@@ -181,7 +188,7 @@ def replay(events: list[dict], vecs: dict, mu: np.ndarray,
         if seed_vec is None:
             return ReplayResult(None, True, k, m)
         S, from_seed = _unit(_unit(seed_vec) - mu), True
-    q = S if N is None else _unit(S - NEG_WEIGHT * m * N)
+    q = S if N is None else _unit(S - neg_weight * m * N)
     return ReplayResult(q, from_seed, k, m)
 
 

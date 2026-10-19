@@ -1350,11 +1350,14 @@ session language re-rank was built and measured, and lost
 `scripts/refuse_vectors.py`, `deploy/cloud-run/deploy.ps1`
 
 **verified on a local copy only** (dry run, apply, re-run, then the app and
-the HTTP eval on it). The new app reads only `fused_v2_embedding`, and on
-Turso nothing adds it but the migration (`ensure_db()` no-ops there).
-Deployed first, every DJ request would fail: `_load_mert_vec` selects the
-column outside any try, so "no such column" becomes a 500 (read from the
-code, not run). So: backup, migrate, deploy. The migration
+the HTTP eval on it). On Turso nothing adds `fused_v2_embedding` but the
+migration (`ensure_db()` no-ops there). Deployed first, the app ranks
+fused_v1 instead (`_fused_v2_ready`: one zero-row probe, cached, re-checked
+every minute while missing, one warning): v1 column, 788 wide, v1 mean key,
+pre-fused_v2 avoid constants, never mixed with v2 in a request. That is the
+previous revision's DJ, so the order is still backup, migrate, deploy; a
+wrong order degrades instead of failing (tested on a Turso-shaped SQLite
+file, where without the fallback every request dies on "no such column"). The migration
 is an ALTER TABLE ADD COLUMN (no row rewrite) and ~5.3k UPDATEs in
 execute_batch chunks of 200; it reads every fused row's MERT blob raw (what
 FuseStage does on every prod run). Nothing in it has run against Turso.
