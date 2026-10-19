@@ -102,12 +102,18 @@ def test_avoid_term_is_bounded_however_many_skips(space):
     vecs, mu = space
     log = [ev(1, "completed", 1)] + [ev(i, "skipped", 0.0) for i in range(2, 30)]
     res = R.replay(log, vecs, mu)
-    assert res.avoid <= 1.0
-    # the vibe still contributes: the query keeps a real component along S
-    assert cos(res.query, vecs[1]) > 0.3
+    assert res.avoid <= R.M_MAX
+    # the vibe still contributes. It was > 0.3 before 2026-10-19; the avoid
+    # term may now reach twice |S| (NEG_WEIGHT 1.0 x M_MAX 2.0, chosen on
+    # the replay benchmark), and 28 skips leave 0.22 here. It must not flip.
+    assert cos(res.query, vecs[1]) > 0.15
 
 
-def test_a_skip_run_primes_the_next_finished_track(space):
+def test_a_skip_run_primes_the_next_finished_track(space, monkeypatch):
+    """Priming moves S. The avoid term is switched off so it measures S: since
+    2026-10-19 the avoid term left after a skip run (m up to 2) is strong
+    enough to pull the query off the new track on its own."""
+    monkeypatch.setattr(R, "NEG_WEIGHT", 0.0)
     vecs, mu = space
     calm = [ev(1, "completed", 1), ev(9, "completed", 1)]
     after_skips = [ev(1, "completed", 1), ev(2, "skipped", 0.1), ev(3, "skipped", 0.1),

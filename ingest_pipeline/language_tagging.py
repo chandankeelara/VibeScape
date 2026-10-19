@@ -85,8 +85,10 @@ def tag(conn, *, track_id: int | None = None, spotify_id: str | None = None,
                      that genuinely cannot be called. Writes language=NULL
                      with language_status='done'. This is a VERDICT, not a
                      failure: it satisfies fuse's 'done'-only gate exactly
-                     like a real language does, and the fused vector simply
-                     uses the 'other' bucket. "Failed" would be a stage
+                     like a real language does, and the fused vector gets
+                     an all-zero, language-neutral language block (fused_v2;
+                     before 2026-10-19 it shared 'other' with every rare
+                     language). "Failed" would be a stage
                      error, which is a different thing and blocks the row.
 
     Identify the row by `spotify_id` where you can -- local and prod track

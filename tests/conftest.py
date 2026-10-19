@@ -137,7 +137,7 @@ def pauses(monkeypatch):
     monkeypatch.setattr(base, "_sleep", recorded.append)
     return recorded
 
-FUSED_DIM = 788
+from ingest_pipeline.fused_vector import FUSED_COLUMN, FUSED_DIM  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -154,6 +154,7 @@ def db(tmp_path, monkeypatch, app_module):
     path = tmp_path / "test.db"
     monkeypatch.setenv("VIBESCAPE_DB_PATH", str(path))
     app_module._dj_mean_cache.clear()
+    app_module._fused_v2_state.update(ready=None, checked_at=0.0, warned=False)
     conn = app_module.get_conn()  # runs ensure_db() -> schema.sql + migrations
     opened = conn.execute("PRAGMA database_list").fetchall()[0][2]
     conn.close()
@@ -221,7 +222,7 @@ def make_tracks(sql):
             sql.execute("INSERT INTO user_tracks (user_id, track_id) VALUES (?, ?)", (user_id, tid))
             if vec is not None:
                 blob = np.asarray(unit(vec), dtype=np.float32).tobytes()
-                sql.execute("INSERT INTO track_embeddings (track_id, fused_embedding) VALUES (?, ?)",
+                sql.execute(f"INSERT INTO track_embeddings (track_id, {FUSED_COLUMN}) VALUES (?, ?)",
                             (tid, blob))
             ids.append(tid)
         sql.commit()

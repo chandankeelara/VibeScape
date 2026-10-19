@@ -975,12 +975,55 @@ def search_tracks(
 MERT_MODEL_VERSION = "mert_v1_95m_fp32_30s"
 MERT_DIM = 768
 
-# Fused variant: MERT (768) + scalar features (9) + language one-hot (10 langs + 'other')
-# Recipe defined in scripts/_recommender_feasibility.py + scripts/_backfill_fused_embeddings.py.
-FUSED_MODEL_VERSION = "fused_v1_mert_scalar_lang"
+# Fused variant: MERT (768) + scalar features (9) + a 64-slot language block
+# (one slot per tagged language, untagged all zeros). The recipe is
+# ingest_pipeline/fused_vector.py, and these must match it
+# (tests/backend/test_dj_paths.py checks). fused_v2 lives in its own column,
+# FUSED_COLUMN; fused_v1's 788-wide vectors stay in 'fused_embedding' for a
+# rollback until a cleanup drops them. The version also keys the
+# user_embedding_mean cache, so bumping it is what stops a mean of old-space
+# vectors being reused.
+FUSED_MODEL_VERSION = "fused_v2_mert_scalar_lang64"
+FUSED_COLUMN = "fused_v2_embedding"
 FUSED_SCALAR_DIMS = 9
-FUSED_LANG_DIMS = 11
-FUSED_DIM = MERT_DIM + FUSED_SCALAR_DIMS + FUSED_LANG_DIMS  # 788
+FUSED_LANG_DIMS = 64
+FUSED_DIM = MERT_DIM + FUSED_SCALAR_DIMS + FUSED_LANG_DIMS  # 841
+
+# fused_v1, ranked only while FUSED_COLUMN does not exist yet: a deploy that
+# lands before scripts/refuse_vectors.py has migrated the database degrades to
+# what the previous revision did instead of failing every DJ request. The
+# whole request then stays in v1 -- its column, width, mean-cache key and the
+# avoid constants it was tuned with -- so a query is never ranked against
+# vectors of the other width.
+FUSED_V1_MODEL_VERSION = "fused_v1_mert_scalar_lang"
+FUSED_V1_COLUMN = "fused_embedding"
+FUSED_V1_DIM = MERT_DIM + FUSED_SCALAR_DIMS + 11  # 788
+FUSED_V1_AVOID = {"neg_weight": 0.6, "m_step": 0.25, "m_max": 1.0}
+_FUSED_V2_RECHECK_S = 60.0
+_fused_v2_state = {"ready": None, "checked_at": 0.0, "warned": False}
+
+
+def _fused_v2_ready(conn) -> bool:
+    """Does track_embeddings have FUSED_COLUMN? Once it does, that is cached
+    for the life of the process; a missing column is re-checked every
+    _FUSED_V2_RECHECK_S, so a migration run while instances are up is picked
+    up without a restart. A zero-row SELECT, not PRAGMA: it fails the same
+    way on SQLite and over Hrana."""
+    st = _fused_v2_state
+    now = datetime.now(timezone.utc).timestamp()
+    if st["ready"] or (st["ready"] is False and now - st["checked_at"] < _FUSED_V2_RECHECK_S):
+        return bool(st["ready"])
+    try:
+        conn.execute(f"SELECT {FUSED_COLUMN} FROM track_embeddings LIMIT 0").fetchall()
+        ready = True
+    except Exception as e:
+        ready = False
+        if not st["warned"]:
+            st["warned"] = True
+            log.warning("[dj] %s missing (%s): ranking fused_v1 (%s) until "
+                        "scripts/refuse_vectors.py has run", FUSED_COLUMN, e, FUSED_V1_COLUMN)
+    st["ready"], st["checked_at"] = ready, now
+    return ready
 
 # Default DJ variant; override per-request with SimilarBody.variant.
 _DJ_VARIANT_DEFAULT = (os.environ.get("DJ_EMBEDDING_VARIANT") or "fused").strip().lower()
@@ -988,11 +1031,14 @@ if _DJ_VARIANT_DEFAULT not in ("fused", "mert"):
     _DJ_VARIANT_DEFAULT = "fused"
 
 
-def _variant_spec(variant: str):
-    """Return (model_version, dim) for the requested variant."""
+def _variant_spec(variant: str, conn=None):
+    """Return (model_version, dim) for the requested variant. 'fused' is
+    fused_v1 while the database has no FUSED_COLUMN (_fused_v2_ready)."""
     v = (variant or "").strip().lower()
     if v == "mert":
         return MERT_MODEL_VERSION, MERT_DIM
+    if conn is not None and not _fused_v2_ready(conn):
+        return FUSED_V1_MODEL_VERSION, FUSED_V1_DIM
     return FUSED_MODEL_VERSION, FUSED_DIM
 
 
@@ -1044,7 +1090,9 @@ def _embedding_column_for(model_version: str) -> Optional[str]:
     if model_version == MERT_MODEL_VERSION:
         return "mert_embedding"
     if model_version == FUSED_MODEL_VERSION:
-        return "fused_embedding"
+        return FUSED_COLUMN
+    if model_version == FUSED_V1_MODEL_VERSION:
+        return FUSED_V1_COLUMN
     return None
 
 
@@ -1921,7 +1969,8 @@ def _dj_events_query(conn, raw_events, user_id, seed_vec, model_version: str, di
     mu = _dj_library_mean(conn, user_id, model_version, dim)
     if mu is None:
         mu = np.zeros(dim, dtype=np.float64)
-    res = _dj_replay(resolved, vecs, mu, seed_vec)
+    avoid = FUSED_V1_AVOID if model_version == FUSED_V1_MODEL_VERSION else {}
+    res = _dj_replay(resolved, vecs, mu, seed_vec, **avoid)
     q = res.query.astype(np.float32) if res.query is not None else None
     return q, res
 
@@ -1965,13 +2014,13 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
 
     # Resolve variant with cross-variant fallback: try requested; if seed
     # has no vector there, try the other variant; if neither, drop to vibe.
-    model_version, dim = _variant_spec(requested_variant)
+    model_version, dim = _variant_spec(requested_variant, conn)
     seed_vec = _load_mert_vec(conn, anchor_id, model_version, dim)
     variant_used = requested_variant
 
     if seed_vec is None:
         fallback_variant = "mert" if requested_variant == "fused" else "fused"
-        fb_model_version, fb_dim = _variant_spec(fallback_variant)
+        fb_model_version, fb_dim = _variant_spec(fallback_variant, conn)
         seed_vec = _load_mert_vec(conn, anchor_id, fb_model_version, fb_dim)
         if seed_vec is not None:
             model_version, dim = fb_model_version, fb_dim
@@ -2104,7 +2153,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
         # Load candidate track_ids from user's library (done + has the
         # requested embedding variant, not excluded). Option A layout:
         # one row per track, each variant in its own typed column.
-        emb_col = _embedding_column_for(model_version) or "fused_embedding"
+        emb_col = _embedding_column_for(model_version) or FUSED_COLUMN
         mode_used = f"dj_replay_{variant_used}" if use_events else f"dj_{variant_used}"
         if replay_res is not None and replay_res.from_seed:
             mode_used += "_from_seed"

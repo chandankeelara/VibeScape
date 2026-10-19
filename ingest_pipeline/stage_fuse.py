@@ -19,7 +19,11 @@ pass. Two reasons:
    the stored mert_embedding.
 
 Reads mert_embedding from track_embeddings (written by ClassifyStage),
-the scalar columns from tracks, and writes back fused_embedding.
+the scalar columns from tracks, and writes back FUSED_COLUMN (fused_v2,
+841 wide). It never touches fused_v1's 'fused_embedding', so a checkout from
+before fused_v2 that still runs this stage writes only that old column: the
+new one stays NULL for that row (out of the DJ pool, never wrong) until
+scripts/refuse_vectors.py, re-run, fills it.
 """
 from __future__ import annotations
 
@@ -28,7 +32,7 @@ import logging
 import numpy as np
 
 from .base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, iso_now
-from .fused_vector import FUSED_DIM, MERT_DIM, SCALAR_COLS, _build_fused
+from .fused_vector import FUSED_COLUMN, FUSED_DIM, MERT_DIM, SCALAR_COLS, _build_fused
 
 log = logging.getLogger("vibescape.ingest.fuse")
 
@@ -136,10 +140,10 @@ class FuseStage(Stage):
         if res.status != STATUS_DONE or not fused_blob:
             return fields, []
         return fields, [(
-            "INSERT INTO track_embeddings (track_id, fused_embedding, updated_at) "
+            f"INSERT INTO track_embeddings (track_id, {FUSED_COLUMN}, updated_at) "
             "VALUES (?, ?, ?) "
             "ON CONFLICT(track_id) DO UPDATE SET "
-            "  fused_embedding = excluded.fused_embedding, "
+            f"  {FUSED_COLUMN} = excluded.{FUSED_COLUMN}, "
             "  updated_at      = excluded.updated_at",
             (int(res.track_id), fused_blob, iso_now()),
         )]

@@ -13,8 +13,14 @@ Use `D:\Softwares\MiniConda\python.exe` (the PATH python lacks librosa).
 # 1. the copy: a file copy of the backup, plus 4 eval users and one user per persona
 python scripts/dj_eval/setup_copy.py --backup data/backups/prod_<stamp>.db      # -> data/dj_eval/eval.db
 
+# 1b. the copy is fused_v1 (as prod is until the migration): migrate it
+VIBESCAPE_DB_PATH=data/dj_eval/eval.db python scripts/refuse_vectors.py --apply
+
 # 2a. the deterministic eval: starts and stops its own server (~1 h for every group)
 python scripts/dj_eval/run_eval.py --db data/dj_eval/eval.db                     # -> data/dj_eval/reports/dj_eval_*.md/.json
+
+# 2a'. the replay benchmark: no server, deterministic, ~1-2 min per vector space
+python scripts/dj_eval/replay_bench.py --db data/dj_eval/eval.db --listeners data/dj_eval/listener   # -> reports/replay_bench_*.json
 
 # 2b. listener agents: a server in the foreground on :8765 (no --reload), Ctrl-C stops it
 python scripts/dj_eval/serve.py --db data/dj_eval/eval.db
@@ -31,6 +37,8 @@ python scripts/dj_eval/report.py                                                
 | `listener.py` | the CLI a listener agent drives; prints only handle, title, artist, album |
 | `personas.json` | the ten personas |
 | `report.py` | per-persona transcripts, acceptance by DJ step, reviews, side by side |
+| `replay_bench.py` | replays the recorded listener sessions and the real users' `track_events` through `dj_replay`, in vector spaces it rebuilds in memory; finished-vs-skipped AUC, language match, duplicates, the 'single' scenario's group precision offline, and synthetic scenarios (a 70/30 library, skips, a language switch, mixed skips, another release of a skipped track). `--final` is the PR #21 table |
+| `language_rerank.py` | the session language re-rank that was measured against the vector-only DJ and not shipped; kept so the comparison reproduces |
 | `dj-listener.agent.md` | the agent definition |
 
 **Install the agent** (`.claude/agents/` is gitignored, so a clone has none):
@@ -50,3 +58,11 @@ eval and `listener.py start` wipe the test user's history first.
 
 The copy runs on SQLite, so the DJ ranks with the numpy path, not the
 `vector_distance_cos` SQL production uses on Turso.
+
+The replay benchmark ranks with the same pure functions the endpoint calls
+(`backend/dj_replay.py`) and the endpoint's pool
+size, so it judges a change without the server or an LLM. On the baseline it
+reproduces run_eval.py's language precision to within 0.01 and ranks every
+DJ-served listener track inside its top 8 (the `top8` column). It does not
+run the recency re-rank: `user_track_stats` holds the final state, which
+would leak the future into the replay.

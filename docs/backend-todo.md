@@ -1334,6 +1334,83 @@ behind. Harmless (a cache, keyed by an id nothing will look up again), but
 the keeper does not inherit the loser's lyrics either and is fetched anew.
 Add the table to the dedupe script's list if that ever costs anything.
 
+## 12. DJ language — built 2026-10-19 (branch `backend/dj-language`), what is left
+
+The fused space is now `fused_v2`, 841 wide, in its own column
+`track_embeddings.fused_v2_embedding F32_BLOB(841)`: a 64-slot language
+block with an append-only code table (every tagged language has a slot;
+unknown codes share 'other'; untagged is all zeros), weighing 0.40 (was
+0.20). Language and skips come from the taste vector alone: dj_replay's
+avoid term is stronger (NEG_WEIGHT 1.0, M_STEP 0.5, cap 2.0). A separate
+session language re-rank was built and measured, and lost
+(`scripts/dj_eval/language_rerank.py`). Measured offline with
+`scripts/dj_eval/replay_bench.py --final`; the PR has the tables.
+
+### 12.1 Production needs the migration before the deploy
+`scripts/refuse_vectors.py`, `deploy/cloud-run/deploy.ps1`
+
+**verified on a local copy only** (dry run, apply, re-run, then the app and
+the HTTP eval on it). On Turso nothing adds `fused_v2_embedding` but the
+migration (`ensure_db()` no-ops there). Deployed first, the app ranks
+fused_v1 instead (`_fused_v2_ready`: one zero-row probe, cached, re-checked
+every minute while missing, one warning): v1 column, 788 wide, v1 mean key,
+pre-fused_v2 avoid constants, never mixed with v2 in a request. That is the
+previous revision's DJ, so the order is still backup, migrate, deploy; a
+wrong order degrades instead of failing (tested on a Turso-shaped SQLite
+file, where without the fallback every request dies on "no such column"). The migration
+is an ALTER TABLE ADD COLUMN (no row rewrite) and ~5.3k UPDATEs in
+execute_batch chunks of 200; it reads every fused row's MERT blob raw (what
+FuseStage does on every prod run). Nothing in it has run against Turso.
+
+### 12.2 Drop `fused_embedding` once fused_v2 has run on prod — the rollback path until then
+`schema.sql`, `scripts/refuse_vectors.py`
+
+**verified.** fused_v1's 788-wide column is untouched by the migration so
+the previous revision still works on a rollback. Nothing in the new code
+reads it, but `scripts/backup_prod_db.py` (its blob check),
+`scripts/_turso_verify.py`, `scripts/_turso_create_vector_index.py`,
+`scripts/dj_eval/setup_copy.py` and `groups.py` still name it. The cleanup:
+point those at `fused_v2_embedding`, then `ALTER TABLE track_embeddings DROP
+COLUMN fused_embedding` (SQLite 3.35+ / libSQL; no index or view uses it).
+Until then a fuse from a checkout that has not pulled writes only the old
+column and the track stays out of the DJ pool; re-running the migration
+fills it.
+
+### 12.3 Two skips of one sound take its language with it
+`backend/dj_replay.py` (NEG_WEIGHT, M_STEP, M_MAX)
+
+**verified on synthetic vectors.** Four Kannada songs of one sound, then
+two Kannada songs of another sound skipped (a mood skip): the top 10 turns
+Hindi. The skipped tracks share sound and language, and the avoid direction
+carries both. The session re-rank did the same (its Kannada score went
+negative). On the recorded listener sessions, whose skips are mostly about
+mood, language@10 is 0.952 (0.983 in v1), so it bites rarely, but a
+listener who skips two songs in their own language can lose it.
+
+### 12.4 A skipped track's other release can stay
+`scripts/dj_eval/replay_bench.py` (scenario `twin`)
+
+**verified offline.** Search a track and skip it: its other release (same
+cleaned title and primary artist) is in the top 10 in 0.68 of draws before
+and after. With only that one track in the session S and N point the same
+way and the avoid term only shrinks the query. A nearest-skip penalty took
+it to 0.33 but lost on real-user AUC (0.644). Belongs with the duplicate
+filtering work.
+
+### 12.5 What the language work saw for the out-of-scope items
+`scripts/dj_eval/replay_bench.py`
+
+- **Duplicates.** Near-duplicates of a track already seen this session are
+  in the top 10 at 4.5% of listener moments with the shipped design, as in
+  v1. Duplicates of a *skipped* track: 0.4% throughout.
+- **Untagged / ambient.** Untagged tracks are 0.2% of the top 10 in
+  tagged-language listener sessions (v1: 0.5%). The 19 binaural sleep-tone
+  tracks are untagged, so an instrumental session still meets them: the
+  eligibility gate is still needed.
+- **Skips are most of the signal.** Real-user finished-vs-skipped AUC went
+  0.61 -> 0.75 from the avoid term alone. Item-level skip negatives are the
+  obvious next measurement.
+
 ## Checked and clean
 
 Recorded so the next audit does not redo them.
