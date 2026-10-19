@@ -23,3 +23,5 @@ export default function useMediaQuery(query) {
 /** The S2 breakpoints. Must match the @media rules in the player modules. */
 export const PHONE = '(max-width: 767px)';
 export const WIDE = '(min-width: 1100px)';
+/** Below theater's floor (useTheaterMode's 1024px): lyrics become a sheet. */
+export const BELOW_THEATER = '(max-width: 1023px)';

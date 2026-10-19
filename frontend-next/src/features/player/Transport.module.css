@@ -26,3 +26,8 @@
   color: var(--text);
 }
 .play_bare:hover:not(:disabled) { transform: none; background: var(--hover); }
+
+/* Phone: the Lyrics pill drops its word so it fits beside Audio | Video. */
+@media (max-width: 767px) {
+  .pillWord { display: none; }
+}

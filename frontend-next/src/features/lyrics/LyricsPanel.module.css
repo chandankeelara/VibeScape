@@ -1,0 +1,197 @@
+/*
+ * The lyrics panel. Two tones:
+ *   .dark    stage + sheet: a blurred cover under a scrim, always dark, so the
+ *            text tokens are the --on-dark family in both themes (like the
+ *            video surface).
+ *   .themed  side + dock: sits on the now-playing panel and follows the theme.
+ */
+
+.panel {
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  isolation: isolate;
+}
+
+/* ---------------------------------------------------------------- variants */
+
+/* Audio view: exactly over the artwork, which stays underneath. */
+.stage {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+  overflow: hidden;
+}
+
+.sheet { height: 100%; }
+
+.side,
+.dock {
+  border-radius: var(--r-lg);
+  background: var(--raised);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+/* ---------------------------------------------------------------- backdrop */
+
+.backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  background: var(--visor);
+}
+.backdrop img {
+  position: absolute;
+  inset: -12%;
+  width: 124%;
+  height: 124%;
+  object-fit: cover;
+  filter: blur(32px) saturate(1.3);
+}
+.backdrop::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--lyrics-scrim);
+}
+
+/* -------------------------------------------------------------------- body */
+
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* The scroller pads by this box's height so the first and last lines can
+     reach the centre. */
+  container-type: size;
+}
+.themed .body { flex: none; height: var(--lyrics-list-h); }
+
+.scroller {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0 var(--sp-4);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  position: relative;
+  /* Fade the list out at both edges. A mask, so only its alpha counts. */
+  -webkit-mask-image: linear-gradient(transparent, #000 16%, #000 84%, transparent);
+  mask-image: linear-gradient(transparent, #000 16%, #000 84%, transparent);
+}
+.synced { list-style: none; padding-block: 42cqh; }
+.big { padding-inline: var(--sp-5); }
+
+.line { margin: 0; }
+.lineBtn {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: var(--sp-1) var(--sp-2);
+  border: 0;
+  border-radius: var(--r-md);
+  background: none;
+  text-align: left;
+  font: inherit;
+  font-size: var(--fs-base);
+  font-weight: 600;
+  line-height: 1.35;
+  color: inherit;
+  overflow-wrap: anywhere;
+  transition: color var(--d-2) var(--ease), background-color var(--d-1) var(--ease);
+}
+button.lineBtn { cursor: pointer; }
+.big .lineBtn { font-size: var(--fs-lg); font-weight: 700; padding-block: 6px; }
+.cur .lineBtn { font-size: var(--fs-lg); font-weight: 700; }
+.big .cur .lineBtn { font-size: var(--fs-xl); letter-spacing: -0.01em; }
+
+/* Themed tone (side, dock). */
+.themed .line { color: var(--text-3); }
+.themed .next { color: var(--text-2); }
+.themed .cur { color: var(--text); }
+.themed button.lineBtn:hover { background: var(--hover); }
+
+/* Dark tone (stage, sheet). */
+.dark { color: var(--on-dark); }
+.dark .line { color: var(--on-dark-4); }
+.dark .next { color: var(--on-dark-3); }
+.dark .cur { color: var(--on-dark); }
+.dark button.lineBtn:hover { background: var(--hover-on-dark); }
+.dark :focus-visible { outline-color: var(--on-dark); }
+
+/* Plain (unsynced) lyrics: one even voice, nothing highlighted. */
+.plain { padding-block: var(--sp-5) var(--sp-8); }
+.plainLine,
+.gap {
+  margin: 0;
+  padding: 2px var(--sp-2);
+  font-size: var(--fs-base);
+  font-weight: 600;
+  line-height: 1.45;
+}
+.big .plainLine { font-size: var(--fs-lg); font-weight: 700; }
+.gap { line-height: 0.9; }
+.themed .plainLine { color: var(--text-2); }
+.dark .plainLine { color: var(--on-dark-2); }
+
+/* ------------------------------------------------------------------ status */
+
+.status {
+  flex: 1 1 auto;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+  text-align: center;
+  font-size: var(--fs-sm);
+}
+.statusTitle { margin: 0; font-size: var(--fs-base); font-weight: 700; }
+.themed .status { color: var(--text-3); }
+.themed .statusTitle { color: var(--text); }
+.dark .status { color: var(--on-dark-2); }
+.dark .statusTitle { color: var(--on-dark); }
+
+/* ------------------------------------------------------------------ footer */
+
+.foot {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4) var(--sp-3);
+  text-align: center;
+}
+.note { margin: 0; font-size: var(--fs-sm); font-weight: 600; }
+.noteRow { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: var(--sp-2) var(--sp-3); }
+.credit { margin: 0; font-size: var(--fs-2xs); letter-spacing: 0.02em; }
+.themed .note { color: var(--text-2); }
+.themed .credit { color: var(--text-3); }
+.dark .note { color: var(--on-dark-2); }
+.dark .credit { color: var(--on-dark-3); }
+
+/* A pill on the dark surface: same shape, glass instead of --raised. */
+.pill { composes: pill from '../../ui/controls.module.css'; }
+.dark .pill {
+  color: var(--on-dark);
+  background: var(--hover-on-dark);
+  border-color: var(--line-on-dark);
+}
+.dark .pill:hover:not(:disabled) {
+  color: var(--on-dark);
+  background: var(--line-on-dark);
+  border-color: var(--line-on-dark);
+}
+
+@media (max-width: 767px) {
+  .big { padding-inline: var(--sp-4); }
+  .foot { padding-bottom: calc(var(--sp-3) + env(safe-area-inset-bottom)); }
+}

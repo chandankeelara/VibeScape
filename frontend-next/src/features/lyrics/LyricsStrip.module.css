@@ -1,0 +1,44 @@
+/*
+ * Theater subtitles. Anchored bottom-LEFT of the video and capped short of
+ * the centre-right, so the bottom-right corner (YouTube's controls, Bit) is
+ * never covered; raised by a share of the video height so it sits above
+ * YouTube's control row at theater sizes. No pointer events, ever: this lies
+ * over a cross-origin iframe.
+ */
+.strip {
+  position: absolute;
+  left: 4%;
+  bottom: 15%;
+  z-index: 3;
+  max-width: min(58%, 720px);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--glass-dark);
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+.cur,
+.next {
+  margin: 0;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.cur {
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  color: var(--on-dark);
+  animation: lineIn var(--d-3) var(--ease) both;
+}
+.next {
+  font-size: var(--fs-base);
+  font-weight: 600;
+  color: var(--on-dark-3);
+}
+
+@keyframes lineIn { from { opacity: 0; transform: translateY(4px); } }

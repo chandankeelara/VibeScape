@@ -46,10 +46,14 @@
   align-items: center;
 }
 .isVideo .hero { --stage-w: min(56%, 560px); }
+/* Lyrics over the art want more room than a cover does; capped by height so
+   the square never pushes the column into a scroll. */
+.isLyrics .hero { --stage-w: min(56%, max(280px, min(560px, 100dvh - 300px))); }
 
 .meta { min-width: 0; display: flex; flex-direction: column; gap: var(--sp-5); }
 .side { display: flex; flex-direction: column; gap: var(--sp-3); }
 .phTransport { display: none; }
+.lyricsSide { min-width: 0; }
 
 .recent { margin-top: var(--sp-5); }
 

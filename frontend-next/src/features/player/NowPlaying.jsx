@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { usePlayer } from '../../state/PlayerContext';
 import { useTheme } from '../../state/ThemeContext';
 import { artColor } from '../../lib/artColor';
 import { tintFor } from '../../lib/vibe';
 import { useQueueState } from '../queue';
+import { useLyrics } from '../lyrics';
+import useMediaQuery, { BELOW_THEATER, PHONE } from '../../lib/useMediaQuery';
 import Icon from '../../ui/Icon';
 import Equalizer from '../../ui/Equalizer';
 import ui from '../../ui/controls.module.css';
@@ -12,7 +14,7 @@ import TrackMeta from './TrackMeta';
 import MoodSlider from './MoodSlider';
 import DjLine from './DjLine';
 import RecentTrail from './RecentTrail';
-import { ModeSwitch, Seek, Times, TheaterButton, TransportButtons } from './Transport';
+import { LyricsButton, ModeSwitch, Seek, Times, TheaterButton, TransportButtons } from './Transport';
 import styles from './NowPlaying.module.css';
 
 /**
@@ -23,7 +25,27 @@ import styles from './NowPlaying.module.css';
  *
  * Theater is a class here: the stage takes the whole column and the meta
  * folds into two columns underneath. The queue panel stays where it is.
+ *
+ * Lyrics, when on, go where each view has room without moving the stage:
+ *   audio            over the artwork (ArtStage's overlay)
+ *   video            in the side column, in place of the vibe controls
+ *   theater          subtitles on the video, the sync bar under it
+ *   below 1024px     a full-screen sheet (on a phone, only while this view is
+ *                    open — the sheet belongs to it)
  */
+
+// Loaded on first use — see features/lyrics/index.js.
+const LyricsPanel = lazy(() => import('../lyrics/LyricsPanel'));
+const LyricsStrip = lazy(() => import('../lyrics/LyricsStrip'));
+const LyricsSheet = lazy(() => import('../lyrics/LyricsSheet'));
+
+/** Where the lyrics go: null | 'stage' | 'side' | 'theater' | 'sheet'. */
+function lyricsPlace({ on, current, narrow, isVideo, theater }) {
+  if (!on || !current) return null;
+  if (narrow) return 'sheet';
+  if (!isVideo) return 'stage';
+  return theater ? 'theater' : 'side';
+}
 
 /** The art's colour, as a static room tint plus the stage's light pool. */
 function useArtColour(url) {
@@ -70,9 +92,13 @@ export default function NowPlaying({
 }) {
   const { current, mode } = usePlayer();
   const { djEnabled } = useQueueState();
+  const { on: lyricsOn } = useLyrics();
+  const narrow = useMediaQuery(BELOW_THEATER);
+  const isPhone = useMediaQuery(PHONE);
   const { theme } = useTheme();
   const colour = useArtColour(current?.artwork_url || '');
   const isVideo = mode === 'video';
+  const lyrics = lyricsPlace({ on: lyricsOn, current, narrow, isVideo, theater });
 
   const tint = colour
     ? `radial-gradient(90% 70% at 12% 0%, ${tintFor(colour.hue, theme)}, transparent 75%)`
@@ -84,7 +110,14 @@ export default function NowPlaying({
     isVideo ? styles.isVideo : '',
     theater ? styles.isTheater : '',
     phoneOpen ? styles.phoneOpen : '',
+    lyrics === 'stage' ? styles.isLyrics : '',
   ].filter(Boolean).join(' ');
+
+  const overlay = lyrics === 'stage' || lyrics === 'theater' ? (
+    <Suspense fallback={null}>
+      {lyrics === 'stage' ? <LyricsPanel variant="stage" /> : <LyricsStrip />}
+    </Suspense>
+  ) : null;
 
   return (
     <main className={cls} aria-label="Now playing">
@@ -96,6 +129,7 @@ export default function NowPlaying({
         </button>
         <div className={styles.headLeft}>
           <ModeSwitch className={styles.seg} />
+          <LyricsButton />
           {isVideo && canTheater && (
             <TheaterButton theater={theater} onToggle={onToggleTheater} className={styles.deskOnly} />
           )}
@@ -111,7 +145,7 @@ export default function NowPlaying({
 
       <div className={styles.scroll}>
         <div className={styles.hero}>
-          <ArtStage className={styles.stage} pool={pool} />
+          <ArtStage className={styles.stage} pool={pool} overlay={overlay} />
 
           <div className={styles.meta}>
             <div className={styles.info}>
@@ -127,15 +161,25 @@ export default function NowPlaying({
               </div>
             </div>
 
-            <div className={styles.side}>
-              <MoodSlider />
-              <DjLine />
-            </div>
+            {lyrics === 'side' || lyrics === 'theater' ? (
+              <Suspense fallback={null}>
+                <LyricsPanel variant={lyrics === 'side' ? 'side' : 'dock'} className={styles.lyricsSide} />
+              </Suspense>
+            ) : (
+              <div className={styles.side}>
+                <MoodSlider />
+                <DjLine />
+              </div>
+            )}
           </div>
         </div>
 
         <RecentTrail variant="tiles" className={styles.recent} />
       </div>
+
+      {lyrics === 'sheet' && (!isPhone || phoneOpen) && (
+        <Suspense fallback={null}><LyricsSheet /></Suspense>
+      )}
     </main>
   );
 }

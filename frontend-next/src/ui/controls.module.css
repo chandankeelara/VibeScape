@@ -59,6 +59,13 @@
 .pill:hover:not(:disabled) { color: var(--text); background: var(--hover); border-color: var(--line-2); }
 .pill:active:not(:disabled) { transform: scale(0.97); }
 .pill:disabled { opacity: 0.5; cursor: default; }
+/* A pill that is a toggle, switched on (Lyrics). */
+.pillOn,
+.pillOn:hover:not(:disabled) {
+  color: var(--acc-ink);
+  background: var(--acc-fill);
+  border-color: transparent;
+}
 
 .badge {
   height: 22px;
