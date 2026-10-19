@@ -1305,10 +1305,12 @@ what production should use.
 `backend/lyrics.py`), cached per track in `track_lyrics`
 (`tests/backend/test_lyrics.py`).
 
-### 11.1 `track_lyrics` must be created on Turso before deploy
+### 11.1 ~~`track_lyrics` must be created on Turso before deploy~~ — DONE (2026-10-18)
 `schema.sql` (end), `scripts/_turso_create_track_lyrics.py`
 
-**verified locally, not run on prod.** `ensure_db()` no-ops on Turso.
+**Run on prod 2026-10-18** (dry run, then `--apply`: "created
+track_lyrics"), before the deploy that shipped the endpoint (revision
+vibescape-00027). Kept for the record: `ensure_db()` no-ops on Turso.
 Without the table the endpoint still answers (it logs a warning and skips
 the cache), but asks LRCLIB on every request. Run
 `python scripts/_turso_create_track_lyrics.py --target prod` (dry run),
@@ -1333,6 +1335,20 @@ whatever attribution its licence requires.
 behind. Harmless (a cache, keyed by an id nothing will look up again), but
 the keeper does not inherit the loser's lyrics either and is fetched anew.
 Add the table to the dedupe script's list if that ever costs anything.
+
+### 11.4 `tests/frontend/lyricsProvider.test.jsx` is flaky
+`tests/frontend/lyricsProvider.test.jsx`
+
+**verified 2026-10-19 by running it three times on main, unchanged code:**
+one run passed all 5 tests, one failed 2 ("the active line follows the
+clock and the offset", "a preview plays plain lyrics"), one failed a third
+("the YouTube path stays plain until the video length matches"). A
+different test failing each run points at timing in the test, not at the
+feature, which works in use (local preview and prod, 2026-10-18/19).
+Likely a missing `await`/`act`, or real and fake timers racing. It makes
+`python tests/run_all.py` fail at random, which teaches people to ignore
+red. Fix by making the test wait properly; prove it with ~20 consecutive
+green runs. Deferred by the owner, 2026-10-19.
 
 ## 12. DJ language — built 2026-10-19 (branch `backend/dj-language`), what is left
 
