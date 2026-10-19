@@ -88,20 +88,45 @@ def test_cold_start_on_a_hindi_seed_gets_hindi(client, library):
     assert _share(out, L["hi"]) >= 0.9
 
 
-def test_three_kannada_skips_remove_kannada(client, library):
+def test_kannada_skips_after_a_move_to_hindi_remove_kannada(client, library):
+    """The taste has moved to Hindi, so skipping Kannada is about Kannada."""
     h, L = library
-    session = L["kn"][:6]
-    events = [done(t) for t in session[:3]] + [skip(t) for t in session[3:]]
+    session = L["kn"][:3] + L["hi"][:3] + L["kn"][3:5]
+    events = [done(t) for t in session[:6]] + [skip(t) for t in session[6:]]
     out = _post(client, h, session[-1], {"events": events, "exclude_ids": session})
     assert _share(out, L["kn"]) <= 0.1
 
 
-def test_one_stray_skip_does_not_flip_the_language(client, library):
-    h, L = library
-    session = L["kn"][:5]
-    events = [done(t) for t in session[:4]] + [skip(session[4])]
+def test_mood_skips_inside_a_language_keep_the_language(client, make_user, make_tracks, sql):
+    """One sound, two moods, two languages: the session finishes four plain
+    Kannada songs, then skips three Kannada songs that sound the same plus a
+    mood the listener does not want. The query must avoid the mood and keep
+    Kannada. Before 2026-10-20 the avoid term also carried what the skipped
+    songs share with the taste -- the language -- and the top 10 turned
+    Hindi; fails with AVOID_PERP off."""
+    rng = np.random.default_rng(29)
+    sound, mood = rng.normal(size=fv.MERT_DIM), rng.normal(size=fv.MERT_DIM)
+    uid, h = make_user()
+    groups = {}
+    for lang in ("kn", "hi"):
+        for name, centre in (("plain", sound), ("mood", sound + 0.8 * mood)):
+            ids = []
+            for _ in range(40):
+                mert = (centre + 0.5 * rng.normal(size=fv.MERT_DIM)).astype(np.float32)
+                row = {c: 0.5 * (fv.SCALAR_RANGE[c][0] + fv.SCALAR_RANGE[c][1]) for c in fv.SCALAR_COLS}
+                row["language"] = lang
+                (tid,) = make_tracks(uid, [fv._build_fused(row, mert)])
+                sql.execute("UPDATE tracks SET language = ? WHERE id = ?", (lang, tid))
+                ids.append(tid)
+            groups[(lang, name)] = ids
+    sql.commit()
+    session = groups[("kn", "plain")][:4] + groups[("kn", "mood")][:3]
+    events = [done(t) for t in session[:4]] + [skip(t) for t in session[4:]]
     out = _post(client, h, session[-1], {"events": events, "exclude_ids": session})
-    assert _share(out, L["kn"]) >= 0.9
+    kn = groups[("kn", "plain")] + groups[("kn", "mood")]
+    moody = groups[("kn", "mood")] + groups[("hi", "mood")]
+    assert _share(out, kn) >= 0.9
+    assert _share(out, moody) <= 0.1
 
 
 def test_a_switch_to_hindi_is_followed_within_two_songs(client, library):

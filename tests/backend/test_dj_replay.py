@@ -103,10 +103,13 @@ def test_avoid_term_is_bounded_however_many_skips(space):
     log = [ev(1, "completed", 1)] + [ev(i, "skipped", 0.0) for i in range(2, 30)]
     res = R.replay(log, vecs, mu)
     assert res.avoid <= R.M_MAX
-    # the vibe still contributes. It was > 0.3 before 2026-10-19; the avoid
-    # term may now reach twice |S| (NEG_WEIGHT 1.0 x M_MAX 2.0, chosen on
-    # the replay benchmark), and 28 skips leave 0.22 here. It must not flip.
-    assert cos(res.query, vecs[1]) > 0.15
+    # The taste can never be outweighed: the avoid term is orthogonal to S
+    # and capped at AVOID_CAP x |S|, so the query keeps at least
+    # 1 / sqrt(1 + cap^2) of its cosine with S (0.55 at 1.5) however many
+    # skips. Before 2026-10-20 nothing bounded it but m (0.22 here), and
+    # skip-heavy listener sessions wandered off their language.
+    S = R.replay([ev(1, "completed", 1)], vecs, mu).query
+    assert cos(res.query, S) >= 0.55
 
 
 def test_a_skip_run_primes_the_next_finished_track(space, monkeypatch):

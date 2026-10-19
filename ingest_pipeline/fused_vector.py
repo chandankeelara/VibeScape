@@ -101,7 +101,25 @@ LANG_CODES = [
     "en", "hi", "kn", "te", "ta", "pa", "ml", "es", "fr", "pt",   # 0-9
     "ar", "sa", "ko", "ur", "ru", "bn", "ja", "mr", "yo", "de",   # 10-19
     "it", "nl", "bm", "ka", "tcy", "tr", "tw", "zh",              # 20-27
+    "zxx",                                                        # 28: instrumental (2026-10-20)
 ]
+# ISO 639-2 'zxx', "no linguistic content": the tagging verdict that a track
+# has no language (language_tagging.tag(clear=True) writes language NULL with
+# language_status 'done'), which is an instrumental in almost every case. It
+# has its own slot so instrumental sessions hold together; a track that is
+# merely untagged (no verdict yet, or a legacy 'no_match') keeps the
+# language-neutral all-zero block.
+INSTRUMENTAL = "zxx"
+# The instrumental slot is set to this, not 1: instrumentals should hold
+# together against vocal songs, but a full slot glues drones to film score.
+# replay_bench --final2, 2026-10-20 (drones in the top 10 after three
+# film-score songs / instrumentals in the film-BGM regression session's
+# top 10): weight 1.0: 0.37 / 1.00; 0.5: 0.22 / 0.91; 0.25: 0.18 / 0.82;
+# no slot (revision 00028): 0.16 / 0.46. Drone sessions stay drones at every
+# weight (0.94-1.00): it is MERT and the scalars (energy, brightness) that
+# keep a drone apart from a score, the slot only decides how much "no
+# vocals" outweighs them.
+INSTRUMENTAL_WEIGHT = 0.5
 assert len(LANG_CODES) == len(set(LANG_CODES)) <= OTHER_SLOT
 LANG_DIMS = LANG_BLOCK
 # MERT and scalars keep fused_v1's 0.55 : 0.25 ratio and share what the
@@ -140,8 +158,18 @@ def _lang_onehot(language: Optional[str], langs=None, block=None) -> np.ndarray:
     v = np.zeros(block, dtype=np.float32)
     code = str(language or "").strip().lower()
     if code:
-        v[langs.index(code) if code in langs else block - 1] = 1.0
+        v[langs.index(code) if code in langs else block - 1] = (
+            INSTRUMENTAL_WEIGHT if code == INSTRUMENTAL else 1.0)
     return v
+
+
+def lang_code(row_dict: dict) -> Optional[str]:
+    """The code a row's language block is built from: its language, else
+    INSTRUMENTAL when tagging gave the 'no language' verdict, else None."""
+    lang = str(row_dict.get("language") or "").strip()
+    if lang:
+        return lang
+    return INSTRUMENTAL if row_dict.get("language_status") == "done" else None
 
 
 def _build_fused(row_dict: dict, mert_vec: np.ndarray,
@@ -154,7 +182,7 @@ def _build_fused(row_dict: dict, mert_vec: np.ndarray,
         [_norm_scalar(c, row_dict.get(c)) for c in SCALAR_COLS],
         dtype=np.float32,
     )
-    lang = _lang_onehot(row_dict.get("language"), langs)
+    lang = _lang_onehot(lang_code(row_dict), langs)
     fused = np.concatenate([
         w_mert   * _l2(mert_vec),
         w_scalar * _l2(scalars),

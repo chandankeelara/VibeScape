@@ -14,7 +14,12 @@ All weighting lives here. Two pieces of state are rebuilt on every request:
      confidence m in [0, 1] that grows with each skip (faster in a streak)
      and fades on every positive.
 
-  query = normalize(S - NEG_WEIGHT * m * N)
+  query = normalize(S - min(NEG_WEIGHT * m, AVOID_CAP) * N_perp)
+  N_perp = N without its component along S, renormalised
+
+The avoid term only pushes away from what the rejected tracks have that the
+taste does not, and it can never turn the query more than atan(AVOID_CAP)
+away from S (56 degrees at 1.5): see "The skip overshoot" below.
 
 Everything happens after subtracting the library mean `mu`. Fused vectors
 are strongly anisotropic — measured 2026-10-09 on the local DB (3,783
@@ -40,6 +45,30 @@ steers mostly by what was rejected. Stronger still (NEG_WEIGHT 1.5) lost
 language@10 (0.878) for no AUC. A nearest-skip penalty (max cosine to any
 skipped track) was measured too and lost to this on real-user AUC
 (0.645 at best).
+
+The skip overshoot (2026-10-20). With that, N subtracted whole and up to
+twice |S|, five listener sessions on the deployed DJ (revision 00028) went
+wrong once they skipped several times: two or three mood skips (Kannada love
+songs in a Kannada mass session) threw two Kannada sessions out of Kannada,
+a workout session that skipped 14 of 26 wandered through four languages,
+film BGM drowned in vocal songs. N is an average of the skipped tracks, and
+what those share with the taste -- the language, mostly -- is the part that
+must not be avoided. So N loses its component along S (AVOID_PERP) and the
+avoid weight is capped (AVOID_CAP). On scripts/dj_eval/replay_bench.py
+--final2 (a copy of prod_20261019T024426Z, with fused_vector's instrumental
+slot): the five sessions back to 0.96-1.00 of the persona's language (film
+BGM: 0.91 instrumentals, from 0.46), three mood skips inside Kannada keep
+Kannada (0.00 -> 0.98), six mixed English skips keep English (0.00 -> 0.99),
+and a session that moved to Hindi still drops Kannada on two Kannada skips
+(0.00). The cost is real-user AUC: 0.748 -> 0.643 (95% block bootstrap of
+the difference -0.142..-0.066), still above fused_v1's 0.595. Real sessions are short, and a
+run of skips there mostly does mean "not this language"; the listener
+sessions say that reading is wrong once a listener skips for mood. The old
+"three Kannada skips after three Kannada songs clear Kannada" no longer
+holds, and cannot together with "three mood skips keep the language": the
+two sessions differ only in what the skipped songs share with the taste.
+Cap 1.5 over 1.0: +0.013 real-user AUC (CI +0.008..+0.018) with every check
+passing; at 2.0 the checks start to fail (mood 0.96, film BGM 0.95).
 
 Offline evidence for the original constants (.claude/tmp/dj-compare/harness.py,
 local track_events 2026-10-02..09, 241 DJ-served tracks): finished-vs-
@@ -76,6 +105,9 @@ N_BETA_MAX = 0.8
 M_STEP = 0.5             # confidence gained per skip: 0.5 * depth * amp
 M_MAX = 2.0              # ... capped here
 M_FADE = 0.7             # confidence kept after each positive
+AVOID_PERP = True        # avoid only N's part orthogonal to S
+AVOID_PERP_RENORM = True # ... renormalised to unit length
+AVOID_CAP = 1.5          # cap on NEG_WEIGHT * m, in units of |S| (None: no cap)
 
 POSITIVE = frozenset({"searched", "queued", "picked", "completed"})
 KNOWN = POSITIVE | {"next", "skipped"}
@@ -125,13 +157,14 @@ class ReplayResult:
 
 def replay(events: list[dict], vecs: dict, mu: np.ndarray,
            seed_vec: Optional[np.ndarray] = None, *, neg_weight: Optional[float] = None,
-           m_step: Optional[float] = None, m_max: Optional[float] = None) -> ReplayResult:
+           m_step: Optional[float] = None, m_max: Optional[float] = None,
+           avoid_perp: Optional[bool] = None, avoid_cap=...) -> ReplayResult:
     """Replay `events` (already resolved: e["id"] is an internal int) over
     `vecs` {track_id: raw vector}. Tracks with no vector still count toward
     the skip streak but contribute no direction. neg_weight / m_step / m_max
-    default to NEG_WEIGHT / M_STEP / M_MAX; the app passes the pre-fused_v2
-    values when it has to rank fused_v1 vectors (backend/app.py
-    _fused_v2_ready)."""
+    / avoid_perp / avoid_cap default to the module constants; the app passes
+    the pre-fused_v2 values when it has to rank fused_v1 vectors
+    (backend/app.py _fused_v2_ready). avoid_cap=None means no cap."""
     neg_weight = NEG_WEIGHT if neg_weight is None else neg_weight
     m_step = M_STEP if m_step is None else m_step
     m_max = M_MAX if m_max is None else m_max
@@ -188,8 +221,24 @@ def replay(events: list[dict], vecs: dict, mu: np.ndarray,
         if seed_vec is None:
             return ReplayResult(None, True, k, m)
         S, from_seed = _unit(_unit(seed_vec) - mu), True
-    q = S if N is None else _unit(S - neg_weight * m * N)
+    perp = AVOID_PERP if avoid_perp is None else avoid_perp
+    cap = AVOID_CAP if avoid_cap is ... else avoid_cap
+    q = S if N is None else _unit(S - _avoid(S, N, neg_weight * m, perp, cap))
     return ReplayResult(q, from_seed, k, m)
+
+
+def _avoid(S: np.ndarray, N: np.ndarray, coef: float, perp: bool, cap) -> np.ndarray:
+    """The vector subtracted from S: coef * N, without N's component along
+    S when `perp`, with coef capped at `cap` unless that is None."""
+    if cap is not None:
+        coef = min(coef, cap)
+    if perp:
+        P = N - float(N @ S) * S
+        n = float(np.linalg.norm(P))
+        if n < 1e-9:
+            return np.zeros_like(S)
+        N = P / n if AVOID_PERP_RENORM else P
+    return coef * N
 
 
 def library_mean(vectors) -> Optional[np.ndarray]:

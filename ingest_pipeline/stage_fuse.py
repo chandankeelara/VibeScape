@@ -91,7 +91,7 @@ class FuseStage(Stage):
     )
     gate_params = (CURRENT_MERT_VERSION,)
     # Qualified with the table alias because of the join.
-    fetch_cols = ", ".join(["t.id", "t.spotify_id", "t.language"]
+    fetch_cols = ", ".join(["t.id", "t.spotify_id", "t.language", "t.language_status"]
                            + [f"t.{c}" for c in SCALAR_COLS]
                            + ["te.mert_embedding AS mert_blob"])
     fetch_join = "JOIN track_embeddings te ON te.track_id = t.id "

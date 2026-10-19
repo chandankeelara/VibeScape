@@ -1346,21 +1346,9 @@ session language re-rank was built and measured, and lost
 (`scripts/dj_eval/language_rerank.py`). Measured offline with
 `scripts/dj_eval/replay_bench.py --final`; the PR has the tables.
 
-### 12.1 Production needs the migration before the deploy
-`scripts/refuse_vectors.py`, `deploy/cloud-run/deploy.ps1`
-
-**verified on a local copy only** (dry run, apply, re-run, then the app and
-the HTTP eval on it). On Turso nothing adds `fused_v2_embedding` but the
-migration (`ensure_db()` no-ops there). Deployed first, the app ranks
-fused_v1 instead (`_fused_v2_ready`: one zero-row probe, cached, re-checked
-every minute while missing, one warning): v1 column, 788 wide, v1 mean key,
-pre-fused_v2 avoid constants, never mixed with v2 in a request. That is the
-previous revision's DJ, so the order is still backup, migrate, deploy; a
-wrong order degrades instead of failing (tested on a Turso-shaped SQLite
-file, where without the fallback every request dies on "no such column"). The migration
-is an ALTER TABLE ADD COLUMN (no row rewrite) and ~5.3k UPDATEs in
-execute_batch chunks of 200; it reads every fused row's MERT blob raw (what
-FuseStage does on every prod run). Nothing in it has run against Turso.
+### 12.1 ~~Production needs the migration before the deploy~~ — DONE (2026-10-19)
+Prod was migrated and runs fused_v2 (revision 00028). The pre-migration
+fallback (`_fused_v2_ready`) stays until 12.2's cleanup.
 
 ### 12.2 Drop `fused_embedding` once fused_v2 has run on prod — the rollback path until then
 `schema.sql`, `scripts/refuse_vectors.py`
@@ -1376,16 +1364,19 @@ Until then a fuse from a checkout that has not pulled writes only the old
 column and the track stays out of the DJ pool; re-running the migration
 fills it.
 
-### 12.3 Two skips of one sound take its language with it
-`backend/dj_replay.py` (NEG_WEIGHT, M_STEP, M_MAX)
+### 12.3 Skips of a different sound in the session's own language still take the language — CHANGED (2026-10-20)
+`backend/dj_replay.py` (AVOID_PERP, AVOID_CAP)
 
-**verified on synthetic vectors.** Four Kannada songs of one sound, then
-two Kannada songs of another sound skipped (a mood skip): the top 10 turns
-Hindi. The skipped tracks share sound and language, and the avoid direction
-carries both. The session re-rank did the same (its Kannada score went
-negative). On the recorded listener sessions, whose skips are mostly about
-mood, language@10 is 0.952 (0.983 in v1), so it bites rarely, but a
-listener who skips two songs in their own language can lose it.
+**verified on synthetic vectors.** The avoid term now drops what the skipped
+songs share with the taste, so a mood skip -- a song that sounds like the
+taste plus something unwanted -- no longer carries the language
+(`test_mood_skips_inside_a_language_keep_the_language`; the listener mood
+scenario 0.00 -> 0.98 Kannada). What remains: skipped songs that share
+nothing with the taste *but* the language (another sound entirely) still
+push the language away: N is then mostly that other sound plus the
+language, and only the part of the language that S itself holds is removed.
+On two orthogonal synthetic sounds the top 10 still turns Hindi. Not seen
+in the recorded sessions.
 
 ### 12.4 A skipped track's other release can stay
 `scripts/dj_eval/replay_bench.py` (scenario `twin`)
@@ -1410,6 +1401,34 @@ filtering work.
 - **Skips are most of the signal.** Real-user finished-vs-skipped AUC went
   0.61 -> 0.75 from the avoid term alone. Item-level skip negatives are the
   obvious next measurement.
+
+### 12.6 The skip fix costs real-user AUC; decide what the real-user replay should count
+`backend/dj_replay.py`, `scripts/dj_eval/replay_bench.py`
+
+**verified offline (2026-10-20).** The perpendicular, capped avoid term
+fixes the five regressed listener sessions and the skip-heavy scenarios,
+and real-user finished-vs-skipped AUC drops 0.748 -> 0.643 (block bootstrap
+-0.142..-0.066), still above fused_v1's 0.595. The real users' logs are
+short skip runs, where "skipped three songs" mostly does mean "not this
+language", and the uncapped avoid term ranked the next skip low; the
+listener sessions show the same term overshooting once someone skips for
+mood. Both cannot be fitted by one constant. Worth knowing before tuning
+the avoid term again: the real-user AUC rewards it monotonically, the
+listener sessions punish it past a point, and the benchmark now reports
+both (`replay_bench.py --final2`). The old scenario "three Kannada skips
+after three Kannada songs clear Kannada" (`skip3`) no longer holds and
+cannot hold together with "three mood skips keep the language": the two
+sessions differ only in what the skipped songs share with the taste.
+
+### 12.7 The instrumental slot is set by the "no language" verdict, which also covers uncallable titles
+`ingest_pipeline/fused_vector.py` (INSTRUMENTAL, lang_code)
+
+**suspected.** `language_tagging.tag(clear=True)` is documented as "an
+instrumental, or a title that genuinely cannot be called", so a vocal track
+whose language the tagger could not call gets the instrumental slot. Of the
+235 verdict tracks on the 2026-10-20 copy a title sample was all
+instrumental (EDM, film themes, drones). Cheap check: list the verdict
+tracks whose titles do not look instrumental and listen to a few.
 
 ## Checked and clean
 
