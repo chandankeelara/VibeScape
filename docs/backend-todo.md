@@ -1339,8 +1339,10 @@ Add the table to the dedupe script's list if that ever costs anything.
 The fused space is now `fused_v2`: untagged tracks get an all-zero language
 block, the slots are every language with 25+ finished tracks (ml, es, fr in;
 sa, ur, km out), and `backend/dj_language.py` re-ranks the candidate pool by
-the session's language mix on both ranking paths. Measured offline with
-`scripts/dj_eval/replay_bench.py`; the PR has the tables.
+this session's languages only (recency-decayed accepts, skips against their
+language, the seed's language at cold start) on both ranking paths.
+Measured offline with `scripts/dj_eval/replay_bench.py`; the PR has the
+tables.
 
 ### 12.1 Production needs the re-fuse, and the order matters
 `scripts/refuse_vectors.py`, `deploy/cloud-run/deploy.ps1`
@@ -1365,23 +1367,37 @@ the re-rank brings them to 0.61 and 0.93 (it matches exact codes, and
 grows is a space change (version bump + re-fuse); an 11th slot also widens
 the vector to 789, production's `F32_BLOB(788)` column with it.
 
-### 12.3 What the language work saw for the out-of-scope items
+### 12.3 Two skips do not clear a language that fills the neighbourhood
+`backend/dj_language.py` (DEMOTE, `demoting`), `backend/app.py` `_similar_dj` pool
+
+**verified offline.** After three Kannada songs and two Kannada skips,
+Kannada still holds 0.69 of the top 10 (three skips: 0.15), at any demotion
+strength: the pool, widened to 300 while a language is demoted, holds too
+few other tracks. A 600-track pool took three skips to 0.00 and lifted
+real-user AUC further (0.687 -> 0.714 at demotion 12), but every pool row
+is streamed from Turso. Options: a deeper fetch only while demoting, or
+excluding a fully demoted language in the candidate SQL (needs a guard for
+one-language libraries).
+
+### 12.4 What the language work saw for the out-of-scope items
 `scripts/dj_eval/replay_bench.py`
 
 - **Duplicates.** Near-duplicates of a track already seen this session
   (same cleaned title and primary artist) are in the top 10 at 4.5% of
-  listener moments in v1 and 4.9% with the language re-rank: pulling
-  same-language tracks up pulls their other releases up too. Duplicates of
-  a *skipped* track: 0.4% before and after.
+  listener moments in v1, 4.9% with the first (library-prior) re-rank and
+  3.7% with the session-only one, which demotes a skipped language and its
+  other releases with it. Duplicates of a *skipped* track: 0.4% throughout.
 - **Untagged / ambient.** Language-neutral untagged tracks, without the
   re-rank, rose from 0.5% to 3.8% of the top 10 in tagged-language listener
   sessions; with it, 0.0%. The 19 binaural sleep-tone tracks are untagged,
   so an instrumental session still meets them: the eligibility gate is
   still needed.
-- **Real-user AUC is low.** Finished-vs-skipped AUC on the real users'
-  `track_events` is 0.59-0.61 in every configuration, against the 0.83 the
-  2026-10-10 replay measured on a smaller, older local log. Not
-  investigated; the item-level skip negatives may be where it is.
+- **Real-user AUC and skips.** Finished-vs-skipped AUC on the real users'
+  `track_events` was 0.59-0.61 for every vector space, against the 0.83 the
+  2026-10-10 replay measured on a smaller, older local log. Counting skips
+  against their *language* alone took it to 0.69, so skips carry signal the
+  replay's avoid term does not use; item-level skip negatives are the
+  obvious next measurement.
 
 ## Checked and clean
 

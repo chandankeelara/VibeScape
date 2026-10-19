@@ -1939,68 +1939,40 @@ def _dj_events_query(conn, raw_events, user_id, seed_vec, model_version: str, di
 # ---------------------------------------------------------------------------
 # DJ language re-rank (backend/dj_language.py). After the candidate fetch, on
 # both ranking paths, before the recency re-rank: cosine + a bonus for the
-# languages this session accepted, blended with the user's library mix.
+# languages this session is accepting, minus one for a language it keeps
+# skipping. Session only: the user's library plays no part.
 # DJ_LANG_WEIGHT=0 turns it off (no extra query is issued then).
 # ---------------------------------------------------------------------------
 _DJ_LANG_WEIGHT = _env_float("DJ_LANG_WEIGHT", _dj_language.WEIGHT)
-_DJ_LANG_RECHECK_S = 600.0
-_dj_lang_cache: dict = {}  # user_id -> (counts, checked_at)
 
 
-def _dj_library_languages(conn, user_id) -> dict:
-    """{language: analysed tracks} in the user's library: the prior of the
-    language mix. One GROUP BY, kept in process memory for
-    _DJ_LANG_RECHECK_S like the library mean, because on Turso it reads the
-    whole library."""
-    uid = int(user_id or 0)
-    now = datetime.now(timezone.utc).timestamp()
-    hit = _dj_lang_cache.get(uid)
-    if hit and now - hit[1] < _DJ_LANG_RECHECK_S:
-        return hit[0]
-    rows = conn.execute(
-        "SELECT t.language AS language, COUNT(*) AS n FROM user_tracks ut "
-        "JOIN tracks t ON t.id = ut.track_id "
-        "WHERE ut.user_id = ? AND t.ingestion_status = 'done' "
-        "GROUP BY t.language", (uid,)).fetchall()
-    counts = {}
-    for r in rows:
-        k = _dj_language.lang_key(r["language"])
-        counts[k] = counts.get(k, 0) + int(r["n"] or 0)
-    _dj_lang_cache[uid] = (counts, now)
-    return counts
-
-
-def _dj_language_mix(conn, user_id, resolved) -> Optional[dict]:
-    """The session's language mix, or None when the re-rank is off or
-    cannot be computed. Never fails the request: without it the DJ ranks
-    exactly as it did before the re-rank existed."""
+def _dj_language_scores(conn, resolved, seed_id) -> Optional[dict]:
+    """The session's signed language scores, or None when the re-rank is off
+    or they cannot be read. One id lookup of the log's tracks and the seed
+    (the cold-start signal). Never fails the request: without it the DJ
+    ranks exactly as it did before the re-rank existed."""
     if _DJ_LANG_WEIGHT <= 0:
         return None
     try:
-        ids = sorted({int(e["id"]) for e in resolved
-                      if e["action"] in _dj_language.POSITIVE})
-        lang_of = {}
-        if ids:
-            ph = ",".join("?" * len(ids))
-            for r in conn.execute(f"SELECT id, language FROM tracks WHERE id IN ({ph})",
-                                  ids).fetchall():
-                lang_of[int(r["id"])] = r["language"]
-        counts = _dj_language.session_languages(resolved, lang_of)
-        mix = _dj_language.language_mix(counts, _dj_library_languages(conn, user_id))
+        ids = sorted({int(e["id"]) for e in resolved} | {int(seed_id)})
+        ph = ",".join("?" * len(ids))
+        lang_of = {int(r["id"]): r["language"] for r in conn.execute(
+            f"SELECT id, language FROM tracks WHERE id IN ({ph})", ids).fetchall()}
+        scores = _dj_language.session_scores(resolved, lang_of, seed=int(seed_id))
     except Exception as e:
-        log.warning("[dj] language mix unavailable (%s); ranking without it", e)
+        log.warning("[dj] language scores unavailable (%s); ranking without it", e)
         return None
-    return mix or None
+    return scores if any(scores.values()) else None
 
 
-def _dj_rerank_language(cands, mix, limit):
+def _dj_rerank_language(cands, scores, limit):
     """Re-order a cosine-sorted pool of _RecencyCandidate by
     dj_language.rerank. `score` becomes the adjusted value the recency
     re-rank then works on; `sim` keeps the cosine. Both ranking paths call
     this on the same (cosine, language) pairs, so they agree."""
-    if not mix:
+    if not scores:
         return cands
-    order = _dj_language.rerank([(c.score, c.lang) for c in cands], mix, limit,
+    order = _dj_language.rerank([(c.score, c.lang) for c in cands], scores, limit,
                                 _DJ_LANG_WEIGHT)
     out = []
     for i, adjusted in order:
@@ -2065,7 +2037,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
     # throws the whole session away.
     use_events = body.events is not None
     replay_res = None
-    lang_mix = None
+    lang_scores = None
 
     if seed_vec is None and not use_events:
         conn.close()
@@ -2092,7 +2064,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
                 resp["mode_used"] = "vibe_fallback_no_signal"
                 resp["variant_used"] = None
                 return resp
-            lang_mix = _dj_language_mix(conn, user_id, resolved)
+            lang_scores = _dj_language_scores(conn, resolved, anchor_id)
         else:
             # Legacy weighted path, kept byte-for-byte for clients that still
             # send positive_ids / negative_ids.
@@ -2193,8 +2165,12 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
         mode_used = f"dj_replay_{variant_used}" if use_events else f"dj_{variant_used}"
         if replay_res is not None and replay_res.from_seed:
             mode_used += "_from_seed"
-        # Either re-rank needs a pool deeper than `limit` to pull from.
-        pool = _dj_recency_pool(limit) if (rerank or lang_mix) else limit
+        # Either re-rank needs a pool deeper than `limit` to pull from, and
+        # demoting a skipped language needs the deepest: that language
+        # usually fills the query's neighbourhood (dj_language.demoting).
+        pool = _dj_recency_pool(limit) if (rerank or lang_scores) else limit
+        if lang_scores and _dj_language.demoting(lang_scores):
+            pool = max(pool, _DJ_RECENCY_POOL_MAX)
 
         # ------------------------------------------------------------------
         # Ranking backend: on Turso we push the cosine computation into the
@@ -2256,7 +2232,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
                     dist = float(r["distance"]) if r["distance"] is not None else 1.0
                     return 1.0 - dist
 
-                if not rerank and not lang_mix:
+                if not rerank and not lang_scores:
                     for r in rows[:limit]:
                         d = _row_to_dict(r)
                         d["score"] = _sim(r)
@@ -2275,7 +2251,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
                         )
                         for r in rows
                     ]
-                    cands = _dj_rerank_language(cands, lang_mix, limit)
+                    cands = _dj_rerank_language(cands, lang_scores, limit)
                     ranked = (_rerank_by_recency(cands, limit, explain=explain,
                                                  halflife_h=h_user)
                               if rerank else [(c, c.score, None) for c in cands[:limit]])
@@ -2388,7 +2364,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
             norms[norms < 1e-12] = 1.0
             mat_n = mat / norms
             sims = mat_n @ query_vec.astype(np.float32)
-            if not rerank and not lang_mix:
+            if not rerank and not lang_scores:
                 order = np.argsort(-sims)[:limit]
                 top_ids = [int(ids_arr[i]) for i in order]
                 top_scores = {int(ids_arr[i]): float(sims[i]) for i in order}
@@ -2398,7 +2374,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
                 # behaviour would not predict production's.
                 order = np.argsort(-sims)[:pool]
                 cands = [_mk_cand(int(ids_arr[i]), float(sims[i])) for i in order]
-                cands = _dj_rerank_language(cands, lang_mix, limit)
+                cands = _dj_rerank_language(cands, lang_scores, limit)
                 ranked = (_rerank_by_recency(cands, limit, explain=explain,
                                              halflife_h=h_user)
                           if rerank else [(c, c.score, None) for c in cands[:limit]])
