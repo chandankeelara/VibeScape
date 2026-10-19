@@ -118,8 +118,10 @@ export function plainLines(data) {
  *   loading · synced · mismatch (YouTube, plain + "Sync manually") · plain ·
  *   preview (plain + note) · instrumental · none · error
  *
- * `error` is a failed request or the backend's `error: "upstream"`. A 404 is
- * an answer ("nothing for this track"), not a failure.
+ * `error` is a failed request or the backend's `error: "upstream"` (the key
+ * is absent unless LRCLIB is down). A 404 is an answer ("nothing for this
+ * track"), not a failure. 'plain' also covers timings the backend rejected
+ * (duration > 3s off), so manual sync is offered for 'synced' only.
  */
 export function deriveView({ data, error, pending, path, ytMatch, manualSync }) {
   if (error) return error.status === 404 ? { kind: 'none' } : { kind: 'error' };

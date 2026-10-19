@@ -167,6 +167,16 @@ describe('deriveView — one state per response', () => {
     expect(deriveView({ error: { status: 404 } }).kind).toBe('none');
   });
 
+  it('the shapes backend PR #18 sends: null fields, error key absent', () => {
+    const none = { status: 'none', source: null, lines: [], plain: null, matched_duration_ms: null, credit: null };
+    expect(deriveView({ data: none, path: 'spotify' }).kind).toBe('none');
+    const inst = { status: 'instrumental', source: 'lrclib', lines: [], plain: null, credit: 'Lyrics from LRCLIB' };
+    expect(deriveView({ data: inst, path: 'youtube' }).kind).toBe('instrumental');
+    // Timings rejected server-side come back as plain: no manual sync on YouTube.
+    const rejected = { status: 'plain', lines: [], plain: 'a\nb', credit: 'Lyrics from LRCLIB' };
+    expect(deriveView({ data: rejected, path: 'youtube', ytMatch: false }).kind).toBe('plain');
+  });
+
   it('upstream error, and a failed request', () => {
     expect(deriveView({ data: { status: 'none', error: 'upstream', lines: [] } }).kind).toBe('error');
     expect(deriveView({ error: { status: 502 } }).kind).toBe('error');

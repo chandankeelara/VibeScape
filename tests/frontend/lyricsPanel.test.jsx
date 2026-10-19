@@ -145,10 +145,10 @@ it('instrumental', async () => {
   expect(screen.getByText('Lyrics from LRCLIB')).toBeTruthy();
 });
 
-it('none', async () => {
-  await panel({ kind: 'none' });
+it('none: no source, so no credit line', async () => {
+  await panel({ kind: 'none' }, { credit: null });
   expect(screen.getByText('No lyrics for this song yet')).toBeTruthy();
-  expect(screen.getByText('Lyrics from LRCLIB')).toBeTruthy();
+  expect(screen.queryByText('Lyrics from LRCLIB')).toBeNull();
 });
 
 it('upstream error, with retry', async () => {

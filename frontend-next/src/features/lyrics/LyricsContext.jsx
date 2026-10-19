@@ -27,8 +27,6 @@ import { readLyricsOn, readOffset, writeLyricsOn, writeOffset } from './lyricsSt
 
 const LyricsCtx = createContext(null);
 
-const DEFAULT_CREDIT = 'Lyrics from LRCLIB';
-
 /** Ticks are 250ms apart; a line boundary between two is scheduled exactly. */
 const BOUNDARY_LOOKAHEAD_MS = 400;
 /** Never extrapolate further than this past the last tick (a stalled clock). */
@@ -202,7 +200,8 @@ export function LyricsProvider({ children }) {
     track: current,
     path,
     view,
-    credit: data?.credit || DEFAULT_CREDIT,
+    // null for 'none' (backend PR #18): no source, so nothing to credit.
+    credit: data?.credit || null,
     offset, nudge, reset, tapSync, canSync: !!syncedLines && !!sourceKey,
     startManualSync, canManualSync: path === 'youtube' && !!sourceKey,
     canSeek, seekToLine,

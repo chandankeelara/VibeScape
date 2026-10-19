@@ -65,7 +65,7 @@ export default function LyricsPanel({ variant = 'side', className = '' }) {
           </div>
         )}
         {view.kind === 'synced' && <SyncBar tone={dark ? 'dark' : 'themed'} />}
-        <p className={styles.credit}>{credit}</p>
+        {credit && <p className={styles.credit}>{credit}</p>}
       </footer>
     </section>
   );
