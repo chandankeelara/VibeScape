@@ -57,12 +57,16 @@ export default function MiniPlayer({ pipWindow }) {
     <div className={styles.mini} data-playing={playing ? 'true' : 'false'}>
       <div className={styles.art}>
         {artUrl && !artFailed ? (
-          <img
-            className={styles.artImg}
-            src={artUrl}
-            alt=""
-            onError={() => setArtFailed(true)}
-          />
+          <>
+            <img
+              className={styles.artImg}
+              src={artUrl}
+              alt=""
+              onError={() => setArtFailed(true)}
+            />
+            {/* The caption's backing in the cover layout; see .artBlur. */}
+            <img className={styles.artBlur} src={artUrl} alt="" aria-hidden="true" />
+          </>
         ) : (
           <div className={styles.artEmpty} aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">

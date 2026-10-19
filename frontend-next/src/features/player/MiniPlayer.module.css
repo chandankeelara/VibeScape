@@ -74,6 +74,37 @@
   color: var(--text-4);
 }
 
+/*
+ * Cover only: the same artwork again, blurred, under the caption. A wash
+ * alone lets any hard shape in the art show through at full sharpness — a
+ * pale panel in a cover read as a stray card behind the title, with the text
+ * overhanging its edges. Blurred, whatever is under the text arrives as tone.
+ *
+ * A second <img> with `filter`, not `backdrop-filter` on the caption: the
+ * blur has to fade out upwards, and Chrome drops a backdrop-filter outright
+ * when the same element has a mask-image (measured 2026-10-18 — computed
+ * value present, nothing blurred). Scaled up so the transparent fringe a
+ * blur leaves at the image's own edges falls outside the window.
+ *
+ * The mask is in lengths because the caption is a near-constant height
+ * (about 135-160px) whatever the window size: solid under all of it, then
+ * feathering out over the wash's own fade.
+ */
+.artBlur {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: blur(var(--sp-5));
+  transform: scale(1.15);
+  mask-image: linear-gradient(
+    to top,
+    black calc(var(--sp-7) * 3),
+    transparent calc(var(--sp-7) * 4)
+  );
+}
+
 /* Sized from the box, so the placeholder disc scales with whichever layout
    it is in rather than sitting as a fixed dot in a 300px square. */
 .artEmpty svg {
@@ -252,6 +283,8 @@
     padding: 0;
     background: none;
   }
+
+  .artBlur { display: none; }
 
   .title { font-size: var(--fs-md); }
 
