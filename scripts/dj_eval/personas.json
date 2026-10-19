@@ -1,0 +1,42 @@
+[
+  {
+    "name": "kannada-late-night",
+    "brief": "Late at night, winding down. You want soft, romantic Kannada film melodies: slow, tender, melodic. Nothing loud, no item numbers, no dance tracks."
+  },
+  {
+    "name": "kannada-mass",
+    "brief": "Pumped up. You want Kannada mass and hype songs: hero-intro numbers, big drums, whistles, high energy. Slow love songs kill the mood."
+  },
+  {
+    "name": "hindi-romantic",
+    "brief": "In a romantic, slightly wistful mood. You want Hindi romantic songs in the Arijit Singh mould: soulful, melodic, mid-tempo. No party or dance tracks."
+  },
+  {
+    "name": "punjabi-hindi-party",
+    "brief": "Getting ready for a party. You want Punjabi and Hindi party tracks: bhangra beats, club remixes, Badshah / Diljit / Yo Yo Honey Singh energy. Ballads are skips."
+  },
+  {
+    "name": "tamil-anirudh",
+    "brief": "You want high-energy Tamil songs in the Anirudh Ravichander style: punchy, electronic, catchy hooks, mass and dance numbers. Slow melodies are not what you came for."
+  },
+  {
+    "name": "telugu-mass",
+    "brief": "You want Telugu mass songs: loud, fast, folk-percussion or EDM-driven, the kind that plays at a hero's entry. Soft melodies are skips."
+  },
+  {
+    "name": "indian-heartbreak",
+    "brief": "Heartbroken. You want sad Indian film songs about loss and longing, in any Indian language: slow, aching, emotional. Anything upbeat or celebratory breaks the mood."
+  },
+  {
+    "name": "english-chill",
+    "brief": "Unwinding with a book. You want chill English music: lo-fi, acoustic, soft indie, mellow singer-songwriter. Nothing loud, no rap, no EDM drops."
+  },
+  {
+    "name": "english-workout",
+    "brief": "At the gym, mid-workout. You want English workout hype: hard-hitting hip-hop, EDM, rock anthems, high tempo. Anything slow or mellow is a skip."
+  },
+  {
+    "name": "film-bgm",
+    "brief": "Working and want no lyrics in the way. You want Indian film instrumentals and background scores (BGM, themes), any language. Songs with vocals are skips."
+  }
+]
