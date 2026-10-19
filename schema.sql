@@ -420,3 +420,25 @@ CREATE TABLE IF NOT EXISTS user_embedding_mean (
     computed_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id, model_version)
 );
+
+-- ---------------------------------------------------------------------------
+-- track_lyrics — the cache behind GET /api/tracks/{key}/lyrics, one row per
+-- track (backend/lyrics.py). Its own table so the wide tracks rows do not
+-- grow. status is synced, plain, instrumental or none. synced_lrc is the raw
+-- LRC, parsed on read. error is 'upstream' when LRCLIB was down: that row is
+-- asked again after 10 minutes, any other 'none' after 30 days, found lyrics
+-- never. Nothing turns foreign_keys on, so the CASCADE is documentation and
+-- a deleted track leaves its row behind. A cache, so safe to drop. On Turso
+-- it needs scripts/_turso_create_track_lyrics.py (ensure_db does not run there).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS track_lyrics (
+    track_id             INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    source               TEXT,
+    status               TEXT NOT NULL,
+    synced_lrc           TEXT,
+    plain                TEXT,
+    matched_duration_ms  INTEGER,
+    source_id            TEXT,
+    error                TEXT,
+    fetched_at           TIMESTAMP NOT NULL
+);

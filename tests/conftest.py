@@ -71,6 +71,18 @@ def _no_turso(monkeypatch):
     monkeypatch.setattr(db_client._HttpConnection, "_post", refuse)
 
 
+@pytest.fixture(autouse=True)
+def _no_lrclib(monkeypatch):
+    """No test may call LRCLIB. backend/lyrics.py's only way out is _http;
+    a test that wants answers sets its own (tests/backend/test_lyrics.py)."""
+    import lyrics
+
+    def refuse(url, params):
+        raise AssertionError(f"a test tried to reach LRCLIB ({url}); give lyrics a fake _http")
+    monkeypatch.setattr(lyrics, "_http", refuse)
+    monkeypatch.setattr(lyrics, "_sleep", lambda s: None)
+
+
 @pytest.fixture
 def batches(monkeypatch):
     """Every execute_batch() on a db_client SQLite connection (what get_conn()

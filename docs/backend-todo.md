@@ -1299,6 +1299,41 @@ belongs with 1.13's dedupe and unique index, or a hand-off that carries
 its ids so the next stage reads them by key. `--until-drained` is still
 what production should use.
 
+## 11. Lyrics — built 2026-10-18, what is left
+
+`GET /api/tracks/{key}/lyrics` (`backend/app.py` `get_track_lyrics`,
+`backend/lyrics.py`), cached per track in `track_lyrics`
+(`tests/backend/test_lyrics.py`).
+
+### 11.1 `track_lyrics` must be created on Turso before deploy
+`schema.sql` (end), `scripts/_turso_create_track_lyrics.py`
+
+**verified locally, not run on prod.** `ensure_db()` no-ops on Turso.
+Without the table the endpoint still answers (it logs a warning and skips
+the cache), but asks LRCLIB on every request. Run
+`python scripts/_turso_create_track_lyrics.py --target prod` (dry run),
+then with `--apply`, before the deploy that ships the endpoint.
+
+### 11.2 LRCLIB is unlicensed, crowd-sourced lyrics: switch source before going public
+`backend/lyrics.py`
+
+**verified (a licensing fact, not a code one).** LRCLIB is free and keyless,
+and its entries are user uploads with no licence from the rights holders.
+That is fine for a private app. Before VibeScape is public, move the
+source to a licensed provider (Musixmatch or LyricFind). Keep the endpoint
+and the table: `source` and `source_id` exist for this, and the response
+carries `source` and `credit`, so a new provider is a new `lookup()` plus
+whatever attribution its licence requires.
+
+### 11.3 `_dedupe_tracks.py` does not know `track_lyrics`
+`scripts/_dedupe_tracks.py`
+
+**verified by reading.** Nothing enables `foreign_keys`, so the schema's
+`ON DELETE CASCADE` never fires: a merged-away track leaves its lyrics row
+behind. Harmless (a cache, keyed by an id nothing will look up again), but
+the keeper does not inherit the loser's lyrics either and is fetched anew.
+Add the table to the dedupe script's list if that ever costs anything.
+
 ## Checked and clean
 
 Recorded so the next audit does not redo them.

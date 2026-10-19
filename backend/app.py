@@ -42,6 +42,7 @@ from dj_replay import parse_events as _dj_parse_events
 from dj_replay import replay as _dj_replay
 import playlist_import as _pli
 import library_search as _libsearch
+import lyrics as _lyrics
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -2788,6 +2789,82 @@ def get_track_features(track_key: str, sess: dict = Depends(require_user)):
         "mood": _val("mood"),
         "classification_source": _val("classification_source"),
     }
+
+
+# ---------------- Lyrics ----------------
+
+_LYRICS_COLS = "status, source, synced_lrc, plain, matched_duration_ms, source_id, error, fetched_at"
+
+
+@app.get("/api/tracks/{track_key}/lyrics")
+def get_track_lyrics(track_key: str, sess: dict = Depends(require_user)):
+    """
+    Lyrics for a track (spotify_id or numeric tracks.id), from the
+    track_lyrics cache, else LRCLIB (backend/lyrics.py picks the entry).
+
+        {"status": "synced" | "plain" | "instrumental" | "none",
+         "source": "lrclib" | null,
+         "lines": [{"t_ms": 12400, "text": "first line"}],   # synced only, else []
+         "plain": "full text\\n...",          # null for instrumental / none
+         "matched_duration_ms": 229000,       # null for none
+         "track_duration_ms": 230000,
+         "credit": "Lyrics from LRCLIB"}      # null when source is null
+
+    plus "error": "upstream" when LRCLIB could not be reached; that is not
+    an HTTP error, and it is asked again after 10 minutes. A 'none' is asked
+    again after 30 days. Blank lines stay in `lines` as "" (gaps). The
+    LRCLIB call happens with no DB connection open; it can take ~11 s in
+    the worst case (two 5 s timeouts).
+    """
+    conn = get_conn()
+    try:
+        anchor = _resolve_anchor(conn, track_key)
+        track = conn.execute(
+            "SELECT id, title, artist, album, duration_ms FROM tracks WHERE id = ?",
+            (int(anchor["id"]),),
+        ).fetchone() if anchor else None
+        if not track:
+            raise HTTPException(status_code=404, detail="track not found")
+        try:
+            cached = conn.execute(
+                f"SELECT {_LYRICS_COLS} FROM track_lyrics WHERE track_id = ?", (track["id"],)
+            ).fetchone()
+        except sqlite3.OperationalError as e:  # Turso before _turso_create_track_lyrics.py
+            log.warning("[lyrics] track_lyrics unreadable (%s); not caching", e)
+            cached, cache_ok = None, False
+        else:
+            cache_ok = True
+    finally:
+        conn.close()
+
+    if cached and _lyrics.is_fresh(cached):
+        return _lyrics.response(cached, track["duration_ms"])
+
+    # tracks.artist holds the primary artist only (featured artists live in
+    # the title), so it goes to LRCLIB as is.
+    found = _lyrics.lookup(track["title"], track["artist"], track["album"], track["duration_ms"])
+    row = {**found, "fetched_at": _lyrics.now_ts()}
+    if cache_ok:
+        conn = get_conn()
+        try:
+            conn.execute_batch([(
+                "INSERT INTO track_lyrics (track_id, " + _LYRICS_COLS + ") "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(track_id) DO UPDATE SET status = excluded.status, "
+                "source = excluded.source, synced_lrc = excluded.synced_lrc, "
+                "plain = excluded.plain, matched_duration_ms = excluded.matched_duration_ms, "
+                "source_id = excluded.source_id, error = excluded.error, "
+                "fetched_at = excluded.fetched_at",
+                (track["id"], row["status"], row["source"], row["synced_lrc"], row["plain"],
+                 row["matched_duration_ms"], row["source_id"], row["error"], row["fetched_at"]),
+            )])
+        except (sqlite3.Error, requests.RequestException) as e:
+            # The lyrics are still good; the next request asks again. Turso's
+            # transport errors are requests', not sqlite3's (backend/CLAUDE.md).
+            log.warning("[lyrics] could not cache track %s: %s", track["id"], e)
+        finally:
+            conn.close()
+    return _lyrics.response(row, track["duration_ms"])
 
 
 # ---------------- YouTube lookup ----------------
