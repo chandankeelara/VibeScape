@@ -8,6 +8,7 @@ tests/
   backend/           FastAPI endpoints and pure backend modules (pytest)
   ingest/            pure ingest_pipeline modules (pytest)
   database/          schema.sql, migrations, the stats cache vs its rebuild (pytest)
+  dj_real/           the DJ over real HTTP on a copy of production data (pytest; skipped by default)
   frontend/          frontend-next modules (vitest, config in frontend-next/vitest.config.js)
   run_all.py         runs everything, non-zero exit on any failure
 ```
@@ -68,6 +69,9 @@ commit ran the old `backup_prod_db.main()`, which read the token from
 | Turso adapter | `database/test_turso_adapter.py` | against a fake Hrana server running on in-memory SQLite: blobs padded / unpadded / url-safe and the two shapes production sends, a 788-float vector round trip, an undecodable blob raises, `SQLITE_CONSTRAINT*` is `IntegrityError`, a batch is one request with the BEGIN / conditional / COMMIT / ROLLBACK steps, a failing statement lands nothing and names its step (`step`, `detail`), `rowcount` 0 is 0, `commit()` / `rollback()` send nothing, a batch waits 120 s and a statement 30 s, NaN and infinities go as NULL so a request stays valid JSON, no test can reach a real database; the SQLite `execute_batch` is all-or-nothing, names its step, and rolls back a COMMIT that fails (a reader holding the lock) instead of leaving the transaction open; every SQLite connection waits 30 s for a lock, not Python's 5 s |
 | Schema | `database/test_schema.py` | applies and re-applies, no `;` in comments breaks the Turso scripts' split (commit 322c7c1), fresh bootstrap survives many connections and keeps the production shape, old telemetry tables are widened in place |
 | Track dedupe | `database/test_dedupe_tracks.py` | `scripts/_dedupe_tracks.py` on a prod-shaped file (no tracks indexes): spotify_id and ISRC merge transitively, keeper `done` then lowest id, apple_id is cleared rather than merged, a user holding both rows keeps one link (earliest `added_at`) and one holding only a loser is re-pointed, events move, the stats cache equals a rebuild, embeddings go with their rows, one `execute_batch` per group and a failing group lands nothing, a dry run writes nothing, `--target prod` exits without `.env.prod`; `_turso_create_track_indexes.py` refuses while duplicates remain, then builds all four once; a bootstrapped prod copy with its dead `tracks.user_id` and a unique index keeps its shape |
+| DJ eval harness | `dj_real/test_dj_eval_groups.py` | the eval's primary-artist and album / film keys, energy terciles, and its copy of the frontend's played-ratio thresholds |
+| DJ, end to end | `dj_real/test_dj_real.py` | **skipped unless `DJ_EVAL_DB` or `DJ_EVAL_BASE_URL` is set** (below): a real uvicorn on a copy of production, signed in through `/api/auth/login`, the request the frontend sends; every call 200, no duplicates, nothing already played, skipped or seeded comes back, through a 10-step autoplay loop |
+| DJ listener CLI | `dj_real/test_listener_cli.py` | a track prints as handle, title, artist, album and nothing else; the state file holds no language or vibe; **with `DJ_EVAL_DB`**, a scripted search / play / next / skip / feedback / review session against a real server prints exactly the database's title, artist and album for every handle, no spotify id, and no hidden-field word |
 | Cache = rebuild | `database/test_rollup_rebuild.py` | randomised sessions: the inline `user_track_stats` equals `scripts/rebuild_user_track_stats.py` |
 | Sync job | `frontend/syncJobProvider.test.jsx` | a job `note` becomes a toast instead of crashing the poll effect (the real `ToastProvider`, only the API and the player mocked), once per job |
 | DJ event log | `frontend/dj.test.js` | append-only log, cap, v3 migration, request body |
@@ -96,6 +100,22 @@ wait, are gone since), and 10 in the review round (db_client's 30 s lock
 wait, WAL staying off, both stop checks, the shared batch counting, the
 shared id query, classify's librosa clause, COALESCE again, the look's ids
 and its exclusion).
+
+## The DJ against real data
+
+`tests/dj_real/test_dj_real.py` and `test_listener_cli.py` run the DJ through
+`POST /api/tracks/{key}/similar` on a copy of a production backup, never on
+the backup itself and never on production (`scripts/dj_eval/README.md`):
+
+```
+python scripts/dj_eval/setup_copy.py --backup data/backups/prod_<stamp>.db   # -> data/dj_eval/eval.db
+DJ_EVAL_DB=data/dj_eval/eval.db python -m pytest tests/dj_real               # basics only
+```
+
+Do not run them while `run_eval.py` is running on the same copy: both use
+the first eval user and wipe its history. The copy runs on SQLite, so the DJ
+ranks with the numpy path, not the `vector_distance_cos` SQL production uses
+on Turso. The tests assert no quality floor; that is what the reports are for.
 
 ## Not covered yet
 
