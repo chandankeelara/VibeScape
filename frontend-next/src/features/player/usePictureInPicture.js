@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as player from '../../media/player';
 import { useToast } from '../../state/ToastContext';
+import { ACCENT_EVENT, ACCENT_VARS } from '../../lib/vibe';
 
 /**
  * Document Picture-in-Picture — the Spotify-style miniplayer window, opened
@@ -68,11 +69,21 @@ export const PIP_SUPPORTED =
   typeof window !== 'undefined' && 'documentPictureInPicture' in window;
 
 /**
- * Requested INNER size. Chrome clamps to its own minimum and remembers what
- * the user resized to afterwards, so this is a first-run hint, not a contract
- * — MiniPlayer.module.css is written to survive being resized either way.
+ * Requested INNER size: a 300x300 square, which is what Spotify's own web
+ * player asks Document PiP for (`getInitialWindowSize` in
+ * open.spotifycdn.com/cdn/build/web-player/web-player.0079e2e5.js, read
+ * 2026-10-18: 300x300, or 425x300 when the item is a video). Their desktop
+ * app's miniplayer also opens as a square. A square is the one shape where
+ * the artwork can be the window rather than a thumbnail in it.
+ *
+ * We do not take the 425x300 video size: this window shows artwork in video
+ * mode too (MiniPlayer.jsx explains why), and artwork is square.
+ *
+ * Chrome clamps to its own minimum and remembers what the user resized to
+ * afterwards, so this is a first-run hint, not a contract — the layouts in
+ * MiniPlayer.module.css switch on the window's own size.
  */
-const SIZE = { width: 400, height: 184 };
+const SIZE = { width: 300, height: 300 };
 
 /* Tri-state, because "never asked" and "said no" are different answers and
    only one of them may be asked again. Absent key = never asked. */
@@ -154,6 +165,41 @@ function copyStyles(pip) {
     }
     try { doc.adoptedStyleSheets = copies; } catch { /* not supported */ }
   }
+}
+
+/**
+ * Keep the PiP document's theme and accent in step with the tab's.
+ *
+ * copyStyles() brings tokens.css across, but both of the things that pick
+ * which tokens apply live on the main document's <html> and in no stylesheet:
+ * the `data-theme` attribute (useApplyTheme) and the accent, written as inline
+ * style (applyAccent). Without this the window renders dark tokens and the
+ * default purple whatever the app shows — which is what it did until
+ * 2026-10-18.
+ *
+ * Copied once now, then again on every ACCENT_EVENT. Every theme flip goes
+ * through applyAccent (a flip must re-solve the accent per theme), so that one
+ * event covers both. There is no `prefers-color-scheme` to follow: the app
+ * deliberately ignores the OS setting (ThemeContext.jsx), so the window
+ * follows the app's choice, and `color-scheme` comes with the attribute via
+ * tokens.css.
+ *
+ * Returns the unsubscribe. Exported for the test.
+ */
+export function followTheme(pip, from = document.documentElement) {
+  const to = pip.document.documentElement;
+  const sync = () => {
+    if (from.dataset.theme) to.dataset.theme = from.dataset.theme;
+    else delete to.dataset.theme;
+    for (const name of ACCENT_VARS) {
+      const v = from.style.getPropertyValue(name);
+      if (v) to.style.setProperty(name, v);
+      else to.style.removeProperty(name);
+    }
+  };
+  sync();
+  window.addEventListener(ACCENT_EVENT, sync);
+  return () => window.removeEventListener(ACCENT_EVENT, sync);
 }
 
 /**
@@ -275,6 +321,10 @@ export default function usePictureInPicture() {
     win.document.title = 'VibeScape';
     win.document.documentElement.lang = 'en';
     copyStyles(win);
+    // Before the portal renders into it, so the first frame is already in
+    // the right theme rather than flashing dark.
+    const unfollow = followTheme(win);
+    win.addEventListener('pagehide', unfollow, { once: true });
 
     /*
      * The ONLY close signal we get. It covers the user closing the window,

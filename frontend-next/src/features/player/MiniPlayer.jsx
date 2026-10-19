@@ -35,42 +35,26 @@ import styles from './MiniPlayer.module.css';
  * #ytPlayer). So the video keeps playing in the tab and this window carries
  * the metadata and the transport, with a line saying so. YouTube's own
  * context menu still offers real video PiP for anyone who wants the picture.
+ *
+ * THEME AND ACCENT are not handled here. They live on the main document's
+ * <html>, and usePictureInPicture.followTheme() copies them across.
+ *
+ * ONE DOM, THREE LAYOUTS. The window is user-resizable, so the shape is
+ * chosen by MiniPlayer.module.css from the window's own size (cover, compact,
+ * bar), not by props. `data-playing` is there for the cover layout, which
+ * keeps the transport visible while paused instead of only on hover.
  */
 export default function MiniPlayer({ pipWindow }) {
-  const { current, mode, vibe, mood } = usePlayer();
+  const { current, mode, vibe, mood, playing } = usePlayer();
   const [artFailed, setArtFailed] = useState(false);
 
   const artUrl = current?.artwork_url || '';
   useEffect(() => { setArtFailed(false); }, [artUrl]);
 
-  /*
-   * The accent variables are written as INLINE STYLE on the main document's
-   * <html> by applyAccent() (lib/vibe.js) — inline style is not in any
-   * stylesheet, so copyStyles() cannot bring it across and the miniplayer
-   * would fall back to tokens.css's default purple.
-   *
-   * Re-read from the live inline style (rather than recomputing the accent
-   * here) so there is still exactly one writer and no chance of the two views
-   * disagreeing. Keyed on `vibe`, which is the only thing that moves it — this
-   * runs on a slider release, not on a frame.
-   *
-   * --art-glow-alpha is deliberately NOT mirrored: it is written ~60x/sec by
-   * the analyser loop and nothing in this window reads it.
-   */
-  useEffect(() => {
-    if (!pipWindow) return;
-    const from = document.documentElement.style;
-    const to = pipWindow.document.documentElement.style;
-    for (const name of ['--vibe-accent', '--vibe-accent-2']) {
-      const v = from.getPropertyValue(name);
-      if (v) to.setProperty(name, v);
-    }
-  }, [pipWindow, vibe]);
-
   if (!pipWindow) return null;
 
   return createPortal(
-    <div className={styles.mini}>
+    <div className={styles.mini} data-playing={playing ? 'true' : 'false'}>
       <div className={styles.art}>
         {artUrl && !artFailed ? (
           <img
@@ -81,7 +65,7 @@ export default function MiniPlayer({ pipWindow }) {
           />
         ) : (
           <div className={styles.artEmpty} aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
               <circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="3" />
             </svg>
           </div>
@@ -103,7 +87,7 @@ export default function MiniPlayer({ pipWindow }) {
             * The vibe as a READOUT, not a control. It earns the space because
             * it is what the DJ will pick from next, so it answers "why this
             * song" without the user going back to the tab — but a 40px fader
-            * in a 400px window would be a mis-click waiting to happen, and
+            * in a 300px window would be a mis-click waiting to happen, and
             * nothing else here authors anything either. No queue, no search,
             * no seek bar.
             */}

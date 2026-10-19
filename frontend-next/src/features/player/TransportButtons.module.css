@@ -27,16 +27,22 @@
   height: 44px;
   color: var(--text-2);
 }
-.ghost:hover:not(:disabled) { color: var(--text); background: rgba(255, 255, 255, 0.06); }
+/* A wash of the text colour rather than of white, so it reads on the light
+   theme too — the PiP window follows the theme since 2026-10-18. */
+.ghost:hover:not(:disabled) {
+  color: var(--text);
+  background: color-mix(in oklab, var(--text) 8%, transparent);
+}
 .ghost:active:not(:disabled) { transform: scale(0.94); }
 
-/* White, not accent-tinted — the accent lives in its shadow. */
+/* The theme's play disc (white on dark, ink on light), not accent-tinted —
+   the accent lives in its shadow. */
 .play {
   composes: btn;
   width: 56px;
   height: 56px;
-  background: #fff;
-  color: #0a0a0f;
+  background: var(--play-bg);
+  color: var(--play-ink);
   box-shadow: 0 8px 30px -8px color-mix(in oklab, var(--vibe-accent, var(--accent)) 60%, black);
   transition: transform 120ms var(--ease), box-shadow 400ms var(--ease);
 }
@@ -55,7 +61,7 @@
 
 .play:disabled { box-shadow: none; }
 
-/* Compact variant for the theater bar, which is a strip rather than a panel.
+/* Compact variant for the PiP miniplayer, its only caller.
    Defined AFTER .ghost / .play so the smaller box wins at equal specificity.
    Nothing else changes — same colours, shadow, hover and disabled rules. */
 .ghostCompact {
