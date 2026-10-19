@@ -136,9 +136,23 @@ const currentTheme = () =>
  * colour across the whole page and change on every slider tick, so routing
  * them through React state would re-render the tree during a drag.
  *
- * Also writes the pre-S2 --vibe-accent / --vibe-accent-2 names, because the
- * PiP miniplayer copies those by name into its own document.
+ * Also writes the pre-S2 --vibe-accent / --vibe-accent-2 names, for modules
+ * still written against them.
+ *
+ * Every write ends with ACCENT_EVENT on `window`. The PiP miniplayer is a
+ * second document that has to copy these inline values (and the theme
+ * attribute, which useApplyTheme sets just before calling this) across, and
+ * it cannot learn when they changed any other way: a React effect keyed on
+ * `vibe` runs in the child BEFORE PlayerContext's own effect has written the
+ * new accent, so it copied the previous one; and a MutationObserver on
+ * <html>'s style would also wake ~60x/sec for glow.js's --art-glow-alpha.
  */
+export const ACCENT_VARS = [
+  '--acc', '--acc-text', '--acc-fill', '--acc-ink', '--acc-soft',
+  '--vibe-accent', '--vibe-accent-2',
+];
+export const ACCENT_EVENT = 'vibescape:accent';
+
 export function applyAccent(vibe, theme = currentTheme()) {
   const a = solveAccent(vibe, theme);
   const root = document.documentElement;
@@ -149,6 +163,7 @@ export function applyAccent(vibe, theme = currentTheme()) {
   root.style.setProperty('--acc-soft', `rgb(${a.mark.join(' ')} / ${ACCENT_SOFT_ALPHA})`);
   root.style.setProperty('--vibe-accent', rgbStr(a.mark));
   root.style.setProperty('--vibe-accent-2', rgbStr(a.fill));
+  window.dispatchEvent(new Event(ACCENT_EVENT));
 }
 
 /**
