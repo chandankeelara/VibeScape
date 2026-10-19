@@ -158,15 +158,23 @@ CREATE INDEX IF NOT EXISTS idx_user_tracks_track ON user_tracks(track_id);
 --
 -- mert_embedding:  768-D  raw MERT-v1-95M mean-pooled last_hidden_state
 --                         over 30 s of audio.
--- fused_embedding: 788-D  concat of (0.55·L2(MERT768) ⊕ 0.25·L2(9 scalars)
---                         ⊕ 0.20·language_one_hot_11), then L2-normalized.
---                         This is what DJ mode ranks by.
+-- fused_embedding: 788-D  fused_v1: concat of (0.55·L2(MERT768) ⊕
+--                         0.25·L2(9 scalars) ⊕ 0.20·language_one_hot_11),
+--                         then L2-normalized. Nothing reads it since
+--                         fused_v2; kept for a rollback until a cleanup
+--                         drops it.
+-- fused_v2_embedding: 841-D  fused_v2 (ingest_pipeline/fused_vector.py):
+--                         a 64-slot language block. This is what DJ mode
+--                         ranks by. Existing databases gain the column from
+--                         db.py (SQLite) or scripts/refuse_vectors.py
+--                         (Turso), not from this file.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS track_embeddings (
     track_id         INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
     mert_embedding   F32_BLOB(768),
     fused_embedding  F32_BLOB(788),
     model_version    TEXT,          -- provenance: which regressor produced the scalars
+    fused_v2_embedding F32_BLOB(841),
     updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

@@ -975,15 +975,19 @@ def search_tracks(
 MERT_MODEL_VERSION = "mert_v1_95m_fp32_30s"
 MERT_DIM = 768
 
-# Fused variant: MERT (768) + scalar features (9) + language one-hot (10 langs
-# + 'other'; untagged is all zeros). The recipe is ingest_pipeline/
-# fused_vector.py, and these must match it (tests/backend/test_dj_paths.py
-# checks). The version keys the user_embedding_mean cache, so bumping it with
-# the recipe is what stops a mean of old-space vectors being reused.
-FUSED_MODEL_VERSION = "fused_v2_mert_scalar_lang"
+# Fused variant: MERT (768) + scalar features (9) + a 64-slot language block
+# (one slot per tagged language, untagged all zeros). The recipe is
+# ingest_pipeline/fused_vector.py, and these must match it
+# (tests/backend/test_dj_paths.py checks). fused_v2 lives in its own column,
+# FUSED_COLUMN; fused_v1's 788-wide vectors stay in 'fused_embedding' for a
+# rollback until a cleanup drops them. The version also keys the
+# user_embedding_mean cache, so bumping it is what stops a mean of old-space
+# vectors being reused.
+FUSED_MODEL_VERSION = "fused_v2_mert_scalar_lang64"
+FUSED_COLUMN = "fused_v2_embedding"
 FUSED_SCALAR_DIMS = 9
-FUSED_LANG_DIMS = 11
-FUSED_DIM = MERT_DIM + FUSED_SCALAR_DIMS + FUSED_LANG_DIMS  # 788
+FUSED_LANG_DIMS = 64
+FUSED_DIM = MERT_DIM + FUSED_SCALAR_DIMS + FUSED_LANG_DIMS  # 841
 
 # Default DJ variant; override per-request with SimilarBody.variant.
 _DJ_VARIANT_DEFAULT = (os.environ.get("DJ_EMBEDDING_VARIANT") or "fused").strip().lower()
@@ -1047,7 +1051,7 @@ def _embedding_column_for(model_version: str) -> Optional[str]:
     if model_version == MERT_MODEL_VERSION:
         return "mert_embedding"
     if model_version == FUSED_MODEL_VERSION:
-        return "fused_embedding"
+        return FUSED_COLUMN
     return None
 
 
@@ -2107,7 +2111,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
         # Load candidate track_ids from user's library (done + has the
         # requested embedding variant, not excluded). Option A layout:
         # one row per track, each variant in its own typed column.
-        emb_col = _embedding_column_for(model_version) or "fused_embedding"
+        emb_col = _embedding_column_for(model_version) or FUSED_COLUMN
         mode_used = f"dj_replay_{variant_used}" if use_events else f"dj_{variant_used}"
         if replay_res is not None and replay_res.from_seed:
             mode_used += "_from_seed"

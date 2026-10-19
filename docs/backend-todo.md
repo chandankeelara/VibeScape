@@ -1336,37 +1336,42 @@ Add the table to the dedupe script's list if that ever costs anything.
 
 ## 12. DJ language — built 2026-10-19 (branch `backend/dj-language`), what is left
 
-The fused space is now `fused_v2`: untagged tracks get an all-zero language
-block, the slots are every language with 25+ finished tracks (ml, es, fr in;
-sa, ur, km out), and the language block weighs 0.40 (was 0.20). Language
-and skips come from the taste vector alone: dj_replay's avoid term is
-stronger (NEG_WEIGHT 1.0, M_STEP 0.5, cap 2.0). A separate session language
-re-rank was built and measured, and lost (`scripts/dj_eval/
-language_rerank.py`). Measured offline with `scripts/dj_eval/replay_bench.py
---final`; the PR has the tables.
+The fused space is now `fused_v2`, 841 wide, in its own column
+`track_embeddings.fused_v2_embedding F32_BLOB(841)`: a 64-slot language
+block with an append-only code table (every tagged language has a slot;
+unknown codes share 'other'; untagged is all zeros), weighing 0.40 (was
+0.20). Language and skips come from the taste vector alone: dj_replay's
+avoid term is stronger (NEG_WEIGHT 1.0, M_STEP 0.5, cap 2.0). A separate
+session language re-rank was built and measured, and lost
+(`scripts/dj_eval/language_rerank.py`). Measured offline with
+`scripts/dj_eval/replay_bench.py --final`; the PR has the tables.
 
-### 12.1 Production needs the re-fuse, and the order matters
+### 12.1 Production needs the migration before the deploy
 `scripts/refuse_vectors.py`, `deploy/cloud-run/deploy.ps1`
 
-**verified on the local copy only.** Until `refuse_vectors.py --target prod
---apply` has run, production's vectors are fused_v1. The code reads either
-(the width is still 788), so nothing errors: the DJ ranks in the old space,
-with the new, stronger skip term. Run it after `backup_prod_db.py` and
-before the deploy, so the restart drops the means the old instances hold in
-memory. It reads every fused row's MERT and fused blobs raw (about 5.3k
-rows, 200 a query); the raw fused read is the decode verified on prod
-2026-10-15, the raw MERT read is what FuseStage does on every prod run.
+**verified on a local copy only** (dry run, apply, re-run, then the app and
+the HTTP eval on it). The new app reads only `fused_v2_embedding`, and on
+Turso nothing adds it but the migration (`ensure_db()` no-ops there).
+Deployed first, every DJ request would fail: `_load_mert_vec` selects the
+column outside any try, so "no such column" becomes a 500 (read from the
+code, not run). So: backup, migrate, deploy. The migration
+is an ALTER TABLE ADD COLUMN (no row rewrite) and ~5.3k UPDATEs in
+execute_batch chunks of 200; it reads every fused row's MERT blob raw (what
+FuseStage does on every prod run). Nothing in it has run against Turso.
 
-### 12.2 Languages without a slot are weak: `ar`, `ko`, `ur`, `sa` — a decision is pending
-`ingest_pipeline/fused_vector.py` TOP_LANGS
+### 12.2 Drop `fused_embedding` once fused_v2 has run on prod — the rollback path until then
+`schema.sql`, `scripts/refuse_vectors.py`
 
-**verified offline.** They share 'other'. Single-seed precision@10 with
-the shipped recipe: ar 0.46, ko 0.16, sa 0.74, ur 0.09 (v1: 0.11, 0.06,
-0.82, 0.83; every slotted language is 1.00). The measured re-rank held them
-at 0.99 / 0.86 / 1.00 / 0.87 by matching exact codes, which is the one
-place it beat the vector. Giving them slots widens the vector past 788:
-production's `F32_BLOB(788)` column, `FUSED_LANG_DIMS`, a version bump and a
-re-fuse.
+**verified.** fused_v1's 788-wide column is untouched by the migration so
+the previous revision still works on a rollback. Nothing in the new code
+reads it, but `scripts/backup_prod_db.py` (its blob check),
+`scripts/_turso_verify.py`, `scripts/_turso_create_vector_index.py`,
+`scripts/dj_eval/setup_copy.py` and `groups.py` still name it. The cleanup:
+point those at `fused_v2_embedding`, then `ALTER TABLE track_embeddings DROP
+COLUMN fused_embedding` (SQLite 3.35+ / libSQL; no index or view uses it).
+Until then a fuse from a checkout that has not pulled writes only the old
+column and the track stays out of the DJ pool; re-running the migration
+fills it.
 
 ### 12.3 Two skips of one sound take its language with it
 `backend/dj_replay.py` (NEG_WEIGHT, M_STEP, M_MAX)

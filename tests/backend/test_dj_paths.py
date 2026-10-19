@@ -25,10 +25,17 @@ def skip(t):
     return {"id": t, "action": "skipped", "played_ratio": 0.1}
 
 
-def test_the_app_and_the_recipe_agree_on_the_space(app_module):
+def test_the_app_the_schema_and_the_recipe_agree_on_the_space(app_module, sql):
+    import db
     assert app_module.FUSED_MODEL_VERSION == fv.FUSED_MODEL_VERSION
-    assert app_module.FUSED_DIM == fv.FUSED_DIM == 788
-    assert app_module.FUSED_LANG_DIMS == fv.LANG_DIMS
+    assert app_module.FUSED_DIM == fv.FUSED_DIM == 841
+    assert app_module.FUSED_LANG_DIMS == fv.LANG_DIMS == 64
+    assert app_module.FUSED_COLUMN == db.FUSED_V2_COLUMN == fv.FUSED_COLUMN
+    assert db.FUSED_V2_DDL == f"{fv.FUSED_COLUMN} F32_BLOB({fv.FUSED_DIM})"
+    cols = {r["name"]: r["type"] for r in sql.execute("PRAGMA table_info(track_embeddings)")}
+    assert cols[fv.FUSED_COLUMN] == f"F32_BLOB({fv.FUSED_DIM})"
+    # fused_v1's column stays, untouched, for a rollback
+    assert cols["fused_embedding"] == "F32_BLOB(788)"
 
 
 @pytest.fixture

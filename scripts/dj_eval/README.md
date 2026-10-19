@@ -13,6 +13,9 @@ Use `D:\Softwares\MiniConda\python.exe` (the PATH python lacks librosa).
 # 1. the copy: a file copy of the backup, plus 4 eval users and one user per persona
 python scripts/dj_eval/setup_copy.py --backup data/backups/prod_<stamp>.db      # -> data/dj_eval/eval.db
 
+# 1b. the copy is fused_v1 (as prod is until the migration): migrate it
+VIBESCAPE_DB_PATH=data/dj_eval/eval.db python scripts/refuse_vectors.py --apply
+
 # 2a. the deterministic eval: starts and stops its own server (~1 h for every group)
 python scripts/dj_eval/run_eval.py --db data/dj_eval/eval.db                     # -> data/dj_eval/reports/dj_eval_*.md/.json
 

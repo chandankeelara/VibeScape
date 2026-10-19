@@ -137,7 +137,7 @@ def pauses(monkeypatch):
     monkeypatch.setattr(base, "_sleep", recorded.append)
     return recorded
 
-FUSED_DIM = 788
+from ingest_pipeline.fused_vector import FUSED_COLUMN, FUSED_DIM  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -221,7 +221,7 @@ def make_tracks(sql):
             sql.execute("INSERT INTO user_tracks (user_id, track_id) VALUES (?, ?)", (user_id, tid))
             if vec is not None:
                 blob = np.asarray(unit(vec), dtype=np.float32).tobytes()
-                sql.execute("INSERT INTO track_embeddings (track_id, fused_embedding) VALUES (?, ?)",
+                sql.execute(f"INSERT INTO track_embeddings (track_id, {FUSED_COLUMN}) VALUES (?, ?)",
                             (tid, blob))
             ids.append(tid)
         sql.commit()

@@ -17,7 +17,7 @@ import requests
 import run_ingest_v2 as runner
 from ingest_pipeline import base
 from ingest_pipeline.base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, id_filter
-from ingest_pipeline.fused_vector import FUSED_DIM, MERT_DIM
+from ingest_pipeline.fused_vector import FUSED_COLUMN, FUSED_DIM, MERT_DIM
 from ingest_pipeline.stage_classify import ClassifyStage
 from ingest_pipeline.stage_fuse import CURRENT_MERT_VERSION, FuseStage
 
@@ -444,7 +444,7 @@ def test_fuse_writes_the_vector_and_arms_youtube(sql, app_module):
         assert FuseStage().run_batch(conn, 10, log)["done"] == 1
     finally:
         conn.close()
-    row = sql.execute("SELECT t.fuse_status, t.youtube_status, LENGTH(te.fused_embedding) "
+    row = sql.execute(f"SELECT t.fuse_status, t.youtube_status, LENGTH(te.{FUSED_COLUMN}) "
                       "FROM tracks t JOIN track_embeddings te ON te.track_id = t.id").fetchone()
     assert tuple(row) == ("done", "pending", FUSED_DIM * 4)
 
@@ -471,6 +471,6 @@ def test_fuse_never_marks_a_row_done_without_its_vector(sql, app_module, monkeyp
     finally:
         conn.close()
     status = sql.execute("SELECT fuse_status FROM tracks WHERE id = ?", (tid,)).fetchone()[0]
-    fused = sql.execute("SELECT LENGTH(fused_embedding) FROM track_embeddings WHERE track_id = ?",
+    fused = sql.execute(f"SELECT LENGTH({FUSED_COLUMN}) FROM track_embeddings WHERE track_id = ?",
                         (tid,)).fetchone()
     assert status == "done" and fused is not None and fused[0] == FUSED_DIM * 4

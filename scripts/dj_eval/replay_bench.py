@@ -107,13 +107,14 @@ def _v1_onehot(language):
 
 
 def build_space(rows, mert, langs, weights, v1=False) -> np.ndarray:
-    out = np.empty((len(rows), fv.MERT_DIM + len(fv.SCALAR_COLS) + len(langs) + 1))
+    """langs None: the shipped slot table (fused_vector.LANG_CODES, 64 wide)."""
+    width = fv.LANG_BLOCK if langs is None else len(langs) + 1
+    out = np.empty((len(rows), fv.MERT_DIM + len(fv.SCALAR_COLS) + width))
     for i, r in enumerate(rows):
         if v1:
             sc = np.array([fv._norm_scalar(c, r.get(c)) for c in fv.SCALAR_COLS], dtype=np.float32)
-            out[i] = fv._l2(np.concatenate([fv.W_MERT * fv._l2(mert[i]),
-                                            fv.W_SCALAR * fv._l2(sc),
-                                            fv.W_LANG * _v1_onehot(r.get("language"))]))
+            out[i] = fv._l2(np.concatenate([0.55 * fv._l2(mert[i]), 0.25 * fv._l2(sc),
+                                            0.20 * _v1_onehot(r.get("language"))]))
         else:
             out[i] = fv._build_fused(r, mert[i], langs=langs, weights=weights)
     return out
@@ -579,14 +580,17 @@ def evaluate(rankers, moments, pools, rr, meta, nearest=None):
 
 
 # ------------------------------------------------------------------- main
+# fused_v2's first slot list: the ten languages with 25+ tracks, + 'other'.
+TEN = ["en", "hi", "kn", "te", "ta", "pa", "ml", "es", "fr", "pt"]
 SPACES = {
     # name: (langs, weights, v1)
     "v1_stored": None,
     "v1_rebuilt": (V1_LANGS, None, True),
-    "A": (fv.TOP_LANGS, (fv.W_MERT, fv.W_SCALAR, fv.W_LANG), False),   # the current recipe
-    "W20": (fv.TOP_LANGS, (0.55, 0.25, 0.20), False),                    # fused_v2's first weights
-    "C_lang0.10": (fv.TOP_LANGS, (0.55, 0.25, 0.10), False),
-    "C_lang0": (fv.TOP_LANGS, (0.55, 0.25, 0.0), False),
+    "A": (None, (fv.W_MERT, fv.W_SCALAR, fv.W_LANG), False),       # the shipped recipe, 64 slots
+    "A10": (TEN, (fv.W_MERT, fv.W_SCALAR, fv.W_LANG), False),      # ... with ten slots + other
+    "W20": (TEN, (0.55, 0.25, 0.20), False),                       # fused_v2's first weights
+    "C_lang0.10": (TEN, (0.55, 0.25, 0.10), False),
+    "C_lang0": (TEN, (0.55, 0.25, 0.0), False),
 }
 # dj_replay's avoid constants before 2026-10-19, for the comparisons.
 LEGACY_REPLAY = {"NEG_WEIGHT": 0.6, "M_STEP": 0.25, "M_MAX": 1.0}
@@ -595,7 +599,7 @@ LEGACY_REPLAY = {"NEG_WEIGHT": 0.6, "M_STEP": 0.25, "M_MAX": 1.0}
 # vector is L2-normalised).
 for _w in (0.30, 0.40, 0.50):
     _k = (1.0 - _w) / (0.55 + 0.25)
-    SPACES[f"W{int(_w * 100)}"] = (fv.TOP_LANGS, (0.55 * _k, 0.25 * _k, _w), False)
+    SPACES[f"W{int(_w * 100)}"] = (TEN, (0.55 * _k, 0.25 * _k, _w), False)
 
 
 def final_table():
@@ -610,7 +614,8 @@ def final_table():
         {"space": "W20", "replay": LEGACY_REPLAY, "nearest": {"w": 0.4, "h": 3.0}},
         {"space": "W40", "replay": LEGACY_REPLAY, "nearest": {"w": 0.4, "h": 3.0}},
         {"space": "W20", "replay": {}},
-        {"space": "A", "replay": LEGACY_REPLAY},
+        {"space": "A10", "replay": LEGACY_REPLAY},
+        {"space": "A10", "replay": {}},
         {"space": "A", "replay": {}},
     ]
 

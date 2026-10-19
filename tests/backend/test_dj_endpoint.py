@@ -79,7 +79,7 @@ def test_library_mean_is_stored_per_user(client, make_user, make_tracks, cluster
     row = sql.execute("SELECT n_tracks, mean_json FROM user_embedding_mean WHERE user_id = ?",
                       (uid,)).fetchone()
     assert row is not None and row["n_tracks"] == 60
-    assert len(json.loads(row["mean_json"])) == 788
+    assert len(json.loads(row["mean_json"])) == app_module.FUSED_DIM
 
 
 def test_small_library_uses_the_global_mean(client, make_user, make_tracks, clusters, sql):

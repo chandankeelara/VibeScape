@@ -435,14 +435,18 @@ the other 20 dims are engineered features, which is why correcting a
 language tag needs a `fuse` re-run (milliseconds) and never a GPU re-encode
 — set `fuse_status='pending'`.
 
-Changing `SCALAR_COLS`, `TOP_LANGS` or the weights changes the vector
+Changing `SCALAR_COLS`, the order of `LANG_CODES`, `LANG_BLOCK` or the weights changes the vector
 **space**. Cosine across two spaces is meaningless, so every stored vector
 must be rebuilt, and `backend/app.py`'s `MERT_DIM`/`FUSED_DIM` must move in
 step or `/similar` silently returns nothing. Bump `FUSED_MODEL_VERSION` in
 both files (it keys the `user_embedding_mean` cache), then run
 `scripts/refuse_vectors.py` (dry-run by default; `--target prod --apply`
-after a backup), which rewrites every fused vector and drops the cached
-means. `TOP_LANGS` itself comes from `scripts/language_slots.py --db <copy>`.
+after a backup), which writes every fused vector and drops the cached
+means. A change of width also needs its own column (`FUSED_COLUMN`; the
+script adds it): libSQL types a vector column by width. A new language is
+not a space change: append its code to `LANG_CODES` (never reorder;
+`scripts/language_slots.py --db <copy>` lists what is missing) and re-run
+the script, which rewrites only that language's tracks.
 
 ## Files
 

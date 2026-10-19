@@ -7,6 +7,7 @@ SQLite may not enforce the cascade, so these tests assert the rows directly
 rather than observing it.
 """
 import numpy as np
+from ingest_pipeline.fused_vector import FUSED_COLUMN, FUSED_DIM
 
 ENV = {"session_id": "s-clear", "tz_offset_min": 0, "vibe": 50, "vibe_source": "user", "dj_mode": False}
 
@@ -18,7 +19,7 @@ def count(sql, q, *args):
 def test_clear_keeps_catalogue_history_and_embeddings(client, sql, make_user, make_tracks):
     me, h = make_user()
     other, _ = make_user()
-    mine, shared = make_tracks(me, [np.ones(788), np.ones(788)])
+    mine, shared = make_tracks(me, [np.ones(FUSED_DIM), np.ones(FUSED_DIM)])
     sql.execute("INSERT INTO user_tracks (user_id, track_id) VALUES (?, ?)", (other, shared))
     sql.commit()
 
@@ -40,7 +41,7 @@ def test_clear_keeps_catalogue_history_and_embeddings(client, sql, make_user, ma
     # ... but the catalogue, its embeddings and the caller's history survive.
     assert count(sql, "SELECT COUNT(*) FROM tracks WHERE id=?", mine) == 1
     assert count(sql, "SELECT COUNT(*) FROM track_embeddings WHERE track_id=?", mine) == 1
-    assert count(sql, "SELECT LENGTH(fused_embedding) FROM track_embeddings WHERE track_id=?", mine) == 788 * 4
+    assert count(sql, f"SELECT LENGTH({FUSED_COLUMN}) FROM track_embeddings WHERE track_id=?", mine) == FUSED_DIM * 4
     assert count(sql, "SELECT COUNT(*) FROM track_events WHERE user_id=? AND track_id=?", me, mine) == events_before
     assert count(sql, "SELECT COUNT(*) FROM user_track_stats WHERE user_id=? AND track_id=?", me, mine) == 1
     # Another user's link to a shared track is untouched.
