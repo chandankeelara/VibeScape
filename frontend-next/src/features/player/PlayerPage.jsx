@@ -5,6 +5,7 @@ import { applyAccent } from '../../lib/vibe';
 import useMediaQuery, { PHONE, WIDE } from '../../lib/useMediaQuery';
 import { QueueSidebar, QueueStateProvider } from '../queue';
 import { SyncJobProvider, SyncPill, useSyncJob } from '../sync';
+import { LyricsProvider } from '../lyrics';
 import TopBar from './TopBar';
 import NowPlaying from './NowPlaying';
 import PhoneHome from './PhoneHome';
@@ -31,7 +32,9 @@ export default function PlayerPage() {
   return (
     <SyncJobProvider>
       <QueueStateProvider>
-        <PlayerStage />
+        <LyricsProvider>
+          <PlayerStage />
+        </LyricsProvider>
       </QueueStateProvider>
     </SyncJobProvider>
   );

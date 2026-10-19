@@ -136,6 +136,14 @@ export const similarTracksDj = (trackKey, body) =>
   request(`/api/tracks/${encodeURIComponent(trackKey)}/similar`, { method: 'POST', body });
 export const trackFeatures = (trackKey) =>
   request(`/api/tracks/${encodeURIComponent(trackKey)}/features`);
+/**
+ * Lyrics for a track (LRCLIB, via the backend):
+ * { status: 'synced'|'plain'|'instrumental'|'none', source, lines:[{t_ms,text}],
+ *   plain, matched_duration_ms, track_duration_ms, credit, error? }.
+ * `lines` is non-empty only when synced; `error: 'upstream'` comes with 'none'.
+ */
+export const trackLyrics = (trackKey) =>
+  request(`/api/tracks/${encodeURIComponent(trackKey)}/lyrics`);
 export const spotifyForApple = (appleId) =>
   request(`/api/track/${encodeURIComponent(appleId)}/spotify`);
 

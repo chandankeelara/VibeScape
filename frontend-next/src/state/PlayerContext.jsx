@@ -640,6 +640,17 @@ export function usePlaybackTime() {
 }
 
 /**
+ * The same ~4Hz playhead, delivered to a callback instead of state: for a
+ * consumer that derives something coarser from it (the lyrics' active line)
+ * and renders only when THAT changes. Never re-renders by itself.
+ */
+export function usePlaybackClock(onTick) {
+  const ref = useRef(onTick);
+  useEffect(() => { ref.current = onTick; });
+  useEffect(() => player.subscribeTime((t) => ref.current(t)), []);
+}
+
+/**
  * Verify countdown, isolated from the main context on purpose. Ticks ~4x/sec
  * while a clip plays, so only the overlay should subscribe.
  */

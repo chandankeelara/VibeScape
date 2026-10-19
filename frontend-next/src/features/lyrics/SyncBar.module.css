@@ -1,0 +1,52 @@
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+}
+
+.btn {
+  composes: pill from '../../ui/controls.module.css';
+}
+/* Through .bar, so it outranks the composed primitive whatever the bundle order. */
+.bar .btn {
+  padding: 0 var(--sp-3);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.value {
+  min-width: 52px;
+  text-align: center;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.themed .value { color: var(--text); }
+.dark .value { color: var(--on-dark); }
+
+/* On the dark lyrics surface: same shape, glass instead of --raised. */
+.dark .btn {
+  color: var(--on-dark);
+  background: var(--hover-on-dark);
+  border-color: var(--line-on-dark);
+}
+.dark .btn:hover:not(:disabled) {
+  color: var(--on-dark);
+  background: var(--line-on-dark);
+  border-color: var(--line-on-dark);
+}
+.dark .btn:focus-visible { outline-color: var(--on-dark); }
+
+/* The side column is ~380px; five controls at full padding wrap there. */
+.themed { gap: 6px; }
+.themed .btn { padding: 0 10px; }
+.themed .value { min-width: 44px; }
+
+@media (max-width: 767px) {
+  .bar { gap: 6px; }
+  .bar .btn { padding: 0 10px; }
+}

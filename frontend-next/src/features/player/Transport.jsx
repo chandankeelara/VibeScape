@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { usePlayer, usePlaybackTime } from '../../state/PlayerContext';
+import { useLyrics } from '../lyrics';
 import { fmtTime } from '../../lib/vibe';
 import Icon from '../../ui/Icon';
 import Range from '../../ui/Range';
@@ -146,6 +147,28 @@ export function ModeSwitch({ className = '' }) {
         <Icon name="video" size={16} />Video
       </button>
     </div>
+  );
+}
+
+/**
+ * Lyrics — a toggle next to Audio | Video, not a third mode: it never changes
+ * what is playing. Remembered per device (features/lyrics/lyricsStore.js).
+ * The name stays "Lyrics"; aria-pressed carries the state.
+ */
+export function LyricsButton({ className = '' }) {
+  const { on, toggle } = useLyrics();
+  return (
+    <button
+      type="button"
+      className={`${ui.pill} ${on ? ui.pillOn : ''} ${className}`}
+      aria-pressed={on}
+      aria-label="Lyrics"
+      title={on ? 'Hide lyrics' : 'Show lyrics'}
+      onClick={toggle}
+    >
+      <Icon name="lyrics" size={16} />
+      <span className={styles.pillWord}>Lyrics</span>
+    </button>
   );
 }
 

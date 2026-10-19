@@ -124,6 +124,14 @@ const PATHS = {
       <path d="m2 2 20 20" />
     </>
   ),
+  // A vocal mic, not lines + a note: that is too close to `queue`.
+  lyrics: (
+    <>
+      <path d="m11 7.6-6 8.19a1 1 0 0 0 .1 1.3l.82.82a1 1 0 0 0 1.31.09L15.09 12" />
+      <path d="M16.5 21.17C15.5 20.5 14.37 20 13 20c-2.06 0-3.93 2.36-6 2-2.07-.36-2.78-3.37-1.5-4.5" />
+      <circle cx="16" cy="7" r="5" />
+    </>
+  ),
   logo: <path d="M3 15c2.5 0 2.5-6 5-6s2.5 9 5 9 2.5-12 5-12 2 6 3 6" strokeWidth="2.6" />,
   out: <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" />,
   sync: (

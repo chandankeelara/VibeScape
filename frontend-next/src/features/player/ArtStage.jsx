@@ -18,6 +18,10 @@ import styles from './ArtStage.module.css';
  * The stage itself is square in audio mode and 16:9 in video mode; the parent
  * (NowPlaying) sizes it. `pool` is the art's own colour, thrown as a soft
  * light under the cover instead of a black drop shadow.
+ *
+ * `overlay` is laid over the stage by the parent — the lyrics, over the art
+ * or as subtitles on the video. It is a SIBLING after the video surface and
+ * positions itself, so adding or removing it never touches #ytPlayer.
  */
 
 /** Shown while the classification clip plays; owns the ~4x/sec countdown. */
@@ -80,7 +84,7 @@ function Cover({ url }) {
   ));
 }
 
-export default function ArtStage({ className = '', pool }) {
+export default function ArtStage({ className = '', pool, overlay = null }) {
   const { current, mode, videoState, loadingTrack, setPlaybackMode } = usePlayer();
   const isVideo = mode === 'video';
   const noVideo = isVideo && videoState === 'unavailable';
@@ -124,6 +128,8 @@ export default function ArtStage({ className = '', pool }) {
           </button>
         </div>
       </div>
+
+      {overlay}
 
       <VerifyOverlay track={current} />
 

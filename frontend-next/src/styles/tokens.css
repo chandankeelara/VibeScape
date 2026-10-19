@@ -47,7 +47,16 @@
   /* Text on a surface that is always dark (video chrome, the picking pill). */
   --on-dark: #ffffff;
   --on-dark-2: rgb(255 255 255 / 0.82);
+  /* Receding text on the dark lyrics surface: the next lines, then the rest.
+     Over the lyrics scrim they still clear 4.5:1. */
+  --on-dark-3: rgb(255 255 255 / 0.7);
+  --on-dark-4: rgb(255 255 255 / 0.44);
+  --line-on-dark: rgb(255 255 255 / 0.16);
+  --hover-on-dark: rgb(255 255 255 / 0.1);
   --glass-dark: rgb(10 11 13 / 0.78);
+  /* Over a blurred cover: dark enough for --on-dark-4 text on the brightest
+     artwork. */
+  --lyrics-scrim: linear-gradient(rgb(8 9 11 / 0.7), rgb(8 9 11 / 0.82));
 
   /* ------------------------------------------------------------- brand */
   --spotify: #1ed760;
@@ -146,6 +155,8 @@
   --bar-h: 88px;
   --queue-w: 352px;
   --stage-max: 1200px;
+  /* The lyrics list in the video view's side column (and theater's dock). */
+  --lyrics-list-h: clamp(200px, 34dvh, 340px);
 
   /*
    * z-index scale. Use these names only. A fixed sheet must never sit inside

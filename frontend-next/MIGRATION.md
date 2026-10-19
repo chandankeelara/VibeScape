@@ -286,6 +286,39 @@ So consent is a two-link chain, and the UI says so:
   Chrome may never fire the action there. Unverified. Audio mode is the
   designed case and the button works in both regardless.
 
+## Lyrics (`src/features/lyrics/`)
+
+A **Lyrics** pill beside Audio | Video. A toggle, not a mode: it never changes
+what plays. On/off and per-recording sync offsets are per device in
+localStorage (`vs.lyrics.on`, `vs.lyrics.offset.spotify:<id>` /
+`vs.lyrics.offset.yt:<id>`), every access wrapped so it works without storage.
+
+| View | Where the lyrics go |
+|---|---|
+| Audio (>= 1024px) | over the artwork in ArtStage's `overlay` slot, blurred cover behind |
+| Video | the meta column, in place of the vibe card. Never on the video |
+| Theater | two-line subtitles bottom-LEFT of the video (no pointer events); sync bar in the column below |
+| < 1024px | a full-screen sheet portalled to `<body>`; on a phone only while now-playing is open |
+
+**When timings are trusted** (`deriveView` in `lyricsMath.js`): Spotify
+always; YouTube only when the video's duration is within 2s of
+`matched_duration_ms`, otherwise plain + "Sync manually" (a stored offset for
+that video counts as synced); a 30s preview never ("Lyrics sync on full
+playback").
+
+**The active line is not React state in the provider.** `usePlaybackClock`
+(PlayerContext) hands each ~4Hz tick to a callback; the provider computes the
+index, extrapolates between ticks, schedules the next line boundary exactly,
+and publishes the index through a tiny external store. Only `useActiveLine()`
+callers re-render, and only when the index changes. The views are lazy chunks.
+
+Offset convention everywhere: a line shows at `t_ms + offset`; `+0.5s` delays
+the lyrics.
+
+Screenshots were taken against a build with `media/player.js` swapped for a
+fake and every `/api` call mocked; nothing here has run against the real
+endpoint, the Spotify SDK's clock or a real YouTube video yet.
+
 ## Gotchas discovered during the port
 
 **`trackKey()` must stay spotify_id-first.** `_resolve_anchor`
@@ -330,6 +363,11 @@ so nothing breaks at import time — it 404s.
 - `duration_ms` is the duration of *what played*, so a 30s preview reports
   30000, not the catalogue track length. Mixing the two clocks would make
   `position_ms / duration_ms` meaningless.
+- **Lyrics in video mode replace the vibe card**; the vibe stays reachable
+  from the player bar's chip. **The phone lyrics sheet covers the video**
+  (it keeps playing underneath — nothing is moved).
+- Lyrics call `GET /api/tracks/{key}/lyrics` with `apiKey(track)` (internal
+  id first, spotify_id fallback), the same key `/similar` takes.
 - DJ mode's `natural` end flag is inferred from played ratio rather than the
   media `ended` event. `player.js` exposes a real seam (`setHooks.onEnded`) if
   that's ever worth tightening.
