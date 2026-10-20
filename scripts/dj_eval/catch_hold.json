@@ -1,0 +1,94 @@
+{
+ "about": "Catch-and-hold scenarios for score_dj.py. Each one: a listener on its own account plays ONE fixed start song from a search, then follows the DJ for exactly `steps` picks. 'on' starts from a song that fits the target, 'off' from one that does not, so 'off' measures how fast the DJ finds the listener and 'on' whether it keeps them. `prompt` is rendered from `prompt_template` (score_dj.py --render-prompts rewrites it; a test fails when they drift). `account` is a persona in personas.json and must differ between scenarios: two sessions on one account reset each other's history. `start_fit` is the fit the start song should get against the target; the listener is not told it, and score_dj.py warns when the rating it gave is more than 1 away. Bump `version` whenever a scenario, the step count or the template changes: the scoreboard only compares entries of one version.",
+ "version": 1,
+ "steps": 15,
+ "prompt_template": [
+  "This is a catch-and-hold test of the VibeScape DJ. Follow these steps exactly; they replace steps 2 and 3 of your usual session.",
+  "",
+  "WHAT YOU WANT RIGHT NOW, and the only thing you judge songs against: {target}",
+  "",
+  "You are signed in as the `{account}` account. Ignore the `you:` line that `start` prints: that account's usual taste is not what you want today. Rate every song, the first one included, only against what you want above.",
+  "",
+  "1. `start --persona {account}` and keep the session id.",
+  "2. `search --session <id> \"{query}\"`. This is your only search in the whole session. Play the result that is {song}. If it is not among the results, do not play anything else: `review` \"start song not found\", and say so in your final message.",
+  "3. `finish` that song, then give `feedback` for it: your honest fit against what you want.",
+  "4. Then exactly {steps} times: `next`, then `finish` or `skip` the song it plays, then `feedback` for it. Never `play` a song from the up-next list and never search again: only `next`. If the DJ says it has nothing more to play, stop there.",
+  "5. `review` the session: did the DJ find what you want, how many songs it took, and did it keep it once it had it.",
+  "",
+  "In your final message give the session id and your review."
+ ],
+ "scenarios": [
+  {
+   "id": "kn-melody-on",
+   "kind": "on",
+   "target": "soft romantic Kannada film melodies. No mass, rap or dance numbers, and nothing in another language.",
+   "account": "kannada-late-night",
+   "query": "Anisuthide",
+   "title": "Anisuthide",
+   "artist": "Sonu Nigam",
+   "album": null,
+   "start_fit": 5,
+   "prompt": "This is a catch-and-hold test of the VibeScape DJ. Follow these steps exactly; they replace steps 2 and 3 of your usual session.\n\nWHAT YOU WANT RIGHT NOW, and the only thing you judge songs against: soft romantic Kannada film melodies. No mass, rap or dance numbers, and nothing in another language.\n\nYou are signed in as the `kannada-late-night` account. Ignore the `you:` line that `start` prints: that account's usual taste is not what you want today. Rate every song, the first one included, only against what you want above.\n\n1. `start --persona kannada-late-night` and keep the session id.\n2. `search --session <id> \"Anisuthide\"`. This is your only search in the whole session. Play the result that is \"Anisuthide\" by Sonu Nigam. If it is not among the results, do not play anything else: `review` \"start song not found\", and say so in your final message.\n3. `finish` that song, then give `feedback` for it: your honest fit against what you want.\n4. Then exactly 15 times: `next`, then `finish` or `skip` the song it plays, then `feedback` for it. Never `play` a song from the up-next list and never search again: only `next`. If the DJ says it has nothing more to play, stop there.\n5. `review` the session: did the DJ find what you want, how many songs it took, and did it keep it once it had it.\n\nIn your final message give the session id and your review."
+  },
+  {
+   "id": "kn-melody-off",
+   "kind": "off",
+   "target": "soft romantic Kannada film melodies. No mass, rap or dance numbers, and nothing in another language.",
+   "account": "kannada-mass",
+   "query": "Salaam Rocky Bhai",
+   "title": "Salaam Rocky Bhai",
+   "artist": null,
+   "album": null,
+   "start_fit": 2,
+   "prompt": "This is a catch-and-hold test of the VibeScape DJ. Follow these steps exactly; they replace steps 2 and 3 of your usual session.\n\nWHAT YOU WANT RIGHT NOW, and the only thing you judge songs against: soft romantic Kannada film melodies. No mass, rap or dance numbers, and nothing in another language.\n\nYou are signed in as the `kannada-mass` account. Ignore the `you:` line that `start` prints: that account's usual taste is not what you want today. Rate every song, the first one included, only against what you want above.\n\n1. `start --persona kannada-mass` and keep the session id.\n2. `search --session <id> \"Salaam Rocky Bhai\"`. This is your only search in the whole session. Play the result that is \"Salaam Rocky Bhai\". If it is not among the results, do not play anything else: `review` \"start song not found\", and say so in your final message.\n3. `finish` that song, then give `feedback` for it: your honest fit against what you want.\n4. Then exactly 15 times: `next`, then `finish` or `skip` the song it plays, then `feedback` for it. Never `play` a song from the up-next list and never search again: only `next`. If the DJ says it has nothing more to play, stop there.\n5. `review` the session: did the DJ find what you want, how many songs it took, and did it keep it once it had it.\n\nIn your final message give the session id and your review."
+  },
+  {
+   "id": "hi-romantic-on",
+   "kind": "on",
+   "target": "Hindi romantic songs in the Arijit Singh mould. No party or devotional songs, no Punjabi singles, and nothing in another language.",
+   "account": "hindi-romantic",
+   "query": "Tum Hi Ho",
+   "title": "Tum Hi Ho",
+   "artist": "Arijit Singh",
+   "album": "Aashiqui 2",
+   "start_fit": 5,
+   "prompt": "This is a catch-and-hold test of the VibeScape DJ. Follow these steps exactly; they replace steps 2 and 3 of your usual session.\n\nWHAT YOU WANT RIGHT NOW, and the only thing you judge songs against: Hindi romantic songs in the Arijit Singh mould. No party or devotional songs, no Punjabi singles, and nothing in another language.\n\nYou are signed in as the `hindi-romantic` account. Ignore the `you:` line that `start` prints: that account's usual taste is not what you want today. Rate every song, the first one included, only against what you want above.\n\n1. `start --persona hindi-romantic` and keep the session id.\n2. `search --session <id> \"Tum Hi Ho\"`. This is your only search in the whole session. Play the result that is \"Tum Hi Ho\" by Arijit Singh (Aashiqui 2). If it is not among the results, do not play anything else: `review` \"start song not found\", and say so in your final message.\n3. `finish` that song, then give `feedback` for it: your honest fit against what you want.\n4. Then exactly 15 times: `next`, then `finish` or `skip` the song it plays, then `feedback` for it. Never `play` a song from the up-next list and never search again: only `next`. If the DJ says it has nothing more to play, stop there.\n5. `review` the session: did the DJ find what you want, how many songs it took, and did it keep it once it had it.\n\nIn your final message give the session id and your review."
+  },
+  {
+   "id": "hi-romantic-off",
+   "kind": "off",
+   "target": "Hindi romantic songs in the Arijit Singh mould. No party or devotional songs, no Punjabi singles, and nothing in another language.",
+   "account": "indian-heartbreak",
+   "query": "Badtameez Dil",
+   "title": "Badtameez Dil",
+   "artist": null,
+   "album": null,
+   "start_fit": 2,
+   "prompt": "This is a catch-and-hold test of the VibeScape DJ. Follow these steps exactly; they replace steps 2 and 3 of your usual session.\n\nWHAT YOU WANT RIGHT NOW, and the only thing you judge songs against: Hindi romantic songs in the Arijit Singh mould. No party or devotional songs, no Punjabi singles, and nothing in another language.\n\nYou are signed in as the `indian-heartbreak` account. Ignore the `you:` line that `start` prints: that account's usual taste is not what you want today. Rate every song, the first one included, only against what you want above.\n\n1. `start --persona indian-heartbreak` and keep the session id.\n2. `search --session <id> \"Badtameez Dil\"`. This is your only search in the whole session. Play the result that is \"Badtameez Dil\". If it is not among the results, do not play anything else: `review` \"start song not found\", and say so in your final message.\n3. `finish` that song, then give `feedback` for it: your honest fit against what you want.\n4. Then exactly 15 times: `next`, then `finish` or `skip` the song it plays, then `feedback` for it. Never `play` a song from the up-next list and never search again: only `next`. If the DJ says it has nothing more to play, stop there.\n5. `review` the session: did the DJ find what you want, how many songs it took, and did it keep it once it had it.\n\nIn your final message give the session id and your review."
+  },
+  {
+   "id": "en-workout-on",
+   "kind": "on",
+   "target": "English workout music: hip-hop, rap, rock, high-energy anthems; EDM drops are fine. No ballads, no slow R&B, and nothing in another language.",
+   "account": "english-workout",
+   "query": "Lose Yourself",
+   "title": "Lose Yourself",
+   "artist": "Eminem",
+   "album": null,
+   "start_fit": 5,
+   "prompt": "This is a catch-and-hold test of the VibeScape DJ. Follow these steps exactly; they replace steps 2 and 3 of your usual session.\n\nWHAT YOU WANT RIGHT NOW, and the only thing you judge songs against: English workout music: hip-hop, rap, rock, high-energy anthems; EDM drops are fine. No ballads, no slow R&B, and nothing in another language.\n\nYou are signed in as the `english-workout` account. Ignore the `you:` line that `start` prints: that account's usual taste is not what you want today. Rate every song, the first one included, only against what you want above.\n\n1. `start --persona english-workout` and keep the session id.\n2. `search --session <id> \"Lose Yourself\"`. This is your only search in the whole session. Play the result that is \"Lose Yourself\" by Eminem. If it is not among the results, do not play anything else: `review` \"start song not found\", and say so in your final message.\n3. `finish` that song, then give `feedback` for it: your honest fit against what you want.\n4. Then exactly 15 times: `next`, then `finish` or `skip` the song it plays, then `feedback` for it. Never `play` a song from the up-next list and never search again: only `next`. If the DJ says it has nothing more to play, stop there.\n5. `review` the session: did the DJ find what you want, how many songs it took, and did it keep it once it had it.\n\nIn your final message give the session id and your review."
+  },
+  {
+   "id": "en-workout-off",
+   "kind": "off",
+   "target": "English workout music: hip-hop, rap, rock, high-energy anthems; EDM drops are fine. No ballads, no slow R&B, and nothing in another language.",
+   "account": "english-chill",
+   "query": "Skinny Love",
+   "title": "Skinny Love",
+   "artist": "Bon Iver",
+   "album": null,
+   "start_fit": 1,
+   "prompt": "This is a catch-and-hold test of the VibeScape DJ. Follow these steps exactly; they replace steps 2 and 3 of your usual session.\n\nWHAT YOU WANT RIGHT NOW, and the only thing you judge songs against: English workout music: hip-hop, rap, rock, high-energy anthems; EDM drops are fine. No ballads, no slow R&B, and nothing in another language.\n\nYou are signed in as the `english-chill` account. Ignore the `you:` line that `start` prints: that account's usual taste is not what you want today. Rate every song, the first one included, only against what you want above.\n\n1. `start --persona english-chill` and keep the session id.\n2. `search --session <id> \"Skinny Love\"`. This is your only search in the whole session. Play the result that is \"Skinny Love\" by Bon Iver. If it is not among the results, do not play anything else: `review` \"start song not found\", and say so in your final message.\n3. `finish` that song, then give `feedback` for it: your honest fit against what you want.\n4. Then exactly 15 times: `next`, then `finish` or `skip` the song it plays, then `feedback` for it. Never `play` a song from the up-next list and never search again: only `next`. If the DJ says it has nothing more to play, stop there.\n5. `review` the session: did the DJ find what you want, how many songs it took, and did it keep it once it had it.\n\nIn your final message give the session id and your review."
+  }
+ ]
+}

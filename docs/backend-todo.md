@@ -1411,6 +1411,22 @@ filtering work.
   0.61 -> 0.75 from the avoid term alone. Item-level skip negatives are the
   obvious next measurement.
 
+## 13. DJ catch-and-hold score — built 2026-10-19 (branch `backend/dj-score`), what is left
+
+`scripts/dj_eval/score_dj.py` scores a DJ version from listener sessions on
+the six scenarios in `catch_hold.json` and keeps `scoreboard.json`.
+
+### 13.1 The scoreboard's commit is whatever `--commit` says
+`scripts/dj_eval/score_dj.py` `main`, `scripts/dj_eval/serve.py`
+
+**verified by reading.** Nothing records which code served a round:
+`serve.py` does not note its checkout's HEAD and the session files hold only
+`base_url`. A wrong `--commit` (the main checkout's HEAD instead of the
+worktree under test) files the score under the wrong version, silently. Fix:
+`serve.py` writes its HEAD and dirty flag next to the copy, `listener.py
+start` copies it into the session, and `score_dj.py` refuses a round whose
+sessions disagree with each other or with `--commit`.
+
 ## Checked and clean
 
 Recorded so the next audit does not redo them.
