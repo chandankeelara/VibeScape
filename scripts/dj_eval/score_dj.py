@@ -1,10 +1,10 @@
 """
-One number for a DJ version: how fast it catches a listener and how well it
-holds them, over the catch-and-hold scenarios in catch_hold.json, kept on a
-scoreboard (scoreboard.json, committed) with the best score so far.
+One number for a DJ version, from LLM listeners on the fixed scenarios in
+scenarios.json, kept on a scoreboard (scoreboard.json, committed) with the
+best score so far.
 
     python scripts/dj_eval/score_dj.py --label v4 --commit HEAD \\
-        --session kn-melody-on=kannada-late-night-84b7e7 --session kn-melody-on=... ...
+        --session vibe-kn-melody=kannada-late-night-84b7e7 --session vibe-kn-melody=... ...
     python scripts/dj_eval/score_dj.py --manifest round.json          # same, from a file
     python scripts/dj_eval/score_dj.py ... --dry-run                  # table only, no entry
     python scripts/dj_eval/score_dj.py --render-prompts               # rewrite the stored prompts
@@ -16,33 +16,53 @@ sessions has that many runs. Session files are listener.py's state files,
 read from --listener-dir (default: data/dj_eval/listener/ of the checkout
 this script is in; the listener agents write to the main checkout's).
 
-SCORE, per run, from the `steps` (15) DJ picks only, the start song aside:
-  catch_step  the first DJ step s whose picks s, s+1 and s+2 all have fit >= 4
-              (--catch-rule fit, the default) or were all finished
-              (--catch-rule finished); none (never caught) when there is no
-              such run of three. The best is kept per catch rule.
-  catch       50 * (steps + 1 - catch_step) / steps: 50 at step 1, 10 at 13.
-  hold        50 * (picks from catch_step on with fit >= 4) / (picks from
-              catch_step on). The catching three count. 0 when never caught.
-  lost        picks after the catch with fit <= 2. Reported, not scored.
-  total       catch + hold, 0 to 100.
-A scenario's score is the mean over its runs; 'on', 'off' and overall are
-means over scenarios.
+The DJ knows only what the listener does: searches, plays, finishes and
+skips. So a test never asks it to guess a vibe it was not shown. Two kinds:
 
-VALIDATION. A run counts only if it is exactly what the prompt asks: the
-right account, one `search` play first, then `steps` `dj` plays with no
-search or up-next (`picked`) play among them, each ended and rated 1-5.
-Plays after DJ step `steps` (agents overshoot) are ignored with a warning,
-since they cannot change the steps before them. Anything else is
-printed as EXCLUDED and left out; a scenario left with no run stops the
-script unless --allow-missing.
+VIBE (one start song in the target vibe, then 15 DJ picks judged against it)
+  hold           share of the 15 with fit >= 4
+  skip_rate      share skipped
+  skip_recovery  of the picks right after a skipped pick, the share finished;
+                 None when no pick follows a skip
+  early          share of fit >= 4 in picks 1-3
+  score          VIBE_WEIGHTS: 50 hold + 25 (1 - skip_rate) + 15 skip_recovery
+                 + 10 early. With no skip_recovery its 15 is left out and the
+                 rest scaled to 100, so a run without skips is neither paid
+                 nor fined for it.
+
+STEER (song A, 5 DJ picks judged against vibe A; then a search for song B,
+       10 DJ picks judged against vibe B)
+  hold_a         share of the 5 A picks with fit >= 4
+  switch_step    the first B pick s where B picks s, s+1, s+2 were all
+                 finished; None if never
+  switch         (11 - switch_step) / 10: 1 at step 1, 0.3 at 8, 0 if never
+  hold_b         share of fit >= 4 among B picks from switch_step on; 0 if never
+  leak           share of the 10 B picks the listener tagged `--vibe A`
+  score          STEER_WEIGHTS: 15 hold_a + 35 switch + 40 hold_b + 10 (1 - leak)
+  Leak is the listener's explicit tag, not fit <= 2: a B pick can be wrong
+  without being A (another language, a third mood), and leak is meant to
+  count the DJ holding on to A.
+
+A scenario's score is the mean over its runs; 'vibe', 'steer' and the
+overall DJ score are means over scenarios.
+
+VALIDATION. A run counts only if its plays are exactly the scenario's
+layout: per phase, one `search` play of that phase's song (one of the
+song's `spotify_ids`), finished, then that phase's number of `dj` plays,
+every play ended and rated 1-5, and in a steer test every B pick tagged A,
+B or other. An up-next (`picked`) play, a search too early or too late, too
+few plays, another song as a start song or the wrong account exclude the
+run, printed as EXCLUDED. Plays after the last expected one (agents
+overshoot) cannot change the ones before and are ignored with a warning. A
+scenario left with no run stops the script unless --allow-missing.
 
 BEST. n is small and an LLM listener is noisy, so an entry with fewer than
 2 valid runs for any scenario (or a missing scenario) is provisional: it is
-recorded and compared, but cannot become the best. The noise band of an
-entry is the max-min range of its overall score across run indices (the
-overall of every scenario's first run, of every second run, ...); a gap to
-the best within the larger of the two entries' bands is called noise.
+recorded and compared, but cannot become the best. The best is kept per
+scenario version. The noise band of an entry is the max-min range of its
+overall score across run indices (the overall of every scenario's first
+run, of every second run, ...); a gap to the best within the larger of the
+two entries' bands is called noise.
 """
 from __future__ import annotations
 
@@ -65,15 +85,17 @@ except Exception:
     pass
 
 _REPO = Path(__file__).resolve().parents[2]
-SCENARIOS = Path(__file__).resolve().with_name("catch_hold.json")
+SCENARIOS = Path(__file__).resolve().with_name("scenarios.json")
 SCOREBOARD = Path(__file__).resolve().with_name("scoreboard.json")
 PERSONAS = Path(__file__).resolve().with_name("personas.json")
 
 GOOD_FIT = 4          # a pick that fits: 4 or 5 of 5
-LOST_FIT = 2          # a pick that loses the listener: 1 or 2
-CATCH_RUN = 3         # consecutive good picks that make a catch
-HALF = 50.0           # points for catch, and for hold
+RUN = 3               # finished picks in a row that make a switch; picks that make 'early'
+VIBE_WEIGHTS = {"hold": 50, "no_skip": 25, "recovery": 15, "early": 10}
+STEER_WEIGHTS = {"hold_a": 15, "switch": 35, "hold_b": 40, "no_leak": 10}
+SOUNDS_LIKE = ("A", "B", "other")
 MIN_RUNS_FOR_BEST = 2
+PHASES = {"vibe": 1, "steer": 2}
 
 
 class ScoreError(Exception):
@@ -81,32 +103,45 @@ class ScoreError(Exception):
 
 
 # ------------------------------------------------------------- scenarios
-def _song(sc: dict) -> str:
-    s = f'"{sc["title"]}"'
-    if sc.get("artist"):
-        s += f" by {sc['artist']}"
-    if sc.get("album"):
-        s += f" ({sc['album']})"
-    return s
+def _song(cfg: dict, key: str) -> str:
+    s = cfg["songs"][key]
+    return f'`{s["title"]} — {s["artist"]}` (as the search lists it)'
 
 
 def render_prompt(cfg: dict, sc: dict) -> str:
-    return "\n".join(cfg["prompt_template"]).format(
-        target=sc["target"], account=sc["account"], query=sc["query"], song=_song(sc),
-        steps=cfg["steps"])
+    tpl = "\n".join(cfg["prompt_templates"][sc["kind"]])
+    ph = sc["phases"]
+    if sc["kind"] == "vibe":
+        p = ph[0]
+        return tpl.format(account=sc["account"], target=cfg["vibes"][p["vibe"]],
+                          query=cfg["songs"][p["song"]]["query"], song=_song(cfg, p["song"]),
+                          picks=p["picks"])
+    a, b = ph
+    return tpl.format(account=sc["account"],
+                      target_a=cfg["vibes"][a["vibe"]], target_b=cfg["vibes"][b["vibe"]],
+                      query_a=cfg["songs"][a["song"]]["query"], song_a=_song(cfg, a["song"]),
+                      query_b=cfg["songs"][b["song"]]["query"], song_b=_song(cfg, b["song"]),
+                      picks_a=a["picks"], picks_b=b["picks"])
 
 
 def check_scenarios(cfg: dict, personas: set[str] | None = None) -> None:
     ids = [sc["id"] for sc in cfg["scenarios"]]
     if len(set(ids)) != len(ids):
-        raise ScoreError(f"duplicate scenario ids in {SCENARIOS.name}: {ids}")
+        raise ScoreError(f"duplicate scenario ids: {ids}")
     accounts = [sc["account"] for sc in cfg["scenarios"]]
     if len(set(accounts)) != len(accounts):
         raise ScoreError("two scenarios share an account; concurrent sessions on one account "
                          f"reset each other's history: {accounts}")
     for sc in cfg["scenarios"]:
-        if sc["kind"] not in ("on", "off"):
-            raise ScoreError(f"{sc['id']}: kind must be 'on' or 'off', not {sc['kind']!r}")
+        if sc["kind"] not in PHASES:
+            raise ScoreError(f"{sc['id']}: kind must be one of {list(PHASES)}, not {sc['kind']!r}")
+        if len(sc["phases"]) != PHASES[sc["kind"]]:
+            raise ScoreError(f"{sc['id']}: a {sc['kind']} test has {PHASES[sc['kind']]} phase(s)")
+        for p in sc["phases"]:
+            if p["vibe"] not in cfg["vibes"] or p["song"] not in cfg["songs"]:
+                raise ScoreError(f"{sc['id']}: unknown vibe or song in {p}")
+            if p["picks"] < RUN:
+                raise ScoreError(f"{sc['id']}: a phase needs at least {RUN} picks")
         if personas is not None and sc["account"] not in personas:
             raise ScoreError(f"{sc['id']}: account {sc['account']!r} is not in personas.json")
 
@@ -119,141 +154,168 @@ def load_scenarios(path: Path = SCENARIOS) -> dict:
 
 
 # ----------------------------------------------------------------- score
-def catch_hold(fits: list[int], steps: int, finished: list[bool] | None = None,
-               rule: str = "fit") -> dict:
-    """Score one run from its DJ picks' fits (and, for rule 'finished',
-    whether each was finished), step 1 first. The rule decides only what
-    makes the catch: three picks in a row with fit >= 4 ('fit'), or three
-    finished in a row ('finished'). Hold is the share of fit >= 4 either way."""
-    if len(fits) != steps:
-        raise ValueError(f"{len(fits)} fits for {steps} steps")
-    if rule == "fit":
-        good = [f >= GOOD_FIT for f in fits]
-    elif rule == "finished":
-        if finished is None or len(finished) != steps:
-            raise ValueError("rule 'finished' needs one outcome per step")
-        good = list(finished)
-    else:
-        raise ValueError(f"unknown catch rule {rule!r}")
-    catch_step = next((s for s in range(1, steps - CATCH_RUN + 2)
-                       if all(good[s - 1:s - 1 + CATCH_RUN])), None)
-    if catch_step is None:
-        return {"catch_step": None, "catch": 0.0, "hold": 0.0, "lost": 0, "total": 0.0}
-    after = fits[catch_step - 1:]
-    catch = HALF * (steps + 1 - catch_step) / steps
-    hold = HALF * sum(f >= GOOD_FIT for f in after) / len(after)
-    lost = sum(f <= LOST_FIT for f in after)
-    return {"catch_step": catch_step, "catch": catch, "hold": hold, "lost": lost,
-            "total": catch + hold}
+def weighted(parts: dict, weights: dict) -> float:
+    """100 x the weighted mean of parts in 0..1. A part that is None is
+    left out and the other weights scaled up, so it neither pays nor fines."""
+    used = {k: w for k, w in weights.items() if parts[k] is not None}
+    return 100 * sum(w * parts[k] for k, w in used.items()) / sum(used.values())
 
 
-def scored_plays(st: dict, steps: int) -> list[dict]:
-    """The `steps` plays after the start song: the only ones scored."""
-    return (st.get("plays") or [])[1:1 + steps]
+def _good(p: dict) -> bool:
+    return p["fit"] >= GOOD_FIT
 
 
-def validate(st: dict, sc: dict, steps: int) -> tuple[list[str], list[str]]:
-    """(problems that exclude the run, warnings that do not).
+def _finished(p: dict) -> bool:
+    return p["outcome"] == "finished"
 
-    Only the start song and the `steps` plays after it are judged. Listener
-    agents often run a few `next`s too many (4 of the first 6 catch-and-hold
-    sessions ran 16-18 DJ plays, 2026-10-19); a play after step `steps`
-    cannot change steps 1..steps, so it is ignored with a warning, whatever
-    it is. A search or up-next play inside the window is the listener
-    steering, and excludes the run."""
+
+def vibe_metrics(picks: list[dict]) -> dict:
+    n = len(picks)
+    skipped = [not _finished(p) for p in picks]
+    after_skip = [_finished(picks[i + 1]) for i in range(n - 1) if skipped[i]]
+    m = {"hold": sum(map(_good, picks)) / n,
+         "skip_rate": sum(skipped) / n,
+         "skip_recovery": sum(after_skip) / len(after_skip) if after_skip else None,
+         "early": sum(map(_good, picks[:RUN])) / RUN}
+    m["score"] = weighted({"hold": m["hold"], "no_skip": 1 - m["skip_rate"],
+                           "recovery": m["skip_recovery"], "early": m["early"]}, VIBE_WEIGHTS)
+    return m
+
+
+def steer_metrics(a_picks: list[dict], b_picks: list[dict]) -> dict:
+    nb = len(b_picks)
+    fin = [_finished(p) for p in b_picks]
+    step = next((s for s in range(1, nb - RUN + 2) if all(fin[s - 1:s - 1 + RUN])), None)
+    after = b_picks[step - 1:] if step else []
+    m = {"hold_a": sum(map(_good, a_picks)) / len(a_picks),
+         "switch_step": step,
+         "switch": (nb + 1 - step) / nb if step else 0.0,
+         "hold_b": sum(map(_good, after)) / len(after) if after else 0.0,
+         "leak": sum(p.get("sounds_like") == "A" for p in b_picks) / nb}
+    m["score"] = weighted({"hold_a": m["hold_a"], "switch": m["switch"], "hold_b": m["hold_b"],
+                           "no_leak": 1 - m["leak"]}, STEER_WEIGHTS)
+    return m
+
+
+def layout(sc: dict) -> list[tuple[int, str]]:
+    """(phase index, how) for every expected play, in order."""
+    out = []
+    for i, p in enumerate(sc["phases"]):
+        out += [(i, "search")] + [(i, "dj")] * p["picks"]
+    return out
+
+
+def phase_picks(st: dict, sc: dict) -> list[list[dict]]:
+    """The DJ plays of each phase, from the expected window only."""
+    plays = st.get("plays") or []
+    out = [[] for _ in sc["phases"]]
+    for p, (i, how) in zip(plays, layout(sc)):
+        if how == "dj":
+            out[i].append(p)
+    return out
+
+
+def validate(st: dict, sc: dict, cfg: dict) -> tuple[list[str], list[str]]:
+    """(problems that exclude the run, warnings that do not)."""
     bad, warn = [], []
     if st.get("persona") != sc["account"]:
         bad.append(f"account {st.get('persona')!r}, scenario wants {sc['account']!r}")
     plays = st.get("plays") or []
-    if not plays or plays[0].get("how") != "search":
-        bad.append("the first play is not the search play")
-    window, extra = scored_plays(st, steps), plays[1 + steps:]
-    hows = [p.get("how") for p in window]
-    n_search, n_dj, n_pick = hows.count("search"), hows.count("dj"), hows.count("picked")
-    if n_search:
-        bad.append(f"{n_search} more search plays in DJ steps 1-{steps}, want 0")
-    if n_pick:
-        bad.append(f"{n_pick} up-next plays in DJ steps 1-{steps}, want 0")
-    other = len(hows) - n_search - n_dj - n_pick
-    if other:
-        bad.append(f"{other} plays of another kind in DJ steps 1-{steps}")
-    if len(window) < steps:
-        bad.append(f"{n_dj} DJ plays, want {steps}")
-    for p in plays[:1 + steps]:
+    want = layout(sc)
+    window, extra = plays[:len(want)], plays[len(want):]
+    if len(window) < len(want):
+        bad.append(f"{len(window)} plays, want {len(want)} "
+                   f"({' + '.join(f'1 search + {p["picks"]} DJ' for p in sc['phases'])})")
+    wrong = [(n, p.get("how"), how) for n, (p, (_, how)) in enumerate(zip(window, want), 1)
+             if p.get("how") != how]
+    if wrong:
+        n, got, how = wrong[0]
+        bad.append(f"play {n} is a {got!r} play, want {how!r}"
+                   + (f" ({len(wrong)} plays out of place)" if len(wrong) > 1 else ""))
+    for p, (i, how) in zip(window, want):
         if p.get("outcome") not in ("finished", "skipped"):
-            bad.append(f"step {p.get('step')} has no outcome")
+            bad.append(f"play {p.get('step')} has no outcome")
         if p.get("fit") not in (1, 2, 3, 4, 5):
-            bad.append(f"step {p.get('step')} has no fit 1-5")
+            bad.append(f"play {p.get('step')} has no fit 1-5")
+        if how == "search" and p.get("how") == "search":
+            song = cfg["songs"][sc["phases"][i]["song"]]
+            if p.get("spotify_id") not in song["spotify_ids"]:
+                bad.append(f"play {p.get('step')} is {p.get('title')!r} by {p.get('artist')!r}, "
+                           f"want {song['title']!r} by {song['artist']!r}")
+            if p.get("outcome") == "skipped":
+                bad.append(f"start song at play {p.get('step')} was skipped, want finished")
+        if (sc["kind"] == "steer" and i == 1 and how == "dj"
+                and p.get("sounds_like") not in SOUNDS_LIKE):
+            bad.append(f"B pick at play {p.get('step')} has no --vibe A|B|other")
     if extra:
-        extra_hows = [p.get("how") for p in extra]
-        kinds = ", ".join(f"{h} x{extra_hows.count(h)}" for h in sorted(set(extra_hows), key=str))
-        warn.append(f"{len(extra)} plays after DJ step {steps} ignored ({kinds})")
-    if plays and plays[0].get("how") == "search":
-        start = plays[0]
-        if sc["title"].casefold() not in (start.get("title") or "").casefold():
-            warn.append(f"start song is {start.get('title')!r}, scenario wants {sc['title']!r}")
-        if isinstance(start.get("fit"), int) and abs(start["fit"] - sc["start_fit"]) > 1:
-            warn.append(f"start song rated {start['fit']}, scenario expects {sc['start_fit']}")
+        hows = [p.get("how") for p in extra]
+        kinds = ", ".join(f"{h} x{hows.count(h)}" for h in sorted(set(hows), key=str))
+        warn.append(f"{len(extra)} plays after play {len(want)} ignored ({kinds})")
     return bad, warn
 
 
-def _overall(by_scenario: dict, kinds: dict, kind: str | None = None) -> float | None:
-    xs = [v for k, v in by_scenario.items() if kind is None or kinds[k] == kind]
+def score_run(st: dict, sc: dict) -> dict:
+    picks = phase_picks(st, sc)
+    return vibe_metrics(picks[0]) if sc["kind"] == "vibe" else steer_metrics(*picks)
+
+
+def _mean(xs):
+    xs = [x for x in xs if x is not None]
     return statistics.fmean(xs) if xs else None
 
 
-def score_round(cfg: dict, runs: dict[str, list[dict]], rule: str = "fit") -> dict:
+METRICS = {"vibe": ("hold", "skip_rate", "skip_recovery", "early"),
+           "steer": ("hold_a", "switch", "hold_b", "leak")}
+
+
+def score_round(cfg: dict, runs: dict[str, list[dict]]) -> dict:
     """runs: scenario id -> session states. Returns the scored round: per
-    scenario, on / off / overall, the noise band, exclusions, provisional."""
-    steps = cfg["steps"]
+    scenario, vibe / steer / overall, the noise band, exclusions, provisional."""
     scs = {sc["id"]: sc for sc in cfg["scenarios"]}
     unknown = set(runs) - set(scs)
     if unknown:
         raise ScoreError(f"unknown scenario(s): {', '.join(sorted(unknown))}; "
                          f"one of {', '.join(scs)}")
     seen: dict[str, str] = {}
-    for sid_scen, sts in runs.items():
+    for scen, sts in runs.items():
         for st in sts:
             if st["id"] in seen:
                 raise ScoreError(f"session {st['id']} is given twice "
-                                 f"({seen[st['id']]} and {sid_scen})")
-            seen[st["id"]] = sid_scen
-    kinds = {k: sc["kind"] for k, sc in scs.items()}
+                                 f"({seen[st['id']]} and {scen})")
+            seen[st["id"]] = scen
     out, excluded, warnings, provisional = {}, [], [], []
     for sid, sc in scs.items():
         scored = []
         for st in runs.get(sid, []):
-            bad, warn = validate(st, sc, steps)
+            bad, warn = validate(st, sc, cfg)
             warnings += [f"{sid} {st['id']}: {w}" for w in warn]
             if bad:
                 excluded.append({"scenario": sid, "session": st["id"], "reasons": bad})
                 continue
-            picks = scored_plays(st, steps)
-            scored.append({"session": st["id"], **catch_hold(
-                [p["fit"] for p in picks], steps,
-                [p["outcome"] == "finished" for p in picks], rule)})
+            scored.append({"session": st["id"], **score_run(st, sc)})
         if not scored:
             provisional.append(f"{sid}: no valid run")
             continue
         if len(scored) < MIN_RUNS_FOR_BEST:
             provisional.append(f"{sid}: {len(scored)} valid run, want {MIN_RUNS_FOR_BEST}")
-        totals = [r["total"] for r in scored]
-        out[sid] = {"kind": sc["kind"], "runs": scored,
-                    "catch_step": [r["catch_step"] for r in scored],
-                    "catch": statistics.fmean(r["catch"] for r in scored),
-                    "hold": statistics.fmean(r["hold"] for r in scored),
-                    "lost": statistics.fmean(r["lost"] for r in scored),
-                    "total": statistics.fmean(totals),
-                    "spread": [min(totals), max(totals)]}
-    means = {k: v["total"] for k, v in out.items()}
+        scores = [r["score"] for r in scored]
+        v = {"kind": sc["kind"], "runs": scored, "score": statistics.fmean(scores),
+             "spread": [min(scores), max(scores)]}
+        v.update({k: _mean(r[k] for r in scored) for k in METRICS[sc["kind"]]})
+        if sc["kind"] == "steer":
+            v["switch_step"] = [r["switch_step"] for r in scored]
+        out[sid] = v
+    kinds = {k: v["kind"] for k, v in out.items()}
+    means = {k: v["score"] for k, v in out.items()}
     # The noise band: the overall of every scenario's i-th run, for each i
     # every present scenario has.
     depth = min((len(v["runs"]) for v in out.values()), default=0)
-    per_index = [statistics.fmean(v["runs"][i]["total"] for v in out.values())
+    per_index = [statistics.fmean(v["runs"][i]["score"] for v in out.values())
                  for i in range(depth)]
     return {"scenarios": out,
-            "on": _overall(means, kinds, "on"), "off": _overall(means, kinds, "off"),
-            "overall": _overall(means, kinds),
+            "vibe": _mean(m for k, m in means.items() if kinds[k] == "vibe"),
+            "steer": _mean(m for k, m in means.items() if kinds[k] == "steer"),
+            "overall": _mean(means.values()),
             "overall_band": (max(per_index) - min(per_index)) if len(per_index) >= 2 else None,
             "min_runs": min((len(out[k]["runs"]) if k in out else 0 for k in scs), default=0),
             "missing": [k for k in scs if k not in out],
@@ -266,32 +328,32 @@ def _round(x, d=1):
 
 
 def make_entry(cfg: dict, result: dict, label: str, commit: str, prod_revision: str | None,
-               sessions: dict[str, list[str]], date: str, rule: str = "fit") -> dict:
+               sessions: dict[str, list[str]], date: str) -> dict:
+    scen = {}
+    for k, v in result["scenarios"].items():
+        e = {"kind": v["kind"], "runs": len(v["runs"]), "score": _round(v["score"]),
+             "spread": [_round(x) for x in v["spread"]]}
+        e.update({m: _round(v[m], 2) for m in METRICS[v["kind"]]})
+        if "switch_step" in v:
+            e["switch_step"] = v["switch_step"]
+        scen[k] = e
     return {
         "label": label, "date": date, "commit": commit, "prod_revision": prod_revision,
-        "scenarios_version": cfg["version"], "steps": cfg["steps"], "catch_rule": rule,
+        "scenarios_version": cfg["version"],
         "provisional": bool(result["provisional"]), "provisional_why": result["provisional"],
         "min_runs": result["min_runs"],
-        "on": _round(result["on"]), "off": _round(result["off"]),
+        "vibe": _round(result["vibe"]), "steer": _round(result["steer"]),
         "overall": _round(result["overall"]), "overall_band": _round(result["overall_band"]),
-        "scenarios": {k: {"kind": v["kind"], "runs": len(v["runs"]),
-                          "catch_step": v["catch_step"], "catch": _round(v["catch"]),
-                          "hold": _round(v["hold"]), "lost": _round(v["lost"]),
-                          "total": _round(v["total"]),
-                          "spread": [_round(x) for x in v["spread"]]}
-                      for k, v in result["scenarios"].items()},
-        "sessions": sessions,
-        "excluded": result["excluded"],
+        "scenarios": scen, "sessions": sessions, "excluded": result["excluded"],
     }
 
 
-def best_of(entries: list[dict], version: int, rule: str = "fit") -> dict | None:
+def best_of(entries: list[dict], version: int) -> dict | None:
     """The highest overall among non-provisional entries of this scenario
-    version and catch rule; the earlier entry wins a tie."""
+    version; the earlier entry wins a tie."""
     best = None
     for e in entries:
-        if (e["provisional"] or e["scenarios_version"] != version
-                or e.get("catch_rule", "fit") != rule or e["overall"] is None):
+        if e["provisional"] or e["scenarios_version"] != version or e["overall"] is None:
             continue
         if best is None or e["overall"] > best["overall"]:
             best = e
@@ -302,8 +364,7 @@ def _best_ref(e: dict | None) -> dict | None:
     if e is None:
         return None
     return {"label": e["label"], "overall": e["overall"], "date": e["date"],
-            "commit": e["commit"], "scenarios_version": e["scenarios_version"],
-            "catch_rule": e.get("catch_rule", "fit")}
+            "commit": e["commit"], "scenarios_version": e["scenarios_version"]}
 
 
 def add_entry(board: dict, entry: dict, replace: bool = False) -> tuple[dict, list[str]]:
@@ -315,15 +376,13 @@ def add_entry(board: dict, entry: dict, replace: bool = False) -> tuple[dict, li
         raise ScoreError(f"label {entry['label']!r} is already on the scoreboard; "
                          "pass --replace to overwrite it")
     others = [e for e in entries if e["label"] != entry["label"]]
-    prev = best_of(others, entry["scenarios_version"], entry["catch_rule"])
-    lines = compare(entry, prev)
+    lines = compare(entry, best_of(others, entry["scenarios_version"]))
     if at is None:
         entries.append(entry)
     else:
         entries[at] = entry
     return {**board, "entries": entries,
-            "best": _best_ref(best_of(entries, entry["scenarios_version"],
-                                      entry["catch_rule"]))}, lines
+            "best": _best_ref(best_of(entries, entry["scenarios_version"]))}, lines
 
 
 def compare(entry: dict, best: dict | None) -> list[str]:
@@ -368,24 +427,38 @@ def _f(x, d=1):
     return "-" if x is None else f"{x:.{d}f}"
 
 
+def _spread(v: dict) -> str:
+    return f"{v['spread'][0]:.1f}–{v['spread'][1]:.1f}" if v["runs"] > 1 else "-"
+
+
 def markdown(entry: dict, comparison: list[str], missing: list[str]) -> str:
-    """The table, from the entry as stored, so it shows the scoreboard's numbers."""
+    """The tables, from the entry as stored, so they show the scoreboard's numbers."""
+    sc = entry["scenarios"]
     L = [f"## DJ score: {entry['label']}\n",
          f"commit `{entry['commit']}`" + (f", prod revision `{entry['prod_revision']}`"
                                           if entry["prod_revision"] else "")
-         + f", {entry['date']}, scenarios v{entry['scenarios_version']}, "
-           f"{entry['steps']} DJ steps, catch rule '{entry['catch_rule']}'\n",
-         "| scenario | kind | runs | catch step | catch | hold | lost | total | spread |",
-         "|---|---|---|---|---|---|---|---|---|"]
-    for k, v in entry["scenarios"].items():
-        steps = ", ".join("never" if s is None else str(s) for s in v["catch_step"])
-        spread = f"{v['spread'][0]:.1f}–{v['spread'][1]:.1f}" if v["runs"] > 1 else "-"
-        L.append(f"| {k} | {v['kind']} | {v['runs']} | {steps} | {_f(v['catch'])} | "
-                 f"{_f(v['hold'])} | {_f(v['lost'])} | {_f(v['total'])} | {spread} |")
-    for k in missing:
-        L.append(f"| {k} | | 0 | | | | | MISSING | |")
+         + f", {entry['date']}, scenarios v{entry['scenarios_version']}\n",
+         "### Vibe\n",
+         "| scenario | runs | hold | skip rate | skip recovery | early | score | spread |",
+         "|---|---|---|---|---|---|---|---|"]
+    for k, v in sc.items():
+        if v["kind"] == "vibe":
+            L.append(f"| {k} | {v['runs']} | {_f(v['hold'], 2)} | {_f(v['skip_rate'], 2)} | "
+                     f"{_f(v['skip_recovery'], 2)} | {_f(v['early'], 2)} | {_f(v['score'])} | "
+                     f"{_spread(v)} |")
+    L += ["", "### Steer\n",
+          "| scenario | runs | hold A | switch step | switch | hold B | leak | score | spread |",
+          "|---|---|---|---|---|---|---|---|---|"]
+    for k, v in sc.items():
+        if v["kind"] == "steer":
+            steps = ", ".join("never" if s is None else str(s) for s in v["switch_step"])
+            L.append(f"| {k} | {v['runs']} | {_f(v['hold_a'], 2)} | {steps} | "
+                     f"{_f(v['switch'], 2)} | {_f(v['hold_b'], 2)} | {_f(v['leak'], 2)} | "
+                     f"{_f(v['score'])} | {_spread(v)} |")
+    if missing:
+        L += ["", "MISSING (no valid run): " + ", ".join(missing)]
     L += ["", "| | score |", "|---|---|",
-          f"| on | {_f(entry['on'])} |", f"| off | {_f(entry['off'])} |",
+          f"| vibe | {_f(entry['vibe'])} |", f"| steer | {_f(entry['steer'])} |",
           f"| **overall** | **{_f(entry['overall'])}** |",
           f"| run-to-run spread | {_f(entry['overall_band'])} |", ""]
     if entry["provisional"]:
@@ -441,11 +514,8 @@ def main(argv=None) -> int:
     ap.add_argument("--allow-missing", action="store_true",
                     help="record even if a scenario has no valid run (provisional)")
     ap.add_argument("--dry-run", action="store_true", help="print the table, write nothing")
-    ap.add_argument("--catch-rule", choices=("fit", "finished"), default="fit",
-                    help="what makes the catch: 3 picks in a row with fit >= 4 (default), "
-                         "or 3 finished in a row; hold is the share of fit >= 4 either way")
     ap.add_argument("--render-prompts", action="store_true",
-                    help="rewrite every scenario's prompt from the template and exit")
+                    help="rewrite every scenario's prompt from its template and exit")
     a = ap.parse_args(argv)
     try:
         if a.render_prompts:
@@ -465,7 +535,7 @@ def main(argv=None) -> int:
         if not sessions:
             raise ScoreError("no sessions: pass --session or --manifest")
         runs = {k: [_load_session(a.listener_dir, s) for s in v] for k, v in sessions.items()}
-        result = score_round(cfg, runs, a.catch_rule)
+        result = score_round(cfg, runs)
         for w in result["warnings"]:
             print(f"warning: {w}", file=sys.stderr)
         if result["excluded"]:
@@ -479,8 +549,7 @@ def main(argv=None) -> int:
                              "(--allow-missing records a provisional entry)")
         date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         entry = make_entry(cfg, result, label, _resolve_commit(commit),
-                           a.prod_revision or man.get("prod_revision"), sessions, date,
-                           a.catch_rule)
+                           a.prod_revision or man.get("prod_revision"), sessions, date)
         board = load_board(a.scoreboard)
         new_board, comparison = add_entry(board, entry, replace=a.replace or a.dry_run)
         print(markdown(entry, comparison, result["missing"]))

@@ -27,7 +27,8 @@ Subcommands:
     next --session <id>                        let the DJ choose and play the next song
     finish --session <id> <handle>             listen to the playing song to the end
     skip --session <id> <handle> --played 0.2  skip it, after hearing that share of it
-    feedback --session <id> <handle> --fit <1-5> --reason "<why>"
+    feedback --session <id> <handle> --fit <1-5> [--vibe A|B|other] --reason "<why>"
+                                               (--vibe only when your task names vibes A and B)
     review --session <id> "<your review>"
 
 One song plays at a time: finish or skip it before `play` or `next`.

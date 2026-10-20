@@ -1411,10 +1411,11 @@ filtering work.
   0.61 -> 0.75 from the avoid term alone. Item-level skip negatives are the
   obvious next measurement.
 
-## 13. DJ catch-and-hold score — built 2026-10-19 (branch `backend/dj-score`), what is left
+## 13. DJ score — built 2026-10-19 (branch `backend/dj-score`), what is left
 
 `scripts/dj_eval/score_dj.py` scores a DJ version from listener sessions on
-the six scenarios in `catch_hold.json` and keeps `scoreboard.json`.
+the seven vibe and steer scenarios in `scenarios.json` and keeps
+`scoreboard.json`.
 
 ### 13.1 The scoreboard's commit is whatever `--commit` says
 `scripts/dj_eval/score_dj.py` `main`, `scripts/dj_eval/serve.py`
