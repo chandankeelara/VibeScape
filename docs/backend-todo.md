@@ -1364,19 +1364,16 @@ Until then a fuse from a checkout that has not pulled writes only the old
 column and the track stays out of the DJ pool; re-running the migration
 fills it.
 
-### 12.3 Skips of a different sound in the session's own language still take the language — CHANGED (2026-10-20)
-`backend/dj_replay.py` (AVOID_PERP, AVOID_CAP)
+### 12.3 ~~Two skips of one sound take its language with it~~ — DONE (2026-10-20)
+`backend/dj_replay.py` (AVOID_PERP "lang")
 
-**verified on synthetic vectors.** The avoid term now drops what the skipped
-songs share with the taste, so a mood skip -- a song that sounds like the
-taste plus something unwanted -- no longer carries the language
-(`test_mood_skips_inside_a_language_keep_the_language`; the listener mood
-scenario 0.00 -> 0.98 Kannada). What remains: skipped songs that share
-nothing with the taste *but* the language (another sound entirely) still
-push the language away: N is then mostly that other sound plus the
-language, and only the part of the language that S itself holds is removed.
-On two orthogonal synthetic sounds the top 10 still turns Hindi. Not seen
-in the recorded sessions.
+The avoid term no longer pushes against the language the taste holds: N's
+language block loses its component along S's. Mood skips and skips of an
+entirely different sound in the session's language both keep the language
+(`test_mood_skips_inside_a_language_keep_the_language`,
+`test_skips_of_another_sound_in_the_same_language_keep_the_language`),
+while a session that has moved to Hindi still drops Kannada on Kannada
+skips.
 
 ### 12.4 A skipped track's other release can stay
 `scripts/dj_eval/replay_bench.py` (scenario `twin`)
@@ -1402,23 +1399,33 @@ filtering work.
   0.61 -> 0.75 from the avoid term alone. Item-level skip negatives are the
   obvious next measurement.
 
-### 12.6 The skip fix costs real-user AUC; decide what the real-user replay should count
+### 12.6 The skip fix costs some real-user AUC; real-user replay and listener sessions pull opposite ways
 `backend/dj_replay.py`, `scripts/dj_eval/replay_bench.py`
 
-**verified offline (2026-10-20).** The perpendicular, capped avoid term
-fixes the five regressed listener sessions and the skip-heavy scenarios,
-and real-user finished-vs-skipped AUC drops 0.748 -> 0.643 (block bootstrap
--0.142..-0.066), still above fused_v1's 0.595. The real users' logs are
-short skip runs, where "skipped three songs" mostly does mean "not this
-language", and the uncapped avoid term ranked the next skip low; the
-listener sessions show the same term overshooting once someone skips for
-mood. Both cannot be fitted by one constant. Worth knowing before tuning
-the avoid term again: the real-user AUC rewards it monotonically, the
-listener sessions punish it past a point, and the benchmark now reports
-both (`replay_bench.py --final2`). The old scenario "three Kannada skips
-after three Kannada songs clear Kannada" (`skip3`) no longer holds and
-cannot hold together with "three mood skips keep the language": the two
-sessions differ only in what the skipped songs share with the taste.
+**verified offline (2026-10-20).** The angle-bounded avoid term that keeps
+the taste's language fixes the five regressed listener sessions, the
+skip-heavy scenarios and the off-target seed, and real-user
+finished-vs-skipped AUC drops 0.746 -> 0.707 (block bootstrap
+-0.064..-0.014). Protecting all of S instead cost 0.104. The real users'
+logs are short skip runs where "skipped three songs" mostly does mean "not
+this", and an unbounded avoid term ranked the next skip low; the listener
+sessions show the same term overshooting once someone skips for mood.
+Before tuning the avoid term again: real-user AUC rewards it
+monotonically, the listener sessions punish it past a point, and the
+benchmark reports both (`replay_bench.py --final3`). PR #21's scenario
+"three Kannada skips after three Kannada songs clear Kannada" (`skip3`) no
+longer holds and cannot together with "three mood skips keep the
+language".
+
+### 12.8 A search is 80% of the taste, so a chill session that searched lo-fi gets instrumentals
+`backend/dj_replay.py` ETA_SEARCHED
+
+**verified offline (2026-10-20, by the team lead).** english-chill-aef5e7
+searched SYML, SYML, then a lo-fi track: the last search makes up ~80% of S
+(ETA_SEARCHED = 0.8), and the top 20 was 0 English / 20 instrumental with
+the instrumental slot and 0 / 17 without it -- not the slot's doing. Lower
+ETA_SEARCHED, or weight a search by how many searches came before it;
+measure on `replay_bench.py --final3` before changing it.
 
 ### 12.7 The instrumental slot is set by the "no language" verdict, which also covers uncallable titles
 `ingest_pipeline/fused_vector.py` (INSTRUMENTAL, lang_code)

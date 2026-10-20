@@ -189,7 +189,9 @@ def listener_moments(paths):
         ends = [i for i, e in enumerate(log) if e["action"] in ("completed", "next", "skipped")]
         plays = st["plays"]
         if len(ends) != len(plays):
-            raise SystemExit(f"{p}: {len(plays)} plays but {len(ends)} endings in the log")
+            # A session still being recorded (or cut off mid-track).
+            print(f"  skipping {Path(p).name}: {len(plays)} plays but {len(ends)} endings")
+            continue
         ids = [log[i]["id"] for i in ends]
         outcome = {}
         for tid, pl in zip(ids, plays):
@@ -357,7 +359,45 @@ def scenario_moments(rows, mert=None, dup_key=None):
                           "kn", None))
     if mert is not None:
         out += _type_moments(rows, mert, dup_key, rng)
+    out += _seed_off_moments(rows)
     return out, set(kn) | set(hi70)
+
+
+# indian-heartbreak-9c8502 (2026-10-20): a listener wanting Hindi romantic
+# finished one song, Badtameez Dil (party), then skipped fifteen party songs
+# in a row while the DJ never moved -- the whole-N perpendicular avoid
+# cancelled every skip, because the skips were the taste. Its ids, in order.
+SEED_OFF = (5956, [2637, 1323, 759, 1708, 5441])
+
+
+def _seed_off_moments(rows):
+    """One off-target seed finished, then 3-5 of that session's party songs
+    skipped. Scored twice: Hindi kept (want 1) and the share of the top 10
+    in Hindi's high-energy tercile (want it to fall)."""
+    have = {r["id"] for r in rows}
+    seed, skips = SEED_OFF
+    if seed not in have or not all(t in have for t in skips):
+        return []
+    hv = sorted(r["vibe_score_ml"] for r in rows
+                if r["language"] == "hi" and r["vibe_score_ml"] is not None)
+    cut = hv[(2 * len(hv)) // 3]
+    party = {r["id"] for r in rows if r["language"] == "hi"
+             and r["vibe_score_ml"] is not None and r["vibe_score_ml"] >= cut}
+    hindi = {r["id"] for r in rows if r["language"] == "hi"}
+    out = []
+    for k in (3, 4, 5):
+        events = ([{"id": seed, "action": "searched", "played_ratio": None},
+                   {"id": seed, "action": "completed", "played_ratio": 1.0}]
+                  + [{"id": t, "action": "skipped", "played_ratio": 0.05} for t in skips[:k]])
+        for name, members in ((f"seedoff{k}: hi@10", hindi), (f"seedoff{k}: party@10", party)):
+            out.append({"src": "scenario", "scenario": name, "members": members, "metric": "share",
+                        "events": events, "seed": skips[k - 1], "exclude": {seed, *skips[:k]},
+                        "user": None})
+    base = [{"id": seed, "action": "searched", "played_ratio": None},
+            {"id": seed, "action": "completed", "played_ratio": 1.0}]
+    out.append({"src": "scenario", "scenario": "seedoff0: party@10", "members": party,
+                "metric": "share", "events": base, "seed": seed, "exclude": {seed}, "user": None})
+    return out
 
 
 _DRONE = re.compile(r"\bhz\b|\d+(\.\d+)?\s*hz|delta|theta|binaural|solfeggio|sleep", re.I)
@@ -744,6 +784,20 @@ def final_table2():
     ]
 
 
+def final_table3():
+    """The rows the catch-and-hold revision of PR #23 reports (2026-10-20)."""
+    base = {"NEG_WEIGHT": 1.0, "M_STEP": 0.5, "M_MAX": 2.0}
+    return [
+        {"space": "v1_stored", "replay": LEGACY_REPLAY},
+        {"space": "A", "replay": PROD_00028},
+        {"space": "AZ", "replay": {**base, "AVOID_PERP": "full", "AVOID_CAP": 1.5}},
+        {"space": "AZ", "replay": {**base, "AVOID_PERP": False, "AVOID_CAP": 1.5}},
+        {"space": "AZ", "replay": {**base, "AVOID_PERP": "lang", "AVOID_CAP": 1.0}},
+        {"space": "AZ", "replay": {**base, "AVOID_PERP": "lang", "AVOID_CAP": 1.5}},
+        {"space": "AZ", "replay": {**base, "AVOID_PERP": "lang", "AVOID_CAP": 2.0}},
+    ]
+
+
 def skip_grid2():
     """Round 2: between the configs that pass the skip-heavy checks and prod."""
     out = [{"space": "AZ", "replay": {}}]
@@ -806,6 +860,7 @@ def main(argv=None) -> int:
     ap.add_argument("--skip-grid", action="store_true", help="only the rows of skip_grid()")
     ap.add_argument("--skip-grid2", action="store_true", help="only the rows of skip_grid2()")
     ap.add_argument("--final2", action="store_true", help="only the rows of final_table2()")
+    ap.add_argument("--final3", action="store_true", help="only the rows of final_table3()")
     ap.add_argument("--only-vector-grid", action="store_true",
                     help="run vector_grid() and the session re-rank on A as the reference")
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
@@ -858,6 +913,8 @@ def main(argv=None) -> int:
         cfgs = skip_grid2()
     if a.final2:
         cfgs = final_table2()
+    if a.final3:
+        cfgs = final_table3()
     meta = {"lang_of": lang_of, "dup_key": dup_key,
             "instrumental": {r["id"] for r in rows
                              if not r["language"] and r["language_status"] == "done"}}

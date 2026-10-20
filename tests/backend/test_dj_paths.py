@@ -103,7 +103,7 @@ def test_mood_skips_inside_a_language_keep_the_language(client, make_user, make_
     mood the listener does not want. The query must avoid the mood and keep
     Kannada. Before 2026-10-20 the avoid term also carried what the skipped
     songs share with the taste -- the language -- and the top 10 turned
-    Hindi; fails with AVOID_PERP off."""
+    Hindi. A regression guard: the angle bound alone already passes it."""
     rng = np.random.default_rng(29)
     sound, mood = rng.normal(size=fv.MERT_DIM), rng.normal(size=fv.MERT_DIM)
     uid, h = make_user()
@@ -127,6 +127,50 @@ def test_mood_skips_inside_a_language_keep_the_language(client, make_user, make_
     moody = groups[("kn", "mood")] + groups[("hi", "mood")]
     assert _share(out, kn) >= 0.9
     assert _share(out, moody) <= 0.1
+
+
+def test_an_off_target_seed_is_left_when_its_vibe_is_skipped(client, make_user, make_tracks, sql):
+    """The only song finished was the wrong vibe (a party song for a listener
+    who wants romance), then four party songs skipped. The query must leave
+    party and stay in the language. Avoiding all of what the skips share
+    with the taste (PR #23's first version) cancelled every skip -- the skips
+    WERE the taste -- and the DJ held party for fifteen skips
+    (indian-heartbreak-9c8502); only the language is protected now."""
+    rng = np.random.default_rng(37)
+    party, mellow = rng.normal(size=fv.MERT_DIM), rng.normal(size=fv.MERT_DIM)
+    uid, h = make_user()
+    groups = {}
+    for lang, name, centre in (("hi", "party", party), ("hi", "mellow", mellow),
+                               ("kn", "party", party), ("kn", "mellow", mellow)):
+        ids = []
+        for _ in range(40):
+            mert = (centre + 0.5 * rng.normal(size=fv.MERT_DIM)).astype(np.float32)
+            row = {c: 0.5 * (fv.SCALAR_RANGE[c][0] + fv.SCALAR_RANGE[c][1]) for c in fv.SCALAR_COLS}
+            row["language"] = lang
+            (tid,) = make_tracks(uid, [fv._build_fused(row, mert)])
+            sql.execute("UPDATE tracks SET language = ? WHERE id = ?", (lang, tid))
+            ids.append(tid)
+        groups[(lang, name)] = ids
+    sql.commit()
+    seed, skipped = groups[("hi", "party")][0], groups[("hi", "party")][1:5]
+    events = ([{"id": seed, "action": "searched"}, done(seed)] + [skip(t) for t in skipped])
+    out = _post(client, h, skipped[-1], {"events": events, "exclude_ids": [seed, *skipped]})
+    hi = groups[("hi", "party")] + groups[("hi", "mellow")]
+    assert _share(out, hi) >= 0.9
+    assert _share(out, groups[("hi", "party")]) <= 0.5
+
+
+def test_skips_of_another_sound_in_the_same_language_keep_the_language(client, library):
+    """Four Kannada songs of one sound, then three Kannada songs of a wholly
+    different sound skipped: N is that other sound plus Kannada. With the
+    language the taste holds protected, the query leaves the sound and keeps
+    Kannada (with all of N avoided, the top 10 turned Hindi)."""
+    h, L = library
+    session = L[("kn", 0)][:4] + L[("kn", 1)][:3]
+    events = [done(t) for t in session[:4]] + [skip(t) for t in session[4:]]
+    out = _post(client, h, session[-1], {"events": events, "exclude_ids": session})
+    assert _share(out, L["kn"]) >= 0.9
+    assert _share(out, L[("kn", 0)] + L[("hi", 0)]) >= 0.9
 
 
 def test_a_switch_to_hindi_is_followed_within_two_songs(client, library):
