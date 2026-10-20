@@ -655,7 +655,7 @@ the DJ until a second source exists. The chain is iTunes-only on purpose —
 Deezer audio shifts MERT embeddings — so the choice (Deezer, or a 30 s clip
 from the `youtube_id` already on the row) is a design decision, not a fix.
 
-### 3.9 The same song stored twice under different ISRCs is recommended twice
+### 3.9 ~~The same song stored twice under different ISRCs is recommended twice~~ — DONE in the DJ (2026-10-20, see 12.4); the catalogue still holds both
 `backend/app.py` `_similar_dj`
 
 **verified by querying the 2026-10-12 prod backup.** 78 groups share a
@@ -1375,15 +1375,17 @@ entirely different sound in the session's language both keep the language
 while a session that has moved to Hindi still drops Kannada on Kannada
 skips.
 
-### 12.4 A skipped track's other release can stay
-`scripts/dj_eval/replay_bench.py` (scenario `twin`)
+### 12.4 ~~A skipped track's other release can stay~~ — DONE (2026-10-20)
+`backend/same_song.py`, `backend/app.py` `_dj_drop_repeats`
 
-**verified offline.** Search a track and skip it: its other release (same
-cleaned title and primary artist) is in the top 10 in 0.68 of draws before
-and after. With only that one track in the session S and N point the same
-way and the avoid term only shrinks the query. A nearest-skip penalty took
-it to 0.33 but lost on real-user AUC (0.644). Belongs with the duplicate
-filtering work.
+The DJ drops any candidate that is another release of a song in the
+session's log or of the seed, and any second release of a song already in
+the response, on both ranking paths; a skip of such a repeat no longer
+feeds the avoid term. Same-song repeats in the served top 10 went 0.189 ->
+0.000 of listener moments and 0.252 -> 0.000 of real-user ones
+(`replay_bench.py --final4`). It is per session only: a different release
+of a song played yesterday can still come back (that is the recency
+re-rank's job, by track id).
 
 ### 12.5 What the language work saw for the out-of-scope items
 `scripts/dj_eval/replay_bench.py`

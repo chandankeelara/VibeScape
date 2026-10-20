@@ -75,6 +75,7 @@ sys.path.insert(0, str(_REPO / "scripts"))
 
 from dj_eval import language_rerank as dj_language  # noqa: E402  (measured, not shipped)
 import dj_replay  # noqa: E402
+import same_song  # noqa: E402
 from dj_replay import MAX_EVENTS, library_mean, parse_events, replay  # noqa: E402
 from dj_eval.client import classify  # noqa: E402
 from dj_eval.groups import (  # noqa: E402
@@ -177,6 +178,9 @@ REGRESSION = ("english-chill-aef5e7", "film-bgm-29e1d1", "kannada-mass-d40162",
 # instrumentals instead.
 PERSONA_LANG = {"english-chill": "en", "english-workout": "en", "kannada-mass": "kn",
                 "kannada-late-night": "kn"}
+
+
+SONG_KEYS: dict = {}   # track id -> same_song.song_key, filled by main()
 
 
 def listener_moments(paths):
@@ -486,6 +490,7 @@ class Ranker:
         # legacy 'b' re-rank read it; the shipped re-rank does not.
         self.library = Counter(dj_language.lang_key(lang_of[int(t)]) for t in ids)
         self.vecs = {int(t): X[i] for i, t in enumerate(ids)}
+        self.song_keys = SONG_KEYS
 
     def pool(self, m, center="full", replay_kw=None):
         """center 'nolang': the library mean without its language block, so
@@ -496,11 +501,14 @@ class Ranker:
         mu = self.mu.copy()
         if center == "nolang":
             mu[fv.MERT_DIM + len(fv.SCALAR_COLS):] = 0.0
-        saved = {k: getattr(dj_replay, k) for k in (replay_kw or {})}
+        replay_kw = dict(replay_kw or {})
+        same = replay_kw.pop("SAME_SONG", False)
+        saved = {k: getattr(dj_replay, k) for k in replay_kw}
         try:
-            for k, v in (replay_kw or {}).items():
+            for k, v in replay_kw.items():
                 setattr(dj_replay, k, v)
-            res = replay(events, self.vecs, mu, seed)
+            res = replay(events, self.vecs, mu, seed,
+                         song_keys=self.song_keys if same else None)
         finally:
             for k, v in saved.items():
                 setattr(dj_replay, k, v)
@@ -518,6 +526,7 @@ class Ranker:
         rank[order] = np.arange(len(order))
         top = order[:POOL_MAX]
         return {"events": events, "order": order, "rank": rank, "n": len(order), "mu": mu,
+                "same_song": same,
                 "pool": [(float(sims[i]), self.lang_of[int(self.ids[i])]) for i in top],
                 "pool_ids": [int(self.ids[i]) for i in top], "pool_idx": top}
 
@@ -564,6 +573,19 @@ class Ranker:
             perm = [idx[i] for i, _ in dj_language.rerank(sub, scores, K, rr["weight"],
                                                           rr["close"], rr.get("demote", rr["weight"]))]
         new_pool = [P["pool_ids"][i] for i in perm]
+        if P.get("same_song"):
+            # backend/app.py _dj_drop_repeats, on the same pool
+            sess = {self.song_keys.get(e["id"]) for e in P["events"]} | {self.song_keys.get(m["seed"])}
+            sess.discard(None)
+            seen, kept = set(sess), []
+            for t in new_pool:
+                k = self.song_keys.get(t)
+                if k is not None:
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                kept.append(t)
+            new_pool = kept
         pool_rank = {t: j for j, t in enumerate(new_pool)}
 
         def rank_of(t):
@@ -621,6 +643,7 @@ def evaluate(rankers, moments, pools, rr, meta, nearest=None):
     lang_of, dup_key = meta["lang_of"], meta["dup_key"]
     served = defaultdict(list)
     fut, lang_hit, untag, dup_skip, dup_seen, top8, offered = [], [], [], [], [], [], []
+    repeat, repeat_real = [], []
     grp = defaultdict(list)
     scen = defaultdict(list)
     reg = defaultdict(lambda: defaultdict(list))
@@ -655,6 +678,12 @@ def evaluate(rankers, moments, pools, rr, meta, nearest=None):
             other = {k for k, v in lib.items() if v >= 0.05 and k and k not in acc}
             if acc and other:
                 offered.append(sum(dj_language.lang_key(lang_of[t]) in other for t in top) / K)
+        if m["src"] == "real":
+            # P["events"]: the log as the endpoint sees it (parse_events: last 30)
+            sess = {SONG_KEYS.get(e["id"]) for e in P["events"]} | {SONG_KEYS.get(m["seed"])}
+            sess.discard(None)
+            tk = [k for k in (SONG_KEYS.get(t) for t in top) if k is not None]
+            repeat_real.append(bool(set(tk) & sess) or len(tk) != len(set(tk)))
         if m["src"] != "listener":
             continue
         pairs = [(rank_of(t) / P["n"], lab) for t, lab in m["future"].items()
@@ -680,6 +709,12 @@ def evaluate(rankers, moments, pools, rr, meta, nearest=None):
         seen = {dup_key[t] for t in m["exclude"] | {m["seed"]} if t in dup_key}
         dup_skip.append(any(dup_key.get(t) in sk for t in top))
         dup_seen.append(any(dup_key.get(t) in seen for t in top))
+        # P["events"]: the log as the endpoint sees it (parse_events: last 30)
+        sess = {SONG_KEYS.get(e["id"]) for e in P["events"]} | {SONG_KEYS.get(m["seed"])}
+        sess.discard(None)
+        tk = [SONG_KEYS.get(t) for t in top]
+        tk = [k for k in tk if k is not None]
+        repeat.append(bool(set(tk) & sess) or len(tk) != len(set(tk)))
     mean = lambda v: float(np.mean(v)) if len(v) else float("nan")  # noqa: E731
     return {
         "served_auc_listener": auc(served["listener"]),
@@ -693,6 +728,10 @@ def evaluate(rankers, moments, pools, rr, meta, nearest=None):
         "other_habitual10_real": mean(offered),
         "dup_skipped10": mean(dup_skip),
         "dup_seen10": mean(dup_seen),
+        # same_song keys (2026-10-20): another release of a song the session
+        # already had, or two releases of one song, in the top 10.
+        "repeat10_listener": mean(repeat),
+        "repeat10_real": mean(repeat_real),
         "groups": {g: mean(v) for g, v in sorted(grp.items())},
         "scenarios": {k: mean(v) for k, v in sorted(scen.items())},
         "regression": {sid: {k: mean(v) for k, v in d.items()} for sid, d in sorted(reg.items())},
@@ -798,6 +837,15 @@ def final_table3():
     ]
 
 
+def final_table4():
+    """Card 1, the same-song filter, on PR #23's head (2026-10-20)."""
+    return [
+        {"space": "A", "replay": PROD_00028},
+        {"space": "AZ", "replay": {}},
+        {"space": "AZ", "replay": {"SAME_SONG": True}},
+    ]
+
+
 def skip_grid2():
     """Round 2: between the configs that pass the skip-heavy checks and prod."""
     out = [{"space": "AZ", "replay": {}}]
@@ -861,6 +909,7 @@ def main(argv=None) -> int:
     ap.add_argument("--skip-grid2", action="store_true", help="only the rows of skip_grid2()")
     ap.add_argument("--final2", action="store_true", help="only the rows of final_table2()")
     ap.add_argument("--final3", action="store_true", help="only the rows of final_table3()")
+    ap.add_argument("--final4", action="store_true", help="only the rows of final_table4()")
     ap.add_argument("--only-vector-grid", action="store_true",
                     help="run vector_grid() and the session re-rank on A as the reference")
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
@@ -915,6 +964,10 @@ def main(argv=None) -> int:
         cfgs = final_table2()
     if a.final3:
         cfgs = final_table3()
+    if a.final4:
+        cfgs = final_table4()
+    SONG_KEYS.update({r["id"]: same_song.song_key(r["title"], r["artist"], r["language"])
+                      for r in rows})
     meta = {"lang_of": lang_of, "dup_key": dup_key,
             "instrumental": {r["id"] for r in rows
                              if not r["language"] and r["language_status"] == "done"}}
@@ -953,6 +1006,10 @@ def main(argv=None) -> int:
 
     _print(results)
     _print_regression(results)
+    print("\n| config | repeat@10 listener | repeat@10 real |")
+    print("|---|---|---|")
+    for r in results:
+        print(f"| {_label(r)} | {r['repeat10_listener']:.3f} | {r['repeat10_real']:.3f} |")
     a.out.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = a.out / f"replay_bench_{stamp}.json"

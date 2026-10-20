@@ -37,6 +37,7 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, Redirec
 from pydantic import BaseModel
 
 from db import ensure_db, get_conn
+import same_song as _same_song
 from dj_replay import library_mean as _dj_mean_of
 from dj_replay import parse_events as _dj_parse_events
 from dj_replay import replay as _dj_replay
@@ -1949,8 +1950,11 @@ def _dj_library_mean(conn, user_id, model_version: str, dim: int):
     return mean
 
 
-def _dj_events_query(conn, raw_events, user_id, seed_vec, model_version: str, dim: int):
-    """Resolve the client's event log and replay it. Returns (query, result)."""
+def _dj_events_query(conn, raw_events, user_id, seed_vec, model_version: str, dim: int,
+                     seed_id=None):
+    """Resolve the client's event log and replay it. Returns (query, result,
+    session song keys): the same_song keys of every track in the log, and of
+    the seed, which _dj_drop_repeats keeps out of the response."""
     events = _dj_parse_events(raw_events)
     str_keys = sorted({e["id"] for e in events
                        if isinstance(e["id"], str) and not e["id"].isdigit()})
@@ -1970,10 +1974,40 @@ def _dj_events_query(conn, raw_events, user_id, seed_vec, model_version: str, di
     mu = _dj_library_mean(conn, user_id, model_version, dim)
     if mu is None:
         mu = np.zeros(dim, dtype=np.float64)
+    song_keys = _dj_song_keys(conn, {e["id"] for e in resolved} | ({seed_id} if seed_id else set()))
     avoid = FUSED_V1_AVOID if model_version == FUSED_V1_MODEL_VERSION else {}
-    res = _dj_replay(resolved, vecs, mu, seed_vec, **avoid)
+    res = _dj_replay(resolved, vecs, mu, seed_vec, song_keys=song_keys, **avoid)
     q = res.query.astype(np.float32) if res.query is not None else None
-    return q, res
+    return q, res, {k for k in song_keys.values() if k is not None}
+
+
+def _dj_song_keys(conn, ids) -> dict:
+    """{track_id: same_song.song_key} for `ids`, one query."""
+    ids = sorted(int(i) for i in ids)
+    if not ids:
+        return {}
+    ph = ",".join("?" * len(ids))
+    return {int(r["id"]): _same_song.song_key(r["title"], r["artist"], r["language"])
+            for r in conn.execute(f"SELECT id, title, artist, language FROM tracks "
+                                  f"WHERE id IN ({ph})", ids).fetchall()}
+
+
+def _dj_drop_repeats(items, key_of, session_keys):
+    """`items` (best first) without another release of a song the session
+    already had, nor a second release of a song kept earlier in the list:
+    the DJ served Belakina Kavithe's album and single releases back to back,
+    and Mask Off right after its remix. Both ranking paths call this on
+    their candidate pool, before the recency re-rank and the cut to
+    `limit`, so the response still has `limit` tracks when the pool has."""
+    seen, out = set(session_keys), []
+    for it in items:
+        k = key_of(it)
+        if k is not None:
+            if k in seen:
+                continue
+            seen.add(k)
+        out.append(it)
+    return out
 
 
 def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
@@ -2032,6 +2066,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
     # throws the whole session away.
     use_events = body.events is not None
     replay_res = None
+    session_keys = None
 
     if seed_vec is None and not use_events:
         conn.close()
@@ -2048,8 +2083,11 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
             # OWN events count — a search-and-play is the seed, and dropping
             # it (as the weighted path below does) threw away the strongest
             # signal there is. The seed is still excluded from candidates.
-            query_vec, replay_res = _dj_events_query(
-                conn, body.events, user_id, seed_vec, model_version, dim)
+            query_vec, replay_res, session_keys = _dj_events_query(
+                conn, body.events, user_id, seed_vec, model_version, dim, seed_id=anchor_id)
+            # Repeats are filtered out of a pool, so the pool must be deeper
+            # than `limit` even with the recency re-rank off.
+            pool = max(pool, _dj_recency_pool(limit))
             if query_vec is None:
                 # No usable event AND a seed with no vector: nothing to
                 # point a query at. Same fallback as a seed without a vector.
@@ -2212,6 +2250,10 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
                 log.warning("[dj] turso vector_distance_cos path failed: %s; "
                             "falling back to numpy", e)
                 rows = None
+            if rows is not None and session_keys is not None:
+                rows = _dj_drop_repeats(
+                    rows, lambda r: _same_song.song_key(r["title"], r["artist"], r["language"]),
+                    session_keys)
             if rows is not None:
                 # vector_distance_cos returns (1 - cos_sim), so cosine
                 # similarity = 1 - distance. Frontend expects similarity.
@@ -2261,7 +2303,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
 
         # -------- numpy fallback (local dev / cold-start / turso error) --------
         cand_rows = conn.execute(
-            "SELECT t.id, t.duration_ms FROM tracks t "
+            "SELECT t.id, t.duration_ms, t.title, t.artist, t.language FROM tracks t "
             "JOIN user_tracks ut ON ut.track_id = t.id "
             "JOIN track_embeddings te ON te.track_id = t.id "
             "WHERE ut.user_id = ? "
@@ -2273,6 +2315,8 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
         # the denominator of the skip-depth term and the full track rows are
         # not fetched until after re-ranking on this path.
         cand_duration = {int(r["id"]): r["duration_ms"] for r in cand_rows}
+        cand_key = ({int(r["id"]): _same_song.song_key(r["title"], r["artist"], r["language"])
+                     for r in cand_rows} if session_keys is not None else {})
         cand_ids = [int(r["id"]) for r in cand_rows if int(r["id"]) not in exclude_ids]
         if not cand_ids:
             anchor_out = {
@@ -2346,15 +2390,19 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
             norms[norms < 1e-12] = 1.0
             mat_n = mat / norms
             sims = mat_n @ query_vec.astype(np.float32)
+            ranked = None
+            if session_keys is not None:
+                ranked = _dj_drop_repeats([int(i) for i in np.argsort(-sims)[:pool]],
+                                          lambda i: cand_key.get(int(ids_arr[i])), session_keys)
             if not rerank:
-                order = np.argsort(-sims)[:limit]
+                order = ranked[:limit] if ranked is not None else np.argsort(-sims)[:limit]
                 top_ids = [int(ids_arr[i]) for i in order]
                 top_scores = {int(ids_arr[i]): float(sims[i]) for i in order}
             else:
                 # Pool, not the whole library, so this path displaces ranks by
                 # the same amount the Turso path does -- otherwise local
                 # behaviour would not predict production's.
-                order = np.argsort(-sims)[:pool]
+                order = ranked if ranked is not None else np.argsort(-sims)[:pool]
                 cands = [_mk_cand(int(ids_arr[i]), float(sims[i])) for i in order]
                 top_ids = []
                 top_scores = {}
