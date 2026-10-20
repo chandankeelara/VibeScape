@@ -35,7 +35,7 @@
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-gutter: stable;
-  padding: var(--sp-2) var(--sp-10) var(--sp-8);
+  padding: var(--sp-2) var(--sp-10) var(--sp-4);
 }
 
 .hero {
@@ -50,12 +50,19 @@
    the square never pushes the column into a scroll. */
 .isLyrics .hero { --stage-w: min(56%, max(280px, min(560px, 100dvh - 300px))); }
 
-.meta { min-width: 0; display: flex; flex-direction: column; gap: var(--sp-5); }
-.side { display: flex; flex-direction: column; gap: var(--sp-3); }
+/* The meta column, not the art, is the tall side of the hero at every desktop
+   size, so it sets whether the panel fits: these gaps are budgeted to keep
+   title, chips, vibe card and Bit inside a 720px-tall viewport. */
+.meta { min-width: 0; display: flex; flex-direction: column; gap: var(--sp-4); }
+.side { display: flex; flex-direction: column; gap: var(--sp-2); }
 .phTransport { display: none; }
 .lyricsSide { min-width: 0; }
 
-.recent { margin-top: var(--sp-5); }
+.recent { margin-top: var(--sp-4); }
+.recent:empty { display: none; }
+/* Too short to hold the trail under the hero: it goes rather than putting
+   the panel into a scroll (useTrailFits in NowPlaying.jsx). */
+.recentOff { display: none; }
 
 /* Theater: the video takes the whole column; meta and vibe fold into two
    columns below. Height-led width, so YouTube never pillarboxes. */

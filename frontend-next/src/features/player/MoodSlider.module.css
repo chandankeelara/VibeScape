@@ -2,7 +2,7 @@
   background: var(--raised);
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
-  padding: var(--sp-4) var(--sp-mid) var(--sp-3);
+  padding: var(--sp-3) var(--sp-mid);
 }
 .compact { background: none; border: 0; padding: 0; }
 

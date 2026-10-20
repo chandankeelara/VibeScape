@@ -59,6 +59,49 @@ function useArtColour(url) {
   return colour;
 }
 
+/*
+ * Whether the recent trail fits under the hero without the panel scrolling.
+ * Everything else in the column is budgeted to fit a 720px-tall viewport;
+ * the trail (~200px with its heading) only fits from about 900px tall, so it
+ * is the one piece that gives way. Measured rather than a height media query because the hero's
+ * height is content: a title that wraps, lyrics over the art.
+ *
+ * The trail's height (its wrapper, observed too, so its first tile landing
+ * re-checks) is read whenever it is showing and remembered for when it is
+ * not; TRAIL_EST, measured at 1440x900, stands in until it has shown once.
+ * Hiding it changes neither the scroller nor the hero, so this cannot
+ * oscillate.
+ */
+const TRAIL_EST = 198;
+function useTrailFits(scrollRef, heroRef, trailRef, enabled) {
+  const [fits, setFits] = useState(true);
+  const trailH = useRef(TRAIL_EST);
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    const hero = heroRef.current;
+    const trail = trailRef.current;
+    if (!enabled || !scroll || !hero || !trail || typeof ResizeObserver !== 'function') {
+      setFits(true);
+      return undefined;
+    }
+    const check = () => {
+      if (trail.offsetHeight) {
+        trailH.current = trail.offsetHeight + parseFloat(getComputedStyle(trail).marginTop);
+      }
+      const cs = getComputedStyle(scroll);
+      const room = scroll.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)
+        - hero.offsetHeight;
+      setFits(room >= trailH.current);
+    };
+    const ro = new ResizeObserver(check);
+    ro.observe(scroll);
+    ro.observe(hero);
+    ro.observe(trail);
+    return () => ro.disconnect();
+  }, [scrollRef, heroRef, trailRef, enabled]);
+  return fits;
+}
+
 /** Two-layer crossfade of the static tint on track change. */
 function Tint({ background }) {
   const [layers, setLayers] = useState([]);
@@ -99,6 +142,12 @@ export default function NowPlaying({
   const colour = useArtColour(current?.artwork_url || '');
   const isVideo = mode === 'video';
   const lyrics = lyricsPlace({ on: lyricsOn, current, narrow, isVideo, theater });
+  const scrollRef = useRef(null);
+  const heroRef = useRef(null);
+  const trailRef = useRef(null);
+  // Theater scrolls by design (the meta sits under the fold), and the phone
+  // never shows the trail here.
+  const trailFits = useTrailFits(scrollRef, heroRef, trailRef, !theater && !isPhone);
 
   const tint = colour
     ? `radial-gradient(90% 70% at 12% 0%, ${tintFor(colour.hue, theme)}, transparent 75%)`
@@ -143,8 +192,8 @@ export default function NowPlaying({
         </button>
       </div>
 
-      <div className={styles.scroll}>
-        <div className={styles.hero}>
+      <div className={styles.scroll} ref={scrollRef}>
+        <div className={styles.hero} ref={heroRef}>
           <ArtStage className={styles.stage} pool={pool} overlay={overlay} />
 
           <div className={styles.meta}>
@@ -176,7 +225,9 @@ export default function NowPlaying({
           </div>
         </div>
 
-        <RecentTrail variant="tiles" className={styles.recent} />
+        <div ref={trailRef} className={`${styles.recent} ${trailFits ? '' : styles.recentOff}`}>
+          <RecentTrail variant="tiles" />
+        </div>
       </div>
 
       {lyrics === 'sheet' && (!isPhone || phoneOpen) && (

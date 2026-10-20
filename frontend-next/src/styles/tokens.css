@@ -159,8 +159,10 @@
   --lyrics-list-h: clamp(200px, 34dvh, 340px);
   /* Bit beside the DJ line. Large enough for the energy bands to show (they
      differ by AMPLITUDE, so a small Bit flattens sleep and chill into one
-     move); small enough to stay a companion to one line of text. */
-  --bit-h: 76px;
+     move); small enough to stay a companion to one line of text. 76px pushed
+     the now-playing column past a 720px-tall viewport; 64 is what the column
+     can give him there and still fit. */
+  --bit-h: 64px;
   --bit-h-phone: 60px;
   /* Bit's body: outline and skin. Props keep their own text-token strokes. */
   --bit-line: var(--text-3);

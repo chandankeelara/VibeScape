@@ -53,7 +53,7 @@ export default function TrackMeta({ onShowMetrics, compact = false }) {
   return (
     <section className={`${styles.meta} ${compact ? styles.compact : ''}`}>
       <p className={styles.overline}><Equalizer />Now playing</p>
-      <h1 className={styles.title}>{current.title || 'Untitled'}</h1>
+      <h1 className={styles.title} title={current.title || undefined}>{current.title || 'Untitled'}</h1>
       <p className={styles.byline}>
         <span className={styles.artist}>{current.artist || 'Unknown artist'}</span>
         {current.album && (
