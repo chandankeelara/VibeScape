@@ -21,7 +21,7 @@
  *   cover    taller than 170px: the artwork IS the window, text on a wash at
  *            the foot, transport revealed on hover (default 300x300)
  *   compact  170px and under, or any window twice as wide as it is tall:
- *            artwork tile + title, artist, vibe and transport side by side
+ *            artwork tile + title, artist, Bit and transport side by side
  *   bar      132px and under: one line — title, artist, transport
  *
  * Media queries cannot read custom properties, so the cut points are the one
@@ -173,38 +173,10 @@
   min-width: 0;
 }
 
-/* The accent lands on a 2px RULE, not on the digits — a non-text mark, which
-   is the only place the raw accent is safe given how far its contrast swings
-   across the vibe range. */
-.vibe {
-  margin: 0;
-  flex: 0 1 auto;
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  padding-left: var(--sp-2);
-  border-left: 2px solid var(--vibe-accent, var(--acc));
-  font-family: var(--mono);
-  line-height: 1.2;
-  white-space: nowrap;
-}
-
-.vibeNum {
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-}
-
-.vibeMood {
-  font-size: var(--fs-2xs);
-  letter-spacing: 0.08em;
-  text-transform: lowercase;
-  color: var(--text-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+/* Bit in the readout's old spot. The icon is drawn at 34x44 and scaled
+   down from its height, so every layout gets the same figure. */
+.bit { flex: 0 0 auto; display: inline-flex; }
+.bit .bitSvg { height: var(--sp-6); width: auto; }
 
 /*
  * Cover only: the transport waits for the pointer, as Spotify's square does,
@@ -293,7 +265,7 @@
 
 /* -------------------------------------------------------------------- bar
 
-   Spotify's "sleek bar". One line: the vibe and the video note go, and the
+   Spotify's "sleek bar". One line: Bit and the video note go, and the
    transport moves up beside the title. */
 
 @media (max-height: 132px) {
@@ -317,7 +289,7 @@
   .artist { margin-top: 0; }
 
   .row { flex: 0 0 auto; }
-  .vibe,
+  .bit,
   .note { display: none; }
 }
 

@@ -90,6 +90,12 @@
 }
 .mi:hover { background: var(--hover); color: var(--text); }
 .mval { font-size: var(--fs-sm); color: var(--text-3); }
+/* A menu row that holds its own controls: no hover of its own, or the row
+   would light up behind the segment the pointer is actually on. */
+.mrow { composes: mi; }
+.mrow:hover { background: none; color: var(--text-2); }
+.mseg { padding: 2px; }
+.msegBtn { height: 28px; padding: 0 var(--sp-3); font-size: var(--fs-xs); }
 .msep { height: 1px; background: var(--line); margin: var(--sp-1) 0; }
 
 @media (max-width: 1099px) {

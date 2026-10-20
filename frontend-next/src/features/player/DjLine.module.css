@@ -22,6 +22,8 @@
   width: calc(var(--bit-h) * 5 / 6);
 }
 .withBit { gap: var(--sp-2); }
+/* Large mode: the icon in the rig's place, inside the line's own 44px. */
+.icon { flex: none; display: inline-flex; }
 
 @media (max-width: 767px) {
   .bit { height: var(--bit-h-phone); width: calc(var(--bit-h-phone) * 5 / 6); }

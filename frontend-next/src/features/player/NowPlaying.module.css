@@ -58,11 +58,26 @@
 .phTransport { display: none; }
 .lyricsSide { min-width: 0; }
 
-.recent { margin-top: var(--sp-4); }
+/* As wide as its eight tiles and no wider, so the panel's bottom-right
+   corner is free for the large Bit. */
+.recent { margin-top: var(--sp-4); width: fit-content; max-width: 100%; }
 .recent:empty { display: none; }
 /* Too short to hold the trail under the hero: it goes rather than putting
    the panel into a scroll (useTrailFits in NowPlaying.jsx). */
 .recentOff { display: none; }
+
+/* Large Bit in the bottom-right corner. Placed and capped by useBigBitBox
+   (NowPlaying.jsx), which writes right/bottom and --fit-h; until it has
+   measured he has no height, so he never flashes over the controls. */
+.bigBit {
+  position: absolute;
+  height: min(var(--bit-h-large), var(--fit-h, 0px));
+  aspect-ratio: 5 / 6;
+  pointer-events: none;
+}
+/* Hidden, not display:none: the measure needs his offsetParent to place him
+   again once the corner has room. */
+.bigBit[data-fit='no'] { visibility: hidden; }
 
 /* Theater: the video takes the whole column; meta and vibe fold into two
    columns below. Height-led width, so YouTube never pillarboxes. */

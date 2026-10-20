@@ -1,5 +1,6 @@
 import { Component, useEffect } from 'react';
 import { usePlayer } from '../../../state/PlayerContext';
+import { useQueueState } from '../../queue';
 import { onMascot } from '../../../lib/mascotBus';
 import BitRig from './BitRig';
 import useBitState from './useBitState';
@@ -31,6 +32,7 @@ import styles from './BitDock.module.css';
  */
 function BitDockInner({ paused }) {
   const { current, playing, loadingTrack, verifying, mode, source, vibe } = usePlayer();
+  const { djEnabled } = useQueueState();
 
   const { state, animKey, prop, beat, fire } = useBitState({
     current,
@@ -40,6 +42,7 @@ function BitDockInner({ paused }) {
     mode,
     source,
     vibe,
+    djOn: djEnabled,
   });
 
   useReactions(fire);

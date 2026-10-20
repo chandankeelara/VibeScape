@@ -7,7 +7,8 @@
  *   - mounting mid-song is not a track starting (no cueing on mount), which
  *     matters because "Show Bit" mounts him mid-song;
  *   - a reaction in flight (a skip's sulk) is not cut off by the replacement
- *     track's cueing.
+ *     track's cueing;
+ *   - with DJ mode off he sleeps, reacts to nothing, and wakes clean.
  */
 import { act, render, cleanup } from '@testing-library/react';
 import { GROOVE_BY_BAND } from '../../frontend-next/src/features/player/bit/manifest';
@@ -61,5 +62,22 @@ describe('useBitState', () => {
     expect(bit.state).toBe('sulk');
     rerender(<Probe {...base} current={T2} playing vibe={50} />);
     expect(bit.state).toBe('sulk');
+  });
+  it('sleeps while DJ mode is off, whatever is playing, and wakes when it is on', () => {
+    const { rerender } = render(<Probe {...base} current={T1} playing vibe={50} djOn={false} />);
+    expect(bit.state).toBe('asleep');
+    expect(bit.prop).toBe('zzz');
+    rerender(<Probe {...base} current={T1} playing vibe={50} djOn />);
+    expect(bit.state).toBe('groove');
+  });
+
+  it('reacts to nothing asleep, and does not wake into a stale reaction', () => {
+    const { rerender } = render(<Probe {...base} current={T1} playing vibe={50} djOn={false} />);
+    act(() => bit.fire('sulk'));
+    expect(bit.state).toBe('asleep');
+    // A track change asleep must not park a cueing event either.
+    rerender(<Probe {...base} current={T2} playing vibe={50} djOn={false} />);
+    rerender(<Probe {...base} current={T2} playing vibe={50} djOn />);
+    expect(bit.state).toBe('groove');
   });
 });

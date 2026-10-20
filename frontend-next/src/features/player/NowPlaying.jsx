@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { usePlayer } from '../../state/PlayerContext';
 import { useTheme } from '../../state/ThemeContext';
 import { artColor } from '../../lib/artColor';
@@ -38,6 +38,8 @@ import styles from './NowPlaying.module.css';
 const LyricsPanel = lazy(() => import('../lyrics/LyricsPanel'));
 const LyricsStrip = lazy(() => import('../lyrics/LyricsStrip'));
 const LyricsSheet = lazy(() => import('../lyrics/LyricsSheet'));
+// The same chunk DjLine loads for the medium rig.
+const BitDock = lazy(() => import('./bit/BitDock'));
 
 /** Where the lyrics go: null | 'stage' | 'side' | 'theater' | 'sheet'. */
 function lyricsPlace({ on, current, narrow, isVideo, theater }) {
@@ -102,6 +104,74 @@ function useTrailFits(scrollRef, heroRef, trailRef, enabled) {
   return fits;
 }
 
+/*
+ * The large Bit's box: the biggest square-ish corner (5:6, the rig's
+ * viewBox) at the scroller's bottom-right that clears everything marked
+ * data-bit-avoid, the art and the trail. He is absolute, so he never adds
+ * height; this is what keeps him off the controls instead.
+ *
+ * For a box growing out of the corner, an obstacle is cleared either by
+ * staying left of it or by staying below it, whichever allows more:
+ *   h <= max((R - right) * 6/5, B - bottom)
+ * and the corner gets the smallest such h. --bit-h-large caps it (the CSS
+ * takes the min); under BIG_MIN he is too small to read as the big one and
+ * hides, leaving the DJ line's icon.
+ *
+ * Written to the node, not to state: it runs after every render (the DJ
+ * sentence's width is content) and must not cause one. Every obstacle is
+ * observed as well, because a web font landing re-wraps the sentence with no
+ * render and no change to the scroller or the hero (measured: the 1280x720
+ * video layout kept a box sized for the fallback font, over the sentence).
+ */
+const BIG_GAP = 12;
+const BIG_MIN = 72;
+function useBigBitBox(bigRef, scrollRef, heroRef, trailRef, enabled) {
+  const measure = useRef(() => {});
+  const ro = useRef(null);
+  const avoidList = () => {
+    const hero = heroRef.current;
+    if (!hero) return [];
+    return [hero.firstElementChild, trailRef.current, ...hero.querySelectorAll('[data-bit-avoid]')].filter(Boolean);
+  };
+  measure.current = () => {
+    const big = bigRef.current;
+    const scroll = scrollRef.current;
+    const hero = heroRef.current;
+    if (!big || !scroll || !hero) return;
+    const np = big.offsetParent;
+    if (!np) return;
+    const cs = getComputedStyle(scroll);
+    const sr = scroll.getBoundingClientRect();
+    const R = sr.left + scroll.clientLeft + scroll.clientWidth - parseFloat(cs.paddingRight);
+    const B = sr.top + scroll.clientTop + scroll.clientHeight - parseFloat(cs.paddingBottom);
+    let h = Infinity;
+    for (const el of avoidList()) {
+      const r = el.getBoundingClientRect();
+      if (!r || !r.width || !r.height) continue;
+      h = Math.min(h, Math.max((R - r.right - BIG_GAP) * 6 / 5, B - r.bottom - BIG_GAP));
+    }
+    const nr = np.getBoundingClientRect();
+    big.style.right = `${nr.right - R}px`;
+    big.style.bottom = `${nr.bottom - B}px`;
+    big.style.setProperty('--fit-h', `${Math.max(0, Math.floor(h))}px`);
+    big.dataset.fit = h >= BIG_MIN ? 'yes' : 'no';
+  };
+  useLayoutEffect(() => {
+    if (!enabled) return;
+    measure.current();
+    // Observing an element twice is a no-op, so new obstacles join here.
+    avoidList().forEach((el) => ro.current?.observe(el));
+  });
+  useEffect(() => {
+    if (!enabled || typeof ResizeObserver !== 'function') return undefined;
+    ro.current = new ResizeObserver(() => measure.current());
+    [scrollRef.current, heroRef.current, ...avoidList()].forEach((el) => el && ro.current.observe(el));
+    return () => { ro.current.disconnect(); ro.current = null; };
+    // avoidList reads refs only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, scrollRef, heroRef, trailRef]);
+}
+
 /** Two-layer crossfade of the static tint on track change. */
 function Tint({ background }) {
   const [layers, setLayers] = useState([]);
@@ -138,7 +208,7 @@ export default function NowPlaying({
   const { on: lyricsOn } = useLyrics();
   const narrow = useMediaQuery(BELOW_THEATER);
   const isPhone = useMediaQuery(PHONE);
-  const { theme } = useTheme();
+  const { theme, bitSize } = useTheme();
   const colour = useArtColour(current?.artwork_url || '');
   const isVideo = mode === 'video';
   const lyrics = lyricsPlace({ on: lyricsOn, current, narrow, isVideo, theater });
@@ -148,6 +218,15 @@ export default function NowPlaying({
   // Theater scrolls by design (the meta sits under the fold), and the phone
   // never shows the trail here.
   const trailFits = useTrailFits(scrollRef, heroRef, trailRef, !theater && !isPhone);
+  /*
+   * Large Bit needs the panel's bottom-right corner, which only a desktop
+   * panel that does not scroll has: not theater (it scrolls by design), not
+   * below 1024px (single column, or the phone), and not with lyrics in the
+   * side column (they take the DJ line, and so Bit, with them).
+   */
+  const big = bitSize === 'large' && !theater && !narrow && lyrics !== 'side';
+  const bigRef = useRef(null);
+  useBigBitBox(bigRef, scrollRef, heroRef, trailRef, big);
 
   const tint = colour
     ? `radial-gradient(90% 70% at 12% 0%, ${tintFor(colour.hue, theme)}, transparent 75%)`
@@ -197,7 +276,7 @@ export default function NowPlaying({
           <ArtStage className={styles.stage} pool={pool} overlay={overlay} />
 
           <div className={styles.meta}>
-            <div className={styles.info}>
+            <div className={styles.info} data-bit-avoid="">
               <TrackMeta onShowMetrics={onShowMetrics} compact={theater} />
             </div>
 
@@ -216,10 +295,10 @@ export default function NowPlaying({
               </Suspense>
             ) : (
               <div className={styles.side}>
-                <MoodSlider />
+                <div data-bit-avoid=""><MoodSlider /></div>
                 {/* Hidden on a phone until opened: Bit holds still in here
                     while the home list's copy is the one in view. */}
-                <DjLine bitPaused={isPhone && !phoneOpen} />
+                <DjLine bitPaused={isPhone && !phoneOpen} bigElsewhere={big} />
               </div>
             )}
           </div>
@@ -229,6 +308,12 @@ export default function NowPlaying({
           <RecentTrail variant="tiles" />
         </div>
       </div>
+
+      {big && (
+        <span className={styles.bigBit} ref={bigRef} data-fit="no" aria-hidden="true">
+          <Suspense fallback={null}><BitDock /></Suspense>
+        </span>
+      )}
 
       {lyrics === 'sheet' && (!isPhone || phoneOpen) && (
         <Suspense fallback={null}><LyricsSheet /></Suspense>

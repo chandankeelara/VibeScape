@@ -4,8 +4,13 @@ import styles from './Bit.module.css';
 
 /**
  * Bit, icon size — small, flat, reacts once and returns to rest. Used where
- * a figure would crowd the row (the queue's "picking" placeholder). Beside
- * the DJ line he is the full rig instead (features/player/bit/BitDock.jsx).
+ * a figure would crowd the row: the queue's "picking" placeholder, the DJ
+ * line when the large Bit stands in the panel's corner, and the PiP window.
+ * At Medium, beside the DJ line he is the full rig instead
+ * (features/player/bit/BitDock.jsx).
+ *
+ * `asleep` (DJ mode is off) wins over everything: eyes shut, a slow breath
+ * and a z, and no reactions until he wakes.
  *
  * Mood comes from the mascot bus (lib/mascotBus.js): a finished track makes
  * him happy, a skip makes him sad, for 2.6s. `thinking` is driven by the
@@ -41,13 +46,18 @@ function BitSvg({ mood, className }) {
             <path d="M38.5 27 L45.5 29" /><path d="M54.5 29 L61.5 27" />
             <circle cx="42" cy="31.6" r="2.2" /><circle cx="58" cy="31.6" r="2.2" />
           </g>
+          <g className={`${styles.eyes} ${styles.eShut}`}>
+            <path d="M38.5 28 Q42 31.5 45.5 28" /><path d="M54.5 28 Q58 31.5 61.5 28" />
+          </g>
         </g>
       </g>
+      {/* Outside .body, so the breath does not carry it. */}
+      <path className={styles.z} d="M70 2 H79 L70 11 H79" />
     </svg>
   );
 }
 
-function BitInner({ thinking = false, reactive = true, className }) {
+function BitInner({ thinking = false, reactive = true, asleep = false, className }) {
   const [reaction, setReaction] = useState(null);
   const timer = useRef(0);
 
@@ -65,7 +75,9 @@ function BitInner({ thinking = false, reactive = true, className }) {
     return () => { off(); clearTimeout(timer.current); };
   }, [reactive]);
 
-  return <BitSvg mood={thinking ? 'thinking' : reaction} className={className} />;
+  let mood = thinking ? 'thinking' : reaction;
+  if (asleep) mood = 'asleep';
+  return <BitSvg mood={mood} className={className} />;
 }
 
 /** Decoration must never take the player down with it. */

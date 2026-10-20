@@ -87,6 +87,7 @@ export default function useBitState({
   mode,
   source,
   vibe,
+  djOn = true,
 }) {
   /*
    * The event is {name, n} rather than a bare string. `n` is a nonce bumped
@@ -129,7 +130,16 @@ export default function useBitState({
     return 'idle';
   }, [current, loadingTrack, verifying, mode, source, playing]);
 
-  const state = event ? event.name : base;
+  /*
+   * DJ mode off: Bit is the DJ, so with the DJ off he sleeps, whatever is
+   * playing, and reacts to nothing. Above the event as well as the base: a
+   * skip with the DJ off is not his to sulk about. The event is dropped
+   * rather than held, so waking up does not replay a stale reaction.
+   */
+  const state = !djOn ? 'asleep' : (event ? event.name : base);
+  const awake = useRef(djOn);
+  awake.current = djOn;
+  useEffect(() => { if (!djOn) setEvent(null); }, [djOn]);
   /*
    * The band, not the raw vibe, is what the groove picker depends on. Keyed on
    * `vibe`, every step of a slider drag re-rolled the move — he changed dance
@@ -220,6 +230,10 @@ export default function useBitState({
    * another tab. The nonce does the same job with no dependency on paint.
    */
   const fire = useCallback((name) => {
+    // Asleep he ignores everything (see `state`). Refused here too, or a
+    // track change would park a cueing event that no one-shot timer clears
+    // (the asleep clips loop) and he would wake straight into it.
+    if (!awake.current) return;
     if (!ANIMATIONS[name] || ANIMATIONS[name].length === 0) return;
     nonce.current += 1;
     setEvent({ name, n: nonce.current });
@@ -237,8 +251,8 @@ export default function useBitState({
    * effect above would read it before initialisation.
    *
    * Seeded with the track already playing at mount: mounting is not a track
-   * starting, and Bit mounts mid-song whenever the "Show Bit" switch is
-   * turned back on.
+   * starting, and Bit mounts mid-song whenever his size is
+   * set back to Medium or Large.
    */
   const lastTrackId = useRef(current ? current.id : null);
   useEffect(() => {

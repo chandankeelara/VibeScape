@@ -164,6 +164,9 @@
      can give him there and still fit. */
   --bit-h: 64px;
   --bit-h-phone: 60px;
+  /* Large: the pre-S2 dock's rig height, now in the now-playing panel's
+     bottom-right corner. A cap; the corner's free space usually decides. */
+  --bit-h-large: clamp(112px, 17dvh, 184px);
   /* Bit's body: outline and skin. Props keep their own text-token strokes. */
   --bit-line: var(--text-3);
   --bit-skin: var(--raised);

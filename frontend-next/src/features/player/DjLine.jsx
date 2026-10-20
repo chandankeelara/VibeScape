@@ -2,6 +2,7 @@ import { Suspense, lazy } from 'react';
 import { usePlayer } from '../../state/PlayerContext';
 import { useTheme } from '../../state/ThemeContext';
 import { useQueueState } from '../queue';
+import Bit from '../../ui/Bit';
 import styles from './DjLine.module.css';
 
 /*
@@ -24,6 +25,12 @@ const BitDock = lazy(() => import('./bit/BitDock'));
  * lyrics: where lyrics take the side column they take the line with them.
  *
  * `bitPaused` freezes him in a copy that is mounted but not in view.
+ *
+ * Bit's size is the account menu's setting. Medium is the rig here. Large is
+ * the rig in the panel's corner (NowPlaying's BigBit), and `bigElsewhere`
+ * says that copy is actually mounted, so the line keeps the small icon
+ * beside the sentence and the two are never the same size twice. Where there
+ * is no corner (theater, tablet, phone) Large falls back to Medium.
  */
 function sentence({ kind, from }, djOn, mood) {
   if (kind === 'search') return djOn ? <>Playing from search. The DJ takes it from here</> : <>Playing from search</>;
@@ -36,21 +43,25 @@ function sentence({ kind, from }, djOn, mood) {
   return <>Easing toward <b className={styles.cap}>{mood}</b></>;
 }
 
-export default function DjLine({ className = '', bitPaused = false }) {
+export default function DjLine({ className = '', bitPaused = false, bigElsewhere = false }) {
   const { startInfo, mood, loadingTrack, current } = usePlayer();
   const { djEnabled } = useQueueState();
-  const { showBit } = useTheme();
+  const { bitSize } = useTheme();
 
   if (!current && !loadingTrack) return null;
 
+  const icon = bitSize === 'large' && bigElsewhere;
+  const rig = bitSize !== 'off' && !icon;
+
   return (
-    <div className={`${styles.line} ${showBit ? styles.withBit : ''} ${className}`}>
-      {showBit && (
-        <span className={styles.bit}>
+    <div className={`${styles.line} ${rig ? styles.withBit : ''} ${className}`}>
+      {rig && (
+        <span className={styles.bit} data-bit-avoid="">
           <Suspense fallback={null}><BitDock paused={bitPaused} /></Suspense>
         </span>
       )}
-      <p className={styles.say} aria-live="polite">
+      {icon && <span className={styles.icon} data-bit-avoid=""><Bit asleep={!djEnabled} /></span>}
+      <p className={styles.say} aria-live="polite" data-bit-avoid="">
         {djEnabled && <span className={styles.tag}>DJ</span>}
         {loadingTrack ? <>Picking the next track…</> : sentence(startInfo, djEnabled, mood)}
       </p>

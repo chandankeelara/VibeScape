@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { usePlayer } from '../../state/PlayerContext';
+import { useTheme } from '../../state/ThemeContext';
+import { useQueueState } from '../queue';
+import Bit from '../../ui/Bit';
 import TransportButtons from './TransportButtons';
 import styles from './MiniPlayer.module.css';
 
@@ -45,7 +48,9 @@ import styles from './MiniPlayer.module.css';
  * keeps the transport visible while paused instead of only on hover.
  */
 export default function MiniPlayer({ pipWindow }) {
-  const { current, mode, vibe, mood, playing } = usePlayer();
+  const { current, mode, playing } = usePlayer();
+  const { bitSize } = useTheme();
+  const { djEnabled } = useQueueState();
   const [artFailed, setArtFailed] = useState(false);
 
   const artUrl = current?.artwork_url || '';
@@ -88,17 +93,19 @@ export default function MiniPlayer({ pipWindow }) {
 
         <div className={styles.row}>
           {/*
-            * The vibe as a READOUT, not a control. It earns the space because
-            * it is what the DJ will pick from next, so it answers "why this
-            * song" without the user going back to the tab — but a 40px fader
-            * in a 300px window would be a mis-click waiting to happen, and
-            * nothing else here authors anything either. No queue, no search,
-            * no seek bar.
+            * Bit, where the vibe readout used to be. The small icon, not the
+            * rig: the rig's animation sheet is a lazy chunk that may not have
+            * loaded when copyStyles() ran, and at this size the icon reads
+            * better anyway. Asleep while the DJ is off, as everywhere else.
+            * With Bit off the spot stays empty and the transport keeps its
+            * place at the end of the row. Nothing here authors anything: no
+            * queue, no search, no seek bar.
             */}
-          <p className={styles.vibe} aria-label={`Vibe ${vibe}, ${mood}`}>
-            <span className={styles.vibeNum}>{vibe}</span>
-            <span className={styles.vibeMood}>{mood}</span>
-          </p>
+          {bitSize !== 'off' ? (
+            <span className={styles.bit} data-testid="pip-bit">
+              <Bit asleep={!djEnabled} className={styles.bitSvg} />
+            </span>
+          ) : <span />}
 
           <div className={styles.controls}>
             {/* The SAME component the main transport renders. */}
