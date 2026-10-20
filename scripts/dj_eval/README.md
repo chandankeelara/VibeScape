@@ -38,7 +38,7 @@ python scripts/dj_eval/report.py                                                
 | `personas.json` | the ten personas |
 | `report.py` | per-persona transcripts, acceptance by DJ step, reviews, side by side |
 | `replay_bench.py` | replays the recorded listener sessions and the real users' `track_events` through `dj_replay`, in vector spaces it rebuilds in memory; finished-vs-skipped AUC, language match, duplicates, the 'single' scenario's group precision offline, and synthetic scenarios (a 70/30 library, skips, a language switch, mixed skips, another release of a skipped track). `--final` is the PR #21 table |
-| `scenarios.json`, `score_dj.py`, `scoreboard.json` | the vibe and steer scenarios and their listener prompts; one score per DJ version; the committed scoreboard (below) |
+| `scenarios.json`, `score_dj.py`, `scoreboard.json` | the vibe tests and their listener prompts; one score per DJ version; the committed scoreboard (below) |
 | `language_rerank.py` | the session language re-rank that was measured against the vector-only DJ and not shipped; kept so the comparison reproduces |
 | `dj-listener.agent.md` | the agent definition |
 
@@ -70,17 +70,16 @@ would leak the future into the replay.
 
 ## Scoring a DJ version
 
-One number per DJ version, from LLM listeners on seven fixed scenarios
-(`scenarios.json`, version 2). The DJ knows only what the listener does
-(searches, plays, finishes, skips), so every test tells it what is wanted by
-playing a song in that vibe; none asks it to guess. Version 1 also started
-listeners on a song in the *wrong* vibe and scored how fast the DJ left it,
-which penalised it for doing what it should: continue the one song it was
-shown.
+One number per DJ version, from LLM listeners on three fixed vibe tests
+(`scenarios.json`, version 2: Kannada melody, Hindi romantic, English
+workout). The DJ knows only what the listener does (searches, plays,
+finishes, skips), so a test tells it what is wanted by playing one start song
+in that vibe; none asks it to guess. Version 1 also started listeners on a
+song in the *wrong* vibe and scored how fast the DJ left it, which penalised
+it for doing what it should: continue the one song it was shown.
 
-**Vibe tests** (3: Kannada melody, Hindi romantic, English workout). Search
-and finish one start song in the vibe, then exactly 15 DJ picks, each finished
-or skipped and rated fit 1-5 against the vibe. Per run:
+Each test: search and finish the start song, then exactly 15 DJ picks, each
+finished or skipped and rated fit 1-5 against the vibe. Per run:
 
 | metric | | weight |
 |---|---|---|
@@ -90,46 +89,29 @@ or skipped and rated fit 1-5 against the vibe. Per run:
 | early | share of fit >= 4 in picks 1-3 | 10 |
 
 A run with no pick after a skip has no skip_recovery: its 15 is left out and
-the other weights scaled to 100, so it neither pays nor fines.
+the other weights scaled to 100, so it neither pays nor fines. The weights
+are `VIBE_WEIGHTS` in `score_dj.py`.
 
-**Steer tests** (4: Kannada mass to melody, Hindi party to romantic, English
-chill to workout, Kannada melody to Hindi romantic). Phase A: search and
-finish song A, then 5 DJ picks judged against vibe A. Phase B: search and
-finish song B, then 10 DJ picks judged against vibe B, each also tagged with
-`feedback --vibe A|B|other` (which vibe the song itself belongs to). Per run:
+**Steer tests come later**: a listener who changes vibe partway through and
+says so only by searching a song in the new vibe (how fast the DJ follows,
+whether the old vibe leaks back).
 
-| metric | | weight |
-|---|---|---|
-| hold_a | share of the 5 A picks with fit >= 4 | 15 |
-| switch | (11 - switch_step) / 10, where switch_step is the first B pick that starts 3 finished in a row; 0 if never | 35 |
-| hold_b | share of fit >= 4 among B picks from switch_step on; 0 if never | 40 |
-| 1 - leak | leak: share of the 10 B picks tagged `--vibe A` | 10 |
-
-Leak is the listener's tag rather than fit <= 2 because a wrong B pick is not
-necessarily an A song (another language, a third mood), and leak is meant to
-count the DJ holding on to A. The weights are `VIBE_WEIGHTS` and
-`STEER_WEIGHTS` in `score_dj.py`.
-
-A scenario is the mean of its runs; `vibe`, `steer` and the overall DJ score
-are means over scenarios (so 3 vibe and 4 steer scenarios weigh 3:4 in the
-overall). **n is small and an LLM listener is noisy**: run every scenario at
-least twice. An entry with a single run anywhere is recorded but
-**provisional** and cannot become the best, and every comparison says whether
-the gap is inside the run-to-run spread (the range of the overall score across
-the rounds' first runs, second runs, ...). A gap inside it is not a result.
+A scenario is the mean of its runs; the DJ score is the mean over scenarios.
+**n is small and an LLM listener is noisy**: run every scenario at least
+twice. An entry with a single run anywhere is recorded but **provisional** and
+cannot become the best, and every comparison says whether the gap is inside
+the run-to-run spread (the range of the overall score across the rounds'
+first runs, second runs, ...). A gap inside it is not a result.
 
 The start songs, checked read-only on `data/dj_eval/eval.db` on 2026-10-19
 (analysed, a 841-float fused_v2 vector, owned by every listener account, and
 the query finds it among the listener's 10 search results):
 
-| song | query | catalogue title, artist | spotify ids |
-|---|---|---|---|
-| anisuthide | Anisuthide | Anisuthide, Sonu Nigam | 2Rts79IsoUBDH2fam6LROy |
-| salaam-rocky-bhai | Salaam Rocky Bhai | Salaam Rocky Bhai (From "Kgf Chapter 1"), Vijay Prakash | 1e04JEvKIj6LmrmQaeVohx, 0DlWUIfi176SZgYuoQjflR (two releases) |
-| tum-hi-ho | Tum Hi Ho | Tum Hi Ho (From "Aashiqui 2"), Arijit Singh | 7ouBSPZKQpm7zQz2leJXta |
-| badtameez-dil | Badtameez Dil | Badtameez Dil, Pritam | 4eu27jAU2bbnyHUC3G75U8 |
-| lose-yourself | Lose Yourself | Lose Yourself, Eminem | 6GkTKjv1XbFVdI2D8vvDPu |
-| skinny-love | Skinny Love | Skinny Love, Bon Iver | 3B3eOgLJSqPEA0RfboIQVM |
+| scenario | account | query | catalogue title, artist | spotify id |
+|---|---|---|---|---|
+| vibe-kn-melody | kannada-late-night | Anisuthide | Anisuthide, Sonu Nigam | 2Rts79IsoUBDH2fam6LROy |
+| vibe-hi-romantic | hindi-romantic | Tum Hi Ho | Tum Hi Ho (From "Aashiqui 2"), Arijit Singh | 7ouBSPZKQpm7zQz2leJXta |
+| vibe-en-workout | english-workout | Lose Yourself | Lose Yourself, Eminem | 6GkTKjv1XbFVdI2D8vvDPu |
 
 "Tum Hi Ho" also finds "Tum Hi Ho Bandhu" (Pritam), listed first; the prompt
 names the result by title and artist, and a run that played another song than
@@ -158,13 +140,12 @@ under test. Everything runs with `D:\Softwares\MiniConda\python.exe`.
    ```
 
 3. **The listeners.** For each scenario in `scenarios.json`, launch one
-   `dj-listener` agent whose prompt is that scenario's `prompt`, verbatim. The
-   steer prompts need `listener.py feedback --vibe`, which `<main>` must have.
-   Launch them **one at a time** (parallel spawns hit a lock), at most about 7
-   running at once. The seven scenarios use seven different accounts, which
-   is required: two sessions on one account reset each other's play history.
-   So a second run of a scenario waits until its first has finished. Note
-   each agent's session id from its final message.
+   `dj-listener` agent whose prompt is that scenario's `prompt`, verbatim.
+   Launch them **one at a time** (parallel spawns hit a lock). The scenarios
+   use different accounts, which is required: two sessions on one account
+   reset each other's play history. So a second run of a scenario waits until
+   its first has finished. Note each agent's session id from its final
+   message.
 
 4. **Score**, from `<main>` (the session files are there; or pass
    `--listener-dir`):
@@ -175,20 +156,19 @@ under test. Everything runs with `D:\Softwares\MiniConda\python.exe`.
    ```
 
    or `--manifest round.json` with `{"label", "commit", "sessions": {scenario:
-   [session ids]}}`. A run's plays must be exactly the scenario's layout: per
-   phase, the search play of that phase's song (finished), then that phase's
-   number of DJ plays, all rated, and in a steer test every B pick tagged.
-   Plays past the last expected one (agents overshoot) are ignored with a
-   warning. Anything else (an up-next play, a search too early or too late,
-   too few plays, another start song, the wrong account) is printed as
-   EXCLUDED and left out; rerun it. The tables go to stdout and an entry to
+   [session ids]}}`. A run's plays must be exactly: the search play of the
+   scenario's song (finished), then 15 DJ plays, all rated. Plays past the
+   last expected one (agents overshoot) are ignored with a warning. Anything
+   else (an up-next play, a second search, too few plays, another start song,
+   the wrong account) is printed as EXCLUDED and left out; rerun it. The table
+   goes to stdout and an entry to
    `scoreboard.json` (the same label twice is refused; `--replace` overwrites;
    `--dry-run` writes nothing). Commit the scoreboard change. Writing it in
    `<main>` dirties the main checkout: carry the change to a branch.
 
 5. **Stop the server** (Ctrl-C in its terminal).
 
-Changing a scenario, a pick count, a vibe's words or a prompt template: edit
+Changing a scenario, a pick count, a vibe's words or the prompt template: edit
 `scenarios.json`, bump its `version` (the best is per version), and run
-`score_dj.py --render-prompts`; a test fails while a stored prompt and its
+`score_dj.py --render-prompts`; a test fails while a stored prompt and the
 template disagree.

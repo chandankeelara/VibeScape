@@ -1,5 +1,5 @@
 {
- "about": "Vibe and steer scores of DJ versions, written by score_dj.py (README: Scoring a DJ version). `best` is the highest overall among non-provisional entries of the current scenario version; an entry with fewer than 2 valid runs for any scenario is provisional. Do not edit by hand.",
+ "about": "Vibe-test scores of DJ versions, written by score_dj.py (README: Scoring a DJ version). `best` is the highest overall among non-provisional entries of the current scenario version; an entry with fewer than 2 valid runs for any scenario is provisional. Do not edit by hand.",
  "best": null,
  "entries": []
 }

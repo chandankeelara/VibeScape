@@ -1414,8 +1414,17 @@ filtering work.
 ## 13. DJ score — built 2026-10-19 (branch `backend/dj-score`), what is left
 
 `scripts/dj_eval/score_dj.py` scores a DJ version from listener sessions on
-the seven vibe and steer scenarios in `scenarios.json` and keeps
-`scoreboard.json`.
+the three vibe tests in `scenarios.json` and keeps `scoreboard.json`.
+
+### 13.2 Steer tests are not built yet
+`scripts/dj_eval/scenarios.json`, `scripts/dj_eval/score_dj.py`
+
+**by decision (2026-10-19).** The suite measures only whether the DJ keeps a
+vibe it was shown. Whether it follows a listener who changes vibe (a second
+search partway through: how many picks until it follows, whether the old
+vibe leaks back) is unmeasured. A design was built and set aside in PR #24's
+history (commit d9f52fd): phase A 5 picks, phase B 10, a `feedback --vibe
+A|B|other` tag for leak.
 
 ### 13.1 The scoreboard's commit is whatever `--commit` says
 `scripts/dj_eval/score_dj.py` `main`, `scripts/dj_eval/serve.py`

@@ -1,11 +1,10 @@
-"""score_dj.py: the vibe and steer maths, session validation, the
-scoreboard's best and provisional flag, and label idempotence. Pure: no
-server, no data; sessions are synthetic listener.py state files."""
+"""score_dj.py: the vibe-test maths, session validation, the scoreboard's
+best and provisional flag, and label idempotence. Pure: no server, no data;
+sessions are synthetic listener.py state files."""
 from __future__ import annotations
 
 import json
 import sys
-from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -13,66 +12,47 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "scripts"))
 
-from dj_eval import listener, score_dj  # noqa: E402
-from dj_eval.score_dj import (ScoreError, add_entry, score_round, steer_metrics,  # noqa: E402
-                              validate, vibe_metrics)
+from dj_eval import score_dj  # noqa: E402
+from dj_eval.score_dj import ScoreError, add_entry, score_round, validate, vibe_metrics  # noqa: E402
 
 CFG = score_dj.load_scenarios()
 SCS = {sc["id"]: sc for sc in CFG["scenarios"]}
 VIBE = SCS["vibe-kn-melody"]
-STEER = SCS["steer-kn-mass-to-kn-melody"]
 
 
-def _pick(fit, outcome=None, how="dj", sounds_like=None, step=0):
-    return {"step": step, "how": how, "spotify_id": "x", "title": "song", "artist": "a",
-            "outcome": outcome or ("finished" if fit >= 3 else "skipped"), "fit": fit,
-            "sounds_like": sounds_like}
+def _pick(fit, outcome=None, how="dj"):
+    return {"step": 0, "how": how, "spotify_id": "x", "title": "song", "artist": "a",
+            "outcome": outcome or ("finished" if fit >= 3 else "skipped"), "fit": fit}
 
 
-def _search(song_key, step=0):
-    s = CFG["songs"][song_key]
-    return {"step": step, "how": "search", "spotify_id": s["spotify_ids"][0], "title": s["title"],
-            "artist": s["artist"], "outcome": "finished", "fit": 4, "sounds_like": None}
+def _search(sc):
+    s = CFG["songs"][sc["song"]]
+    return {"step": 0, "how": "search", "spotify_id": s["spotify_ids"][0], "title": s["title"],
+            "artist": s["artist"], "outcome": "finished", "fit": 4}
 
 
-def _session(sc, picks_by_phase, sid="s", account=None):
-    """A valid session for sc: per phase, the search then the given picks
-    (fits, or ready-made play dicts). Steer B picks are tagged 'B'."""
-    plays = []
-    for n, (ph, picks) in enumerate(zip(sc["phases"], picks_by_phase)):
-        plays.append(_search(ph["song"]))
-        tag = "B" if sc["kind"] == "steer" and n == 1 else None
-        plays += [p if isinstance(p, dict) else _pick(p, sounds_like=tag) for p in picks]
+def _session(sc, picks, sid="s"):
+    """sc's search, then the given picks (fits, or ready-made play dicts)."""
+    plays = [_search(sc)] + [p if isinstance(p, dict) else _pick(p) for p in picks]
     for i, p in enumerate(plays, 1):
         p["step"] = i
-    return {"id": sid, "persona": account or sc["account"], "plays": plays}
-
-
-def _good_session(sc, sid, fits=None):
-    if sc["kind"] == "vibe":
-        return _session(sc, [fits or [5] * 15], sid)
-    return _session(sc, [[5] * 5, fits or [5] * 10], sid)
+    return {"id": sid, "persona": sc["account"], "plays": plays}
 
 
 def _round(fits_by_run):
-    """Every scenario: one session per run; vibe runs get the fits, steer
-    runs get the first 10 as their B picks (their A picks are all 5)."""
-    runs = {}
-    for sc in CFG["scenarios"]:
-        runs[sc["id"]] = [_good_session(sc, f"{sc['id']}-{i}",
-                                        f if sc["kind"] == "vibe" else f[:10])
-                          for i, f in enumerate(fits_by_run)]
-    return runs
+    """Every scenario: one session per run, with that run's fits."""
+    return {sc["id"]: [_session(sc, f, f"{sc['id']}-{i}") for i, f in enumerate(fits_by_run)]
+            for sc in CFG["scenarios"]}
 
 
-# ------------------------------------------------------------ vibe maths
-def test_a_perfect_vibe_run_scores_100_without_a_recovery():
+# ----------------------------------------------------------------- maths
+def test_a_perfect_run_scores_100_without_a_recovery():
     m = vibe_metrics([_pick(5) for _ in range(15)])
     assert m == {"hold": 1.0, "skip_rate": 0.0, "skip_recovery": None, "early": 1.0,
                  "score": 100.0}
 
 
-def test_vibe_hold_skip_rate_and_early():
+def test_hold_skip_rate_and_early():
     fits = [2, 4, 5] + [4] * 6 + [1] * 6                 # 8 good, 7 skipped (fit < 3)
     m = vibe_metrics([_pick(f) for f in fits])
     assert m["hold"] == pytest.approx(8 / 15)
@@ -88,79 +68,25 @@ def test_skip_recovery_counts_the_pick_right_after_each_skip():
     assert vibe_metrics(picks)["skip_recovery"] == pytest.approx(2 / 3)
 
 
-def test_vibe_score_weights_and_a_missing_recovery_is_neutral():
+def test_score_weights_and_a_missing_recovery_is_neutral():
     picks = [_pick(4, "skipped")] + [_pick(4)] * 14      # recovery 1, skip 1/15
     m = vibe_metrics(picks)
     assert m["score"] == pytest.approx(50 * 1 + 25 * (14 / 15) + 15 * 1 + 10 * 1)
     # No skip at all: recovery is left out, not scored as 0 or as 1.
-    picks = [_pick(3)] * 15                              # all finished, none good
-    assert vibe_metrics(picks)["score"] == pytest.approx(100 * 25 / 85)
-
-
-# ----------------------------------------------------------- steer maths
-def _b(outs, fits=None, tags=None):
-    fits = fits or [5] * len(outs)
-    tags = tags or ["B"] * len(outs)
-    return [_pick(f, "finished" if o == "f" else "skipped", sounds_like=t)
-            for o, f, t in zip(outs, fits, tags)]
-
-
-def test_switch_at_step_1_and_full_hold_is_100():
-    m = steer_metrics([_pick(5)] * 5, _b("f" * 10))
-    assert m["switch_step"] == 1 and m["switch"] == 1.0 and m["hold_b"] == 1.0
-    assert m["score"] == 100.0
-
-
-def test_switch_needs_three_finishes_in_a_row():
-    m = steer_metrics([_pick(5)] * 5, _b("ffsfffssss"))
-    assert m["switch_step"] == 4
-    assert m["switch"] == pytest.approx(0.7)
-
-
-def test_switch_at_step_8_the_last_possible_and_never():
-    m = steer_metrics([_pick(5)] * 5, _b("sssssssfff"))
-    assert m["switch_step"] == 8 and m["switch"] == pytest.approx(0.3)
-    m = steer_metrics([_pick(5)] * 5, _b("ssssssssff"))
-    assert m["switch_step"] is None and m["switch"] == 0.0 and m["hold_b"] == 0.0
-
-
-def test_hold_b_counts_fit_from_the_switch_on_and_not_before():
-    # switch at 3; B picks 3..10 are 8, of which fit >= 4: the switch run's
-    # 5, 4, 4 and step 9; steps 1-2 are 5s but before the switch.
-    fits = [5, 5, 5, 4, 4, 3, 3, 3, 4, 2]
-    m = steer_metrics([_pick(5)] * 5, _b("ssffffffff", fits))
-    assert m["switch_step"] == 3
-    assert m["hold_b"] == pytest.approx(4 / 8)
-
-
-def test_hold_a_and_leak():
-    a = [_pick(f) for f in (5, 4, 3, 2, 4)]
-    tags = ["A", "A", "B", "other", "B", "B", "A", "B", "B", "B"]
-    m = steer_metrics(a, _b("f" * 10, tags=tags))
-    assert m["hold_a"] == pytest.approx(3 / 5)
-    assert m["leak"] == pytest.approx(3 / 10)
-    assert m["score"] == pytest.approx(15 * 0.6 + 35 * 1 + 40 * 1 + 10 * 0.7)
-
-
-def test_leak_is_the_tag_not_a_low_fit():
-    # fit 1 everywhere but tagged 'other': wrong, but not A.
-    m = steer_metrics([_pick(5)] * 5, _b("f" * 10, [1] * 10, ["other"] * 10))
-    assert m["leak"] == 0.0
+    assert vibe_metrics([_pick(3)] * 15)["score"] == pytest.approx(100 * 25 / 85)
 
 
 def test_weights_sum_to_100():
     assert sum(score_dj.VIBE_WEIGHTS.values()) == 100
-    assert sum(score_dj.STEER_WEIGHTS.values()) == 100
 
 
 # ----------------------------------------------------------- validation
-def test_clean_sessions_are_valid():
-    for sc in (VIBE, STEER):
-        assert validate(_good_session(sc, "s"), sc, CFG) == ([], [])
+def test_a_clean_session_is_valid():
+    assert validate(_session(VIBE, [5] * 15), VIBE, CFG) == ([], [])
 
 
-def test_a_vibe_run_of_18_is_kept_and_scored_on_its_first_15():
-    st = _session(VIBE, [[5] * 15 + [1, 1, 1]])
+def test_a_run_of_18_is_kept_and_scored_on_its_first_15():
+    st = _session(VIBE, [5] * 15 + [1, 1, 1])
     st["plays"][-1]["fit"] = None                        # an unrated overshoot does not matter
     bad, warn = validate(st, VIBE, CFG)
     assert bad == [] and warn == ["3 plays after play 16 ignored (dj x3)"]
@@ -168,71 +94,49 @@ def test_a_vibe_run_of_18_is_kept_and_scored_on_its_first_15():
 
 
 def test_an_up_next_play_after_the_last_step_is_ignored():
-    st = _session(STEER, [[5] * 5, [5] * 10 + [_pick(1, how="picked")]])
-    bad, warn = validate(st, STEER, CFG)
-    assert bad == [] and warn == ["1 plays after play 17 ignored (picked x1)"]
+    st = _session(VIBE, [5] * 15 + [_pick(1, how="picked")])
+    bad, warn = validate(st, VIBE, CFG)
+    assert bad == [] and warn == ["1 plays after play 16 ignored (picked x1)"]
 
 
 def test_an_up_next_play_inside_the_window_is_rejected():
-    st = _session(VIBE, [[5] * 9 + [_pick(5, how="picked")] + [5] * 6])
+    st = _session(VIBE, [5] * 9 + [_pick(5, how="picked")] + [5] * 6)
     bad, _ = validate(st, VIBE, CFG)
     assert bad == ["play 11 is a 'picked' play, want 'dj'"]
 
 
-def test_a_steer_search_too_early_is_rejected():
-    # 4 A picks then the B search: the second search lands on play 6.
-    st = _session(STEER, [[5] * 4, [5] * 11])
-    bad, _ = validate(st, STEER, CFG)
-    assert bad[0].startswith("play 6 is a 'search' play, want 'dj'")
-
-
-def test_an_extra_search_in_a_vibe_run_is_rejected():
-    st = _session(VIBE, [[5] * 15])
-    st["plays"].insert(5, _search("anisuthide"))
+def test_an_extra_search_is_rejected():
+    st = _session(VIBE, [5] * 15)
+    st["plays"].insert(5, _search(VIBE))
     bad, _ = validate(st, VIBE, CFG)
     assert bad[0].startswith("play 6 is a 'search' play, want 'dj'")
 
 
 def test_too_few_plays_are_rejected():
-    bad, _ = validate(_session(VIBE, [[5] * 14]), VIBE, CFG)
+    bad, _ = validate(_session(VIBE, [5] * 14), VIBE, CFG)
     assert bad == ["15 plays, want 16 (1 search + 15 DJ)"]
-    bad, _ = validate(_session(STEER, [[5] * 5, [5] * 9]), STEER, CFG)
-    assert bad == ["16 plays, want 17 (1 search + 5 DJ + 1 search + 10 DJ)"]
 
 
 def test_the_wrong_start_song_is_rejected():
-    st = _good_session(VIBE, "s")
+    st = _session(VIBE, [5] * 15)
     st["plays"][0]["spotify_id"] = "somethingelse"
     bad, _ = validate(st, VIBE, CFG)
     assert len(bad) == 1 and "want 'Anisuthide'" in bad[0]
-    st = _good_session(STEER, "s")                       # the other Salaam Rocky Bhai is fine
-    st["plays"][0]["spotify_id"] = CFG["songs"]["salaam-rocky-bhai"]["spotify_ids"][1]
-    assert validate(st, STEER, CFG)[0] == []
 
 
 def test_a_skipped_start_song_is_rejected():
-    st = _good_session(STEER, "s")
-    st["plays"][6]["outcome"] = "skipped"                # song B
-    bad, _ = validate(st, STEER, CFG)
-    assert bad == ["start song at play 7 was skipped, want finished"]
+    st = _session(VIBE, [5] * 15)
+    st["plays"][0]["outcome"] = "skipped"
+    assert validate(st, VIBE, CFG)[0] == ["start song at play 1 was skipped, want finished"]
 
 
 def test_an_unrated_pick_and_the_wrong_account_are_rejected():
-    st = _good_session(VIBE, "s")
+    st = _session(VIBE, [5] * 15)
     st["plays"][5]["fit"] = None
     assert validate(st, VIBE, CFG)[0] == ["play 6 has no fit 1-5"]
-    st = _good_session(VIBE, "s")
+    st = _session(VIBE, [5] * 15)
     st["persona"] = "kannada-mass"
     assert any("account" in b for b in validate(st, VIBE, CFG)[0])
-
-
-def test_an_untagged_b_pick_is_rejected_an_untagged_a_pick_is_not():
-    st = _good_session(STEER, "s")
-    st["plays"][9]["sounds_like"] = None                 # B pick 3
-    assert validate(st, STEER, CFG)[0] == ["B pick at play 10 has no --vibe A|B|other"]
-    st = _good_session(STEER, "s")
-    st["plays"][2]["sounds_like"] = None                 # A pick 2
-    assert validate(st, STEER, CFG)[0] == []
 
 
 def test_invalid_sessions_are_excluded_from_the_score():
@@ -248,19 +152,23 @@ def test_invalid_sessions_are_excluded_from_the_score():
 
 
 # ---------------------------------------------------- the round and best
-def test_vibe_steer_overall_and_spread():
-    runs = _round([[5] * 15, [3] * 15])
-    res = score_round(CFG, runs)
-    low_vibe = 100 * 25 / 85                             # all finished, none good, no skips
-    low_steer = 15 + 35 + 0 + 10                         # A good, switch 1, hold B 0, no leak
+LOW = 100 * 25 / 85                                      # all finished, none good, no skips
+
+
+def test_overall_and_spread():
+    res = score_round(CFG, _round([[5] * 15, [3] * 15]))
     for v in res["scenarios"].values():
-        assert v["spread"][1] == 100.0
-    assert res["vibe"] == pytest.approx((100 + low_vibe) / 2)
-    assert res["steer"] == pytest.approx((100 + low_steer) / 2)
-    assert res["overall"] == pytest.approx((3 * (100 + low_vibe) / 2 + 4 * (100 + low_steer) / 2)
-                                           / 7)
-    assert res["overall_band"] == pytest.approx(100 - (3 * low_vibe + 4 * low_steer) / 7)
+        assert v["spread"] == [pytest.approx(LOW), 100.0]
+    assert res["overall"] == pytest.approx((100 + LOW) / 2)
+    assert res["overall_band"] == pytest.approx(100 - LOW)
     assert res["provisional"] == []
+
+
+def test_overall_is_the_mean_over_scenarios():
+    runs = _round([[5] * 15, [5] * 15])
+    runs["vibe-en-workout"] = [_session(SCS["vibe-en-workout"], [3] * 15, f"w{i}")
+                               for i in range(2)]
+    assert score_round(CFG, runs)["overall"] == pytest.approx((100 + 100 + LOW) / 3)
 
 
 def _entry(label, fits_by_run):
@@ -357,21 +265,13 @@ def test_manifest_gives_the_same_sessions(tmp_path):
 
 # ------------------------------------------------------------ scenarios
 def test_scenarios_have_distinct_accounts_and_rendered_prompts():
+    assert sorted(SCS) == ["vibe-en-workout", "vibe-hi-romantic", "vibe-kn-melody"]
     accounts = [sc["account"] for sc in CFG["scenarios"]]
-    assert len(set(accounts)) == len(accounts) == 7
-    assert CFG["version"] == 2
-    assert [sc["kind"] for sc in CFG["scenarios"]].count("steer") == 4
+    assert len(set(accounts)) == len(accounts)
+    assert CFG["version"] == 2 and all(sc["picks"] == 15 for sc in CFG["scenarios"])
     for sc in CFG["scenarios"]:
         assert sc["prompt"] == score_dj.render_prompt(CFG, sc), \
             f"{sc['id']}: run score_dj.py --render-prompts"
-
-
-def test_the_steer_prompt_names_both_vibes_and_both_searches():
-    p = STEER["prompt"]
-    assert CFG["vibes"]["kn-mass"] in p and CFG["vibes"]["kn-melody"] in p
-    assert 'search --session <id> "Salaam Rocky Bhai"' in p
-    assert 'search --session <id> "Anisuthide"' in p
-    assert "exactly 5 times" in p and "exactly 10 times" in p and "--vibe" in p
 
 
 def test_a_shared_account_is_refused():
@@ -379,23 +279,3 @@ def test_a_shared_account_is_refused():
     cfg["scenarios"][1]["account"] = cfg["scenarios"][0]["account"]
     with pytest.raises(ScoreError):
         score_dj.check_scenarios(cfg)
-
-
-# -------------------------------------------------- listener.py --vibe
-def test_listener_feedback_stores_the_vibe_tag_and_does_not_print_it():
-    st = {"plays": [{"handle": "t-ab12", "fit": None, "reason": None, "sounds_like": None}],
-          "history": []}
-    a = Namespace(handle="t-ab12", fit=2, reason="too loud", vibe="A")
-    lines = listener.cmd_feedback(a, st, None)
-    assert st["plays"][0]["sounds_like"] == "A"
-    assert lines == ["noted: t-ab12 fit 2"]
-    a = listener.parser().parse_args(["feedback", "--session", "s", "t-ab12", "--fit", "4",
-                                      "--vibe", "other", "--reason", "x"])
-    assert a.vibe == "other"
-
-
-def test_a_steer_run_splits_its_picks_at_the_second_search():
-    a = [5, 5, 2, 2, 2]                                  # hold A 2/5
-    st = _session(STEER, [a, [4] * 10])
-    m = score_dj.score_run(st, STEER)
-    assert m["hold_a"] == pytest.approx(2 / 5) and m["hold_b"] == 1.0

@@ -125,8 +125,7 @@ def _timed(st: dict, s: Session) -> None:
 def _play_entry(st: dict, handle: str, how: str, t: Track) -> None:
     st["plays"].append({"step": len(st["plays"]) + 1, "handle": handle, "spotify_id": t.spotify_id,
                         "title": t.title, "artist": t.artist, "album": t.album, "how": how,
-                        "outcome": None, "played": None, "fit": None, "reason": None,
-                        "sounds_like": None})
+                        "outcome": None, "played": None, "fit": None, "reason": None})
 
 
 def _current_play(st: dict, handle: str) -> dict:
@@ -246,9 +245,7 @@ def cmd_feedback(a, st, s) -> list[str]:
     if p is None:
         raise UserError(f"you have not played {a.handle}")
     p["fit"], p["reason"] = a.fit, a.reason
-    if a.vibe is not None:
-        p["sounds_like"] = a.vibe
-    _log(st, "feedback", handle=a.handle, fit=a.fit, reason=a.reason, sounds_like=a.vibe)
+    _log(st, "feedback", handle=a.handle, fit=a.fit, reason=a.reason)
     return [f"noted: {a.handle} fit {a.fit}"]
 
 
@@ -287,10 +284,6 @@ def parser() -> argparse.ArgumentParser:
     q.add_argument("handle")
     q.add_argument("--fit", type=int, required=True, choices=range(1, 6), metavar="1-5")
     q.add_argument("--reason", required=True)
-    # The listener's own call, for score_dj.py's steer tests: which of the
-    # two vibes it was told about this song belongs to. Stored, never printed.
-    q.add_argument("--vibe", choices=("A", "B", "other"),
-                   help="which of the two vibes a steer test named this song belongs to")
     with_session("review", "your overall review of the session").add_argument("text")
     return ap
 
