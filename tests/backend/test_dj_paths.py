@@ -9,6 +9,7 @@ language. What separates Kannada from Hindi is the language block at its
 real weight, and what pushes a skipped language out is dj_replay's avoid
 term at its real strength.
 """
+import secrets
 import sqlite3
 
 import numpy as np
@@ -23,6 +24,12 @@ def done(t):
 
 def skip(t):
     return {"id": t, "action": "skipped", "played_ratio": 0.1}
+
+
+def _title():
+    """A distinct title per track: same-titled tracks by one artist in one
+    language are one song to the DJ's repeat filter (backend/same_song.py)."""
+    return f"Song {secrets.token_hex(4)}"
 
 
 def test_the_app_the_schema_and_the_recipe_agree_on_the_space(app_module, sql):
@@ -54,7 +61,7 @@ def library(make_user, make_tracks, sql):
             row = {c: rng.uniform(0.3, 0.7) * (fv.SCALAR_RANGE[c][1] - fv.SCALAR_RANGE[c][0])
                    + fv.SCALAR_RANGE[c][0] for c in fv.SCALAR_COLS}
             row["language"] = lang
-            (tid,) = make_tracks(uid, [fv._build_fused(row, mert)])
+            (tid,) = make_tracks(uid, [fv._build_fused(row, mert)], titles={0: _title()})
             sql.execute("UPDATE tracks SET language = ? WHERE id = ?", (lang, tid))
             by_lang[lang].append(tid)
             by_lang.setdefault((lang, snd), []).append(tid)
@@ -115,7 +122,7 @@ def test_mood_skips_inside_a_language_keep_the_language(client, make_user, make_
                 mert = (centre + 0.5 * rng.normal(size=fv.MERT_DIM)).astype(np.float32)
                 row = {c: 0.5 * (fv.SCALAR_RANGE[c][0] + fv.SCALAR_RANGE[c][1]) for c in fv.SCALAR_COLS}
                 row["language"] = lang
-                (tid,) = make_tracks(uid, [fv._build_fused(row, mert)])
+                (tid,) = make_tracks(uid, [fv._build_fused(row, mert)], titles={0: _title()})
                 sql.execute("UPDATE tracks SET language = ? WHERE id = ?", (lang, tid))
                 ids.append(tid)
             groups[(lang, name)] = ids
@@ -147,7 +154,7 @@ def test_an_off_target_seed_is_left_when_its_vibe_is_skipped(client, make_user, 
             mert = (centre + 0.5 * rng.normal(size=fv.MERT_DIM)).astype(np.float32)
             row = {c: 0.5 * (fv.SCALAR_RANGE[c][0] + fv.SCALAR_RANGE[c][1]) for c in fv.SCALAR_COLS}
             row["language"] = lang
-            (tid,) = make_tracks(uid, [fv._build_fused(row, mert)])
+            (tid,) = make_tracks(uid, [fv._build_fused(row, mert)], titles={0: _title()})
             sql.execute("UPDATE tracks SET language = ? WHERE id = ?", (lang, tid))
             ids.append(tid)
         groups[(lang, name)] = ids

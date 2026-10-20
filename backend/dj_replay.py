@@ -177,20 +177,34 @@ class ReplayResult:
 def replay(events: list[dict], vecs: dict, mu: np.ndarray,
            seed_vec: Optional[np.ndarray] = None, *, neg_weight: Optional[float] = None,
            m_step: Optional[float] = None, m_max: Optional[float] = None,
-           avoid_perp: Optional[bool] = None, avoid_cap=...) -> ReplayResult:
+           avoid_perp: Optional[bool] = None, avoid_cap=...,
+           song_keys: Optional[dict] = None) -> ReplayResult:
     """Replay `events` (already resolved: e["id"] is an internal int) over
     `vecs` {track_id: raw vector}. Tracks with no vector still count toward
     the skip streak but contribute no direction. neg_weight / m_step / m_max
     / avoid_perp / avoid_cap default to the module constants; the app passes
     the pre-fused_v2 values when it has to rank fused_v1 vectors
-    (backend/app.py _fused_v2_ready). avoid_cap=None means no cap."""
+    (backend/app.py _fused_v2_ready). avoid_cap=None means no cap.
+
+    song_keys {track_id: same_song.song_key or None}: a skip of a track that
+    is another release of a song an EARLIER event already had (album, then
+    single) is left out entirely -- no avoid term, no skip streak. It says
+    "not again", not "not this vibe": in the Kannada vibe tests the skip of
+    a repeated Belakina Kavithe started a four-skip slide into mass songs."""
     neg_weight = NEG_WEIGHT if neg_weight is None else neg_weight
     m_step = M_STEP if m_step is None else m_step
     m_max = M_MAX if m_max is None else m_max
     S = N = None
     m, k, primed = 0.0, 0, 0.0
+    first_of: dict = {}                    # song key -> the first track id seen with it
     for e in events:
         a = e["action"]
+        if song_keys:
+            sk = song_keys.get(e["id"])
+            if sk is not None:
+                first = first_of.setdefault(sk, e["id"])
+                if a == "skipped" and first != e["id"]:
+                    continue
         v = vecs.get(e["id"])
         x = _unit(_unit(v) - mu) if v is not None else None
         ratio = e.get("played_ratio")
