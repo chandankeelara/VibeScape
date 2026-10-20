@@ -1439,6 +1439,26 @@ whose language the tagger could not call gets the instrumental slot. Of the
 instrumental (EDM, film themes, drones). Cheap check: list the verdict
 tracks whose titles do not look instrumental and listen to a few.
 
+### 12.9 A skip at the taste's energy can still lift the session to party — the fix conflicts with leaving a wrong starting vibe
+`backend/dj_replay.py` (AVOID_PERP, protect_dirs), `scripts/dj_eval/replay_bench.py --final5`
+
+**verified offline (2026-10-20).** hindi-romantic-1991d7: after Tum Hi Ho
+and Humnava Mere (top-10 mean vibe_score_ml 0.31), one skip of Kun Faya Kun
+(0.25) lifts the top 10 to 0.60. Protecting the scalar block as well as the
+language block (`AVOID_PERP="lang_scalar"`, card 2 as approved) leaves it
+at 0.57: energy lives 77% in MERT (a ridge regression of vibe_score_ml on
+the fused vector, R^2 0.99), so the scalar block is the smaller part of
+it. Protecting that learned energy direction (`protect_dirs`) holds it at
+0.37, but then a session that starts on the wrong vibe cannot leave it:
+the off-target party seed's party@10 after 3/4/5 skips goes 0.00 -> 0.40 /
+0.10 / 0.80, and real-user AUC 0.708 -> 0.683. In both sessions the
+skipped songs sit at the taste's energy; what differs is that the Hindi
+session had two accepted songs first. Neither option is the default. A
+weaker angle cap does not help (0.5: the jump stays +0.27 and the seed
+breaks). Candidates to measure: protecting energy in proportion to how
+many accepted songs back the taste, or a smaller angle allowance for the
+first skip after accepts.
+
 ## Checked and clean
 
 Recorded so the next audit does not redo them.

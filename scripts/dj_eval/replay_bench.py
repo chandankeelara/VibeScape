@@ -181,6 +181,7 @@ PERSONA_LANG = {"english-chill": "en", "english-workout": "en", "kannada-mass": 
 
 
 SONG_KEYS: dict = {}   # track id -> same_song.song_key, filled by main()
+ENERGY: dict = {}      # track id -> vibe_score_ml, filled by main()
 
 
 def listener_moments(paths):
@@ -374,6 +375,28 @@ def scenario_moments(rows, mert=None, dup_key=None):
 SEED_OFF = (5956, [2637, 1323, 759, 1708, 5441])
 
 
+# hindi-romantic-1991d7 (2026-10-20): after Tum Hi Ho and Humnava Mere, a
+# skip of Kun Faya Kun (a slow devotional song) lifted the top 10's mean
+# vibe_score_ml from calm (0.31) to party (0.60). "hi-skip: vibe before /
+# after" replays that log up to and including that first skip.
+ENERGY_SESSION = "hindi-romantic-1991d7"
+
+
+def energy_moments(listeners):
+    path = Path(listeners) / f"{ENERGY_SESSION}.json"
+    if not path.is_file():
+        return []
+    log = json.loads(path.read_text(encoding="utf-8"))["session"]["log"]
+    k = next((i for i, e in enumerate(log) if e["action"] == "skipped"), None)
+    if k is None:
+        return []
+    out = []
+    for name, prefix in (("hi-skip: vibe before", log[:k]), ("hi-skip: vibe after", log[:k + 1])):
+        out.append({"src": "scenario", "scenario": name, "metric": "vibe", "events": prefix,
+                    "seed": prefix[-1]["id"], "exclude": {e["id"] for e in prefix}, "user": None})
+    return out
+
+
 def _seed_off_moments(rows):
     """One off-target seed finished, then 3-5 of that session's party songs
     skipped. Scored twice: Hindi kept (want 1) and the share of the top 10
@@ -491,6 +514,19 @@ class Ranker:
         self.library = Counter(dj_language.lang_key(lang_of[int(t)]) for t in ids)
         self.vecs = {int(t): X[i] for i, t in enumerate(ids)}
         self.song_keys = SONG_KEYS
+        self._energy = {}
+
+    def energy_dir(self, mu):
+        """The unit direction (centred space) that best predicts a track's
+        vibe_score_ml: ridge regression over this library, cached."""
+        key = mu.tobytes()
+        if key not in self._energy:
+            have = [i for i, t in enumerate(self.ids) if ENERGY.get(int(t)) is not None]
+            Xc = self.X[have] - mu
+            y = np.array([ENERGY[int(self.ids[i])] for i in have])
+            w = np.linalg.solve(Xc.T @ Xc + np.eye(Xc.shape[1]), Xc.T @ (y - y.mean()))
+            self._energy[key] = w / np.linalg.norm(w)
+        return self._energy[key]
 
     def pool(self, m, center="full", replay_kw=None):
         """center 'nolang': the library mean without its language block, so
@@ -503,12 +539,14 @@ class Ranker:
             mu[fv.MERT_DIM + len(fv.SCALAR_COLS):] = 0.0
         replay_kw = dict(replay_kw or {})
         same = replay_kw.pop("SAME_SONG", False)
+        energy = replay_kw.pop("ENERGY_DIR", False)
         saved = {k: getattr(dj_replay, k) for k in replay_kw}
         try:
             for k, v in replay_kw.items():
                 setattr(dj_replay, k, v)
             res = replay(events, self.vecs, mu, seed,
-                         song_keys=self.song_keys if same else None)
+                         song_keys=self.song_keys if same else None,
+                         protect_dirs=[self.energy_dir(mu)] if energy else None)
         finally:
             for k, v in saved.items():
                 setattr(dj_replay, k, v)
@@ -655,6 +693,9 @@ def evaluate(rankers, moments, pools, rr, meta, nearest=None):
         if m["src"] == "scenario":
             if m.get("metric") == "present":
                 scen[m["scenario"]].append(float(any(t in m["members"] for t in top)))
+            elif m.get("metric") == "vibe":
+                vs = [ENERGY.get(t) for t in top if ENERGY.get(t) is not None]
+                scen[m["scenario"]].append(float(np.mean(vs)) if vs else float("nan"))
             elif m.get("metric") == "share":
                 scen[m["scenario"]].append(sum(t in m["members"] for t in top) / K)
             else:
@@ -846,6 +887,16 @@ def final_table4():
     ]
 
 
+def final_table5():
+    """Card 2, the taste's energy protected from skips, on PR #25 (2026-10-20)."""
+    return [
+        {"space": "A", "replay": PROD_00028},
+        {"space": "AZ", "replay": {"SAME_SONG": True, "AVOID_PERP": "lang"}},
+        {"space": "AZ", "replay": {"SAME_SONG": True, "AVOID_PERP": "lang_scalar"}},
+        {"space": "AZ", "replay": {"SAME_SONG": True, "AVOID_PERP": "lang", "ENERGY_DIR": True}},
+    ]
+
+
 def skip_grid2():
     """Round 2: between the configs that pass the skip-heavy checks and prod."""
     out = [{"space": "AZ", "replay": {}}]
@@ -910,6 +961,7 @@ def main(argv=None) -> int:
     ap.add_argument("--final2", action="store_true", help="only the rows of final_table2()")
     ap.add_argument("--final3", action="store_true", help="only the rows of final_table3()")
     ap.add_argument("--final4", action="store_true", help="only the rows of final_table4()")
+    ap.add_argument("--final5", action="store_true", help="only the rows of final_table5()")
     ap.add_argument("--only-vector-grid", action="store_true",
                     help="run vector_grid() and the session re-rank on A as the reference")
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
@@ -931,6 +983,7 @@ def main(argv=None) -> int:
         libs[uid] = [t for t in ids if t in own]
     scen, kn70 = scenario_moments(rows, mert, dup_key)
     libs["kn70"] = [t for t in ids if t in kn70]
+    scen += energy_moments(a.listeners)
     moments = (listener_moments(a.listeners.glob("*.json"))
                + real_moments(conn, dur_of) + group_moments(rows) + scen)
     conn.close()
@@ -966,8 +1019,11 @@ def main(argv=None) -> int:
         cfgs = final_table3()
     if a.final4:
         cfgs = final_table4()
+    if a.final5:
+        cfgs = final_table5()
     SONG_KEYS.update({r["id"]: same_song.song_key(r["title"], r["artist"], r["language"])
                       for r in rows})
+    ENERGY.update({r["id"]: r["vibe_score_ml"] for r in rows})
     meta = {"lang_of": lang_of, "dup_key": dup_key,
             "instrumental": {r["id"] for r in rows
                              if not r["language"] and r["language_status"] == "done"}}

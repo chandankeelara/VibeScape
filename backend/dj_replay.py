@@ -115,17 +115,22 @@ N_BETA_MAX = 0.8
 M_STEP = 0.5             # confidence gained per skip: 0.5 * depth * amp
 M_MAX = 2.0              # ... capped here
 M_FADE = 0.7             # confidence kept after each positive
-# What the avoid term may not push against. "lang": N's language block loses
-# its component along S's language block (the language the taste and the
-# skips share stays), the audio and scalar blocks are untouched. "full": the
-# whole of N loses its component along S (PR #23's first version; it froze a
-# session whose only accepted song was the wrong vibe). False: neither.
+# What the avoid term may not push against. "lang_scalar": N's language block
+# and its scalar block (energy, tempo, valence...) each lose their component
+# along S's same block -- the language and the energy the taste holds stay;
+# MERT, the sound, is untouched (2026-10-20; measured and NOT the default: the
+# energy of a track lives 77% in MERT, so this barely moved the Hindi
+# session's skip-to-party jump, +0.29 -> +0.27). "lang": the language block
+# only (PR #23), the default. "full": the whole of N loses its component along S (PR #23's
+# first version; it froze a session whose only accepted song was the wrong
+# vibe). False: none.
 AVOID_PERP = "lang"
 AVOID_PERP_RENORM = True # ... renormalised to unit length
 # The fused_v2 language block, ingest_pipeline/fused_vector.py: MERT (768) +
 # scalars (9), then 64 slots. "lang" applies to vectors of this width only
 # (tests/backend/test_dj_replay.py checks it against the recipe).
 LANG_BLOCK = (777, 841)
+SCALAR_BLOCK = (768, 777)
 AVOID_CAP = 1.5          # cap on NEG_WEIGHT * m, in units of |S| (None: no cap)
 
 POSITIVE = frozenset({"searched", "queued", "picked", "completed"})
@@ -178,7 +183,7 @@ def replay(events: list[dict], vecs: dict, mu: np.ndarray,
            seed_vec: Optional[np.ndarray] = None, *, neg_weight: Optional[float] = None,
            m_step: Optional[float] = None, m_max: Optional[float] = None,
            avoid_perp: Optional[bool] = None, avoid_cap=...,
-           song_keys: Optional[dict] = None) -> ReplayResult:
+           song_keys: Optional[dict] = None, protect_dirs=None) -> ReplayResult:
     """Replay `events` (already resolved: e["id"] is an internal int) over
     `vecs` {track_id: raw vector}. Tracks with no vector still count toward
     the skip streak but contribute no direction. neg_weight / m_step / m_max
@@ -256,7 +261,7 @@ def replay(events: list[dict], vecs: dict, mu: np.ndarray,
         S, from_seed = _unit(_unit(seed_vec) - mu), True
     perp = AVOID_PERP if avoid_perp is None else avoid_perp
     cap = AVOID_CAP if avoid_cap is ... else avoid_cap
-    q = S if N is None else _unit(S - _avoid(S, N, neg_weight * m, perp, cap))
+    q = S if N is None else _unit(S - _avoid(S, N, neg_weight * m, perp, cap, protect_dirs))
     return ReplayResult(q, from_seed, k, m)
 
 
@@ -283,27 +288,34 @@ def _within(S: np.ndarray, A: np.ndarray, cap) -> np.ndarray:
     return lo * A
 
 
-def _avoid(S: np.ndarray, N: np.ndarray, coef: float, perp, cap) -> np.ndarray:
+def _avoid(S: np.ndarray, N: np.ndarray, coef: float, perp, cap, protect_dirs=None) -> np.ndarray:
     """The vector subtracted from S: coef * N, with coef capped at `cap`
     unless that is None, and N first stripped of what it shares with S --
     its language-block component along S's language block (perp "lang"),
     or its whole component along S (perp "full" / True)."""
-    return _within(S, _avoid_raw(S, N, coef, perp, cap), cap)
+    A = _avoid_raw(S, N, coef, perp, cap)
+    # protect_dirs: unit vectors (centred space) the avoid term may not move
+    # the query along, e.g. the direction that predicts a track's energy, so
+    # a skip cannot lift or drop the session's energy level (2026-10-20 card
+    # 2 experiment; not wired into the app).
+    for d in protect_dirs or ():
+        if d is not None and d.shape == A.shape:
+            A = A - float(A @ d) * d
+    return _within(S, A, cap)
 
 
 def _avoid_raw(S, N, coef, perp, cap):
     if cap is not None:
         coef = min(coef, cap)
-    if perp == "lang":
-        a, b = LANG_BLOCK
-        if S.shape[0] != b:
-            return coef * N
-        sl = S[a:b]
-        n_sl = float(np.linalg.norm(sl))
-        if n_sl < 1e-9:
+    if perp in ("lang", "lang_scalar"):
+        if S.shape[0] != LANG_BLOCK[1]:
             return coef * N
         P = N.copy()
-        P[a:b] = N[a:b] - float(N[a:b] @ sl) / n_sl ** 2 * sl
+        for a, b in ((LANG_BLOCK, SCALAR_BLOCK) if perp == "lang_scalar" else (LANG_BLOCK,)):
+            sb = S[a:b]
+            n_sb = float(np.linalg.norm(sb))
+            if n_sb > 1e-9:
+                P[a:b] = N[a:b] - float(N[a:b] @ sb) / n_sb ** 2 * sb
         n = float(np.linalg.norm(P))
         if n < 1e-9:
             return np.zeros_like(S)

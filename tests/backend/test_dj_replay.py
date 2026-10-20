@@ -175,3 +175,21 @@ def test_the_language_block_is_the_recipes():
     from ingest_pipeline import fused_vector as fv
     a, b = R.LANG_BLOCK
     assert a == fv.MERT_DIM + len(fv.SCALAR_COLS) and b == fv.FUSED_DIM
+    # ... and SCALAR_BLOCK its scalar block (AVOID_PERP 'lang_scalar')
+    assert R.SCALAR_BLOCK == (fv.MERT_DIM, fv.MERT_DIM + len(fv.SCALAR_COLS))
+
+
+def test_the_scalar_and_direction_protections_do_what_they_say():
+    """Options measured for card 2 (2026-10-20), not the default: with
+    'lang_scalar' the avoid term has no component along S's scalar block or
+    S's language block; with protect_dirs none along each given direction."""
+    rng = np.random.default_rng(9)
+    a, b = R.SCALAR_BLOCK
+    la, lb = R.LANG_BLOCK
+    S, N = (v / np.linalg.norm(v) for v in (rng.normal(size=lb), rng.normal(size=lb)))
+    A = R._avoid_raw(S, N, 1.0, "lang_scalar", None)
+    assert abs(float(A[a:b] @ S[a:b])) < 1e-9 and abs(float(A[la:lb] @ S[la:lb])) < 1e-9
+    d = rng.normal(size=lb)
+    d /= np.linalg.norm(d)
+    A2 = R._avoid(S, N, 1.0, "lang", None, protect_dirs=[d])
+    assert abs(float(A2 @ d)) < 1e-9
