@@ -57,8 +57,9 @@
  * Desktop and tablet: the meta column is budgeted to fit the panel (see
  * NowPlaying.module.css), so a title gets two lines at most; the full text
  * stays in the DOM and in the tooltip. On a short viewport the overline and
- * genre go, the two lines the phone already drops: the head row says what is
- * playing, and that buys a two-line title room at 720px tall.
+ * genre go, the two lines the phone already drops (the head row says what is
+ * playing), and the title takes one smaller line: that is what leaves the
+ * foot row its room at 720px tall.
  */
 @media (min-width: 768px) {
   .title {
@@ -70,6 +71,9 @@
 }
 @media (min-width: 768px) and (max-height: 799px) {
   .overline, .genre { display: none; }
+  /* With the foot row always under the hero there is room for one line. */
+  .title { font-size: var(--fs-np-title-short); -webkit-line-clamp: 1; }
+  .quiet { margin-top: var(--sp-1); }
 }
 
 @media (max-width: 767px) {

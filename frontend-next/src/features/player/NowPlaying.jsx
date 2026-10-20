@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { usePlayer } from '../../state/PlayerContext';
 import { useTheme } from '../../state/ThemeContext';
 import { artColor } from '../../lib/artColor';
@@ -62,114 +62,34 @@ function useArtColour(url) {
 }
 
 /*
- * Whether the recent trail fits under the hero without the panel scrolling.
- * Everything else in the column is budgeted to fit a 720px-tall viewport;
- * the trail (~200px with its heading) only fits from about 900px tall, so it
- * is the one piece that gives way. Measured rather than a height media query because the hero's
- * height is content: a title that wraps, lyrics over the art.
+ * The large Bit's height: whatever the panel has left under the hero, between
+ * --bit-h-large-min and --bit-h-large (the CSS clamps). He stands in the
+ * foot row beside the recent tiles, so the row is as tall as the taller of
+ * the two, and sizing him from the space left is what keeps that row from
+ * ever making the panel scroll. The hero's height does not depend on the
+ * row, so this cannot feed back on itself. Theater scrolls by design, so the
+ * room there is negative and he takes the minimum.
  *
- * The trail's height (its wrapper, observed too, so its first tile landing
- * re-checks) is read whenever it is showing and remembered for when it is
- * not; TRAIL_EST, measured at 1440x900, stands in until it has shown once.
- * Hiding it changes neither the scroller nor the hero, so this cannot
- * oscillate.
+ * Written to the node, not to state, so a resize costs no render.
  */
-const TRAIL_EST = 198;
-function useTrailFits(scrollRef, heroRef, trailRef, enabled) {
-  const [fits, setFits] = useState(true);
-  const trailH = useRef(TRAIL_EST);
+function useBigRoom(footRef, scrollRef, heroRef, enabled) {
   useEffect(() => {
+    const foot = footRef.current;
     const scroll = scrollRef.current;
     const hero = heroRef.current;
-    const trail = trailRef.current;
-    if (!enabled || !scroll || !hero || !trail || typeof ResizeObserver !== 'function') {
-      setFits(true);
-      return undefined;
-    }
-    const check = () => {
-      if (trail.offsetHeight) {
-        trailH.current = trail.offsetHeight + parseFloat(getComputedStyle(trail).marginTop);
-      }
+    if (!enabled || !foot || !scroll || !hero || typeof ResizeObserver !== 'function') return undefined;
+    const measure = () => {
       const cs = getComputedStyle(scroll);
       const room = scroll.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)
-        - hero.offsetHeight;
-      setFits(room >= trailH.current);
+        - hero.offsetHeight - parseFloat(getComputedStyle(foot).marginTop);
+      foot.style.setProperty('--big-room', `${Math.floor(room)}px`);
     };
-    const ro = new ResizeObserver(check);
+    measure();
+    const ro = new ResizeObserver(measure);
     ro.observe(scroll);
     ro.observe(hero);
-    ro.observe(trail);
     return () => ro.disconnect();
-  }, [scrollRef, heroRef, trailRef, enabled]);
-  return fits;
-}
-
-/*
- * The large Bit's box: the biggest square-ish corner (5:6, the rig's
- * viewBox) at the scroller's bottom-right that clears everything marked
- * data-bit-avoid, the art and the trail. He is absolute, so he never adds
- * height; this is what keeps him off the controls instead.
- *
- * For a box growing out of the corner, an obstacle is cleared either by
- * staying left of it or by staying below it, whichever allows more:
- *   h <= max((R - right) * 6/5, B - bottom)
- * and the corner gets the smallest such h. --bit-h-large caps it (the CSS
- * takes the min); under BIG_MIN he is too small to read as the big one and
- * hides, leaving the DJ line's icon.
- *
- * Written to the node, not to state: it runs after every render (the DJ
- * sentence's width is content) and must not cause one. Every obstacle is
- * observed as well, because a web font landing re-wraps the sentence with no
- * render and no change to the scroller or the hero (measured: the 1280x720
- * video layout kept a box sized for the fallback font, over the sentence).
- */
-const BIG_GAP = 12;
-const BIG_MIN = 72;
-function useBigBitBox(bigRef, scrollRef, heroRef, trailRef, enabled) {
-  const measure = useRef(() => {});
-  const ro = useRef(null);
-  const avoidList = () => {
-    const hero = heroRef.current;
-    if (!hero) return [];
-    return [hero.firstElementChild, trailRef.current, ...hero.querySelectorAll('[data-bit-avoid]')].filter(Boolean);
-  };
-  measure.current = () => {
-    const big = bigRef.current;
-    const scroll = scrollRef.current;
-    const hero = heroRef.current;
-    if (!big || !scroll || !hero) return;
-    const np = big.offsetParent;
-    if (!np) return;
-    const cs = getComputedStyle(scroll);
-    const sr = scroll.getBoundingClientRect();
-    const R = sr.left + scroll.clientLeft + scroll.clientWidth - parseFloat(cs.paddingRight);
-    const B = sr.top + scroll.clientTop + scroll.clientHeight - parseFloat(cs.paddingBottom);
-    let h = Infinity;
-    for (const el of avoidList()) {
-      const r = el.getBoundingClientRect();
-      if (!r || !r.width || !r.height) continue;
-      h = Math.min(h, Math.max((R - r.right - BIG_GAP) * 6 / 5, B - r.bottom - BIG_GAP));
-    }
-    const nr = np.getBoundingClientRect();
-    big.style.right = `${nr.right - R}px`;
-    big.style.bottom = `${nr.bottom - B}px`;
-    big.style.setProperty('--fit-h', `${Math.max(0, Math.floor(h))}px`);
-    big.dataset.fit = h >= BIG_MIN ? 'yes' : 'no';
-  };
-  useLayoutEffect(() => {
-    if (!enabled) return;
-    measure.current();
-    // Observing an element twice is a no-op, so new obstacles join here.
-    avoidList().forEach((el) => ro.current?.observe(el));
-  });
-  useEffect(() => {
-    if (!enabled || typeof ResizeObserver !== 'function') return undefined;
-    ro.current = new ResizeObserver(() => measure.current());
-    [scrollRef.current, heroRef.current, ...avoidList()].forEach((el) => el && ro.current.observe(el));
-    return () => { ro.current.disconnect(); ro.current = null; };
-    // avoidList reads refs only.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, scrollRef, heroRef, trailRef]);
+  }, [footRef, scrollRef, heroRef, enabled]);
 }
 
 /** Two-layer crossfade of the static tint on track change. */
@@ -214,19 +134,14 @@ export default function NowPlaying({
   const lyrics = lyricsPlace({ on: lyricsOn, current, narrow, isVideo, theater });
   const scrollRef = useRef(null);
   const heroRef = useRef(null);
-  const trailRef = useRef(null);
-  // Theater scrolls by design (the meta sits under the fold), and the phone
-  // never shows the trail here.
-  const trailFits = useTrailFits(scrollRef, heroRef, trailRef, !theater && !isPhone);
+  const footRef = useRef(null);
   /*
-   * Large Bit needs the panel's bottom-right corner, which only a desktop
-   * panel that does not scroll has: not theater (it scrolls by design), not
-   * below 1024px (single column, or the phone), and not with lyrics in the
-   * side column (they take the DJ line, and so Bit, with them).
+   * Large Bit stands at the end of the foot row, after the recent tiles. The
+   * phone has no foot row (its home list carries the recents), so there
+   * Large is Medium: the rig beside the DJ line.
    */
-  const big = bitSize === 'large' && !theater && !narrow && lyrics !== 'side';
-  const bigRef = useRef(null);
-  useBigBitBox(bigRef, scrollRef, heroRef, trailRef, big);
+  const big = bitSize === 'large' && !isPhone;
+  useBigRoom(footRef, scrollRef, heroRef, big);
 
   const tint = colour
     ? `radial-gradient(90% 70% at 12% 0%, ${tintFor(colour.hue, theme)}, transparent 75%)`
@@ -276,7 +191,7 @@ export default function NowPlaying({
           <ArtStage className={styles.stage} pool={pool} overlay={overlay} />
 
           <div className={styles.meta}>
-            <div className={styles.info} data-bit-avoid="">
+            <div className={styles.info}>
               <TrackMeta onShowMetrics={onShowMetrics} compact={theater} />
             </div>
 
@@ -295,7 +210,7 @@ export default function NowPlaying({
               </Suspense>
             ) : (
               <div className={styles.side}>
-                <div data-bit-avoid=""><MoodSlider /></div>
+                <MoodSlider />
                 {/* Hidden on a phone until opened: Bit holds still in here
                     while the home list's copy is the one in view. */}
                 <DjLine bitPaused={isPhone && !phoneOpen} bigElsewhere={big} />
@@ -304,16 +219,17 @@ export default function NowPlaying({
           </div>
         </div>
 
-        <div ref={trailRef} className={`${styles.recent} ${trailFits ? '' : styles.recentOff}`}>
+        {/* One row: the last eight plays, then the large Bit right after the
+            last of them (at the start when there are none). */}
+        <div ref={footRef} className={styles.foot}>
           <RecentTrail variant="tiles" />
+          {big && (
+            <span className={styles.bigBit} aria-hidden="true">
+              <Suspense fallback={null}><BitDock /></Suspense>
+            </span>
+          )}
         </div>
       </div>
-
-      {big && (
-        <span className={styles.bigBit} ref={bigRef} data-fit="no" aria-hidden="true">
-          <Suspense fallback={null}><BitDock /></Suspense>
-        </span>
-      )}
 
       {lyrics === 'sheet' && (!isPhone || phoneOpen) && (
         <Suspense fallback={null}><LyricsSheet /></Suspense>

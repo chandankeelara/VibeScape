@@ -106,6 +106,8 @@
   --fs-vibe-phone: 34px;
   --fs-vibe: 40px;
   --fs-2xl: 44px;
+  /* The now-playing title on a short (<800px) viewport. */
+  --fs-np-title-short: 36px;
 
   /* ------------------------------------------------------------- radii */
   --r-xs: 4px;
@@ -164,9 +166,16 @@
      can give him there and still fit. */
   --bit-h: 64px;
   --bit-h-phone: 60px;
-  /* Large: the pre-S2 dock's rig height, now in the now-playing panel's
-     bottom-right corner. A cap; the corner's free space usually decides. */
+  /* Large: at the end of the now-playing panel's foot row, sized by the
+     room the hero leaves (NowPlaying useBigRoom), between these two. The
+     cap is the pre-S2 dock's rig height; the floor keeps him clearly larger
+     than the medium rig on a 720px-tall viewport, where the room is ~100. */
   --bit-h-large: clamp(112px, 17dvh, 184px);
+  --bit-h-large-min: 88px;
+  /* Recent tile thumbnails in the foot row: from the height (the row must
+     fit under the hero) and the width (eight of them and Bit must fit in
+     the panel). */
+  --trail-thumb: clamp(52px, min(7.5dvh, 5vw), 96px);
   /* Bit's body: outline and skin. Props keep their own text-token strokes. */
   --bit-line: var(--text-3);
   --bit-skin: var(--raised);

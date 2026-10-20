@@ -8,7 +8,8 @@ import styles from './RecentTrail.module.css';
 /**
  * Recently played — the last 8, newest first, current track excluded.
  *
- *   variant="tiles"     — the desktop row of square tiles under the stage
+ *   variant="tiles"     — the desktop foot row of small square tiles, with
+ *                         the large Bit after them (NowPlaying)
  *   variant="shortcuts" — the phone home's two-column shortcut grid
  *
  * Going back to something from here is a choice — logged for the DJ through
@@ -60,10 +61,9 @@ export default function RecentTrail({ variant = 'tiles', className = '' }) {
 
   return (
     <section className={className} aria-labelledby="recent-h">
-      <div className={ui.secHead}>
-        <h2 id="recent-h" className={ui.secTitle}>Recently played</h2>
-        <span className={ui.secAside}>Last {items.length}</span>
-      </div>
+      {/* Named for assistive tech only: the row has to fit under the hero
+          at every desktop height, and the tiles explain themselves. */}
+      <h2 id="recent-h" className={ui.srOnly}>Recently played</h2>
       <div className={styles.trail}>
         {items.map((t) => (
           <button

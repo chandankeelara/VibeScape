@@ -27,10 +27,10 @@ const BitDock = lazy(() => import('./bit/BitDock'));
  * `bitPaused` freezes him in a copy that is mounted but not in view.
  *
  * Bit's size is the account menu's setting. Medium is the rig here. Large is
- * the rig in the panel's corner (NowPlaying's BigBit), and `bigElsewhere`
- * says that copy is actually mounted, so the line keeps the small icon
- * beside the sentence and the two are never the same size twice. Where there
- * is no corner (theater, tablet, phone) Large falls back to Medium.
+ * the rig at the end of the panel's foot row, after the recent tiles, and
+ * `bigElsewhere` says that copy is actually mounted, so the line keeps the
+ * small icon beside the sentence and the two are never the same size twice.
+ * On the phone there is no foot row and Large falls back to Medium.
  */
 function sentence({ kind, from }, djOn, mood) {
   if (kind === 'search') return djOn ? <>Playing from search. The DJ takes it from here</> : <>Playing from search</>;
@@ -56,12 +56,12 @@ export default function DjLine({ className = '', bitPaused = false, bigElsewhere
   return (
     <div className={`${styles.line} ${rig ? styles.withBit : ''} ${className}`}>
       {rig && (
-        <span className={styles.bit} data-bit-avoid="">
+        <span className={styles.bit}>
           <Suspense fallback={null}><BitDock paused={bitPaused} /></Suspense>
         </span>
       )}
-      {icon && <span className={styles.icon} data-bit-avoid=""><Bit asleep={!djEnabled} /></span>}
-      <p className={styles.say} aria-live="polite" data-bit-avoid="">
+      {icon && <span className={styles.icon}><Bit asleep={!djEnabled} /></span>}
+      <p className={styles.say} aria-live="polite">
         {djEnabled && <span className={styles.tag}>DJ</span>}
         {loadingTrack ? <>Picking the next track…</> : sentence(startInfo, djEnabled, mood)}
       </p>

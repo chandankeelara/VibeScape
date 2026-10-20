@@ -47,8 +47,9 @@
 }
 .isVideo .hero { --stage-w: min(56%, 560px); }
 /* Lyrics over the art want more room than a cover does; capped by height so
-   the square never pushes the column into a scroll. */
-.isLyrics .hero { --stage-w: min(56%, max(280px, min(560px, 100dvh - 300px))); }
+   the square, with the foot row under it, never pushes the column into a
+   scroll. */
+.isLyrics .hero { --stage-w: min(56%, max(280px, min(560px, 92dvh - 300px))); }
 
 /* The meta column, not the art, is the tall side of the hero at every desktop
    size, so it sets whether the panel fits: these gaps are budgeted to keep
@@ -58,26 +59,31 @@
 .phTransport { display: none; }
 .lyricsSide { min-width: 0; }
 
-/* As wide as its eight tiles and no wider, so the panel's bottom-right
-   corner is free for the large Bit. */
-.recent { margin-top: var(--sp-4); width: fit-content; max-width: 100%; }
-.recent:empty { display: none; }
-/* Too short to hold the trail under the hero: it goes rather than putting
-   the panel into a scroll (useTrailFits in NowPlaying.jsx). */
-.recentOff { display: none; }
+/*
+ * The foot row: the recent tiles, then the large Bit right after the last of
+ * them. Both stand on the row's floor, so the row is as tall as the taller
+ * of the two. It is always shown on desktop and tablet, so the hero above is
+ * budgeted to leave it room (see the max-height rules below and in
+ * TrackMeta/MoodSlider), and Bit takes what is left (useBigRoom).
+ */
+.foot {
+  margin-top: var(--sp-3);
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-4);
+}
+.foot:empty { display: none; }
 
-/* Large Bit in the bottom-right corner. Placed and capped by useBigBitBox
-   (NowPlaying.jsx), which writes right/bottom and --fit-h; until it has
-   measured he has no height, so he never flashes over the controls. */
+/* --big-room is written by useBigRoom; the clamp keeps him clearly larger
+   than the medium rig however little is left, and no taller than the
+   pre-S2 dock's rig however much is. */
 .bigBit {
-  position: absolute;
-  height: min(var(--bit-h-large), var(--fit-h, 0px));
+  position: relative;
+  flex: none;
+  height: clamp(var(--bit-h-large-min), var(--big-room, 0px), var(--bit-h-large));
   aspect-ratio: 5 / 6;
   pointer-events: none;
 }
-/* Hidden, not display:none: the measure needs his offsetParent to place him
-   again once the corner has room. */
-.bigBit[data-fit='no'] { visibility: hidden; }
 
 /* Theater: the video takes the whole column; meta and vibe fold into two
    columns below. Height-led width, so YouTube never pillarboxes. */
@@ -92,6 +98,12 @@
   grid-template-columns: minmax(0, 1fr) minmax(300px, 400px);
   gap: var(--sp-5) var(--sp-10);
   align-items: start;
+}
+
+/* Short desktop and tablet: the foot row is always shown, so the head
+   gives back a little of its height. */
+@media (min-width: 768px) and (max-height: 799px) {
+  .head { min-height: 52px; }
 }
 
 /* Narrower desktop: tighter gutters. */
@@ -140,5 +152,6 @@
   .phTransport { display: block; margin-top: var(--sp-2); }
   .phButtons { display: flex; align-items: center; justify-content: center; gap: var(--sp-5); margin-top: var(--sp-1); }
   .side { margin-top: var(--sp-3); gap: var(--sp-2); }
-  .recent { display: none; }
+  /* The phone home list carries the recents; Large is Medium here. */
+  .foot { display: none; }
 }

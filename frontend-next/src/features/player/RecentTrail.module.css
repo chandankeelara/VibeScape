@@ -1,10 +1,13 @@
 /* --------------------------------------------------------- desktop tiles */
+/* Only as many tiles as there are plays, at --trail-thumb, so the large Bit
+   can stand right after the last one. */
 .trail {
-  display: grid;
-  grid-template-columns: repeat(8, minmax(0, 96px));
-  gap: var(--sp-4);
+  display: flex;
+  gap: var(--sp-3);
 }
 .tile {
+  flex: none;
+  width: calc(var(--trail-thumb) + 12px);
   text-align: left;
   border-radius: var(--r-md);
   padding: 6px;
@@ -51,10 +54,9 @@
 .t1 { font-size: var(--fs-sm); font-weight: 600; }
 .t2 { font-size: var(--fs-xs); color: var(--text-3); }
 
-/* Narrow panels: fewer, still square. */
-@media (max-width: 1279px) {
-  .trail { grid-template-columns: repeat(6, minmax(0, 96px)); }
-  .tile:nth-child(n + 7) { display: none; }
+/* Short viewports: the title alone; the artist is in the label. */
+@media (max-height: 799px) {
+  .t2 { display: none; }
 }
 
 /* ------------------------------------------------------ phone shortcuts */

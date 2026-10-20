@@ -83,3 +83,9 @@
   .num { font-size: var(--fs-vibe-phone); }
   .bands button { height: var(--hit-min); }
 }
+
+/* Short desktop and tablet: the foot row under the hero needs the height. */
+@media (min-width: 768px) and (max-height: 799px) {
+  .card { padding-top: var(--sp-2); padding-bottom: var(--sp-2); }
+  .bands button { height: 28px; }
+}
