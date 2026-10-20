@@ -998,7 +998,8 @@ FUSED_DIM = MERT_DIM + FUSED_SCALAR_DIMS + FUSED_LANG_DIMS  # 841
 FUSED_V1_MODEL_VERSION = "fused_v1_mert_scalar_lang"
 FUSED_V1_COLUMN = "fused_embedding"
 FUSED_V1_DIM = MERT_DIM + FUSED_SCALAR_DIMS + 11  # 788
-FUSED_V1_AVOID = {"neg_weight": 0.6, "m_step": 0.25, "m_max": 1.0}
+FUSED_V1_AVOID = {"neg_weight": 0.6, "m_step": 0.25, "m_max": 1.0,
+                  "avoid_perp": False, "avoid_cap": None}
 _FUSED_V2_RECHECK_S = 60.0
 _fused_v2_state = {"ready": None, "checked_at": 0.0, "warned": False}
 

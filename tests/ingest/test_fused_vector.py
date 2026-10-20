@@ -36,7 +36,8 @@ def test_every_language_has_its_own_slot():
     first fused_v2 and scored single-seed precision@10 of 0.09-0.74."""
     for i, lang in enumerate(fv.LANG_CODES):
         v = fv._lang_onehot(lang.upper())
-        assert v[i] == 1 and v.sum() == 1
+        w = fv.INSTRUMENTAL_WEIGHT if lang == fv.INSTRUMENTAL else 1
+        assert v[i] == w and v.sum() == w
     blocks = [_fused(lang)[LANG] for lang in ("ur", "sa", "ar", "ko", "hi")]
     for i in range(len(blocks)):
         for j in range(i + 1, len(blocks)):
@@ -60,7 +61,8 @@ def test_an_untagged_track_has_an_all_zero_language_block():
 
 def test_untagged_is_equally_far_from_every_language():
     blank = _fused(None)
-    sims = {lang: float(blank @ _fused(lang)) for lang in fv.LANG_CODES + ["xx"]}
+    sims = {lang: float(blank @ _fused(lang)) for lang in fv.LANG_CODES + ["xx"]
+            if lang != fv.INSTRUMENTAL}
     assert max(sims.values()) - min(sims.values()) < 1e-6
 
 
@@ -87,3 +89,27 @@ def test_the_slot_check_lists_what_to_append():
     import language_slots
     counts = {"en": 50, None: 3, "sw": 2, "am": 2, "hi": 1}
     assert language_slots.missing(counts) == ["am", "sw"]
+
+
+def test_the_no_language_verdict_gets_the_instrumental_slot():
+    """language NULL with language_status 'done' is tagging's "no language"
+    verdict (an instrumental). It gets slot 28 ('zxx') at INSTRUMENTAL_WEIGHT,
+    so instrumental sessions hold together; a track with no verdict yet keeps
+    the language-neutral all-zero block."""
+    assert fv.LANG_CODES[28] == fv.INSTRUMENTAL == "zxx"
+    rng = np.random.default_rng(3)
+    m = rng.normal(size=fv.MERT_DIM).astype(np.float32)
+    row = {c: 0.5 for c in fv.SCALAR_COLS}
+    clear = fv._build_fused({**row, "language": None, "language_status": "done"}, m)[LANG]
+    nonzero = np.flatnonzero(clear)
+    assert list(nonzero) == [28]
+    for status in (None, "pending", "no_match"):
+        assert not fv._build_fused({**row, "language": None, "language_status": status}, m)[LANG].any()
+    # a tagged track is its language, whatever the status says
+    tagged = fv._build_fused({**row, "language": "kn", "language_status": "done"}, m)[LANG]
+    assert list(np.flatnonzero(tagged)) == [fv.LANG_CODES.index("kn")]
+
+
+def test_the_instrumental_slot_is_lighter_than_a_language():
+    assert 0 < fv.INSTRUMENTAL_WEIGHT < 1
+    assert fv._lang_onehot("zxx")[28] == fv.INSTRUMENTAL_WEIGHT
