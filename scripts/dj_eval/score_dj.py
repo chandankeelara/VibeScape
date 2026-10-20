@@ -17,8 +17,10 @@ read from --listener-dir (default: data/dj_eval/listener/ of the checkout
 this script is in; the listener agents write to the main checkout's).
 
 SCORE, per run, from the `steps` (15) DJ picks only, the start song aside:
-  catch_step  the first DJ step s whose picks s, s+1 and s+2 all have fit >= 4;
-              none (never caught) when there is no such run of three.
+  catch_step  the first DJ step s whose picks s, s+1 and s+2 all have fit >= 4
+              (--catch-rule fit, the default) or were all finished
+              (--catch-rule finished); none (never caught) when there is no
+              such run of three. The best is kept per catch rule.
   catch       50 * (steps + 1 - catch_step) / steps: 50 at step 1, 10 at 13.
   hold        50 * (picks from catch_step on with fit >= 4) / (picks from
               catch_step on). The catching three count. 0 when never caught.
@@ -28,8 +30,10 @@ A scenario's score is the mean over its runs; 'on', 'off' and overall are
 means over scenarios.
 
 VALIDATION. A run counts only if it is exactly what the prompt asks: the
-right account, one `search` play first, then exactly `steps` `dj` plays, no
-up-next (`picked`) play, every play ended and rated 1-5. Anything else is
+right account, one `search` play first, then `steps` `dj` plays with no
+search or up-next (`picked`) play among them, each ended and rated 1-5.
+Plays after DJ step `steps` (agents overshoot) are ignored with a warning,
+since they cannot change the steps before them. Anything else is
 printed as EXCLUDED and left out; a scenario left with no run stops the
 script unless --allow-missing.
 
@@ -115,12 +119,24 @@ def load_scenarios(path: Path = SCENARIOS) -> dict:
 
 
 # ----------------------------------------------------------------- score
-def catch_hold(fits: list[int], steps: int) -> dict:
-    """Score one run from its DJ picks' fits, step 1 first."""
+def catch_hold(fits: list[int], steps: int, finished: list[bool] | None = None,
+               rule: str = "fit") -> dict:
+    """Score one run from its DJ picks' fits (and, for rule 'finished',
+    whether each was finished), step 1 first. The rule decides only what
+    makes the catch: three picks in a row with fit >= 4 ('fit'), or three
+    finished in a row ('finished'). Hold is the share of fit >= 4 either way."""
     if len(fits) != steps:
         raise ValueError(f"{len(fits)} fits for {steps} steps")
+    if rule == "fit":
+        good = [f >= GOOD_FIT for f in fits]
+    elif rule == "finished":
+        if finished is None or len(finished) != steps:
+            raise ValueError("rule 'finished' needs one outcome per step")
+        good = list(finished)
+    else:
+        raise ValueError(f"unknown catch rule {rule!r}")
     catch_step = next((s for s in range(1, steps - CATCH_RUN + 2)
-                       if all(f >= GOOD_FIT for f in fits[s - 1:s - 1 + CATCH_RUN])), None)
+                       if all(good[s - 1:s - 1 + CATCH_RUN])), None)
     if catch_step is None:
         return {"catch_step": None, "catch": 0.0, "hold": 0.0, "lost": 0, "total": 0.0}
     after = fits[catch_step - 1:]
@@ -131,30 +147,47 @@ def catch_hold(fits: list[int], steps: int) -> dict:
             "total": catch + hold}
 
 
+def scored_plays(st: dict, steps: int) -> list[dict]:
+    """The `steps` plays after the start song: the only ones scored."""
+    return (st.get("plays") or [])[1:1 + steps]
+
+
 def validate(st: dict, sc: dict, steps: int) -> tuple[list[str], list[str]]:
-    """(problems that exclude the run, warnings that do not)."""
+    """(problems that exclude the run, warnings that do not).
+
+    Only the start song and the `steps` plays after it are judged. Listener
+    agents often run a few `next`s too many (4 of the first 6 catch-and-hold
+    sessions ran 16-18 DJ plays, 2026-10-19); a play after step `steps`
+    cannot change steps 1..steps, so it is ignored with a warning, whatever
+    it is. A search or up-next play inside the window is the listener
+    steering, and excludes the run."""
     bad, warn = [], []
     if st.get("persona") != sc["account"]:
         bad.append(f"account {st.get('persona')!r}, scenario wants {sc['account']!r}")
     plays = st.get("plays") or []
-    hows = [p.get("how") for p in plays]
+    if not plays or plays[0].get("how") != "search":
+        bad.append("the first play is not the search play")
+    window, extra = scored_plays(st, steps), plays[1 + steps:]
+    hows = [p.get("how") for p in window]
     n_search, n_dj, n_pick = hows.count("search"), hows.count("dj"), hows.count("picked")
-    if n_search != 1:
-        bad.append(f"{n_search} search plays, want 1")
-    elif hows[0] != "search":
-        bad.append("the search play is not the first play")
-    if n_dj != steps:
-        bad.append(f"{n_dj} DJ plays, want {steps}")
+    if n_search:
+        bad.append(f"{n_search} more search plays in DJ steps 1-{steps}, want 0")
     if n_pick:
-        bad.append(f"{n_pick} up-next plays, want 0")
+        bad.append(f"{n_pick} up-next plays in DJ steps 1-{steps}, want 0")
     other = len(hows) - n_search - n_dj - n_pick
     if other:
-        bad.append(f"{other} plays of another kind")
-    for p in plays:
+        bad.append(f"{other} plays of another kind in DJ steps 1-{steps}")
+    if len(window) < steps:
+        bad.append(f"{n_dj} DJ plays, want {steps}")
+    for p in plays[:1 + steps]:
         if p.get("outcome") not in ("finished", "skipped"):
             bad.append(f"step {p.get('step')} has no outcome")
         if p.get("fit") not in (1, 2, 3, 4, 5):
             bad.append(f"step {p.get('step')} has no fit 1-5")
+    if extra:
+        extra_hows = [p.get("how") for p in extra]
+        kinds = ", ".join(f"{h} x{extra_hows.count(h)}" for h in sorted(set(extra_hows), key=str))
+        warn.append(f"{len(extra)} plays after DJ step {steps} ignored ({kinds})")
     if plays and plays[0].get("how") == "search":
         start = plays[0]
         if sc["title"].casefold() not in (start.get("title") or "").casefold():
@@ -169,7 +202,7 @@ def _overall(by_scenario: dict, kinds: dict, kind: str | None = None) -> float |
     return statistics.fmean(xs) if xs else None
 
 
-def score_round(cfg: dict, runs: dict[str, list[dict]]) -> dict:
+def score_round(cfg: dict, runs: dict[str, list[dict]], rule: str = "fit") -> dict:
     """runs: scenario id -> session states. Returns the scored round: per
     scenario, on / off / overall, the noise band, exclusions, provisional."""
     steps = cfg["steps"]
@@ -195,8 +228,10 @@ def score_round(cfg: dict, runs: dict[str, list[dict]]) -> dict:
             if bad:
                 excluded.append({"scenario": sid, "session": st["id"], "reasons": bad})
                 continue
-            fits = [p["fit"] for p in st["plays"] if p["how"] == "dj"]
-            scored.append({"session": st["id"], **catch_hold(fits, steps)})
+            picks = scored_plays(st, steps)
+            scored.append({"session": st["id"], **catch_hold(
+                [p["fit"] for p in picks], steps,
+                [p["outcome"] == "finished" for p in picks], rule)})
         if not scored:
             provisional.append(f"{sid}: no valid run")
             continue
@@ -231,10 +266,10 @@ def _round(x, d=1):
 
 
 def make_entry(cfg: dict, result: dict, label: str, commit: str, prod_revision: str | None,
-               sessions: dict[str, list[str]], date: str) -> dict:
+               sessions: dict[str, list[str]], date: str, rule: str = "fit") -> dict:
     return {
         "label": label, "date": date, "commit": commit, "prod_revision": prod_revision,
-        "scenarios_version": cfg["version"], "steps": cfg["steps"],
+        "scenarios_version": cfg["version"], "steps": cfg["steps"], "catch_rule": rule,
         "provisional": bool(result["provisional"]), "provisional_why": result["provisional"],
         "min_runs": result["min_runs"],
         "on": _round(result["on"]), "off": _round(result["off"]),
@@ -250,12 +285,13 @@ def make_entry(cfg: dict, result: dict, label: str, commit: str, prod_revision: 
     }
 
 
-def best_of(entries: list[dict], version: int) -> dict | None:
+def best_of(entries: list[dict], version: int, rule: str = "fit") -> dict | None:
     """The highest overall among non-provisional entries of this scenario
-    version; the earlier entry wins a tie."""
+    version and catch rule; the earlier entry wins a tie."""
     best = None
     for e in entries:
-        if e["provisional"] or e["scenarios_version"] != version or e["overall"] is None:
+        if (e["provisional"] or e["scenarios_version"] != version
+                or e.get("catch_rule", "fit") != rule or e["overall"] is None):
             continue
         if best is None or e["overall"] > best["overall"]:
             best = e
@@ -266,7 +302,8 @@ def _best_ref(e: dict | None) -> dict | None:
     if e is None:
         return None
     return {"label": e["label"], "overall": e["overall"], "date": e["date"],
-            "commit": e["commit"], "scenarios_version": e["scenarios_version"]}
+            "commit": e["commit"], "scenarios_version": e["scenarios_version"],
+            "catch_rule": e.get("catch_rule", "fit")}
 
 
 def add_entry(board: dict, entry: dict, replace: bool = False) -> tuple[dict, list[str]]:
@@ -278,14 +315,15 @@ def add_entry(board: dict, entry: dict, replace: bool = False) -> tuple[dict, li
         raise ScoreError(f"label {entry['label']!r} is already on the scoreboard; "
                          "pass --replace to overwrite it")
     others = [e for e in entries if e["label"] != entry["label"]]
-    prev = best_of(others, entry["scenarios_version"])
+    prev = best_of(others, entry["scenarios_version"], entry["catch_rule"])
     lines = compare(entry, prev)
     if at is None:
         entries.append(entry)
     else:
         entries[at] = entry
     return {**board, "entries": entries,
-            "best": _best_ref(best_of(entries, entry["scenarios_version"]))}, lines
+            "best": _best_ref(best_of(entries, entry["scenarios_version"],
+                                      entry["catch_rule"]))}, lines
 
 
 def compare(entry: dict, best: dict | None) -> list[str]:
@@ -336,7 +374,7 @@ def markdown(entry: dict, comparison: list[str], missing: list[str]) -> str:
          f"commit `{entry['commit']}`" + (f", prod revision `{entry['prod_revision']}`"
                                           if entry["prod_revision"] else "")
          + f", {entry['date']}, scenarios v{entry['scenarios_version']}, "
-           f"{entry['steps']} DJ steps\n",
+           f"{entry['steps']} DJ steps, catch rule '{entry['catch_rule']}'\n",
          "| scenario | kind | runs | catch step | catch | hold | lost | total | spread |",
          "|---|---|---|---|---|---|---|---|---|"]
     for k, v in entry["scenarios"].items():
@@ -403,6 +441,9 @@ def main(argv=None) -> int:
     ap.add_argument("--allow-missing", action="store_true",
                     help="record even if a scenario has no valid run (provisional)")
     ap.add_argument("--dry-run", action="store_true", help="print the table, write nothing")
+    ap.add_argument("--catch-rule", choices=("fit", "finished"), default="fit",
+                    help="what makes the catch: 3 picks in a row with fit >= 4 (default), "
+                         "or 3 finished in a row; hold is the share of fit >= 4 either way")
     ap.add_argument("--render-prompts", action="store_true",
                     help="rewrite every scenario's prompt from the template and exit")
     a = ap.parse_args(argv)
@@ -424,7 +465,7 @@ def main(argv=None) -> int:
         if not sessions:
             raise ScoreError("no sessions: pass --session or --manifest")
         runs = {k: [_load_session(a.listener_dir, s) for s in v] for k, v in sessions.items()}
-        result = score_round(cfg, runs)
+        result = score_round(cfg, runs, a.catch_rule)
         for w in result["warnings"]:
             print(f"warning: {w}", file=sys.stderr)
         if result["excluded"]:
@@ -438,7 +479,8 @@ def main(argv=None) -> int:
                              "(--allow-missing records a provisional entry)")
         date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         entry = make_entry(cfg, result, label, _resolve_commit(commit),
-                           a.prod_revision or man.get("prod_revision"), sessions, date)
+                           a.prod_revision or man.get("prod_revision"), sessions, date,
+                           a.catch_rule)
         board = load_board(a.scoreboard)
         new_board, comparison = add_entry(board, entry, replace=a.replace or a.dry_run)
         print(markdown(entry, comparison, result["missing"]))

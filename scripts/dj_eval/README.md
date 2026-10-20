@@ -128,9 +128,13 @@ under test. Everything runs with `D:\Softwares\MiniConda\python.exe`.
    ```
 
    or `--manifest round.json` with `{"label", "commit", "sessions": {scenario:
-   [session ids]}}`. A session that is not exactly one search play then 15 DJ
-   plays, all rated, on the scenario's account, is printed as EXCLUDED and left
-   out; rerun it. The table goes to stdout and an entry to `scoreboard.json`
+   [session ids]}}`. Only the start song and the 15 plays after it are scored;
+   plays past DJ step 15 (agents overshoot) are ignored with a warning. A
+   session on the wrong account, with fewer than 15 DJ plays, or with a search
+   or up-next play inside those 15, is printed as EXCLUDED and left out; rerun
+   it. `--catch-rule finished` makes the catch three finished picks in a row
+   instead of three with fit >= 4 (hold is fit either way); the best is kept
+   per rule. The table goes to stdout and an entry to `scoreboard.json`
    (the same label twice is refused; `--replace` overwrites; `--dry-run`
    writes nothing). Commit the scoreboard change. Writing it in `<main>` dirties
    the main checkout: carry the change to a branch.

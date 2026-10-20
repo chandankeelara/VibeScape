@@ -86,6 +86,32 @@ def test_lost_counts_only_after_the_catch():
     assert r["catch_step"] == 3 and r["lost"] == 0
 
 
+def test_catch_rule_finished_catches_on_three_finishes_and_holds_on_fit():
+    fits = [3, 3, 3, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5]
+    fin = [True] * 15                                    # a fit 3 the listener let play
+    assert catch_hold(fits, STEPS)["catch_step"] == 4
+    r = catch_hold(fits, STEPS, fin, rule="finished")
+    assert r["catch_step"] == 1 and r["catch"] == 50.0
+    assert r["hold"] == pytest.approx(50 * 12 / 15)      # hold is still fit >= 4
+    # Three good fits but a skip among them: no catch there under 'finished'.
+    fin = [True, False, True] + [False] * 12
+    assert catch_hold([5] * 15, STEPS, fin, rule="finished")["catch_step"] is None
+    # And score_round passes the rule and the outcomes through.
+    runs = _round([fits, fits])                          # _session finishes fit >= 3
+    assert {v["catch_step"][0] for v in score_round(CFG, runs)["scenarios"].values()} == {4}
+    assert {v["catch_step"][0]
+            for v in score_round(CFG, runs, "finished")["scenarios"].values()} == {1}
+
+
+def test_best_is_kept_per_catch_rule():
+    board = {"best": None, "entries": []}
+    e = _entry("a", [[5] * 15, [5] * 15])
+    board, _ = add_entry(board, e)
+    f = {**_entry("b", [[1] * 12 + [4, 4, 4]] * 2), "catch_rule": "finished"}
+    board, lines = add_entry(board, f)
+    assert lines[0].startswith("NEW BEST") and board["best"]["label"] == "b"
+
+
 def test_wrong_number_of_fits_is_an_error():
     with pytest.raises(ValueError):
         catch_hold([5] * 14, STEPS)
@@ -110,20 +136,46 @@ def test_an_extra_search_play_is_rejected():
     assert any("search plays" in b for b in bad)
 
 
-def test_an_up_next_play_is_rejected_even_with_15_dj_plays():
+def test_a_run_that_does_not_start_with_the_search_is_rejected():
     sc = _sc()
-    st = _session("s", sc["account"], [4] * 15)
-    st["plays"].append({**st["plays"][-1], "how": "picked", "step": 17})
+    st = _session("s", sc["account"], [4] * 16)
+    st["plays"] = st["plays"][1:]                        # 16 dj plays, no start song
     bad, _ = validate(st, sc, STEPS)
-    assert bad == ["1 up-next plays, want 0"]
+    assert bad == ["the first play is not the search play"]
+
+
+def test_an_up_next_play_at_step_10_is_rejected():
+    sc = _sc()
+    hows = ["dj"] * 9 + ["picked"] + ["dj"] * 6          # still 15 dj plays in all
+    st = _session("s", sc["account"], [4] * 16, hows=hows)
+    bad, _ = validate(st, sc, STEPS)
+    assert bad == ["1 up-next plays in DJ steps 1-15, want 0"]
+
+
+def test_an_up_next_play_at_step_16_is_ignored():
+    sc = _sc()
+    st = _session("s", sc["account"], [4] * 15 + [1], hows=["dj"] * 15 + ["picked"])
+    bad, warn = validate(st, sc, STEPS)
+    assert bad == [] and warn == ["1 plays after DJ step 15 ignored (picked x1)"]
+
+
+def test_a_run_of_18_is_kept_and_scored_on_its_first_15():
+    sc = _sc()
+    st = _session("s", sc["account"], [5] * 15 + [1, 1, 1])
+    st["plays"][-1]["fit"] = None                        # an unrated overshoot does not matter
+    bad, warn = validate(st, sc, STEPS)
+    assert bad == [] and warn == ["3 plays after DJ step 15 ignored (dj x3)"]
+    runs = _round([[5] * 15, [5] * 15])
+    runs[sc["id"]][0] = {**st, "id": "s18"}
+    res = score_round(CFG, runs)
+    assert res["excluded"] == []
+    assert res["scenarios"][sc["id"]]["total"] == 100.0  # the three 1s are not in it
 
 
 def test_too_few_dj_plays_and_an_unrated_pick_are_rejected():
     sc = _sc()
     bad, _ = validate(_session("s", sc["account"], [4] * 14), sc, STEPS)
     assert bad == ["14 DJ plays, want 15"]
-    bad, _ = validate(_session("s", sc["account"], [4] * 16), sc, STEPS)
-    assert bad == ["16 DJ plays, want 15"]
     st = _session("s", sc["account"], [4] * 15)
     st["plays"][5]["fit"] = None
     bad, _ = validate(st, sc, STEPS)
