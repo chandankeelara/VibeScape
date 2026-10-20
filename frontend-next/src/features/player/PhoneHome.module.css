@@ -4,6 +4,8 @@
   .home { display: block; padding: var(--sp-2) var(--sp-4) var(--sp-5); }
   .block { margin-top: var(--sp-5); }
   .block:first-child { margin-top: var(--sp-3); }
+  .dj { margin-top: var(--sp-2); }
+  .dj + .block { margin-top: var(--sp-3); }
   .list { margin: 0 calc(-1 * var(--sp-2)); padding: 0; list-style: none; }
   .empty { margin: 0; font-size: var(--fs-sm); color: var(--text-3); }
 }

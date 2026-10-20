@@ -7,6 +7,25 @@
   font-size: var(--fs-sm);
 }
 .say { margin: 0; min-width: 0; }
+
+/*
+ * Bit's slot. Sized here, not in his own module, so the box exists before
+ * the lazy rig chunk does and the sentence never shifts when he arrives.
+ * The rig's viewBox is 100 x 120; the width follows from the height.
+ * His feet stand on the line's floor, so the line grows to his height rather
+ * than centring a tall figure against one row of text.
+ */
+.bit {
+  position: relative;
+  flex: none;
+  height: var(--bit-h);
+  width: calc(var(--bit-h) * 5 / 6);
+}
+.withBit { gap: var(--sp-2); }
+
+@media (max-width: 767px) {
+  .bit { height: var(--bit-h-phone); width: calc(var(--bit-h-phone) * 5 / 6); }
+}
 .say b { color: var(--text-2); font-weight: 600; }
 .cap { text-transform: capitalize; }
 .tag {

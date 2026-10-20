@@ -157,6 +157,14 @@
   --stage-max: 1200px;
   /* The lyrics list in the video view's side column (and theater's dock). */
   --lyrics-list-h: clamp(200px, 34dvh, 340px);
+  /* Bit beside the DJ line. Large enough for the energy bands to show (they
+     differ by AMPLITUDE, so a small Bit flattens sleep and chill into one
+     move); small enough to stay a companion to one line of text. */
+  --bit-h: 76px;
+  --bit-h-phone: 60px;
+  /* Bit's body: outline and skin. Props keep their own text-token strokes. */
+  --bit-line: var(--text-3);
+  --bit-skin: var(--raised);
 
   /*
    * z-index scale. Use these names only. A fixed sheet must never sit inside

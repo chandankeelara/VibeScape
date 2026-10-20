@@ -77,11 +77,12 @@
 
 /* --------------------------------------------------------------- body panels
  *
- * Outlined with --text-4 rather than --border-strong. DjSearching gets away
- * with --border-strong (16% white) because it renders ~300px wide; Bit is
- * 84-128px tall in the dock, where a 1.6px line at that alpha disappears into
- * the surface behind it and the whole silhouette goes to mush. --text-4 is
- * 30% white — still a hairline, but one you can actually see.
+ * Outlined with --bit-line (tokens.css), which is --text-3. It used to be
+ * --text-4, chosen when Bit stood 112-184px tall on --bg in the old dock. In
+ * S2 he is 60-76px on --panel, one step lighter than --bg, and at 30% white
+ * the silhouette dissolved into the card: he read as a pencil sketch beside
+ * the slider. --text-3 is also the stroke the small S2 Bit (ui/Bit) uses, so
+ * the two drawings are one character.
  */
 
 .skull,
@@ -91,8 +92,8 @@
 .cupR rect,
 .hand,
 .foot {
-  fill: var(--surface-2);
-  stroke: var(--text-4);
+  fill: var(--bit-skin);
+  stroke: var(--bit-line);
   stroke-width: 1.7;
 }
 
@@ -106,12 +107,14 @@
   stroke-linejoin: round;
 }
 
-.limbOutline { stroke: var(--text-4);  stroke-width: 9; }
-.limbFill    { stroke: var(--surface-2);     stroke-width: 6; }
+.limbOutline { stroke: var(--bit-line);  stroke-width: 9; }
+.limbFill    { stroke: var(--bit-skin);     stroke-width: 6; }
 
 .visor rect {
-  fill: var(--bg);
-  stroke: var(--text-4);
+  /* --visor, not --bg: the face stays dark in the light theme too, which is
+     what keeps the accent eyes reading as lit. */
+  fill: var(--visor);
+  stroke: var(--bit-line);
   stroke-width: 1.2;
 }
 
@@ -122,13 +125,13 @@
 
 .band path {
   fill: none;
-  stroke: var(--text-4);
+  stroke: var(--bit-line);
   stroke-width: 3.6;
   stroke-linecap: round;
 }
 
 .antenna line {
-  stroke: var(--text-4);
+  stroke: var(--bit-line);
   stroke-width: 2;
   stroke-linecap: round;
 }

@@ -3,11 +3,9 @@ import { onMascot } from '../lib/mascotBus';
 import styles from './Bit.module.css';
 
 /**
- * Bit, S2 size — small, flat, reacts once and returns to rest. Sits beside
- * the DJ line and speaks for it.
- *
- * Replaces the full-size BitDock rig on the player page (the rig, its 2,000
- * lines of animation and BitLab remain on disk for the ?bit review page).
+ * Bit, icon size — small, flat, reacts once and returns to rest. Used where
+ * a figure would crowd the row (the queue's "picking" placeholder). Beside
+ * the DJ line he is the full rig instead (features/player/bit/BitDock.jsx).
  *
  * Mood comes from the mascot bus (lib/mascotBus.js): a finished track makes
  * him happy, a skip makes him sad, for 2.6s. `thinking` is driven by the

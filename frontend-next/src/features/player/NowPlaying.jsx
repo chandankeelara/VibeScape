@@ -168,7 +168,9 @@ export default function NowPlaying({
             ) : (
               <div className={styles.side}>
                 <MoodSlider />
-                <DjLine />
+                {/* Hidden on a phone until opened: Bit holds still in here
+                    while the home list's copy is the one in view. */}
+                <DjLine bitPaused={isPhone && !phoneOpen} />
               </div>
             )}
           </div>
