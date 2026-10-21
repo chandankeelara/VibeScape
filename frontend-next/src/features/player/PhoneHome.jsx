@@ -21,7 +21,9 @@ import styles from './PhoneHome.module.css';
  */
 export default function PhoneHome({ bitPaused = false }) {
   const { queue, reorderQueue, current } = usePlayer();
-  const { recs, recsLoading, jumpTo, removeAt, playRec, addRec, consumingKey } = useQueueState();
+  const {
+    recs, recsLoading, jumpTo, removeAt, playRec, addRec, consumingKey, discover,
+  } = useQueueState();
 
   return (
     <section className={styles.home} aria-label="Home">
@@ -57,12 +59,14 @@ export default function PhoneHome({ bitPaused = false }) {
         <div className={styles.block}>
           <div className={ui.secHead}>
             <h2 className={ui.secTitle}>For this track</h2>
-            <span className={ui.secAside}>by sound</span>
+            <span className={ui.secAside}>{discover ? 'by sound · discovery' : 'by sound'}</span>
           </div>
           {recsLoading ? (
             <p className={styles.empty}>Finding similar songs…</p>
           ) : recs.length === 0 ? (
-            <p className={styles.empty}>No similar tracks in your library yet.</p>
+            <p className={styles.empty}>
+              {discover ? 'No similar tracks found in the catalogue.' : 'No similar tracks in your library yet.'}
+            </p>
           ) : (
             <ul className={styles.list}>
               {recs.map((t, i) => (

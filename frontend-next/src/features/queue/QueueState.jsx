@@ -18,7 +18,7 @@ import { useToast } from '../../state/ToastContext';
 import { apiKey, trackKey } from '../../lib/vibe';
 import { eventsSignature, fetchDjPicks } from './dj';
 import { PlaybackRatioProbe, useDj } from './useDj';
-import { RECS_LIMIT, useRecs } from './useRecs';
+import { RECS_LIMIT, recsQueryKey, useRecs } from './useRecs';
 
 const QueueCtx = createContext(null);
 
@@ -30,11 +30,11 @@ export function QueueStateProvider({ children }) {
   const queryClient = useQueryClient();
 
   const {
-    enabled: djEnabled, toggle: djToggle, events: djEvents,
+    enabled: djEnabled, toggle: djToggle, discover, toggleDiscover, events: djEvents,
     signature: djSignature, recordQueued, recordPicked, recordTransitionNow, onSample,
   } = useDj();
   const { recs, loading, hasAnchor } = useRecs({
-    djEnabled, events: djEvents, signature: djSignature,
+    djEnabled, discover, events: djEvents, signature: djSignature,
   });
 
   const [consumingKey, setConsumingKey] = useState(null);
@@ -144,7 +144,7 @@ export function QueueStateProvider({ children }) {
     const events = recordTransitionNow({ natural: false });
     const sig = eventsSignature(events);
     // apiKey, not trackKey — useRecs builds its queryKey the same way.
-    const interimKey = ['queue-recs', apiKey(current), 'dj', sig];
+    const interimKey = recsQueryKey({ seedKey: apiKey(current), djEnabled: true, discover, signature: sig });
 
     // fetchQuery instead of a bare fetchDjPicks: an in-flight request under a
     // given key is shared, so useRecs attaches to this one rather than
@@ -153,7 +153,7 @@ export function QueueStateProvider({ children }) {
     const picks = await queryClient.fetchQuery({
       queryKey: interimKey,
       staleTime: 5000,
-      queryFn: () => fetchDjPicks(current, { events, seen: getSeenIds(), queue, limit: RECS_LIMIT }),
+      queryFn: () => fetchDjPicks(current, { events, seen: getSeenIds(), queue, limit: RECS_LIMIT, discover }),
     });
     if (!picks?.length) return null;
     const [top, ...rest] = picks;
@@ -163,25 +163,27 @@ export function QueueStateProvider({ children }) {
     // trigger its own POST. Both get the remainder, which is also what the
     // sidebar should show: the picks queued up behind the one now playing.
     queryClient.setQueryData(interimKey, rest);
-    queryClient.setQueryData(['queue-recs', apiKey(top), 'dj', sig], rest);
+    queryClient.setQueryData(recsQueryKey({ seedKey: apiKey(top), djEnabled: true, discover, signature: sig }), rest);
     return top;
     // No `recent` dep: it is a strict subset of the seen-set, which is read
     // through a ref at fetch time. `queue` stays — it is unioned into the
     // exclude list, since a long-queued track can age out of the set.
-  }, [djEnabled, current, queue, recordTransitionNow, flashConsume, queryClient, getSeenIds]);
+  }, [djEnabled, discover, current, queue, recordTransitionNow, flashConsume, queryClient, getSeenIds]);
 
   // Registered only while DJ is on; clearing it restores the random vibe pull.
+  // `{ discover }` is stamped on the play_start of every track the DJ serves,
+  // so real listening can later be split by which pool it came from.
   useEffect(() => {
-    setNextFallback(djEnabled ? djPickNext : null);
+    setNextFallback(djEnabled ? djPickNext : null, djEnabled ? { discover } : null);
     return () => setNextFallback(null);
-  }, [djEnabled, djPickNext, setNextFallback]);
+  }, [djEnabled, discover, djPickNext, setNextFallback]);
 
   const value = useMemo(() => ({
-    djEnabled, djToggle,
+    djEnabled, djToggle, discover, toggleDiscover,
     recs, recsLoading: loading, hasAnchor,
     consumingKey,
     jumpTo, removeAt, playRec, addRec, insertAt,
-  }), [djEnabled, djToggle, recs, loading, hasAnchor, consumingKey,
+  }), [djEnabled, djToggle, discover, toggleDiscover, recs, loading, hasAnchor, consumingKey,
     jumpTo, removeAt, playRec, addRec, insertAt]);
 
   return (

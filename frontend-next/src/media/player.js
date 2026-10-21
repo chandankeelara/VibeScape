@@ -266,7 +266,7 @@ function setPreviewSource(track) {
  * below would find nothing to close. Only the genuinely programmatic callers
  * (player.stop(), the post-sync re-roll) pass 'replaced'.
  */
-export function loadTrack(track, { mode = state.mode, endReason = 'skipped', source, trigger } = {}) {
+export function loadTrack(track, { mode = state.mode, endReason = 'skipped', source, trigger, data } = {}) {
   if (!track) return;
 
   // Re-loading the SAME track is a source switch, not an end: it happens when
@@ -289,7 +289,7 @@ export function loadTrack(track, { mode = state.mode, endReason = 'skipped', sou
     startSessionAnchor();
     state.source = null;
     emit();
-    if (!continuing) listenLog.startPlay(track, { source, playback: 'youtube' });
+    if (!continuing) listenLog.startPlay(track, { source, playback: 'youtube', data });
     return; // the video feature resolves the id and calls cueVideo()
   }
 
@@ -325,7 +325,7 @@ export function loadTrack(track, { mode = state.mode, endReason = 'skipped', sou
     glow.stop();
     glow.setAlpha(0.65);
     emit();
-    if (!continuing) listenLog.startPlay(track, { source, playback: 'spotify' });
+    if (!continuing) listenLog.startPlay(track, { source, playback: 'spotify', data });
     spotify.playTrack(track.spotify_id).then((ok) => {
       // Couldn't take over the device — better a 30s preview than silence.
       if (!ok && state.track === track) {
@@ -347,7 +347,7 @@ export function loadTrack(track, { mode = state.mode, endReason = 'skipped', sou
   stopSessionAnchor();
   state.source = 'preview';
   emit();
-  if (!continuing) listenLog.startPlay(track, { source, playback: 'preview' });
+  if (!continuing) listenLog.startPlay(track, { source, playback: 'preview', data });
   setPreviewSource(track);
   state.audioEl.play().catch(() => { state.playing = false; emit(); });
 }
