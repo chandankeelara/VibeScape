@@ -853,6 +853,13 @@ def _row_to_dict(row):
     # activation_relative once library z-scores exist. Expose both; when
     # activation_relative is populated, mirror it into vibe_score for
     # backward-compat filter queries.
+    #
+    # in_library (the player's heart) costs no query: every caller passes a
+    # row its query took through `JOIN user_tracks ut ... ut.user_id = <the
+    # caller>` in the same request (tests/backend/test_library_heart.py
+    # checks each endpoint). A caller that returns rows from outside the
+    # caller's library must set it itself.
+    out["in_library"] = True
     return out
 
 
@@ -961,8 +968,12 @@ def search_tracks(
             return {"tracks": []}
         ids = [h["id"] for h in hits]
         select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
+        # Joined again because the narrow rows are cached and per process: a
+        # track unlinked on another instance stays in its cache for 60 s.
         rows = conn.execute(
-            f"SELECT {select} FROM tracks t WHERE t.id IN ({','.join('?' * len(ids))})", ids
+            f"SELECT {select} FROM tracks t JOIN user_tracks ut ON ut.track_id = t.id "
+            f"WHERE ut.user_id = ? AND t.id IN ({','.join('?' * len(ids))})",
+            [sess["user_id"], *ids],
         ).fetchall()
     except Exception as e:
         log.warning("search_tracks failed for q=%r: %s", query, e)
@@ -3525,6 +3536,63 @@ def ingest_clear(sess: dict = Depends(require_user)):
 
     log.info("ingest/clear user=%s removed %d user_tracks", sess["user_id"], n)
     return {"cleared": int(n), "tracks_pruned": 0, "audio_files_removed": 0}
+
+
+def _library_track_id(conn, track_key: str) -> int:
+    anchor = _resolve_anchor(conn, track_key)
+    if not anchor:
+        raise HTTPException(status_code=404, detail={"error": "track_not_found"})
+    return int(anchor["id"])
+
+
+@app.put("/api/me/library/{track_key}")
+def library_link(track_key: str, sess: dict = Depends(require_user)):
+    """Put one catalogue track in the caller's library (the player's heart).
+
+    Idempotent: a track already linked keeps its row, its added_at and its
+    source. The track need not be analysed; the DJ and the vibe lists pick
+    it up once the offline pipeline has marked it done.
+    """
+    uid = sess["user_id"]
+    conn = get_conn()
+    try:
+        tid = _library_track_id(conn, track_key)
+        # added_at written, not defaulted: production's tables were not made
+        # from schema.sql, and `tracks` there has no defaults (backlog 3.11).
+        conn.execute(
+            "INSERT OR IGNORE INTO user_tracks (user_id, track_id, added_at, source) "
+            "VALUES (?, ?, CURRENT_TIMESTAMP, 'heart')", (uid, tid))
+        conn.commit()
+    finally:
+        conn.close()
+    _search_rows_cache.pop(uid, None)
+    return {"in_library": True, "track_id": tid}
+
+
+@app.delete("/api/me/library/{track_key}")
+def library_unlink(track_key: str, sess: dict = Depends(require_user)):
+    """Take one track out of the caller's library, and nothing else.
+
+    Only the caller's `user_tracks` row goes. The catalogue row, its
+    embeddings, and the caller's track_events and user_track_stats stay, for
+    the reason ingest_clear gives (backlog 1.10): on Turso they cascade from
+    `tracks`, and history is the source of truth. Idempotent.
+
+    The DJ and every track list read `user_tracks` per request, so the next
+    one no longer offers the track. user_embedding_mean is not touched: it
+    is rebuilt past 5% drift in the library count, and one track is inside
+    that from the 50-track floor up (below it the global mean is used).
+    """
+    uid = sess["user_id"]
+    conn = get_conn()
+    try:
+        tid = _library_track_id(conn, track_key)
+        conn.execute("DELETE FROM user_tracks WHERE user_id = ? AND track_id = ?", (uid, tid))
+        conn.commit()
+    finally:
+        conn.close()
+    _search_rows_cache.pop(uid, None)
+    return {"in_library": False, "track_id": tid}
 
 
 class IngestSources(BaseModel):
