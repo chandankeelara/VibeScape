@@ -1,15 +1,16 @@
-import { Suspense, lazy } from 'react';
+import { Suspense } from 'react';
 import { usePlayer } from '../../state/PlayerContext';
 import { useTheme } from '../../state/ThemeContext';
 import { useQueueState } from '../queue';
 import Bit from '../../ui/Bit';
+import { lazyWithReload } from '../../lib/chunkReload';
 import styles from './DjLine.module.css';
 
 /*
  * The full rig and its ~105KB of animation CSS, off the main chunk. The slot
  * below reserves his box, so the line does not move when it arrives.
  */
-const BitDock = lazy(() => import('./bit/BitDock'));
+const BitDock = lazyWithReload(() => import('./bit/BitDock'));
 
 /**
  * The DJ explaining itself in one quiet line, with Bit beside it.

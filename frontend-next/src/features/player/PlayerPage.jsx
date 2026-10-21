@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { usePlayer } from '../../state/PlayerContext';
 import { useApplyTheme } from '../../state/ThemeContext';
 import { applyAccent } from '../../lib/vibe';
+import { importWithReload } from '../../lib/chunkReload';
 import useMediaQuery, { PHONE, WIDE } from '../../lib/useMediaQuery';
 import { QueueSidebar, QueueStateProvider } from '../queue';
 import { SyncJobProvider, SyncPill, useSyncJob } from '../sync';
@@ -192,8 +193,8 @@ function LazyPanels({ metricsOpen, onCloseMetrics, helpOpen, onCloseHelp, syncOp
   useEffect(() => {
     if (!anyOpen || mods) return;
     Promise.all([
-      import('../sync').catch(() => ({})),
-      import('../panels').catch(() => ({})),
+      importWithReload(() => import('../sync'), {}),
+      importWithReload(() => import('../panels'), {}),
     ]).then(([sync, panels]) => setMods({ ...sync, ...panels }));
   }, [anyOpen, mods]);
 

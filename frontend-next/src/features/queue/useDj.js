@@ -213,14 +213,14 @@ export function useDj() {
     );
   }, [enabled, toast]);
 
-  // No telemetry event of its own: the backend's app-event types are a closed
-  // list and it has no `discover_toggle`. What matters for later analysis,
-  // which mode served a DJ play, rides on that play's play_start instead
-  // (QueueState passes it through setNextFallback).
+  // Logged like dj_toggle (the backend accepts `discover_toggle` since PR
+  // #30). Which mode served a given DJ play also rides on that play's
+  // play_start (QueueState passes it through setNextFallback).
   const toggleDiscover = useCallback(() => {
     const next = !discover;
     setDiscover(next);
     persistDiscover(next);
+    logEvent('discover_toggle', { data: { on: next } });
     toast(
       next
         ? 'Discovery on — recommendations from the whole catalogue, not just your library.'
