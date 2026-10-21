@@ -6,7 +6,10 @@
   color: var(--text-3);
   font-size: var(--fs-sm);
 }
-.say { margin: 0; min-width: 0; }
+/* One line, always: a sentence that wraps on one track and not the next
+   would move everything under it. The full text stays in the DOM, which is
+   what the live region reads. */
+.say { margin: 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /*
  * Bit's slot. Sized here, not in his own module, so the box exists before

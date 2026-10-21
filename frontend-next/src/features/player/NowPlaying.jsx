@@ -61,37 +61,6 @@ function useArtColour(url) {
   return colour;
 }
 
-/*
- * The large Bit's height: whatever the panel has left under the hero, between
- * --bit-h-large-min and --bit-h-large (the CSS clamps). He stands in the
- * foot row beside the recent tiles, so the row is as tall as the taller of
- * the two, and sizing him from the space left is what keeps that row from
- * ever making the panel scroll. The hero's height does not depend on the
- * row, so this cannot feed back on itself. Theater scrolls by design, so the
- * room there is negative and he takes the minimum.
- *
- * Written to the node, not to state, so a resize costs no render.
- */
-function useBigRoom(footRef, scrollRef, heroRef, enabled) {
-  useEffect(() => {
-    const foot = footRef.current;
-    const scroll = scrollRef.current;
-    const hero = heroRef.current;
-    if (!enabled || !foot || !scroll || !hero || typeof ResizeObserver !== 'function') return undefined;
-    const measure = () => {
-      const cs = getComputedStyle(scroll);
-      const room = scroll.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)
-        - hero.offsetHeight - parseFloat(getComputedStyle(foot).marginTop);
-      foot.style.setProperty('--big-room', `${Math.floor(room)}px`);
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(scroll);
-    ro.observe(hero);
-    return () => ro.disconnect();
-  }, [footRef, scrollRef, heroRef, enabled]);
-}
-
 /** Two-layer crossfade of the static tint on track change. */
 function Tint({ background }) {
   const [layers, setLayers] = useState([]);
@@ -132,16 +101,12 @@ export default function NowPlaying({
   const colour = useArtColour(current?.artwork_url || '');
   const isVideo = mode === 'video';
   const lyrics = lyricsPlace({ on: lyricsOn, current, narrow, isVideo, theater });
-  const scrollRef = useRef(null);
-  const heroRef = useRef(null);
-  const footRef = useRef(null);
   /*
    * Large Bit stands at the end of the foot row, after the recent tiles. The
    * phone has no foot row (its home list carries the recents), so there
    * Large is Medium: the rig beside the DJ line.
    */
   const big = bitSize === 'large' && !isPhone;
-  useBigRoom(footRef, scrollRef, heroRef, big);
 
   const tint = colour
     ? `radial-gradient(90% 70% at 12% 0%, ${tintFor(colour.hue, theme)}, transparent 75%)`
@@ -186,8 +151,8 @@ export default function NowPlaying({
         </button>
       </div>
 
-      <div className={styles.scroll} ref={scrollRef}>
-        <div className={styles.hero} ref={heroRef}>
+      <div className={styles.scroll}>
+        <div className={styles.hero}>
           <ArtStage className={styles.stage} pool={pool} overlay={overlay} />
 
           <div className={styles.meta}>
@@ -219,9 +184,9 @@ export default function NowPlaying({
           </div>
         </div>
 
-        {/* One row: the last eight plays, then the large Bit right after the
-            last of them (at the start when there are none). */}
-        <div ref={footRef} className={styles.foot}>
+        {/* One row: eight slots for the last eight plays, then the large Bit
+            in the place after the eighth. */}
+        <div className={styles.foot}>
           <RecentTrail variant="tiles" />
           {big && (
             <span className={styles.bigBit} aria-hidden="true">

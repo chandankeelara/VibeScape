@@ -11,32 +11,81 @@
   align-items: center;
   gap: var(--sp-2);
 }
+/*
+ * Every line below is a box of fixed height, whatever the track puts in it:
+ * the column under the title (chips, vibe card, DJ line) and the art centred
+ * beside it must not move when the song changes. So the title box is always
+ * --title-lines tall, the byline and genre are one line each (the genre's is
+ * kept when there is none), and the chips are one row.
+ *
+ * The title hangs from the box's floor, so a one-line title sits on its
+ * artist line and the spare line opens above it, under the overline, rather
+ * than as a hole between a title and its own byline.
+ */
+.titleBox {
+  --title-lines: 2;
+  font-size: var(--fs-2xl);
+  height: calc(var(--title-lines) * 1.08em);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
 .title {
   margin: 0;
-  font-size: var(--fs-2xl);
+  font-size: 1em;
   line-height: 1.08;
   font-weight: 800;
   letter-spacing: -0.025em;
   overflow-wrap: anywhere;
   text-wrap: balance;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--title-lines);
+  overflow: hidden;
 }
-.compact .title { font-size: var(--fs-xl); }
+.compact .titleBox { font-size: var(--fs-xl); }
 .byline {
   margin: var(--sp-2) 0 0;
   font-size: var(--fs-base);
+  line-height: 1.4;
+  height: 1.4em;
   color: var(--text-2);
   display: flex;
-  flex-wrap: wrap;
   gap: 0 6px;
+  white-space: nowrap;
+  overflow: hidden;
 }
-.artist { color: var(--text); font-weight: 600; }
-.sep { color: var(--text-3); }
-.genre { margin: 2px 0 0; font-size: var(--fs-sm); color: var(--text-3); }
-.badges { margin-top: var(--sp-3); display: flex; flex-wrap: wrap; gap: 6px; }
+/* The album gives way first; the artist keeps its name as long as it can. */
+.artist,
+.album { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.artist { color: var(--text); font-weight: 600; flex: 0 1 auto; }
+.album { flex: 0 4 auto; }
+.sep { color: var(--text-3); flex: none; }
+.genre {
+  margin: 2px 0 0;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  height: 1.4em;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* One row of chips. Wrapping inside a one-chip-tall box means a chip that
+   does not fit drops whole into the clipped second row, never half-cut; the
+   order in TrackMeta puts the least important last. */
+.badges {
+  margin-top: var(--sp-3);
+  height: var(--badge-h);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  overflow: hidden;
+}
 
-.quiet { margin: var(--sp-2) 0 0 -10px; display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+.quiet { min-height: var(--quiet-h); margin: var(--sp-2) 0 0 -10px; display: flex; flex-wrap: wrap; gap: var(--sp-1); }
 .qbtn {
-  height: 32px;
+  height: var(--quiet-h);
   padding: 0 10px;
   border-radius: var(--r-pill);
   border: 0;
@@ -54,32 +103,23 @@
 .qbtnOn { color: var(--acc-text); }
 
 /*
- * Desktop and tablet: the meta column is budgeted to fit the panel (see
- * NowPlaying.module.css), so a title gets two lines at most; the full text
- * stays in the DOM and in the tooltip. On a short viewport the overline and
- * genre go, the two lines the phone already drops (the head row says what is
- * playing), and the title takes one smaller line: that is what leaves the
- * foot row its room at 720px tall.
+ * The meta column is budgeted to fit the panel (see NowPlaying.module.css):
+ * two title lines at most, the full text in the DOM and the tooltip. On a
+ * short viewport the overline and genre go, the two lines the phone already
+ * drops (the head row says what is playing), and the title box is one
+ * smaller line: that is what leaves the foot row its room at 720px tall.
  */
-@media (min-width: 768px) {
-  .title {
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    overflow: hidden;
-  }
-}
 @media (min-width: 768px) and (max-height: 799px) {
   .overline, .genre { display: none; }
-  /* With the foot row always under the hero there is room for one line. */
-  .title { font-size: var(--fs-np-title-short); -webkit-line-clamp: 1; }
+  .titleBox { --title-lines: 1; font-size: var(--fs-np-title-short); }
   .quiet { margin-top: var(--sp-1); }
 }
 
 @media (max-width: 767px) {
   .overline, .genre { display: none; }
-  .title { font-size: var(--fs-phone-title); letter-spacing: -0.015em; }
+  .titleBox { font-size: var(--fs-phone-title); }
+  .title { letter-spacing: -0.015em; }
   .byline { font-size: var(--fs-md); margin-top: var(--sp-1); }
   .badges { margin-top: var(--sp-3); }
-  .qbtn { height: var(--hit-min); }
+  .quiet { --quiet-h: var(--hit-min); }
 }

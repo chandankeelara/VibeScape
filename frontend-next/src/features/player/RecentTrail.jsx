@@ -5,11 +5,14 @@ import Icon from '../../ui/Icon';
 import ui from '../../ui/controls.module.css';
 import styles from './RecentTrail.module.css';
 
+const SLOTS = 8;
+
 /**
  * Recently played — the last 8, newest first, current track excluded.
  *
- *   variant="tiles"     — the desktop foot row of small square tiles, with
- *                         the large Bit after them (NowPlaying)
+ *   variant="tiles"     — the desktop foot row: always eight square slots,
+ *                         filled newest first, with the large Bit after
+ *                         the eighth (NowPlaying)
  *   variant="shortcuts" — the phone home's two-column shortcut grid
  *
  * Going back to something from here is a choice — logged for the DJ through
@@ -26,10 +29,10 @@ export default function RecentTrail({ variant = 'tiles', className = '' }) {
 
   const items = recent
     .filter((t) => !current || trackKey(t) !== trackKey(current))
-    .slice(-8)
+    .slice(-SLOTS)
     .reverse();
 
-  if (!items.length) return null;
+  if (!items.length && variant === 'shortcuts') return null;
 
   const art = (t) => (t.artwork_url
     ? <img src={t.artwork_url} alt="" loading="lazy" />
@@ -80,6 +83,15 @@ export default function RecentTrail({ variant = 'tiles', className = '' }) {
             <span className={styles.t1}>{t.title || 'Untitled'}</span>
             <span className={styles.t2}>{t.artist || ''}</span>
           </button>
+        ))}
+        {/* The rest of the eight, as empty slots the size of a tile, so the
+            row and Bit after it stand still as plays accumulate. */}
+        {Array.from({ length: SLOTS - items.length }, (_, i) => (
+          <span key={`slot${i}`} className={`${styles.tile} ${styles.slot}`} aria-hidden="true">
+            <span className={styles.thumb} />
+            <span className={styles.t1}>&nbsp;</span>
+            <span className={styles.t2}>&nbsp;</span>
+          </span>
         ))}
       </div>
     </section>

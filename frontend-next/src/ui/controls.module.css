@@ -68,7 +68,7 @@
 }
 
 .badge {
-  height: 22px;
+  height: var(--badge-h);
   padding: 0 var(--sp-2);
   border-radius: var(--r-sm);
   display: inline-flex;

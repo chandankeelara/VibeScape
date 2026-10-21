@@ -1,6 +1,6 @@
 /* --------------------------------------------------------- desktop tiles */
-/* Only as many tiles as there are plays, at --trail-thumb, so the large Bit
-   can stand right after the last one. */
+/* Always eight slots at --trail-thumb, played or not, so the large Bit
+   after them has one place to stand. */
 .trail {
   display: flex;
   gap: var(--sp-3);
@@ -19,6 +19,10 @@
   transition: background-color var(--d-1) var(--ease);
 }
 .tile:hover { background: var(--hover); }
+/* An unplayed slot: the thumb's outline and nothing else, quiet enough to
+   read as room for a play rather than as a missing image. */
+.slot { pointer-events: none; }
+.slot .thumb { background: none; box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--line) 60%, transparent); }
 .thumb {
   position: relative;
   display: block;

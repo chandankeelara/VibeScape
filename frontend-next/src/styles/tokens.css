@@ -151,6 +151,10 @@
 
   /* Minimum comfortable hit target (WCAG AAA / platform HIG). */
   --hit-min: 44px;
+  /* A chip, and the now-playing badge row that is exactly one chip tall. */
+  --badge-h: 22px;
+  /* The now-playing quiet actions (verify, metrics); the phone uses --hit-min. */
+  --quiet-h: 32px;
 
   /* ------------------------------------------------------------ layout */
   --top-h: 64px;
@@ -166,16 +170,30 @@
      can give him there and still fit. */
   --bit-h: 64px;
   --bit-h-phone: 60px;
-  /* Large: at the end of the now-playing panel's foot row, sized by the
-     room the hero leaves (NowPlaying useBigRoom), between these two. The
-     cap is the pre-S2 dock's rig height; the floor keeps him clearly larger
-     than the medium rig on a 720px-tall viewport, where the room is ~100. */
+  /* Large: in the now-playing panel's foot row, after the eighth recent
+     slot, between these two. The cap is the pre-S2 dock's rig height; the
+     floor keeps him clearly larger than the medium rig on a 720px-tall
+     viewport, where the room is ~100. */
   --bit-h-large: clamp(112px, 17dvh, 184px);
   --bit-h-large-min: 88px;
+  /*
+   * Everything in a viewport's height that is not the large Bit's row: top
+   * bar, player bar, panel head, scroller padding, the hero, the row's
+   * margin, and 8px of slack. The hero is built of fixed boxes (TrackMeta,
+   * DjLine), so this is a constant per height band and his size is a pure
+   * function of the viewport: it never follows a title, a chip or a play
+   * count. Measured 2026-10-20 in Large mode (the DJ line holds the icon):
+   * room = 100dvh - 738px from 800px tall, 100dvh - 613px under it. Change
+   * the hero's spacing and these move with it; NowPlaying.module.css has the
+   * lyrics variant, where a taller square can outgrow the meta column.
+   */
+  --np-above-bit: 746px;
+  --np-above-bit-short: 621px;
   /* Recent tile thumbnails in the foot row: from the height (the row must
      fit under the hero) and the width (eight of them and Bit must fit in
-     the panel). */
-  --trail-thumb: clamp(52px, min(7.5dvh, 5vw), 96px);
+     the panel). 7dvh, not 7.5: at 1536x864 with the medium rig the row has
+     106px and a 7.5dvh tile is 109. */
+  --trail-thumb: clamp(52px, min(7dvh, 5vw), 96px);
   /* Bit's body: outline and skin. Props keep their own text-token strokes. */
   --bit-line: var(--text-3);
   --bit-skin: var(--raised);
