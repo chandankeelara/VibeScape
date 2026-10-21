@@ -272,8 +272,22 @@ language nothing to normalise (28 rows wait for a tag), fuse 8, youtube 8
 wrote 4,872 in 8 s. 71 s in all, exit 0; `ingestion_status` done went 4,882
 → 4,890. `--concurrent` has not run against production (10.1).
 
-### 1.13 Production's `tracks` has no indexes: every gate scans, and the app can insert a track twice (it has) — app side DONE (2026-10-17), prod scripts ready and dry-run (2026-10-18), prod run pending approval
+### 1.13 Production's `tracks` has no indexes: every gate scans, and the app can insert a track twice (it has) — DONE (app 2026-10-17; prod dedupe + indexes 2026-10-18)
 `backend/app.py` `_process_track` / `_link_track`, `schema.sql` (`idx_tracks_spotify_id`, `idx_tracks_apple_id`, `idx_tracks_ingestion_status`, `idx_tracks_isrc`)
+
+**Prod run, done 2026-10-18** (approved by the owner, run from the main
+checkout after PR #16 merged, pipeline stopped):
+
+- `scripts/backup_prod_db.py` first, then `scripts/_dedupe_tracks.py --target
+  prod` dry run (271 groups, 292 rows to delete, 47 apple_id cleared, 557
+  user_tracks on losers: 76 re-pointed, 481 folded), then `--apply`. It ended
+  "verified: no duplicates, no orphans, no recording or event lost, stats
+  equal a rebuild"; tracks went 6,262 -> 5,970.
+- `scripts/_turso_create_track_indexes.py --target prod --apply` then built
+  UNIQUE `idx_tracks_spotify_id` and `idx_tracks_apple_id` (partial, NOT
+  NULL), plain `idx_tracks_isrc` and `idx_tracks_ingestion_status`; a
+  re-run reported all four "exists". So a spotify_id now names exactly one
+  row on prod, and the double-insert race is closed by the index.
 
 **App side, done 2026-10-17** (branch `backend/ingest-dedupe`,
 `tests/backend/test_process_track.py` and the `_process_track` tests at the
