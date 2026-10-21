@@ -272,8 +272,22 @@ language nothing to normalise (28 rows wait for a tag), fuse 8, youtube 8
 wrote 4,872 in 8 s. 71 s in all, exit 0; `ingestion_status` done went 4,882
 → 4,890. `--concurrent` has not run against production (10.1).
 
-### 1.13 Production's `tracks` has no indexes: every gate scans, and the app can insert a track twice (it has) — app side DONE (2026-10-17), prod scripts ready and dry-run (2026-10-18), prod run pending approval
+### 1.13 Production's `tracks` has no indexes: every gate scans, and the app can insert a track twice (it has) — DONE (app 2026-10-17; prod dedupe + indexes 2026-10-18)
 `backend/app.py` `_process_track` / `_link_track`, `schema.sql` (`idx_tracks_spotify_id`, `idx_tracks_apple_id`, `idx_tracks_ingestion_status`, `idx_tracks_isrc`)
+
+**Prod run, done 2026-10-18** (approved by the owner, run from the main
+checkout after PR #16 merged, pipeline stopped):
+
+- `scripts/backup_prod_db.py` first, then `scripts/_dedupe_tracks.py --target
+  prod` dry run (271 groups, 292 rows to delete, 47 apple_id cleared, 557
+  user_tracks on losers: 76 re-pointed, 481 folded), then `--apply`. It ended
+  "verified: no duplicates, no orphans, no recording or event lost, stats
+  equal a rebuild"; tracks went 6,262 -> 5,970.
+- `scripts/_turso_create_track_indexes.py --target prod --apply` then built
+  UNIQUE `idx_tracks_spotify_id` and `idx_tracks_apple_id` (partial, NOT
+  NULL), plain `idx_tracks_isrc` and `idx_tracks_ingestion_status`; a
+  re-run reported all four "exists". So a spotify_id now names exactly one
+  row on prod, and the double-insert race is closed by the index.
 
 **App side, done 2026-10-17** (branch `backend/ingest-dedupe`,
 `tests/backend/test_process_track.py` and the `_process_track` tests at the
@@ -1305,10 +1319,12 @@ what production should use.
 `backend/lyrics.py`), cached per track in `track_lyrics`
 (`tests/backend/test_lyrics.py`).
 
-### 11.1 `track_lyrics` must be created on Turso before deploy
+### 11.1 ~~`track_lyrics` must be created on Turso before deploy~~ — DONE (2026-10-18)
 `schema.sql` (end), `scripts/_turso_create_track_lyrics.py`
 
-**verified locally, not run on prod.** `ensure_db()` no-ops on Turso.
+**Run on prod 2026-10-18** (dry run, then `--apply`: "created
+track_lyrics"), before the deploy that shipped the endpoint (revision
+vibescape-00027). Kept for the record: `ensure_db()` no-ops on Turso.
 Without the table the endpoint still answers (it logs a warning and skips
 the cache), but asks LRCLIB on every request. Run
 `python scripts/_turso_create_track_lyrics.py --target prod` (dry run),
@@ -1333,6 +1349,20 @@ whatever attribution its licence requires.
 behind. Harmless (a cache, keyed by an id nothing will look up again), but
 the keeper does not inherit the loser's lyrics either and is fetched anew.
 Add the table to the dedupe script's list if that ever costs anything.
+
+### 11.4 `tests/frontend/lyricsProvider.test.jsx` is flaky
+`tests/frontend/lyricsProvider.test.jsx`
+
+**verified 2026-10-19 by running it three times on main, unchanged code:**
+one run passed all 5 tests, one failed 2 ("the active line follows the
+clock and the offset", "a preview plays plain lyrics"), one failed a third
+("the YouTube path stays plain until the video length matches"). A
+different test failing each run points at timing in the test, not at the
+feature, which works in use (local preview and prod, 2026-10-18/19).
+Likely a missing `await`/`act`, or real and fake timers racing. It makes
+`python tests/run_all.py` fail at random, which teaches people to ignore
+red. Fix by making the test wait properly; prove it with ~20 consecutive
+green runs. Deferred by the owner, 2026-10-19.
 
 ## 12. DJ language — built 2026-10-19 (branch `backend/dj-language`), what is left
 
