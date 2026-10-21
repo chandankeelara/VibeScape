@@ -89,14 +89,15 @@
 }
 /*
  * Lyrics over the art: the square is min(560px, 92dvh - 300px) (see .isLyrics
- * .hero) and from 800px tall it can be up to 78px taller than the 482px meta
- * column, so the room is the audio room less that excess. This is its lower
- * bound written out, with the same 8px of slack: the excess is capped at 78,
- * and where the square still grows with the height it costs 0.92px of room
- * per pixel. A narrow panel's 56% cap only makes the square smaller.
+ * .hero) and from 800px tall it can be up to 126px taller than the 434.9px
+ * meta column, so the room is the audio room less that excess. This is its
+ * lower bound written out, with the same 8px of slack: the excess is capped
+ * at 126, and where the square still grows with the height it costs 0.92px
+ * of room per pixel (8dvh + 36px is 100dvh - 699px less 92dvh - 735px). A
+ * narrow panel's 56% cap only makes the square smaller.
  */
 .isLyrics .bigBit {
-  --bit-room: max(100dvh - var(--np-above-bit) - 78px, min(100dvh - var(--np-above-bit), 8dvh + 36px));
+  --bit-room: max(100dvh - var(--np-above-bit) - 126px, min(100dvh - var(--np-above-bit), 8dvh + 36px));
 }
 @media (min-width: 768px) and (max-height: 799px) {
   .bigBit { --bit-room: calc(100dvh - var(--np-above-bit-short)); }

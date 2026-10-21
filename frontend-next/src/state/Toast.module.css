@@ -1,8 +1,11 @@
 .container {
+  /* Full width, centring its children: a box at left:50% pulled back by
+     translateX(-50%) shrink-wraps to HALF the viewport, which on a phone
+     broke a one-line toast over three lines. */
   position: fixed;
-  left: 50%;
+  left: 0;
+  right: 0;
   bottom: var(--sp-5);
-  transform: translateX(-50%);
   z-index: var(--z-toast);
   display: flex;
   flex-direction: column;
@@ -19,10 +22,11 @@
   max-width: min(92vw, 460px);
   padding: 10px var(--sp-3) 10px var(--sp-4);
   border-radius: var(--radius-pill);
-  background: var(--surface-2);
-  border: 1px solid var(--border-strong);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
-  font-size: 13px;
+  background: var(--raised);
+  border: 1px solid var(--line-2);
+  box-shadow: var(--pop-shadow);
+  font-size: var(--fs-sm);
+  color: var(--text);
   animation: rise var(--dur) var(--ease-out);
 }
 
@@ -33,18 +37,24 @@
 
 .msg { flex: 1; min-width: 0; }
 
-.success { border-color: rgba(30, 215, 96, 0.4); }
-.error   { border-color: rgba(248, 113, 113, 0.45); color: #fca5a5; }
-.warning { border-color: rgba(249, 168, 37, 0.4); }
+.success { border-color: color-mix(in oklab, var(--spotify) 45%, transparent); }
+.error   { border-color: color-mix(in oklab, var(--danger) 50%, transparent); color: var(--danger-text); }
+.warning { border-color: color-mix(in oklab, var(--warning) 45%, transparent); }
 
 .action {
   background: none;
   border: none;
-  color: var(--accent);
-  font-weight: 600;
-  font-size: 12.5px;
-  padding: 0 var(--sp-1);
+  /* The vibe accent's text form: solved for contrast in both themes. The
+     brand cyan this used was 2:1 on the light theme's toast. */
+  color: var(--acc-text);
+  font-weight: 700;
+  font-size: var(--fs-sm);
+  /* Undo is the reason the toast exists: a real target, not a word. */
+  min-height: var(--toast-action-h);
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-pill);
 }
+.action:hover { background: var(--hover); }
 
 .close {
   background: none;
@@ -55,3 +65,8 @@
   border-radius: 50%;
 }
 .close:hover { color: var(--text); }
+
+/* The toast simply appears: its resting state is the whole message. */
+@media (prefers-reduced-motion: reduce) {
+  .toast { animation: none; }
+}

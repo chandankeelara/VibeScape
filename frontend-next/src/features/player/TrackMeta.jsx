@@ -5,13 +5,16 @@ import {
 import { languageLabel } from '../queue/labels';
 import Icon from '../../ui/Icon';
 import Equalizer from '../../ui/Equalizer';
+import Marquee from '../../ui/Marquee';
+import { HeartButton } from '../library';
 import ui from '../../ui/controls.module.css';
 import Skeleton from './Skeleton';
 import styles from './TrackMeta.module.css';
 
 /**
- * Title / artist · album / genre, the badge row, and the two quiet actions
- * (verify, metrics). S2: content is loud, secondary items recede.
+ * Title (one line, scrolling when it must) with its actions (the heart),
+ * artist · album / genre, the badge row, and the two quiet actions (verify,
+ * metrics). S2: content is loud, secondary items recede.
  *
  * The VIBE badge and the mood badge describe THIS track, so they are coloured
  * and named by the track's own score — not by the user's slider.
@@ -29,7 +32,10 @@ export default function TrackMeta({ onShowMetrics, compact = false }) {
     return (
       <section className={`${styles.meta} ${compact ? styles.compact : ''}`} aria-busy="true">
         <p className={styles.overline}><Equalizer />Now playing</p>
-        <div className={styles.titleBox}><Skeleton w="64%" h="0.8em" /></div>
+        <div className={styles.titleRow}>
+          <div className={styles.titleBox}><Skeleton w="64%" h="0.8em" /></div>
+          <div className={styles.actions}><HeartButton track={null} /></div>
+        </div>
         <div className={styles.byline}><Skeleton w="38%" h="16px" /></div>
         <p className={styles.genre} />
         <div className={styles.badges}>
@@ -45,7 +51,9 @@ export default function TrackMeta({ onShowMetrics, compact = false }) {
   if (!current) {
     return (
       <section className={styles.meta}>
-        <div className={styles.titleBox}><h1 className={styles.title}>Move the slider to begin</h1></div>
+        <div className={styles.titleRow}>
+          <div className={styles.titleBox}><h1 className={styles.title}><Marquee text="Move the slider to begin" /></h1></div>
+        </div>
         <p className={styles.byline}>Pick a vibe and the DJ will find something.</p>
       </section>
     );
@@ -58,8 +66,15 @@ export default function TrackMeta({ onShowMetrics, compact = false }) {
   return (
     <section className={`${styles.meta} ${compact ? styles.compact : ''}`}>
       <p className={styles.overline}><Equalizer />Now playing</p>
-      <div className={styles.titleBox}>
-        <h1 className={styles.title} title={current.title || undefined}>{current.title || 'Untitled'}</h1>
+      {/* The title takes what the actions leave, and the actions are always
+          the same buttons, so the box is one width whatever the song. */}
+      <div className={styles.titleRow}>
+        <div className={styles.titleBox}>
+          <h1 className={styles.title}><Marquee text={current.title || 'Untitled'} /></h1>
+        </div>
+        <div className={styles.actions}>
+          <HeartButton track={current} />
+        </div>
       </div>
       <p className={styles.byline} title={[current.artist, current.album].filter(Boolean).join(' · ') || undefined}>
         <span className={styles.artist}>{current.artist || 'Unknown artist'}</span>
