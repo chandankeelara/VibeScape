@@ -201,3 +201,21 @@ def test_events_resolve_by_spotify_id(client, user, sql):
     sid = sql.execute("SELECT spotify_id FROM tracks WHERE id=?", (t,)).fetchone()[0]
     send(client, h, [{**ENV, "type": "play_start", "spotify_id": sid}])
     assert stats(sql, uid, t)["play_count"] == 1
+
+
+def test_discover_toggle_is_an_app_event(client, user, sql):
+    uid, h, _ = user
+    assert send(client, h, [{**ENV, "type": "discover_toggle", "data": {"on": True}}])["accepted"] == 1
+    row = sql.execute("SELECT type, data FROM user_events WHERE user_id=?", (uid,)).fetchone()
+    assert (row["type"], json.loads(row["data"])) == ("discover_toggle", {"on": True})
+
+
+def test_a_discovered_pick_keeps_its_discover_flag(client, user, sql, make_user, make_tracks):
+    """The DJ's play_start carries data.discover, and a discovery is a track
+    outside the caller's library: both must reach track_events."""
+    uid, h, _ = user
+    other, _ = make_user()
+    (t,) = make_tracks(other, [None])
+    send(client, h, [{**ENV, "type": "play_start", "track_id": t, "data": {"discover": True}}])
+    row = sql.execute("SELECT data FROM track_events WHERE user_id=? AND track_id=?", (uid, t)).fetchone()
+    assert json.loads(row["data"]) == {"discover": True}

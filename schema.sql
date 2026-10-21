@@ -260,11 +260,12 @@ CREATE INDEX IF NOT EXISTS idx_track_events_user_track  ON track_events(user_id,
 -- widening that needs a table rebuild, which Turso cannot do atomically.
 --
 -- type: 'session_start' | 'session_end' | 'search' | 'vibe_change' |
---       'dj_toggle'.
+--       'dj_toggle' | 'discover_toggle'.
 -- data: JSON object of type-specific fields, for example
 --   search       {query, results_library, results_spotify, outcome}
 --   vibe_change  {from, to, via}
 --   dj_toggle    {on}
+--   discover_toggle {on}
 --   session_*    {platform} / {duration_ms}
 -- NO UPDATES, NO DELETES, same as track_events.
 -- ---------------------------------------------------------------------------
