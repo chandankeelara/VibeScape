@@ -708,6 +708,18 @@ at the head of it come back on every look and the stage never gets past
 them, while the run counts it idle and drains around it. Same candidate fix,
 kept per stage thread.
 
+### 3.13 [frontend contract] Un-hearting by spotify_id can miss on production's duplicate rows
+`backend/app.py` `library_unlink`, `_resolve_anchor`
+
+**suspected (2026-10-21), by reading the code; not observed.** `DELETE
+/api/me/library/{track_key}` resolves the key with `_resolve_anchor`, which
+takes the first `tracks` row with that spotify_id. Production holds the same
+track twice (1.13), so a user linked to the other copy gets a 200 with
+`in_library: false`, nothing is deleted, and the song stays in the DJ pool.
+The numeric `tracks.id` the player already has is exact; the frontend should
+send that. Goes away when 1.13's dedupe runs on prod. Cheap check: on a prod
+backup, count spotify_ids with more than one row that some user links.
+
 ## 4. Cleanup
 
 ### 4.1 Stale file references
