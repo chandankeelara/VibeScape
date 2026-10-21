@@ -4843,7 +4843,8 @@ _STATS_UPSERT_CHUNK = 20       # user_track_stats rows per statement (20 x 28 = 
 _EVENT_TYPES = ("play_start", "play_end", "pause", "resume", "seek", "queue_add")
 _PLAY_TYPES = ("play_start", "play_end")
 # App-level events with no track, stored in user_events (same envelope).
-_APP_EVENT_TYPES = ("session_start", "session_end", "search", "vibe_change", "dj_toggle")
+_APP_EVENT_TYPES = ("session_start", "session_end", "search", "vibe_change", "dj_toggle",
+                    "discover_toggle")
 _VIBE_SOURCES = ("user", "system")
 _EVENT_DATA_MAX_CHARS = 2000   # serialised `data` object; longer is dropped, not truncated
 _EVENT_DATA_MAX_KEYS = 12
@@ -5368,7 +5369,7 @@ async def post_track_events(request: Request, sess: dict = Depends(require_user)
                        "seek" | "queue_add"
                      app events -> user_events (no track):
                        "session_start" | "session_end" | "search" |
-                       "vibe_change" | "dj_toggle"
+                       "vibe_change" | "dj_toggle" | "discover_toggle"
         spotify_id   22-char Spotify id                    (track events: required unless track_id)
         track_id     internal tracks.id                    (alternative key)
         position_ms  play_end / pause / resume: the playhead
@@ -5383,8 +5384,9 @@ async def post_track_events(request: Request, sess: dict = Depends(require_user)
         tz_offset_min  client offset, minutes east of UTC
         data         flat JSON object of type-specific extras (seek from_ms /
                      to_ms, queue_add via, search query / counts / outcome,
-                     vibe_change from / to, dj_toggle on, session platform /
-                     duration_ms). Nested or oversized objects are dropped.
+                     vibe_change from / to, dj_toggle / discover_toggle on,
+                     play_start discover (a DJ pick from discovery),
+                     session platform / duration_ms). Nested or oversized objects are dropped.
         vibe         slider value 0-100 at the time
         vibe_source  "user" | "system" — who last set that slider value.
                      Expected on every event; an absent or unrecognised value
