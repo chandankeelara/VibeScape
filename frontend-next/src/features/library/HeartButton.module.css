@@ -1,0 +1,23 @@
+/*
+ * The shared icon button, composed (not restyled from outside), so its
+ * hover, press and focus states stay the primitive's.
+ */
+.heart { composes: ib from '../../ui/controls.module.css'; }
+/* A liked heart keeps its colour under the pointer: hover is not a state
+   change, and a heart that greys on hover reads as "about to unlike". */
+.heart[aria-pressed='true'],
+.heart[aria-pressed='true']:hover:not(:disabled) { color: var(--acc-text); }
+
+/* One beat on the click that fills it; on the glyph, so it never fights the
+   primitive's press scale on the button. */
+.pop svg { animation: pop var(--d-3) var(--ease-out); }
+@keyframes pop {
+  40% { transform: scale(1.22); }
+}
+
+@media (max-width: 767px) {
+  .heart { width: var(--hit-min); height: var(--hit-min); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pop svg { animation: none; }
+}

@@ -52,7 +52,9 @@
   gap: var(--sp-2);
   min-width: 0;
 }
-.titleText { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The thumbnail is only --sp-3 away: a wider leading fade would dissolve
+   the title over the artwork. */
+.titleText { --mq-fade: var(--sp-3); }
 .artist { font-size: var(--fs-sm); color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pick { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-sm); color: var(--text-2); }
 

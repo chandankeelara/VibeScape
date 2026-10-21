@@ -65,6 +65,9 @@
   --youtube: #ff0033;
   --danger: #ff5d5d;
   --danger-soft: rgb(255 93 93 / 0.12);
+  /* --danger as TEXT: 4.5:1 on --raised in each theme (the toast). */
+  --danger-text: #ff8f8f;
+  --warning: #f9a825;
   --avatar-grad: linear-gradient(135deg, #6f7bf7, #c86dd7);
 
   /*
@@ -155,6 +158,11 @@
   --badge-h: 22px;
   /* The now-playing quiet actions (verify, metrics); the phone uses --hit-min. */
   --quiet-h: 32px;
+  /* A scrolling title's soft edge (ui/Marquee). Pulled into the gutter on
+     the leading side, so it must not exceed the gutter it sits beside. */
+  --marquee-fade: 24px;
+  /* A toast's action (Undo): above WCAG's 24px target inside a 37px pill. */
+  --toast-action-h: 28px;
 
   /* ------------------------------------------------------------ layout */
   --top-h: 64px;
@@ -183,11 +191,14 @@
    * DjLine), so this is a constant per height band and his size is a pure
    * function of the viewport: it never follows a title, a chip or a play
    * count. Measured 2026-10-20 in Large mode (the DJ line holds the icon):
-   * room = 100dvh - 738px from 800px tall, 100dvh - 613px under it. Change
-   * the hero's spacing and these move with it; NowPlaying.module.css has the
-   * lyrics variant, where a taller square can outgrow the meta column.
+   * room = 100dvh - 738px from 800px tall, 100dvh - 613px under it; on
+   * 2026-10-21 the title went from two reserved lines to one, which shortened
+   * the meta column from 482.4 to 434.9px from 800px tall (under it the title
+   * was already one line), so 738 became 690.5. Change the hero's spacing and
+   * these move with it; NowPlaying.module.css has the lyrics variant, where a
+   * taller square can outgrow the meta column.
    */
-  --np-above-bit: 746px;
+  --np-above-bit: 699px;
   --np-above-bit-short: 621px;
   /* Recent tile thumbnails in the foot row: from the height (the row must
      fit under the hero) and the width (eight of them and Bit must fit in
@@ -253,4 +264,5 @@ html[data-theme='light'] {
   --scrim: rgb(17 19 23 / 0.38);
   --skel: rgb(17 19 23 / 0.07);
   --visor: #15171c;
+  --danger-text: #b42318;
 }
