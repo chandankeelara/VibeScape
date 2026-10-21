@@ -8,6 +8,8 @@ import Icon, { SpotifyMark } from '../../ui/Icon';
 import ui from '../../ui/controls.module.css';
 import styles from './TopBar.module.css';
 
+const BIT_SIZE_LABELS = [['off', 'Off'], ['medium', 'Medium'], ['large', 'Large']];
+
 const initialsFor = (name) => {
   const s = (name || '').trim();
   if (!s) return '?';
@@ -26,7 +28,7 @@ const initialsFor = (name) => {
 export default function TopBar({ onOpenSync, onToggleHelp, searchOpen, onSearchOpen, onSearchClose }) {
   const { user, signOut } = useAuth();
   const { isConnected, isPremium, profile, signIn } = useSpotifyAuth();
-  const { theme, toggleTheme, showBit, toggleBit } = useTheme();
+  const { theme, toggleTheme, bitSize, setBitSize } = useTheme();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
 
@@ -122,9 +124,26 @@ export default function TopBar({ onOpenSync, onToggleHelp, searchOpen, onSearchO
                 <button type="button" role="menuitem" className={styles.mi} onClick={close(onOpenSync)}>
                   <span>Add public playlist</span><Icon name="link" size={18} />
                 </button>
-                <button type="button" role="menuitemcheckbox" aria-checked={showBit} className={styles.mi} onClick={toggleBit}>
-                  <span>Show Bit</span><span className={styles.mval}>{showBit ? 'On' : 'Off'}</span>
-                </button>
+                {/* Three sizes, so a segmented row rather than an item that
+                    cycles: a cycling item hides two of the three choices. The
+                    menu stays open, so the change can be seen as it lands. */}
+                <div className={styles.mrow}>
+                  <span id="bit-size-label">Bit</span>
+                  <div className={`${ui.seg} ${styles.mseg}`} role="group" aria-labelledby="bit-size-label">
+                    {BIT_SIZE_LABELS.map(([size, label]) => (
+                      <button
+                        key={size}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={bitSize === size}
+                        className={`${ui.segBtn} ${styles.msegBtn}`}
+                        onClick={() => setBitSize(size)}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <button type="button" role="menuitem" className={styles.mi} onClick={toggleTheme}>
                   <span>Theme</span><span className={styles.mval}>{theme === 'dark' ? 'Dark' : 'Light'}</span>
                 </button>

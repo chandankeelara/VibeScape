@@ -12,14 +12,30 @@
 .eyes circle { fill: var(--acc); }
 .eyes path { fill: none; stroke: var(--acc); stroke-width: 2.6; stroke-linecap: round; }
 
-.eHappy, .eSad { opacity: 0; }
-.happy .eOpen, .sad .eOpen { opacity: 0; }
+.eHappy, .eSad, .eShut { opacity: 0; }
+.happy .eOpen, .sad .eOpen, .asleep .eOpen { opacity: 0; }
+.asleep .eShut { opacity: 1; }
 .happy .eHappy { opacity: 1; }
 .sad .eSad { opacity: 1; }
 .happy .body { animation: hop 620ms var(--ease) 1; }
 .sad .head { transform: rotate(-10deg) translateY(1.5px); }
 .thinking .head { transform: rotate(6deg); }
 .thinking .bulb { animation: bulb 900ms ease-in-out infinite alternate; }
+
+/* Asleep: head dropped, bulb dim, a slow breath through the body and one z
+   drifting up off the antenna. Transforms and opacity only. */
+.z { fill: none; stroke: var(--text-3); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
+.asleep .head { transform: rotate(9deg) translateY(2px); }
+.asleep .bulb { opacity: 0.3; }
+.asleep .body { animation: breathe 3.6s var(--ease) infinite alternate; }
+.asleep .z { transform-box: view-box; transform-origin: 74px 7px; animation: drift 3.6s var(--ease) infinite; }
+
+@keyframes breathe { to { transform: translateY(1.4px) scaleY(0.985); } }
+@keyframes drift {
+  0% { opacity: 0; transform: translate(-3px, 5px) scale(0.6); }
+  30% { opacity: 0.9; }
+  100% { opacity: 0; transform: translate(2px, -4px) scale(1.05); }
+}
 
 @keyframes hop {
   35% { transform: translateY(-7px); }
@@ -28,5 +44,7 @@
 @keyframes bulb { to { opacity: 0.3; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .happy .body, .thinking .bulb { animation: none; }
+  .happy .body, .thinking .bulb, .asleep .body, .asleep .z { animation: none; }
+  /* Resting state, not the start of the drift: the z stays readable. */
+  .asleep .z { opacity: 0.8; }
 }

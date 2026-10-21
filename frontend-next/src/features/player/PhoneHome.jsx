@@ -3,6 +3,7 @@ import { trackKey } from '../../lib/vibe';
 import { QueueRow, useQueueState } from '../queue';
 import ui from '../../ui/controls.module.css';
 import RecentTrail from './RecentTrail';
+import DjLine from './DjLine';
 import styles from './PhoneHome.module.css';
 
 /**
@@ -12,13 +13,19 @@ import styles from './PhoneHome.module.css';
  *
  * Hidden above 767px by its own CSS; on desktop the now-playing panel and
  * the queue column carry all of this.
+ *
+ * The DJ line heads the list, with Bit: the home screen is where a phone
+ * spends most of a session, and without it he would only exist behind a tap.
+ * `bitPaused` freezes this copy while it is out of view: the full-screen
+ * player covers it, or the page is wider than a phone and it is display:none.
  */
-export default function PhoneHome() {
+export default function PhoneHome({ bitPaused = false }) {
   const { queue, reorderQueue, current } = usePlayer();
   const { recs, recsLoading, jumpTo, removeAt, playRec, addRec, consumingKey } = useQueueState();
 
   return (
     <section className={styles.home} aria-label="Home">
+      <DjLine className={styles.dj} bitPaused={bitPaused} />
       <RecentTrail variant="shortcuts" className={styles.block} />
 
       <div className={styles.block}>

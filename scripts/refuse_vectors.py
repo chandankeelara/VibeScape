@@ -103,7 +103,7 @@ def plan(conn, column_exists: bool, batch: int = BATCH):
     differs."""
     cur = f"te.{FUSED_COLUMN}" if column_exists else "NULL"
     fused = f"(te.{OLD_COLUMN} IS NOT NULL" + (f" OR {cur} IS NOT NULL)" if column_exists else ")")
-    cols = ", ".join(["t.id", "t.language"] + [f"t.{c}" for c in SCALAR_COLS]
+    cols = ", ".join(["t.id", "t.language", "t.language_status"] + [f"t.{c}" for c in SCALAR_COLS]
                      + ["te.model_version AS mert_version", "te.mert_embedding AS mert_blob",
                         f"{cur} AS new_blob"])
     writes, st = [], Counter()

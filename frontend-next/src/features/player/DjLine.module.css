@@ -6,7 +6,34 @@
   color: var(--text-3);
   font-size: var(--fs-sm);
 }
-.say { margin: 0; min-width: 0; }
+/* One line, always: a sentence that wraps on one track and not the next
+   would move everything under it. The full text stays in the DOM, which is
+   what the live region reads. */
+.say { margin: 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  /* The DJ tag is taller than a line of text (padding + border); without
+     this block padding the overflow clip above cut its top border off. */
+  padding-block: 3px; }
+
+/*
+ * Bit's slot. Sized here, not in his own module, so the box exists before
+ * the lazy rig chunk does and the sentence never shifts when he arrives.
+ * The rig's viewBox is 100 x 120; the width follows from the height.
+ * His feet stand on the line's floor, so the line grows to his height rather
+ * than centring a tall figure against one row of text.
+ */
+.bit {
+  position: relative;
+  flex: none;
+  height: var(--bit-h);
+  width: calc(var(--bit-h) * 5 / 6);
+}
+.withBit { gap: var(--sp-2); }
+/* Large mode: the icon in the rig's place, inside the line's own 44px. */
+.icon { flex: none; display: inline-flex; }
+
+@media (max-width: 767px) {
+  .bit { height: var(--bit-h-phone); width: calc(var(--bit-h-phone) * 5 / 6); }
+}
 .say b { color: var(--text-2); font-weight: 600; }
 .cap { text-transform: capitalize; }
 .tag {
@@ -18,5 +45,7 @@
   border-radius: var(--r-xs);
   padding: 2px 5px;
   margin-right: 6px;
-  vertical-align: 1px;
+  display: inline-block;
+  line-height: 1.2;
+  vertical-align: middle;
 }

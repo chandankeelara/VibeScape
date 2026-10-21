@@ -75,6 +75,7 @@ sys.path.insert(0, str(_REPO / "scripts"))
 
 from dj_eval import language_rerank as dj_language  # noqa: E402  (measured, not shipped)
 import dj_replay  # noqa: E402
+import same_song  # noqa: E402
 from dj_replay import MAX_EVENTS, library_mean, parse_events, replay  # noqa: E402
 from dj_eval.client import classify  # noqa: E402
 from dj_eval.groups import (  # noqa: E402
@@ -106,7 +107,18 @@ def _v1_onehot(language):
     return v
 
 
-def build_space(rows, mert, langs, weights, v1=False) -> np.ndarray:
+def build_space(rows, mert, langs, weights, v1=False, instrumental=False,
+                instrumental_weight=None) -> np.ndarray:
+    saved = fv.INSTRUMENTAL_WEIGHT
+    if instrumental_weight is not None:
+        fv.INSTRUMENTAL_WEIGHT = instrumental_weight
+    try:
+        return _build_space(rows, mert, langs, weights, v1, instrumental)
+    finally:
+        fv.INSTRUMENTAL_WEIGHT = saved
+
+
+def _build_space(rows, mert, langs, weights, v1=False, instrumental=False) -> np.ndarray:
     """langs None: the shipped slot table (fused_vector.LANG_CODES, 64 wide)."""
     width = fv.LANG_BLOCK if langs is None else len(langs) + 1
     out = np.empty((len(rows), fv.MERT_DIM + len(fv.SCALAR_COLS) + width))
@@ -116,7 +128,10 @@ def build_space(rows, mert, langs, weights, v1=False) -> np.ndarray:
             out[i] = fv._l2(np.concatenate([0.55 * fv._l2(mert[i]), 0.25 * fv._l2(sc),
                                             0.20 * _v1_onehot(r.get("language"))]))
         else:
-            out[i] = fv._build_fused(r, mert[i], langs=langs, weights=weights)
+            # Without `instrumental` a 'no language' verdict stays all zeros, as
+            # in every recipe before the zxx slot (2026-10-20).
+            row = r if instrumental else {**r, "language_status": None}
+            out[i] = fv._build_fused(row, mert[i], langs=langs, weights=weights)
     return out
 
 
@@ -130,7 +145,8 @@ def load(db: Path):
     cols = ", ".join(f"t.{c}" for c in fv.SCALAR_COLS)
     rows, mert, stored = [], [], []
     for r in conn.execute(
-            f"SELECT t.id, t.title, t.artist, t.album, t.language, t.duration_ms, t.vibe_score_ml, {cols}, "
+            f"SELECT t.id, t.title, t.artist, t.album, t.language, t.language_status, "
+            f"       t.duration_ms, t.vibe_score_ml, {cols}, "
             f"       te.mert_embedding AS m, te.fused_embedding AS f "
             f"FROM tracks t JOIN track_embeddings te ON te.track_id = t.id "
             f"WHERE t.ingestion_status = 'done' AND te.fused_embedding IS NOT NULL "
@@ -152,6 +168,21 @@ def _clean_title(t: str) -> str:
 
 
 # ---------------------------------------------------------------- moments
+# The listener sessions recorded on 2026-10-19 against the fused_v2 DJ as
+# deployed (revision 00028), which exposed the skip overshoot: mood skips
+# threw two Kannada sessions out of Kannada, a workout session wandered
+# through four languages, and film BGM drowned in vocal songs.
+REGRESSION = ("english-chill-aef5e7", "film-bgm-29e1d1", "kannada-mass-d40162",
+              "kannada-late-night-982645", "english-workout-cff981")
+# What each persona asked for (personas.json); film BGM is scored on
+# instrumentals instead.
+PERSONA_LANG = {"english-chill": "en", "english-workout": "en", "kannada-mass": "kn",
+                "kannada-late-night": "kn"}
+
+
+SONG_KEYS: dict = {}   # track id -> same_song.song_key, filled by main()
+
+
 def listener_moments(paths):
     out = []
     for p in sorted(paths):
@@ -162,7 +193,9 @@ def listener_moments(paths):
         ends = [i for i, e in enumerate(log) if e["action"] in ("completed", "next", "skipped")]
         plays = st["plays"]
         if len(ends) != len(plays):
-            raise SystemExit(f"{p}: {len(plays)} plays but {len(ends)} endings in the log")
+            # A session still being recorded (or cut off mid-track).
+            print(f"  skipping {Path(p).name}: {len(plays)} plays but {len(ends)} endings")
+            continue
         ids = [log[i]["id"] for i in ends]
         outcome = {}
         for tid, pl in zip(ids, plays):
@@ -190,7 +223,8 @@ def real_moments(conn, dur_of):
     skipped by played ratio; a search / queue / pick start -> its event."""
     out = []
     users = [int(r[0]) for r in conn.execute(
-        "SELECT DISTINCT user_id FROM track_events ORDER BY user_id")]
+"SELECT DISTINCT e.user_id FROM track_events e JOIN users u ON u.id = e.user_id "
+        "WHERE u.display_name NOT LIKE 'dj-%' ORDER BY e.user_id")]
     for uid in users:
         rows = conn.execute("SELECT * FROM track_events WHERE user_id = ? "
                             "AND type IN ('play_start', 'play_end') ORDER BY id", (uid,)).fetchall()
@@ -286,6 +320,15 @@ def scenario_moments(rows, mert=None, dup_key=None):
     def done(t):
         return {"id": t, "action": "completed", "played_ratio": 1.0}
 
+    def skp(t):
+        return {"id": t, "action": "skipped", "played_ratio": 0.1}
+
+    en = [r["id"] for r in rows if r["language"] == "en"]
+    kv = sorted((r["vibe_score_ml"], r["id"]) for r in rows
+                if r["language"] == "kn" and r["vibe_score_ml"] is not None)
+    third = len(kv) // 3
+    kn_band = {"low": [t for _, t in kv[:third]], "high": [t for _, t in kv[-third:]]}
+
     def moment(name, events, lang, lib):
         ids = [e["id"] for e in events]
         return {"src": "scenario", "scenario": name, "lang": lang, "lib": lib,
@@ -303,9 +346,66 @@ def scenario_moments(rows, mert=None, dup_key=None):
         h4 = rng.choice(hi, 4, replace=False).tolist()
         for j in range(5):
             out.append(moment(f"switch{j}: hi@10", [done(t) for t in k5 + h4[:j]], "hi", None))
+        # Skip-heavy (2026-10-20). Mood: three high-energy Kannada songs
+        # finished, then three low-energy Kannada songs skipped -- the
+        # language must stay. Wander: three English songs finished, then six
+        # English songs of every energy skipped -- the top 10 must not leave
+        # English. Moved: three Kannada, then three Hindi finished, then two
+        # Kannada skipped -- Kannada must be gone.
+        kh = rng.choice(kn_band["high"], 3, replace=False).tolist()
+        kl = rng.choice(kn_band["low"], 3, replace=False).tolist()
+        out.append(moment("mood3: kn@10", [done(t) for t in kh] + [skp(t) for t in kl], "kn", None))
+        e3 = rng.choice(en, 9, replace=False).tolist()
+        out.append(moment("wander6: en@10", [done(t) for t in e3[:3]] + [skp(t) for t in e3[3:]],
+                          "en", None))
+        k3, h3 = rng.choice(kn, 5, replace=False).tolist(), rng.choice(hi, 3, replace=False).tolist()
+        out.append(moment("moved: kn@10", [done(t) for t in k3[:3] + h3] + [skp(t) for t in k3[3:]],
+                          "kn", None))
     if mert is not None:
         out += _type_moments(rows, mert, dup_key, rng)
+    out += _seed_off_moments(rows)
     return out, set(kn) | set(hi70)
+
+
+# indian-heartbreak-9c8502 (2026-10-20): a listener wanting Hindi romantic
+# finished one song, Badtameez Dil (party), then skipped fifteen party songs
+# in a row while the DJ never moved -- the whole-N perpendicular avoid
+# cancelled every skip, because the skips were the taste. Its ids, in order.
+SEED_OFF = (5956, [2637, 1323, 759, 1708, 5441])
+
+
+def _seed_off_moments(rows):
+    """One off-target seed finished, then 3-5 of that session's party songs
+    skipped. Scored twice: Hindi kept (want 1) and the share of the top 10
+    in Hindi's high-energy tercile (want it to fall)."""
+    have = {r["id"] for r in rows}
+    seed, skips = SEED_OFF
+    if seed not in have or not all(t in have for t in skips):
+        return []
+    hv = sorted(r["vibe_score_ml"] for r in rows
+                if r["language"] == "hi" and r["vibe_score_ml"] is not None)
+    cut = hv[(2 * len(hv)) // 3]
+    party = {r["id"] for r in rows if r["language"] == "hi"
+             and r["vibe_score_ml"] is not None and r["vibe_score_ml"] >= cut}
+    hindi = {r["id"] for r in rows if r["language"] == "hi"}
+    out = []
+    for k in (3, 4, 5):
+        events = ([{"id": seed, "action": "searched", "played_ratio": None},
+                   {"id": seed, "action": "completed", "played_ratio": 1.0}]
+                  + [{"id": t, "action": "skipped", "played_ratio": 0.05} for t in skips[:k]])
+        for name, members in ((f"seedoff{k}: hi@10", hindi), (f"seedoff{k}: party@10", party)):
+            out.append({"src": "scenario", "scenario": name, "members": members, "metric": "share",
+                        "events": events, "seed": skips[k - 1], "exclude": {seed, *skips[:k]},
+                        "user": None})
+    base = [{"id": seed, "action": "searched", "played_ratio": None},
+            {"id": seed, "action": "completed", "played_ratio": 1.0}]
+    out.append({"src": "scenario", "scenario": "seedoff0: party@10", "members": party,
+                "metric": "share", "events": base, "seed": seed, "exclude": {seed}, "user": None})
+    return out
+
+
+_DRONE = re.compile(r"\bhz\b|\d+(\.\d+)?\s*hz|delta|theta|binaural|solfeggio|sleep", re.I)
+_FILM = re.compile(r"\(from |theme|bgm|motion picture|soundtrack|score", re.I)
 
 
 def _type_moments(rows, mert, dup_key, rng):
@@ -347,6 +447,19 @@ def _type_moments(rows, mert, dup_key, rng):
             out.append({"src": "scenario", "scenario": name, "members": members,
                         "metric": "share", "events": events, "seed": int(ids[x]),
                         "exclude": excl, "user": None})
+    # Instrumentals: three film-score tracks (or three drones) finished; the
+    # share of drones in the top 10. Titles decide which is which.
+    instr = [r for r in rows if not r["language"] and r["language_status"] == "done"]
+    drones = {r["id"] for r in instr if _DRONE.search(f"{r['title']} {r['album']}")}
+    film = {r["id"] for r in instr if _FILM.search(f"{r['title']} {r['album']}")} - drones
+    for name, pool in (("film3: drone@10", sorted(film)), ("drone3: drone@10", sorted(drones))):
+        if len(pool) < 3:
+            continue
+        for _ in range(30):
+            acc = [int(t) for t in rng.choice(pool, 3, replace=False)]
+            out.append({"src": "scenario", "scenario": name, "members": drones, "metric": "share",
+                        "events": [ev(t, "completed") for t in acc], "seed": acc[-1],
+                        "exclude": set(acc), "user": None})
     by_key = defaultdict(list)
     for i, r in enumerate(rows):
         by_key[dup_key[r["id"]]].append(i)
@@ -377,6 +490,7 @@ class Ranker:
         # legacy 'b' re-rank read it; the shipped re-rank does not.
         self.library = Counter(dj_language.lang_key(lang_of[int(t)]) for t in ids)
         self.vecs = {int(t): X[i] for i, t in enumerate(ids)}
+        self.song_keys = SONG_KEYS
 
     def pool(self, m, center="full", replay_kw=None):
         """center 'nolang': the library mean without its language block, so
@@ -387,11 +501,14 @@ class Ranker:
         mu = self.mu.copy()
         if center == "nolang":
             mu[fv.MERT_DIM + len(fv.SCALAR_COLS):] = 0.0
-        saved = {k: getattr(dj_replay, k) for k in (replay_kw or {})}
+        replay_kw = dict(replay_kw or {})
+        same = replay_kw.pop("SAME_SONG", False)
+        saved = {k: getattr(dj_replay, k) for k in replay_kw}
         try:
-            for k, v in (replay_kw or {}).items():
+            for k, v in replay_kw.items():
                 setattr(dj_replay, k, v)
-            res = replay(events, self.vecs, mu, seed)
+            res = replay(events, self.vecs, mu, seed,
+                         song_keys=self.song_keys if same else None)
         finally:
             for k, v in saved.items():
                 setattr(dj_replay, k, v)
@@ -409,6 +526,7 @@ class Ranker:
         rank[order] = np.arange(len(order))
         top = order[:POOL_MAX]
         return {"events": events, "order": order, "rank": rank, "n": len(order), "mu": mu,
+                "same_song": same,
                 "pool": [(float(sims[i]), self.lang_of[int(self.ids[i])]) for i in top],
                 "pool_ids": [int(self.ids[i]) for i in top], "pool_idx": top}
 
@@ -455,6 +573,19 @@ class Ranker:
             perm = [idx[i] for i, _ in dj_language.rerank(sub, scores, K, rr["weight"],
                                                           rr["close"], rr.get("demote", rr["weight"]))]
         new_pool = [P["pool_ids"][i] for i in perm]
+        if P.get("same_song"):
+            # backend/app.py _dj_drop_repeats, on the same pool
+            sess = {self.song_keys.get(e["id"]) for e in P["events"]} | {self.song_keys.get(m["seed"])}
+            sess.discard(None)
+            seen, kept = set(sess), []
+            for t in new_pool:
+                k = self.song_keys.get(t)
+                if k is not None:
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                kept.append(t)
+            new_pool = kept
         pool_rank = {t: j for j, t in enumerate(new_pool)}
 
         def rank_of(t):
@@ -512,8 +643,10 @@ def evaluate(rankers, moments, pools, rr, meta, nearest=None):
     lang_of, dup_key = meta["lang_of"], meta["dup_key"]
     served = defaultdict(list)
     fut, lang_hit, untag, dup_skip, dup_seen, top8, offered = [], [], [], [], [], [], []
+    repeat, repeat_real = [], []
     grp = defaultdict(list)
     scen = defaultdict(list)
+    reg = defaultdict(lambda: defaultdict(list))
     for m, P in zip(moments, pools):
         if P is None:
             continue
@@ -545,6 +678,12 @@ def evaluate(rankers, moments, pools, rr, meta, nearest=None):
             other = {k for k, v in lib.items() if v >= 0.05 and k and k not in acc}
             if acc and other:
                 offered.append(sum(dj_language.lang_key(lang_of[t]) in other for t in top) / K)
+        if m["src"] == "real":
+            # P["events"]: the log as the endpoint sees it (parse_events: last 30)
+            sess = {SONG_KEYS.get(e["id"]) for e in P["events"]} | {SONG_KEYS.get(m["seed"])}
+            sess.discard(None)
+            tk = [k for k in (SONG_KEYS.get(t) for t in top) if k is not None]
+            repeat_real.append(bool(set(tk) & sess) or len(tk) != len(set(tk)))
         if m["src"] != "listener":
             continue
         pairs = [(rank_of(t) / P["n"], lab) for t, lab in m["future"].items()
@@ -553,13 +692,29 @@ def evaluate(rankers, moments, pools, rr, meta, nearest=None):
         if not math.isnan(a):
             fut.append(a)
         acc_langs = {dj_language.lang_key(lang_of[t]) for t in m["accepted"] if t in lang_of}
-        lang_hit.append(sum(dj_language.lang_key(lang_of[t]) in acc_langs for t in top) / K)
+        hit = sum(dj_language.lang_key(lang_of[t]) in acc_langs for t in top) / K
+        lang_hit.append(hit)
+        if m["session"] in REGRESSION:
+            rg = reg[m["session"]]
+            want = PERSONA_LANG.get(m["session"].rsplit("-", 1)[0])
+            if want:
+                rg["lang10"].append(sum(lang_of[t] == want for t in top) / K)
+            rg["langs"].append(len({dj_language.lang_key(lang_of[t]) for t in top}))
+            rg["instr10"].append(sum(t in meta["instrumental"] for t in top) / K)
+            if not math.isnan(a):
+                rg["fut"].append(a)
         if "" not in acc_langs:
             untag.append(sum(not lang_of[t] for t in top) / K)
         sk = {dup_key[t] for t in m["skipped"] if t in dup_key}
         seen = {dup_key[t] for t in m["exclude"] | {m["seed"]} if t in dup_key}
         dup_skip.append(any(dup_key.get(t) in sk for t in top))
         dup_seen.append(any(dup_key.get(t) in seen for t in top))
+        # P["events"]: the log as the endpoint sees it (parse_events: last 30)
+        sess = {SONG_KEYS.get(e["id"]) for e in P["events"]} | {SONG_KEYS.get(m["seed"])}
+        sess.discard(None)
+        tk = [SONG_KEYS.get(t) for t in top]
+        tk = [k for k in tk if k is not None]
+        repeat.append(bool(set(tk) & sess) or len(tk) != len(set(tk)))
     mean = lambda v: float(np.mean(v)) if len(v) else float("nan")  # noqa: E731
     return {
         "served_auc_listener": auc(served["listener"]),
@@ -573,8 +728,13 @@ def evaluate(rankers, moments, pools, rr, meta, nearest=None):
         "other_habitual10_real": mean(offered),
         "dup_skipped10": mean(dup_skip),
         "dup_seen10": mean(dup_seen),
+        # same_song keys (2026-10-20): another release of a song the session
+        # already had, or two releases of one song, in the top 10.
+        "repeat10_listener": mean(repeat),
+        "repeat10_real": mean(repeat_real),
         "groups": {g: mean(v) for g, v in sorted(grp.items())},
         "scenarios": {k: mean(v) for k, v in sorted(scen.items())},
+        "regression": {sid: {k: mean(v) for k, v in d.items()} for sid, d in sorted(reg.items())},
         "n": {"listener": len(served["listener"]), "real": len(served["real"])},
     }
 
@@ -586,14 +746,20 @@ SPACES = {
     # name: (langs, weights, v1)
     "v1_stored": None,
     "v1_rebuilt": (V1_LANGS, None, True),
-    "A": (None, (fv.W_MERT, fv.W_SCALAR, fv.W_LANG), False),       # the shipped recipe, 64 slots
+    "A": (None, (fv.W_MERT, fv.W_SCALAR, fv.W_LANG), False),       # prod (2026-10-19): 64 slots
+    "AZ": (None, (fv.W_MERT, fv.W_SCALAR, fv.W_LANG), False, True), # + the instrumental slot
+    "AZ1": (None, (fv.W_MERT, fv.W_SCALAR, fv.W_LANG), False, True, 1.0),   # ... at full weight
+    "AZ50": (None, (fv.W_MERT, fv.W_SCALAR, fv.W_LANG), False, True, 0.5),
     "A10": (TEN, (fv.W_MERT, fv.W_SCALAR, fv.W_LANG), False),      # ... with ten slots + other
     "W20": (TEN, (0.55, 0.25, 0.20), False),                       # fused_v2's first weights
     "C_lang0.10": (TEN, (0.55, 0.25, 0.10), False),
     "C_lang0": (TEN, (0.55, 0.25, 0.0), False),
 }
 # dj_replay's avoid constants before 2026-10-19, for the comparisons.
-LEGACY_REPLAY = {"NEG_WEIGHT": 0.6, "M_STEP": 0.25, "M_MAX": 1.0}
+LEGACY_REPLAY = {"NEG_WEIGHT": 0.6, "M_STEP": 0.25, "M_MAX": 1.0,
+                 "AVOID_PERP": False, "AVOID_CAP": None}
+# dj_replay as deployed in revision 00028 (2026-10-19), before the overshoot fix.
+PROD_00028 = {"NEG_WEIGHT": 1.0, "M_STEP": 0.5, "M_MAX": 2.0, "AVOID_PERP": False, "AVOID_CAP": None}
 # Language block raised; MERT and scalars keep their 0.55 : 0.25 ratio and
 # share what is left, so the three still sum to 1 (only ratios matter: the
 # vector is L2-normalised).
@@ -618,6 +784,77 @@ def final_table():
         {"space": "A10", "replay": {}},
         {"space": "A", "replay": {}},
     ]
+
+
+def skip_grid():
+    """2026-10-20, the skip overshoot: the old DJ, prod (revision 00028), and
+    the candidate avoid terms -- N without its component along S (perp),
+    a cap on NEG_WEIGHT * m in units of |S| -- in prod's space (A) and with
+    the instrumental slot (AZ)."""
+    out = [{"space": "v1_stored", "replay": LEGACY_REPLAY}]
+    for sp in ("A", "AZ"):
+        out.append({"space": sp, "replay": {}})
+        for cap in (None, 0.5, 0.75, 1.0):
+            out.append({"space": sp, "replay": {"AVOID_PERP": True, "AVOID_CAP": cap}})
+        for cap in (0.5, 0.75, 1.0):
+            out.append({"space": sp, "replay": {"AVOID_CAP": cap}})
+        for cap in (None, 0.75):
+            out.append({"space": sp, "replay": {"AVOID_PERP": True, "AVOID_PERP_RENORM": False,
+                                                "AVOID_CAP": cap}})
+    return out
+
+
+def final_table2():
+    """The rows the skip-overshoot PR reports (2026-10-20)."""
+    rr = {"weight": 3.0, "half_life": 3.0, "skip_penalty": 1.25, "demote": 12.0,
+          "close": dj_language.CLOSE}
+    fix = {"NEG_WEIGHT": 1.0, "M_STEP": 0.5, "M_MAX": 2.0, "AVOID_PERP": True}
+    return [
+        {"space": "v1_stored", "replay": LEGACY_REPLAY},
+        {"space": "A", "replay": PROD_00028},
+        {"space": "W20", "replay": LEGACY_REPLAY, "rr": rr},
+        {"space": "AZ", "replay": PROD_00028},
+        {"space": "A", "replay": {**fix, "AVOID_CAP": 1.5}},
+        {"space": "AZ1", "replay": {**fix, "AVOID_CAP": 1.5}},
+        {"space": "AZ50", "replay": {**fix, "AVOID_CAP": 1.5}},
+        {"space": "AZ", "replay": {**fix, "AVOID_CAP": 1.0}},
+        {"space": "AZ", "replay": {**fix, "AVOID_CAP": 2.0}},
+        {"space": "AZ", "replay": {**fix, "AVOID_CAP": 1.5}},
+    ]
+
+
+def final_table3():
+    """The rows the catch-and-hold revision of PR #23 reports (2026-10-20)."""
+    base = {"NEG_WEIGHT": 1.0, "M_STEP": 0.5, "M_MAX": 2.0}
+    return [
+        {"space": "v1_stored", "replay": LEGACY_REPLAY},
+        {"space": "A", "replay": PROD_00028},
+        {"space": "AZ", "replay": {**base, "AVOID_PERP": "full", "AVOID_CAP": 1.5}},
+        {"space": "AZ", "replay": {**base, "AVOID_PERP": False, "AVOID_CAP": 1.5}},
+        {"space": "AZ", "replay": {**base, "AVOID_PERP": "lang", "AVOID_CAP": 1.0}},
+        {"space": "AZ", "replay": {**base, "AVOID_PERP": "lang", "AVOID_CAP": 1.5}},
+        {"space": "AZ", "replay": {**base, "AVOID_PERP": "lang", "AVOID_CAP": 2.0}},
+    ]
+
+
+def final_table4():
+    """Card 1, the same-song filter, on PR #23's head (2026-10-20)."""
+    return [
+        {"space": "A", "replay": PROD_00028},
+        {"space": "AZ", "replay": {}},
+        {"space": "AZ", "replay": {"SAME_SONG": True}},
+    ]
+
+
+def skip_grid2():
+    """Round 2: between the configs that pass the skip-heavy checks and prod."""
+    out = [{"space": "AZ", "replay": {}}]
+    for cap in (1.25, 1.5, 2.0):
+        out.append({"space": "AZ", "replay": {"AVOID_PERP": True, "AVOID_CAP": cap}})
+    for cap in (1.0, 1.25, 1.5):
+        out.append({"space": "AZ", "replay": {"AVOID_PERP": True, "AVOID_PERP_RENORM": False,
+                                              "AVOID_CAP": cap}})
+    return out
 
 
 def vector_grid2():
@@ -668,6 +905,11 @@ def main(argv=None) -> int:
                     help="also run vector_grid(): no re-rank, language and skips from the vector")
     ap.add_argument("--vector-grid2", action="store_true", help="also run vector_grid2()")
     ap.add_argument("--final", action="store_true", help="only the rows of final_table()")
+    ap.add_argument("--skip-grid", action="store_true", help="only the rows of skip_grid()")
+    ap.add_argument("--skip-grid2", action="store_true", help="only the rows of skip_grid2()")
+    ap.add_argument("--final2", action="store_true", help="only the rows of final_table2()")
+    ap.add_argument("--final3", action="store_true", help="only the rows of final_table3()")
+    ap.add_argument("--final4", action="store_true", help="only the rows of final_table4()")
     ap.add_argument("--only-vector-grid", action="store_true",
                     help="run vector_grid() and the session re-rank on A as the reference")
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
@@ -681,7 +923,9 @@ def main(argv=None) -> int:
     dup_key = {r["id"]: (_clean_title(r["title"]), primary_artist(r["artist"])) for r in rows}
     pos_of = {t: i for i, t in enumerate(ids)}
     libs = {None: ids}
-    for uid in [int(r[0]) for r in conn.execute("SELECT DISTINCT user_id FROM track_events")]:
+    for uid in [int(r[0]) for r in conn.execute(
+            "SELECT DISTINCT e.user_id FROM track_events e JOIN users u ON u.id = e.user_id "
+        "WHERE u.display_name NOT LIKE 'dj-%' ORDER BY e.user_id")]:
         own = {int(r[0]) for r in conn.execute(
             "SELECT track_id FROM user_tracks WHERE user_id = ?", (uid,))}
         libs[uid] = [t for t in ids if t in own]
@@ -712,11 +956,25 @@ def main(argv=None) -> int:
         cfgs += vector_grid2()
     if a.final:
         cfgs = final_table()
-    meta = {"lang_of": lang_of, "dup_key": dup_key}
+    if a.skip_grid:
+        cfgs = skip_grid()
+    if a.skip_grid2:
+        cfgs = skip_grid2()
+    if a.final2:
+        cfgs = final_table2()
+    if a.final3:
+        cfgs = final_table3()
+    if a.final4:
+        cfgs = final_table4()
+    SONG_KEYS.update({r["id"]: same_song.song_key(r["title"], r["artist"], r["language"])
+                      for r in rows})
+    meta = {"lang_of": lang_of, "dup_key": dup_key,
+            "instrumental": {r["id"] for r in rows
+                             if not r["language"] and r["language_status"] == "done"}}
     results = []
     for name in dict.fromkeys(c["space"] for c in cfgs):
         spec = SPACES[name]
-        X = stored if spec is None else build_space(rows, mert, spec[0], spec[1], spec[2])
+        X = stored if spec is None else build_space(rows, mert, *spec)
         X = X / np.linalg.norm(X, axis=1, keepdims=True)
         rankers = {}
         for uid, lib in libs.items():
@@ -747,6 +1005,11 @@ def main(argv=None) -> int:
                   f"({time.time() - t0:.0f} s)", flush=True)
 
     _print(results)
+    _print_regression(results)
+    print("\n| config | repeat@10 listener | repeat@10 real |")
+    print("|---|---|---|")
+    for r in results:
+        print(f"| {_label(r)} | {r['repeat10_listener']:.3f} | {r['repeat10_real']:.3f} |")
     a.out.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = a.out / f"replay_bench_{stamp}.json"
@@ -765,7 +1028,7 @@ def _label(r):
     if r.get("center", "full") != "full":
         extra += " centre=no-lang"
     if r.get("replay"):
-        extra += " " + " ".join(f"{k}={v:g}" for k, v in sorted(r["replay"].items()))
+        extra += " " + " ".join(f"{k}={v:g}" if isinstance(v, float) else f"{k}={v}" for k, v in sorted(r["replay"].items()))
     if r.get("nearest"):
         nn = r["nearest"]
         extra += f" nearest-skip w={nn['w']:g}" + (f" h={nn['h']:g}" if nn.get("h") else "")
@@ -775,6 +1038,24 @@ def _label(r):
         return f"{r['space']} +rr(b: library prior, no skips) w={rr['weight']:g}"
     return (f"{r['space']} +rr w={rr['weight']:g} half-life={rr['half_life']:g} "
             f"skip={rr['skip_penalty']:g} demote={rr['demote']:g}")
+
+
+def _print_regression(results):
+    sids = sorted({s for r in results for s in r.get("regression", {})})
+    if not sids:
+        return
+    print("\n| config | " + " | ".join(
+        f"{s.rsplit('-', 1)[0]} {'instr' if 'bgm' in s else 'lang'}@10 / langs / fut"
+        for s in sids) + " |")
+    print("|---" * (len(sids) + 1) + "|")
+    for r in results:
+        cells = []
+        for s in sids:
+            g = r["regression"].get(s, {})
+            main = g.get("instr10" if "bgm" in s else "lang10", float("nan"))
+            cells.append(f"{main:.2f} / {g.get('langs', float('nan')):.1f} / "
+                         f"{g.get('fut', float('nan')):.2f}")
+        print(f"| {_label(r)} | " + " | ".join(cells) + " |")
 
 
 def _print(results):

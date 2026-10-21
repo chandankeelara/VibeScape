@@ -38,6 +38,8 @@ import styles from './NowPlaying.module.css';
 const LyricsPanel = lazy(() => import('../lyrics/LyricsPanel'));
 const LyricsStrip = lazy(() => import('../lyrics/LyricsStrip'));
 const LyricsSheet = lazy(() => import('../lyrics/LyricsSheet'));
+// The same chunk DjLine loads for the medium rig.
+const BitDock = lazy(() => import('./bit/BitDock'));
 
 /** Where the lyrics go: null | 'stage' | 'side' | 'theater' | 'sheet'. */
 function lyricsPlace({ on, current, narrow, isVideo, theater }) {
@@ -95,10 +97,16 @@ export default function NowPlaying({
   const { on: lyricsOn } = useLyrics();
   const narrow = useMediaQuery(BELOW_THEATER);
   const isPhone = useMediaQuery(PHONE);
-  const { theme } = useTheme();
+  const { theme, bitSize } = useTheme();
   const colour = useArtColour(current?.artwork_url || '');
   const isVideo = mode === 'video';
   const lyrics = lyricsPlace({ on: lyricsOn, current, narrow, isVideo, theater });
+  /*
+   * Large Bit stands at the end of the foot row, after the recent tiles. The
+   * phone has no foot row (its home list carries the recents), so there
+   * Large is Medium: the rig beside the DJ line.
+   */
+  const big = bitSize === 'large' && !isPhone;
 
   const tint = colour
     ? `radial-gradient(90% 70% at 12% 0%, ${tintFor(colour.hue, theme)}, transparent 75%)`
@@ -168,13 +176,24 @@ export default function NowPlaying({
             ) : (
               <div className={styles.side}>
                 <MoodSlider />
-                <DjLine />
+                {/* Hidden on a phone until opened: Bit holds still in here
+                    while the home list's copy is the one in view. */}
+                <DjLine bitPaused={isPhone && !phoneOpen} bigElsewhere={big} />
               </div>
             )}
           </div>
         </div>
 
-        <RecentTrail variant="tiles" className={styles.recent} />
+        {/* One row: eight slots for the last eight plays, then the large Bit
+            in the place after the eighth. */}
+        <div className={styles.foot}>
+          <RecentTrail variant="tiles" />
+          {big && (
+            <span className={styles.bigBit} aria-hidden="true">
+              <Suspense fallback={null}><BitDock /></Suspense>
+            </span>
+          )}
+        </div>
       </div>
 
       {lyrics === 'sheet' && (!isPhone || phoneOpen) && (

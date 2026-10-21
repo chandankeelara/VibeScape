@@ -103,10 +103,12 @@ def test_avoid_term_is_bounded_however_many_skips(space):
     log = [ev(1, "completed", 1)] + [ev(i, "skipped", 0.0) for i in range(2, 30)]
     res = R.replay(log, vecs, mu)
     assert res.avoid <= R.M_MAX
-    # the vibe still contributes. It was > 0.3 before 2026-10-19; the avoid
-    # term may now reach twice |S| (NEG_WEIGHT 1.0 x M_MAX 2.0, chosen on
-    # the replay benchmark), and 28 skips leave 0.22 here. It must not flip.
-    assert cos(res.query, vecs[1]) > 0.15
+    # The taste can never be outweighed: the avoid term is bounded so that
+    # the query keeps cos >= 1 / sqrt(1 + AVOID_CAP^2) with S (0.55 at 1.5)
+    # however many skips. Before 2026-10-20 nothing bounded it but m (0.22 here), and
+    # skip-heavy listener sessions wandered off their language.
+    S = R.replay([ev(1, "completed", 1)], vecs, mu).query
+    assert cos(res.query, S) >= 0.55
 
 
 def test_a_skip_run_primes_the_next_finished_track(space, monkeypatch):
@@ -165,3 +167,11 @@ def test_library_mean():
     m = R.library_mean([np.array([2.0, 0.0]), np.array([0.0, 5.0])])
     assert np.allclose(m, [0.5, 0.5])
     assert R.library_mean([]) is None
+
+
+def test_the_language_block_is_the_recipes():
+    """AVOID_PERP 'lang' protects dims LANG_BLOCK; they must be the fused
+    recipe's language block, or it protects audio dims instead."""
+    from ingest_pipeline import fused_vector as fv
+    a, b = R.LANG_BLOCK
+    assert a == fv.MERT_DIM + len(fv.SCALAR_COLS) and b == fv.FUSED_DIM
