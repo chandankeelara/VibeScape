@@ -36,6 +36,7 @@ function sentence({ kind, from }, djOn, mood) {
   if (kind === 'search') return djOn ? <>Playing from search. The DJ takes it from here</> : <>Playing from search</>;
   if (kind === 'queue') return <>From your Up next</>;
   if (kind === 'recent') return <>Back to one you played earlier</>;
+  if (kind === 'resume') return <>Picking up where you left off</>;
   if (kind === 'pick') return from ? <>Close in sound to <b>{from}</b></> : <>Close in sound</>;
   if (!djOn) return <>DJ is off. Playing near your vibe</>;
   if (kind === 'ended') return from ? <>Because you played <b>{from}</b></> : <>Picked for your vibe</>;
