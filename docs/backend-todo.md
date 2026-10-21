@@ -1494,6 +1494,32 @@ nothing has measured whether language@10 holds. **Suspected.** Check:
 `replay_bench.py` with the pool widened to the catalogue; the pre-approved
 fallback, if it leaks, is the global mean (`_dj_library_mean(conn, 0, ...)`).
 
+## 14. DJ score — built 2026-10-19 (branch `backend/dj-score`), what is left
+
+`scripts/dj_eval/score_dj.py` scores a DJ version from listener sessions on
+the three vibe tests in `scenarios.json` and keeps `scoreboard.json`.
+
+### 14.2 Steer tests are not built yet
+`scripts/dj_eval/scenarios.json`, `scripts/dj_eval/score_dj.py`
+
+**by decision (2026-10-19).** The suite measures only whether the DJ keeps a
+vibe it was shown. Whether it follows a listener who changes vibe (a second
+search partway through: how many picks until it follows, whether the old
+vibe leaks back) is unmeasured. A design was built and set aside in PR #24's
+history (commit d9f52fd): phase A 5 picks, phase B 10, a `feedback --vibe
+A|B|other` tag for leak.
+
+### 14.1 The scoreboard's commit is whatever `--commit` says
+`scripts/dj_eval/score_dj.py` `main`, `scripts/dj_eval/serve.py`
+
+**verified by reading.** Nothing records which code served a round:
+`serve.py` does not note its checkout's HEAD and the session files hold only
+`base_url`. A wrong `--commit` (the main checkout's HEAD instead of the
+worktree under test) files the score under the wrong version, silently. Fix:
+`serve.py` writes its HEAD and dirty flag next to the copy, `listener.py
+start` copies it into the session, and `score_dj.py` refuses a round whose
+sessions disagree with each other or with `--commit`.
+
 ## Checked and clean
 
 Recorded so the next audit does not redo them.

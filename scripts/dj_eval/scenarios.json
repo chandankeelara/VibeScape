@@ -1,0 +1,76 @@
+{
+ "about": "Vibe tests for score_dj.py (README: Scoring a DJ version). Each plays one start song in the target vibe and follows the DJ for `picks` songs; the DJ knows only what the listener plays and skips, so the start song is the whole brief. Steer tests (a change of vibe partway through) come later. A song's `spotify_ids` are every release of it in the catalogue (checked read-only on data/dj_eval/eval.db, 2026-10-19: done, fused_v2 841 floats, owned by every listener account, and the query finds it in the listener's 10 search results); a run whose start song is another one is excluded. `prompt` is rendered from `prompt_template` (score_dj.py --render-prompts; a test fails when they drift). `account` is a persona in personas.json and differs between scenarios: two sessions on one account reset each other's history. Bump `version` whenever a scenario, a pick count, a vibe's words or the template changes: the scoreboard only compares entries of one version.",
+ "version": 2,
+ "vibes": {
+  "kn-melody": "soft romantic Kannada film melodies. No mass, rap or dance numbers, and nothing in another language.",
+  "hi-romantic": "Hindi romantic songs in the Arijit Singh mould. No party or devotional songs, no Punjabi singles, and nothing in another language.",
+  "en-workout": "English workout music: hip-hop, rap, rock, high-energy anthems; EDM drops are fine. No ballads, no slow R&B, and nothing in another language."
+ },
+ "songs": {
+  "anisuthide": {
+   "query": "Anisuthide",
+   "title": "Anisuthide",
+   "artist": "Sonu Nigam",
+   "spotify_ids": [
+    "2Rts79IsoUBDH2fam6LROy"
+   ]
+  },
+  "tum-hi-ho": {
+   "query": "Tum Hi Ho",
+   "title": "Tum Hi Ho (From \"Aashiqui 2\")",
+   "artist": "Arijit Singh",
+   "spotify_ids": [
+    "7ouBSPZKQpm7zQz2leJXta"
+   ]
+  },
+  "lose-yourself": {
+   "query": "Lose Yourself",
+   "title": "Lose Yourself",
+   "artist": "Eminem",
+   "spotify_ids": [
+    "6GkTKjv1XbFVdI2D8vvDPu"
+   ]
+  }
+ },
+ "prompt_template": [
+  "This is a vibe test of the VibeScape DJ. Follow these steps exactly; they replace steps 2 and 3 of your usual session.",
+  "",
+  "WHAT YOU WANT, and the only thing you judge songs against: {target}",
+  "",
+  "You are signed in as the `{account}` account. Ignore the `you:` line that `start` prints: that account's usual taste is not what you want today.",
+  "",
+  "1. `start --persona {account}` and keep the session id.",
+  "2. `search --session <id> \"{query}\"`. This is your only search in the whole session. Play the result that is {song}. If it is not among the results, play nothing: `review` \"start song not found\", and say so in your final message.",
+  "3. `finish` that song (always finish it, whatever you think of it), then give `feedback` for it against what you want.",
+  "4. Then exactly {picks} times, no fewer and no more: `next`, then `finish` or `skip` the song it plays, then `feedback` for it. Never `play` a song from the up-next list and never search again: only `next`. If the DJ says it has nothing more to play, stop there.",
+  "5. `review` the session: did the DJ play what you want, did it stay there, and what did it play after you skipped something.",
+  "",
+  "In your final message give the session id and your review."
+ ],
+ "scenarios": [
+  {
+   "id": "vibe-kn-melody",
+   "account": "kannada-late-night",
+   "vibe": "kn-melody",
+   "song": "anisuthide",
+   "picks": 15,
+   "prompt": "This is a vibe test of the VibeScape DJ. Follow these steps exactly; they replace steps 2 and 3 of your usual session.\n\nWHAT YOU WANT, and the only thing you judge songs against: soft romantic Kannada film melodies. No mass, rap or dance numbers, and nothing in another language.\n\nYou are signed in as the `kannada-late-night` account. Ignore the `you:` line that `start` prints: that account's usual taste is not what you want today.\n\n1. `start --persona kannada-late-night` and keep the session id.\n2. `search --session <id> \"Anisuthide\"`. This is your only search in the whole session. Play the result that is `Anisuthide — Sonu Nigam` (as the search lists it). If it is not among the results, play nothing: `review` \"start song not found\", and say so in your final message.\n3. `finish` that song (always finish it, whatever you think of it), then give `feedback` for it against what you want.\n4. Then exactly 15 times, no fewer and no more: `next`, then `finish` or `skip` the song it plays, then `feedback` for it. Never `play` a song from the up-next list and never search again: only `next`. If the DJ says it has nothing more to play, stop there.\n5. `review` the session: did the DJ play what you want, did it stay there, and what did it play after you skipped something.\n\nIn your final message give the session id and your review."
+  },
+  {
+   "id": "vibe-hi-romantic",
+   "account": "hindi-romantic",
+   "vibe": "hi-romantic",
+   "song": "tum-hi-ho",
+   "picks": 15,
+   "prompt": "This is a vibe test of the VibeScape DJ. Follow these steps exactly; they replace steps 2 and 3 of your usual session.\n\nWHAT YOU WANT, and the only thing you judge songs against: Hindi romantic songs in the Arijit Singh mould. No party or devotional songs, no Punjabi singles, and nothing in another language.\n\nYou are signed in as the `hindi-romantic` account. Ignore the `you:` line that `start` prints: that account's usual taste is not what you want today.\n\n1. `start --persona hindi-romantic` and keep the session id.\n2. `search --session <id> \"Tum Hi Ho\"`. This is your only search in the whole session. Play the result that is `Tum Hi Ho (From \"Aashiqui 2\") — Arijit Singh` (as the search lists it). If it is not among the results, play nothing: `review` \"start song not found\", and say so in your final message.\n3. `finish` that song (always finish it, whatever you think of it), then give `feedback` for it against what you want.\n4. Then exactly 15 times, no fewer and no more: `next`, then `finish` or `skip` the song it plays, then `feedback` for it. Never `play` a song from the up-next list and never search again: only `next`. If the DJ says it has nothing more to play, stop there.\n5. `review` the session: did the DJ play what you want, did it stay there, and what did it play after you skipped something.\n\nIn your final message give the session id and your review."
+  },
+  {
+   "id": "vibe-en-workout",
+   "account": "english-workout",
+   "vibe": "en-workout",
+   "song": "lose-yourself",
+   "picks": 15,
+   "prompt": "This is a vibe test of the VibeScape DJ. Follow these steps exactly; they replace steps 2 and 3 of your usual session.\n\nWHAT YOU WANT, and the only thing you judge songs against: English workout music: hip-hop, rap, rock, high-energy anthems; EDM drops are fine. No ballads, no slow R&B, and nothing in another language.\n\nYou are signed in as the `english-workout` account. Ignore the `you:` line that `start` prints: that account's usual taste is not what you want today.\n\n1. `start --persona english-workout` and keep the session id.\n2. `search --session <id> \"Lose Yourself\"`. This is your only search in the whole session. Play the result that is `Lose Yourself — Eminem` (as the search lists it). If it is not among the results, play nothing: `review` \"start song not found\", and say so in your final message.\n3. `finish` that song (always finish it, whatever you think of it), then give `feedback` for it against what you want.\n4. Then exactly 15 times, no fewer and no more: `next`, then `finish` or `skip` the song it plays, then `feedback` for it. Never `play` a song from the up-next list and never search again: only `next`. If the DJ says it has nothing more to play, stop there.\n5. `review` the session: did the DJ play what you want, did it stay there, and what did it play after you skipped something.\n\nIn your final message give the session id and your review."
+  }
+ ]
+}
