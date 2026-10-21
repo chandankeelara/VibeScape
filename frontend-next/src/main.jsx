@@ -49,11 +49,12 @@ const queryClient = new QueryClient({
  * Mascot review page: /next/?bit
  *
  * Mounts BitLab INSTEAD of the app — no auth gate, no router, no
- * PlayerProvider — because the rig has to be reviewable before it is wired
- * into anything. Dynamically imported so the 60KB animation stylesheet stays
- * out of the main bundle until the mascot actually ships.
+ * PlayerProvider — so a state can be pinned and judged without a track
+ * playing. Dynamically imported, like the dock itself (DjLine lazy-loads it),
+ * so the ~105KB animation stylesheet stays out of the main bundle.
  *
- * Remove this branch along with BitLab.* when Bit goes live.
+ * It is where a new animation or prop is judged at ship scale: section 01
+ * uses the real DjLine and dock stylesheets.
  */
 if (new URLSearchParams(window.location.search).has('bit')) {
   import('./features/player/bit/BitLab').then(({ default: BitLab }) => {

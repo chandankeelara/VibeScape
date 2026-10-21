@@ -142,7 +142,7 @@ function PlayerStage() {
       />
 
       <div className={styles.content}>
-        <PhoneHome />
+        <PhoneHome bitPaused={!isPhone || npOpen} />
         <NowPlaying
           theater={theater}
           canTheater={canTheater}

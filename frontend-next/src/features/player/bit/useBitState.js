@@ -87,6 +87,7 @@ export default function useBitState({
   mode,
   source,
   vibe,
+  djOn = true,
 }) {
   /*
    * The event is {name, n} rather than a bare string. `n` is a nonce bumped
@@ -129,7 +130,22 @@ export default function useBitState({
     return 'idle';
   }, [current, loadingTrack, verifying, mode, source, playing]);
 
-  const state = event ? event.name : base;
+  /*
+   * DJ mode off: Bit is the DJ, so with the DJ off he sleeps, whatever is
+   * playing, and reacts to nothing. Above the event as well as the base: a
+   * skip with the DJ off is not his to sulk about. The event is dropped
+   * rather than held, so waking up does not replay a stale reaction.
+   */
+  const state = !djOn ? 'asleep' : (event ? event.name : base);
+  const awake = useRef(djOn);
+  awake.current = djOn;
+  useEffect(() => { if (!djOn) setEvent(null); }, [djOn]);
+  /*
+   * The band, not the raw vibe, is what the groove picker depends on. Keyed on
+   * `vibe`, every step of a slider drag re-rolled the move — he changed dance
+   * a dozen times while the hand crossed one band.
+   */
+  const band = moodFor(vibe).name;
 
   // Choose an animation whenever the state changes.
   useEffect(() => {
@@ -157,7 +173,6 @@ export default function useBitState({
      * instead of leaving Bit standing still.
      */
     if (state === 'groove') {
-      const band = moodFor(vibe).name;
       const byBand = manifest.GROOVE_BY_BAND && manifest.GROOVE_BY_BAND[band];
       const bandPool = byBand && byBand.length ? byBand : pool;
       const next = pickDifferent(bandPool, lastByState.current[`groove:${band}`]);
@@ -170,7 +185,7 @@ export default function useBitState({
     lastByState.current[state] = next;
     setAnimKey(next);
     // event?.n is in the deps so a repeat of the same event re-picks.
-  }, [state, vibe, event && event.n]);
+  }, [state, band, event && event.n]);
 
   // A one-shot returns to the base state once its clip is done. Length comes
   // from the manifest rather than a guess, so the hand-off is seamless.
@@ -190,11 +205,11 @@ export default function useBitState({
    */
   useEffect(() => {
     if (event) return undefined;
-    const band = state === 'groove' ? moodFor(vibe).name : null;
-    const byBand = band && manifest.GROOVE_BY_BAND && manifest.GROOVE_BY_BAND[band];
+    const grooveBand = state === 'groove' ? band : null;
+    const byBand = grooveBand && manifest.GROOVE_BY_BAND && manifest.GROOVE_BY_BAND[grooveBand];
     const pool = byBand && byBand.length ? byBand : ANIMATIONS[state];
     if (!pool || pool.length < 2) return undefined;
-    const slot = band ? `groove:${band}` : state;
+    const slot = grooveBand ? `groove:${grooveBand}` : state;
     const id = setInterval(() => {
       setAnimKey((prev) => {
         const next = pickDifferent(pool, prev);
@@ -203,7 +218,7 @@ export default function useBitState({
       });
     }, VARIETY_MS);
     return () => clearInterval(id);
-  }, [state, event, vibe]);
+  }, [state, event, band]);
 
   /**
    * Trigger a one-shot reaction. Ignored if the state has no animations.
@@ -215,6 +230,10 @@ export default function useBitState({
    * another tab. The nonce does the same job with no dependency on paint.
    */
   const fire = useCallback((name) => {
+    // Asleep he ignores everything (see `state`). Refused here too, or a
+    // track change would park a cueing event that no one-shot timer clears
+    // (the asleep clips loop) and he would wake straight into it.
+    if (!awake.current) return;
     if (!ANIMATIONS[name] || ANIMATIONS[name].length === 0) return;
     nonce.current += 1;
     setEvent({ name, n: nonce.current });
@@ -230,8 +249,12 @@ export default function useBitState({
    *
    * Declared AFTER fire() because fire is a const — referencing it from an
    * effect above would read it before initialisation.
+   *
+   * Seeded with the track already playing at mount: mounting is not a track
+   * starting, and Bit mounts mid-song whenever his size is
+   * set back to Medium or Large.
    */
-  const lastTrackId = useRef(null);
+  const lastTrackId = useRef(current ? current.id : null);
   useEffect(() => {
     const id = current ? current.id : null;
     if (id == null || id === lastTrackId.current) {
@@ -239,8 +262,17 @@ export default function useBitState({
       return;
     }
     lastTrackId.current = id;
+    /*
+     * A reaction already in flight IS the transition. A skip fires `sulk`,
+     * and the DJ's replacement lands a few hundred ms later — cueing on top
+     * of it cut the throw off mid-air, so the skip read as nothing at all.
+     * Same for celebrate after a finished track.
+     */
+    if (event) return;
     fire('cueing');
-  }, [current, fire]);
+    // `event` is read, and listed so the read is current; a change to it alone
+    // finds the same track id and returns above.
+  }, [current, fire, event]);
 
   const beat = useMemo(() => beatSeconds(current && current.tempo), [current]);
   /*

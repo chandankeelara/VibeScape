@@ -1,8 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
 /**
- * Light / dark theme, plus the "Show Bit" preference — the two switches in
- * the account menu.
+ * Light / dark theme, plus Bit's size (off / medium / large) — the two
+ * display preferences in the account menu. Both are per device.
  *
  * The theme attribute is written to <html> by the PLAYER only (useApplyTheme,
  * called from PlayerPage), and removed again when the player unmounts. The
@@ -15,7 +15,11 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
  */
 
 const THEME_KEY = 'vs.theme';
-const BIT_KEY = 'vs.showBit';
+const BIT_KEY = 'vs.bitSize';
+/* The on/off switch this setting replaced. Read once, to migrate. */
+const LEGACY_BIT_KEY = 'vs.showBit';
+
+export const BIT_SIZES = ['off', 'medium', 'large'];
 
 const ThemeCtx = createContext(null);
 
@@ -36,19 +40,35 @@ function write(key, value) {
   }
 }
 
+/**
+ * The stored Bit size. A device that only ever had the old switch keeps what
+ * it chose: '0' was "Show Bit: Off" and stays off; anything else, including
+ * never having touched it, was the S2 rig beside the DJ line, which is Medium.
+ * Exported for the test.
+ */
+export function readBitSize() {
+  const v = read(BIT_KEY, null);
+  if (BIT_SIZES.includes(v)) return v;
+  return read(LEGACY_BIT_KEY, '1') === '0' ? 'off' : 'medium';
+}
+
 export function ThemeProvider({ children }) {
   const [theme, setTheme] = useState(() => (read(THEME_KEY, 'dark') === 'light' ? 'light' : 'dark'));
-  const [showBit, setShowBit] = useState(() => read(BIT_KEY, '1') !== '0');
+  const [bitSize, setBitSizeState] = useState(readBitSize);
 
   useEffect(() => { write(THEME_KEY, theme); }, [theme]);
-  useEffect(() => { write(BIT_KEY, showBit ? '1' : '0'); }, [showBit]);
+  useEffect(() => {
+    write(BIT_KEY, bitSize);
+    // Migrated: the new key is the only one read from here on.
+    try { localStorage.removeItem(LEGACY_BIT_KEY); } catch { /* storage blocked */ }
+  }, [bitSize]);
 
   const toggleTheme = useCallback(() => setTheme((t) => (t === 'dark' ? 'light' : 'dark')), []);
-  const toggleBit = useCallback(() => setShowBit((v) => !v), []);
+  const setBitSize = useCallback((s) => { if (BIT_SIZES.includes(s)) setBitSizeState(s); }, []);
 
   const value = useMemo(
-    () => ({ theme, toggleTheme, showBit, toggleBit }),
-    [theme, toggleTheme, showBit, toggleBit],
+    () => ({ theme, toggleTheme, bitSize, setBitSize }),
+    [theme, toggleTheme, bitSize, setBitSize],
   );
   return <ThemeCtx.Provider value={value}>{children}</ThemeCtx.Provider>;
 }

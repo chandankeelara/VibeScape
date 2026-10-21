@@ -46,6 +46,12 @@ async function mount() {
 }
 
 const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+// One macrotask is not always enough for react-query to resolve the mocked
+// fetch when the whole suite runs in parallel: these tests failed about one
+// run in three on an unchanged tree (2026-10-20). Wait for the view instead.
+async function settle() {
+  for (let i = 0; i < 50 && lyrics?.view?.kind === 'loading'; i += 1) await flush();
+}
 const clock = (positionS, durationS) => act(() => { tick({ position: positionS, duration: durationS }); });
 
 beforeEach(() => {
@@ -67,6 +73,7 @@ it('fetches nothing while off, and the track once it is turned on', async () => 
   act(() => lyrics.toggle());
   await flush();
   await flush();
+  await settle();
   expect(fetched).toEqual([42]);
   expect(lyrics.view.kind).toBe('synced');
   expect(localStorage.getItem('vs.lyrics.on')).toBe('1');
@@ -76,6 +83,7 @@ it('the active line follows the clock and the offset; taps and steps are stored 
   localStorage.setItem('vs.lyrics.on', '1');
   await mount();
   await flush();
+  await settle();
   clock(4.5, 200);
   expect(activeSeen).toBe(1);
 
@@ -107,6 +115,7 @@ it('the YouTube path stays plain until the video length matches', async () => {
   playerState = { ...playerState, mode: 'video', source: null, videoState: 'ready' };
   await mount();
   await flush();
+  await settle();
   expect(lyrics.view.kind).toBe('mismatch');
   clock(10, 230); // 30s longer than the lyrics' recording: an intro.
   expect(lyrics.view.kind).toBe('mismatch');
@@ -125,6 +134,7 @@ it('the YouTube path is synced straight away when the length matches', async () 
   playerState = { ...playerState, mode: 'video', source: null, videoState: 'ready' };
   await mount();
   await flush();
+  await settle();
   clock(10, 201);
   expect(lyrics.view.kind).toBe('synced');
 });
@@ -134,6 +144,7 @@ it('a preview plays plain lyrics with no seeking and no offset', async () => {
   playerState = { ...playerState, source: 'preview' };
   await mount();
   await flush();
+  await settle();
   expect(lyrics.view.kind).toBe('preview');
   expect(lyrics.canSeek).toBe(false);
   act(() => lyrics.nudge(500));

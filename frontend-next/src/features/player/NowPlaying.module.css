@@ -35,7 +35,7 @@
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-gutter: stable;
-  padding: var(--sp-2) var(--sp-10) var(--sp-8);
+  padding: var(--sp-2) var(--sp-10) var(--sp-4);
 }
 
 .hero {
@@ -47,15 +47,64 @@
 }
 .isVideo .hero { --stage-w: min(56%, 560px); }
 /* Lyrics over the art want more room than a cover does; capped by height so
-   the square never pushes the column into a scroll. */
-.isLyrics .hero { --stage-w: min(56%, max(280px, min(560px, 100dvh - 300px))); }
+   the square, with the foot row under it, never pushes the column into a
+   scroll. */
+.isLyrics .hero { --stage-w: min(56%, max(280px, min(560px, 92dvh - 300px))); }
 
-.meta { min-width: 0; display: flex; flex-direction: column; gap: var(--sp-5); }
-.side { display: flex; flex-direction: column; gap: var(--sp-3); }
+/* The meta column, not the art, is the tall side of the hero at every desktop
+   size, so it sets whether the panel fits: these gaps are budgeted to keep
+   title, chips, vibe card and Bit inside a 720px-tall viewport. */
+.meta { min-width: 0; display: flex; flex-direction: column; gap: var(--sp-4); }
+.side { display: flex; flex-direction: column; gap: var(--sp-2); }
 .phTransport { display: none; }
 .lyricsSide { min-width: 0; }
 
-.recent { margin-top: var(--sp-5); }
+/*
+ * The foot row: eight slots for the recent plays, then the large Bit in the
+ * place after the eighth. Both stand on the row's floor, so the row is as
+ * tall as the taller of the two. It is always shown on desktop and tablet,
+ * so the hero above is budgeted to leave it room (see the max-height rules
+ * below and in TrackMeta/MoodSlider).
+ */
+.foot {
+  margin-top: var(--sp-3);
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-4);
+}
+
+/*
+ * Sized by the viewport alone (--np-above-bit, tokens.css), never by what
+ * the hero holds, so he does not grow or shrink when the song changes. The
+ * clamp keeps him clearly larger than the medium rig and no taller than the
+ * pre-S2 dock's rig.
+ */
+.bigBit {
+  --bit-room: calc(100dvh - var(--np-above-bit));
+  position: relative;
+  flex: none;
+  height: clamp(var(--bit-h-large-min), var(--bit-room), var(--bit-h-large));
+  aspect-ratio: 5 / 6;
+  pointer-events: none;
+}
+/*
+ * Lyrics over the art: the square is min(560px, 92dvh - 300px) (see .isLyrics
+ * .hero) and from 800px tall it can be up to 78px taller than the 482px meta
+ * column, so the room is the audio room less that excess. This is its lower
+ * bound written out, with the same 8px of slack: the excess is capped at 78,
+ * and where the square still grows with the height it costs 0.92px of room
+ * per pixel. A narrow panel's 56% cap only makes the square smaller.
+ */
+.isLyrics .bigBit {
+  --bit-room: max(100dvh - var(--np-above-bit) - 78px, min(100dvh - var(--np-above-bit), 8dvh + 36px));
+}
+@media (min-width: 768px) and (max-height: 799px) {
+  .bigBit { --bit-room: calc(100dvh - var(--np-above-bit-short)); }
+  /* Under 800px tall the meta column is 365px: the same excess, uncapped. */
+  .isLyrics .bigBit { --bit-room: min(100dvh - var(--np-above-bit-short), 8dvh + 43px); }
+}
+/* Theater and the single-column tablet scroll by design: he takes the floor. */
+.isTheater .bigBit { --bit-room: 0px; }
 
 /* Theater: the video takes the whole column; meta and vibe fold into two
    columns below. Height-led width, so YouTube never pillarboxes. */
@@ -72,6 +121,12 @@
   align-items: start;
 }
 
+/* Short desktop and tablet: the foot row is always shown, so the head
+   gives back a little of its height. */
+@media (min-width: 768px) and (max-height: 799px) {
+  .head { min-height: 52px; }
+}
+
 /* Narrower desktop: tighter gutters. */
 @media (max-width: 1279px) {
   .head { padding-left: var(--sp-5); }
@@ -80,6 +135,7 @@
 }
 @media (max-width: 1023px) and (min-width: 768px) {
   .hero, .isVideo .hero { grid-template-columns: minmax(0, 1fr); }
+  .bigBit, .isLyrics .bigBit { --bit-room: 0px; }
   .stage { width: min(100%, 420px); justify-self: center; }
   .isVideo .stage { width: 100%; }
 }
@@ -118,5 +174,6 @@
   .phTransport { display: block; margin-top: var(--sp-2); }
   .phButtons { display: flex; align-items: center; justify-content: center; gap: var(--sp-5); margin-top: var(--sp-1); }
   .side { margin-top: var(--sp-3); gap: var(--sp-2); }
-  .recent { display: none; }
+  /* The phone home list carries the recents; Large is Medium here. */
+  .foot { display: none; }
 }

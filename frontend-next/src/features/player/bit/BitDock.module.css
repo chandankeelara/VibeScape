@@ -1,145 +1,68 @@
 /* ------------------------------------------------------------- Bit's dock
  *
- * A fixed strip along the bottom of the stage column. See BitDock.jsx for why
- * it is fixed rather than a grid row.
+ * Fills the slot DjLine reserves for him (DjLine.module.css `.bit`). The
+ * slot owns the size so the line does not jump when this chunk arrives.
  *
- * z-index sits at --z-sticky (100), BELOW --z-overlay (200) and --z-modal
- * (300). Two things already live at the bottom of the viewport and both
- * must stay on top of Bit:
- *   - the queue sidebar's mobile sheet + FAB  (fixed, --z-overlay, <=640px)
- *   - the queue drag ghost and drop indicator (fixed, --z-overlay, on <body>)
+ * The rig draws outside its viewBox on purpose: a hurled record, a tossed
+ * one, a jump. The old full-width dock bounded those with its own box. Here
+ * he stands beside a sentence, under the vibe card, so the dock is a small
+ * STAGE around the slot — headroom above, a margin each side — and its edges
+ * FADE rather than cut. A hard clip (tried first, as clip-path) made a thrown
+ * record vanish in mid-air at a line nobody can see; unbounded, it sailed
+ * across the sentence and into the slider. Faded, it leaves his space and is
+ * gone before it reaches anything else.
+ *
+ * The stage is sized in multiples of the slot, so the rig's position inside
+ * it is pure arithmetic on the same four numbers:
+ *   --up    headroom above, in slot heights (a toss peaks ~0.9 up; the fade
+ *           takes the top of it)
+ *   --down  room below his feet for the contact shadow
+ *   --left / --right  in slot widths. Right is the shorter side: the
+ *           sentence starts a gap away from him.
  */
 
 .dock {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  /* Full viewport width. The queue sidebar is align-self:start and caps at a
-     10-row budget, so the floor continues underneath it — Bit's room is the
-     whole bottom of the app, not just the stage column. */
-  right: 0;
-  /*
-   * Far taller than the furniture, on purpose.
-   *
-   * The set dressing and Bit are both anchored to the FLOOR; everything above
-   * them is transparent headroom so a thrown record or a jump has somewhere to
-   * go instead of being clipped. Measured at 1440x900 there are 108px free
-   * below the art card and 150px below the mood labels, but overlapping those
-   * costs nothing here — the dock takes no pointer events and the upper region
-   * is empty.
-   */
-  height: clamp(156px, 28dvh, 310px);
-
-  /*
-   * Low on purpose, and lower than it used to be.
-   *
-   * Now that the dock runs under the sidebar it overlaps the bottom of it on
-   * taller screens, and a fixed element paints above non-positioned in-flow
-   * content whatever its z-index. The sidebar is given an explicit z-index in
-   * PlayerPage.module.css so it wins; this has to sit below that. Still far
-   * below --z-overlay (drag ghost, mobile sheet) and --z-modal (detached
-   * video), which must stay on top of the scenery.
-   */
-  z-index: 1;
-
-  /* Non-negotiable. The band covers the full width of the stage, so without
-     this it would eat every click on the transport and the mood slider. */
-  pointer-events: none;
-
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  overflow: hidden;
-}
-
-/*
- * Bit stands centre stage.
- *
- * He used to walk between stations — the crates, the decks, the dance floor —
- * but those were positions of FURNITURE, and with the room gone there is
- * nowhere to walk to. Travelling to an empty patch of floor reads as drift,
- * not purpose, so he holds the middle and the animations carry the life.
- */
-.spot {
+  --up: 0.6;
+  --down: 0.12;
+  --left: 0.6;
+  --right: 0.3;
   position: absolute;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-}
-
-/*
- * THEATER mode moves him out of the way, to the bottom right.
- *
- * Theater is the only layout where the video is wide enough to sit directly
- * above him, so a centred Bit dances under the middle of the picture. Normal
- * video mode keeps him centred: there the video is a card in the stage
- * column and he is not competing with it.
- *
- * Only the anchor moves. The dock keeps its full width and its headroom,
- * because that transparent upper region is where a thrown record or a jump
- * travels; shrinking the box to a corner would clip those animations.
- *
- * Not applied below 640px — the queue sheet's FAB owns that corner on a
- * phone, and the dock is display:none there anyway. Theater is also gated
- * off below 1024px, so this can only ever fire on a wide window.
- */
-@media (min-width: 641px) {
-  .dockTheater .spot {
-    left: auto;
-    right: var(--sp-5);
-    transform: none;
-    transition: right var(--dur-slow) var(--ease-out);
-  }
-}
-
-.rig {
+  top: calc(var(--up) * -100%);
+  bottom: calc(var(--down) * -100%);
+  left: calc(var(--left) * -100%);
+  right: calc(var(--right) * -100%);
   display: block;
+  /* Non-negotiable: the stage overlaps the vibe card above and the sentence
+     beside him, and must never eat a click on either. */
+  pointer-events: none;
   /*
-   * Sized against the FURNITURE, not the dock.
-   *
-   * At 1440 the booth stands ~108px tall and Bit was 99px — shorter than the
-   * desk he works at, which is why he read as a toy beside it rather than a
-   * DJ using it. He now clears the booth by roughly a head, which is the
-   * proportion that makes the room look inhabited.
-   *
-   * Still well under the dock height: the gap above him is headroom for
-   * thrown records and jumps, and must stay empty.
+   * Opaque over the whole rig, fading only in the margins. Two gradients
+   * intersected: across (the rig spans --left..1-right of the width) and
+   * down (he starts at --up of the height; nothing fades at the floor).
    */
-  height: clamp(112px, 17dvh, 184px);
-  width: auto;
-  /* The rig draws a soft ground shadow that extends past the body, and the
-     dock clips at the bottom edge. */
+  -webkit-mask-image:
+    linear-gradient(to right, transparent, #000 calc(100% * var(--left) / (1 + var(--left) + var(--right))),
+      #000 calc(100% * (1 + var(--left)) / (1 + var(--left) + var(--right))), transparent),
+    linear-gradient(to bottom, transparent, #000 calc(100% * var(--up) / (1 + var(--up) + var(--down))));
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(to right, transparent, #000 calc(100% * var(--left) / (1 + var(--left) + var(--right))),
+      #000 calc(100% * (1 + var(--left)) / (1 + var(--left) + var(--right))), transparent),
+    linear-gradient(to bottom, transparent, #000 calc(100% * var(--up) / (1 + var(--up) + var(--down))));
+  mask-composite: intersect;
+}
+
+/* Back onto the slot: the stage's box minus its margins. */
+.rig {
+  position: absolute;
+  left: calc(100% * var(--left) / (1 + var(--left) + var(--right)));
+  top: calc(100% * var(--up) / (1 + var(--up) + var(--down)));
+  width: calc(100% / (1 + var(--left) + var(--right)));
+  height: calc(100% / (1 + var(--up) + var(--down)));
+  display: block;
   overflow: visible;
 }
 
-/* ------------------------------------------------------------- responsive */
-
-/* Sidebar collapses under the stage here, so the dock takes the full width. */
-@media (max-width: 900px) {
-  .dock { right: 0; }
-}
-
-/*
- * Below 640px the queue sidebar becomes a fixed bottom SHEET with a FAB, in
- * exactly this space — and .stage already reserves padding-bottom: 120px for
- * it. Two things cannot own the bottom of a phone screen, and the queue is
- * the one that does something, so Bit stands down.
- */
-@media (max-width: 640px) {
-  .dock { display: none; }
-}
-
-/*
- * Short viewports have no spare vertical room: the hero card is sized in dvh
- * (clamp(420px, 62dvh, 640px)) so it is already fighting for the space Bit
- * would take.
- */
-@media (max-height: 620px) {
-  .dock { display: none; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  /* Posture still changes per state — the rig's own reduced-motion rules keep
-     a resting pose — but Bit stops walking around the screen. */
-  .spot { transition: none; }
-}
+/* Frozen where he stands, not reset: a paused copy (the phone's hidden
+   full-screen player) must look the same the moment it is shown. */
+.paused * { animation-play-state: paused !important; }
