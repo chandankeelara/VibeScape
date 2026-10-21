@@ -25,6 +25,13 @@ import { apiKey } from '../../lib/vibe';
 
 export const DJ_STORAGE_KEY = 'vibescape.sessionEvents';
 export const DJ_TOGGLE_KEY = 'vibescape.djEnabled';
+/**
+ * Discovery: recommendations drawn from the whole catalogue instead of the
+ * user's library. Independent of DJ mode — it widens what both the DJ picks
+ * and the plain vibe-similarity list are chosen from. Off is today's
+ * behaviour, byte for byte: the flag is only ever SENT when it is on.
+ */
+export const DJ_DISCOVER_KEY = 'vibescape.djDiscover';
 
 /** Entries kept in localStorage. The backend reads at most 30 of them. */
 export const DJ_MAX_EVENTS = 50;
@@ -148,6 +155,22 @@ export function persistEnabled(on) {
   }
 }
 
+export function loadDiscover() {
+  try {
+    return localStorage.getItem(DJ_DISCOVER_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function persistDiscover(on) {
+  try {
+    localStorage.setItem(DJ_DISCOVER_KEY, on ? '1' : '0');
+  } catch {
+    /* ignore */
+  }
+}
+
 /* ------------------------------------------------------------ classify */
 
 /**
@@ -241,7 +264,7 @@ export const eventsSignature = (events) =>
  * track is the seed while it plays); the seed itself is still never returned.
  * api.js degrades to plain similarity if similarTracksDj is not wired yet.
  */
-export async function fetchDjPicks(seed, { events, seen = [], queue = [], limit = 8 }) {
+export async function fetchDjPicks(seed, { events, seen = [], queue = [], limit = 8, discover = false }) {
   const key = apiKey(seed);
   if (!key) return [];
 
@@ -251,18 +274,21 @@ export async function fetchDjPicks(seed, { events, seen = [], queue = [], limit 
       events: events.slice(-DJ_MAX_SENT_EVENTS),
       exclude_ids: excludeIds({ seen, queue }),
       limit,
+      // Omitted, not `false`, when off: an off request is the request the
+      // app sent before discovery existed.
+      ...(discover ? { discover: true } : null),
     });
     return res?.tracks || [];
   }
 
-  const res = await api.similarTracks(key, { limit });
+  const res = await api.similarTracks(key, { limit, ...(discover ? { discover: 1 } : null) });
   return res?.tracks || [];
 }
 
 /** Plain vibe-similarity list, used whenever DJ mode is off. */
-export async function fetchSimilar(seed, { limit = 8 } = {}) {
+export async function fetchSimilar(seed, { limit = 8, discover = false } = {}) {
   const key = apiKey(seed);
   if (!key) return [];
-  const res = await api.similarTracks(key, { limit });
+  const res = await api.similarTracks(key, { limit, ...(discover ? { discover: 1 } : null) });
   return res?.tracks || [];
 }

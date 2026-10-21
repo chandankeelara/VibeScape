@@ -126,6 +126,8 @@ export function PlayerProvider({ children }) {
   // shapes the next choice. Deliberately a ref, not state: registering must not
   // re-render, and DJ must never write into the user's visible queue.
   const nextFallbackRef = useRef(null);
+  /** `data` for the play_start of a track the fallback serves; see setNextFallback. */
+  const nextFallbackDataRef = useRef(null);
 
   // `next` changes identity whenever the queue does, but the media layer's
   // onEnded handler must be registered exactly once. Route through a ref so
@@ -319,10 +321,12 @@ export function PlayerProvider({ children }) {
    * Until 2026-10-10 the default was 'search', so older rows mix the two.
    * `endReason` defaults to 'skipped' inside the media layer — see the note on
    * player.loadTrack() for why that default is the correct one. `trigger` is
-   * how the user ended the previous track.
+   * how the user ended the previous track. `data` rides on the play_start
+   * event as its free-form `data` object (the DJ path stamps the discovery
+   * mode there).
    */
   const loadTrack = useCallback(
-    (t, { syncVibe = true, source = 'pick', endReason, trigger, reason } = {}) => {
+    (t, { syncVibe = true, source = 'pick', endReason, trigger, reason, data } = {}) => {
       if (!t) return;
       // Supersedes any pick still in flight, and ends its loading overlay:
       // that pick will now drop its result instead of loading it.
@@ -341,7 +345,7 @@ export function PlayerProvider({ children }) {
       // but NOT on the random vibe fetch — that track is already inside the
       // requested band, so snapping would drift the slider on every skip.
       if (syncVibe) setVibeFromTrack(t);
-      player.loadTrack(t, { mode, source, endReason, trigger });
+      player.loadTrack(t, { mode, source, endReason, trigger, data });
     },
     [mode, pushRecent, setVibeFromTrack, markSeen]
   );
@@ -512,8 +516,15 @@ export function PlayerProvider({ children }) {
     });
   }, []);
 
-  /** Register an async () => track|null used instead of a random vibe pull. */
-  const setNextFallback = useCallback((fn) => { nextFallbackRef.current = fn; }, []);
+  /**
+   * Register an async () => track|null used instead of a random vibe pull.
+   * `playData` is attached to the play_start of every track it serves — the
+   * DJ registers `{ discover }`, so served plays can be split by mode later.
+   */
+  const setNextFallback = useCallback((fn, playData = null) => {
+    nextFallbackRef.current = fn;
+    nextFallbackDataRef.current = fn ? playData : null;
+  }, []);
 
   /*
    * `trigger` defaults to the on-screen next button. Media keys pass their own
@@ -547,7 +558,7 @@ export function PlayerProvider({ children }) {
       Promise.resolve(fallback())
         .then((t) => {
           if (stale()) return;
-          if (t) loadTrack(t, { source: 'dj', trigger });
+          if (t) loadTrack(t, { source: 'dj', trigger, data: nextFallbackDataRef.current || undefined });
           else fetchForVibe(undefined, { trigger });
         })
         .catch(() => { if (!stale()) fetchForVibe(undefined, { trigger }); })
