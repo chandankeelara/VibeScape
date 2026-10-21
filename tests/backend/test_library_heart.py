@@ -98,6 +98,22 @@ def test_player_payloads_carry_in_library(client, make_user, make_tracks, cluste
     for name, tracks in lists.items():
         assert tracks, name
         assert all(t["in_library"] is True for t in tracks), name
+        assert all(t["discover"] is False for t in tracks), name
+
+
+def test_discovery_is_the_exception_and_tags_each_track_itself(client, make_user, make_tracks, clusters):
+    """/similar with `discover` reads outside the caller's library, so the
+    default above does not hold there: each row says what it is."""
+    me, h = make_user()
+    other, _ = make_user()
+    mine = make_tracks(me, clusters["A"](3), artist="Mine")
+    theirs = make_tracks(other, clusters["A"](3), artist="Theirs")
+    for out in (client.get(f"/api/tracks/{mine[0]}/similar", params={"discover": 1}, headers=h).json(),
+                client.post(f"/api/tracks/{mine[0]}/similar", headers=h,
+                            json={"mode": "dj", "limit": 8, "discover": True}).json()):
+        got = {t["id"]: (t["in_library"], t["discover"]) for t in out["tracks"]}
+        assert got == {**{t: (True, False) for t in mine[1:]},
+                       **{t: (False, True) for t in theirs}}, out["mode_used"]
 
 
 def test_unlinked_track_leaves_dj_search_and_lists_on_the_next_request(client, make_user, make_tracks, clusters):

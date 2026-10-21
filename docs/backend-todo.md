@@ -1439,6 +1439,31 @@ whose language the tagger could not call gets the instrumental slot. Of the
 instrumental (EDM, film themes, drones). Cheap check: list the verdict
 tracks whose titles do not look instrumental and listen to a few.
 
+## 13. Discovery mode — built 2026-10-21 (branch `backend/discovery`), what is left
+
+`discover` on `/api/tracks/{key}/similar` ranks the whole catalogue with the
+DJ's own query, re-ranks and pool, and tags each track `in_library` /
+`discover` (`backend/app.py:2566`). Off is unchanged.
+
+### 13.1 The Turso SQL has only run on SQLite with stand-in vector functions
+
+`backend/app.py:1347` — the discovery query (no `user_tracks` join, the stats
+join bound by a parameter) is tested through the Turso-shaped harness
+(`tests/backend/test_dj_discover.py`), which proves the SQL parses and binds
+on SQLite, not on libSQL. If libSQL rejects it, the except at the Turso call
+falls through to the numpy path, which on Turso reads every fused vector in
+the catalogue per request. **Suspected-safe.** Cheap check after deploy: one
+discovery request, `mode_used` must end `_turso_discover`, and a WARNING
+`turso vector_distance_cos path failed` must not appear.
+
+### 13.2 The query is centred on the library mean, not measured with discovery on
+
+`backend/app.py:2004` — mu is the caller's library mean, as with discovery
+off. Candidates from outside the library can sit far from that mean, and
+nothing has measured whether language@10 holds. **Suspected.** Check:
+`replay_bench.py` with the pool widened to the catalogue; the pre-approved
+fallback, if it leaks, is the global mean (`_dj_library_mean(conn, 0, ...)`).
+
 ## Checked and clean
 
 Recorded so the next audit does not redo them.
