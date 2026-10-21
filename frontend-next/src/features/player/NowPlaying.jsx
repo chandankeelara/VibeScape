@@ -1,7 +1,8 @@
-import { Suspense, lazy, useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { usePlayer } from '../../state/PlayerContext';
 import { useTheme } from '../../state/ThemeContext';
 import { artColor } from '../../lib/artColor';
+import { lazyWithReload } from '../../lib/chunkReload';
 import { tintFor } from '../../lib/vibe';
 import { useQueueState } from '../queue';
 import { useLyrics } from '../lyrics';
@@ -35,11 +36,11 @@ import styles from './NowPlaying.module.css';
  */
 
 // Loaded on first use — see features/lyrics/index.js.
-const LyricsPanel = lazy(() => import('../lyrics/LyricsPanel'));
-const LyricsStrip = lazy(() => import('../lyrics/LyricsStrip'));
-const LyricsSheet = lazy(() => import('../lyrics/LyricsSheet'));
+const LyricsPanel = lazyWithReload(() => import('../lyrics/LyricsPanel'));
+const LyricsStrip = lazyWithReload(() => import('../lyrics/LyricsStrip'));
+const LyricsSheet = lazyWithReload(() => import('../lyrics/LyricsSheet'));
 // The same chunk DjLine loads for the medium rig.
-const BitDock = lazy(() => import('./bit/BitDock'));
+const BitDock = lazyWithReload(() => import('./bit/BitDock'));
 
 /** Where the lyrics go: null | 'stage' | 'side' | 'theater' | 'sheet'. */
 function lyricsPlace({ on, current, narrow, isVideo, theater }) {
