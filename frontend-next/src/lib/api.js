@@ -147,6 +147,22 @@ export const trackLyrics = (trackKey) =>
 export const spotifyForApple = (appleId) =>
   request(`/api/track/${encodeURIComponent(appleId)}/spotify`);
 
+/* --------------------------------------------------------------- library */
+
+/**
+ * The user's library (the heart). Keys are apiKey(track): the internal id,
+ * else the spotify_id. Add and remove are expected to be idempotent — undo
+ * and a retry can both repeat one. Membership normally arrives as
+ * `in_library` on the track payload; `libraryContains` is the batch fallback
+ * for payloads without it (features/library/libraryStore.js).
+ */
+export const libraryAdd = (trackKey) =>
+  request(`/api/me/library/${encodeURIComponent(trackKey)}`, { method: 'PUT' });
+export const libraryRemove = (trackKey) =>
+  request(`/api/me/library/${encodeURIComponent(trackKey)}`, { method: 'DELETE' });
+export const libraryContains = (trackKeys) =>
+  request(`/api/me/library/contains${qs({ ids: trackKeys.join(',') })}`);
+
 /* --------------------------------------------------------------- youtube */
 
 export const trackYoutube = (trackId) => request(`/api/tracks/${trackId}/youtube`);

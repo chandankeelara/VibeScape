@@ -7,6 +7,10 @@
  *   search — played from search
  *   pick   — chosen off a list (a recommendation)
  *   vibe   — a vibe-band pull after the slider moved (and the first track)
+ *
+ * Callers can name the kind instead (loadTrack's `reason`), for starts this
+ * cannot infer: `recent` (prev) and `resume` (the first track of a page load,
+ * picked by the DJ from the stored session).
  */
 export function startKind({ source, trigger, ended }) {
   // Only the automatic followers honour `ended`: if the follow-up fetch

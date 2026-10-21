@@ -166,19 +166,30 @@
 .stageWrap { position: relative; }
 
 /*
- * The dock is position:fixed in the player; here it has to sit in the page.
- * Position is the ONE property overridden — height, the station offsets,
- * pointer-events and the rig size all come from the real stylesheet, which
- * is the entire point of importing it rather than rebuilding it.
+ * Two cards the width of the places he ships in: the desktop side column
+ * (the vibe card above him is 300-400px) and a 390px phone minus gutters.
+ * The line inside is the real DjLine markup and classes.
  */
-.stageDock {
+.stageRow { display: flex; flex-wrap: wrap; gap: var(--sp-4); }
+.stageCard {
   position: relative;
-  left: auto;
-  right: auto;
-  bottom: auto;
-  border-radius: var(--radius-card);
-  background: var(--surface);
+  padding: var(--sp-7) var(--sp-5) var(--sp-5);
+  border-radius: var(--radius);
+  background: var(--panel);
   border: 1px solid var(--border);
+  overflow: hidden;
+}
+.stageDesk { width: 400px; }
+.stagePhone { width: 342px; --bit-h: var(--bit-h-phone); }
+.stageLabel {
+  position: absolute;
+  top: var(--sp-3);
+  left: var(--sp-5);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
 }
 
 .routine {

@@ -3,6 +3,7 @@ import { trackKey } from '../../lib/vibe';
 import { QueueRow, useQueueState } from '../queue';
 import ui from '../../ui/controls.module.css';
 import RecentTrail from './RecentTrail';
+import DjLine from './DjLine';
 import styles from './PhoneHome.module.css';
 
 /**
@@ -12,13 +13,21 @@ import styles from './PhoneHome.module.css';
  *
  * Hidden above 767px by its own CSS; on desktop the now-playing panel and
  * the queue column carry all of this.
+ *
+ * The DJ line heads the list, with Bit: the home screen is where a phone
+ * spends most of a session, and without it he would only exist behind a tap.
+ * `bitPaused` freezes this copy while it is out of view: the full-screen
+ * player covers it, or the page is wider than a phone and it is display:none.
  */
-export default function PhoneHome() {
+export default function PhoneHome({ bitPaused = false }) {
   const { queue, reorderQueue, current } = usePlayer();
-  const { recs, recsLoading, jumpTo, removeAt, playRec, addRec, consumingKey } = useQueueState();
+  const {
+    recs, recsLoading, jumpTo, removeAt, playRec, addRec, consumingKey, discover,
+  } = useQueueState();
 
   return (
     <section className={styles.home} aria-label="Home">
+      <DjLine className={styles.dj} bitPaused={bitPaused} />
       <RecentTrail variant="shortcuts" className={styles.block} />
 
       <div className={styles.block}>
@@ -50,12 +59,14 @@ export default function PhoneHome() {
         <div className={styles.block}>
           <div className={ui.secHead}>
             <h2 className={ui.secTitle}>For this track</h2>
-            <span className={ui.secAside}>by sound</span>
+            <span className={ui.secAside}>{discover ? 'by sound · discovery' : 'by sound'}</span>
           </div>
           {recsLoading ? (
             <p className={styles.empty}>Finding similar songs…</p>
           ) : recs.length === 0 ? (
-            <p className={styles.empty}>No similar tracks in your library yet.</p>
+            <p className={styles.empty}>
+              {discover ? 'No similar tracks found in the catalogue.' : 'No similar tracks in your library yet.'}
+            </p>
           ) : (
             <ul className={styles.list}>
               {recs.map((t, i) => (

@@ -14,7 +14,16 @@ All weighting lives here. Two pieces of state are rebuilt on every request:
      confidence m in [0, 1] that grows with each skip (faster in a streak)
      and fades on every positive.
 
-  query = normalize(S - NEG_WEIGHT * m * N)
+  query = normalize(S - A)
+  A     = min(NEG_WEIGHT * m, AVOID_CAP) * N', shrunk if need be so that the
+          query stays within atan(AVOID_CAP) of S (56 degrees at 1.5)
+  N'    = N with its language block's component along S's language block
+          removed, renormalised
+
+The avoid term may push away from anything the rejected tracks are --
+their sound, their energy, a language the taste does not hold -- except
+the language the taste itself holds, and it can never turn the query
+further from the taste than the bound: see "The skip overshoot" below.
 
 Everything happens after subtracting the library mean `mu`. Fused vectors
 are strongly anisotropic — measured 2026-10-09 on the local DB (3,783
@@ -40,6 +49,36 @@ steers mostly by what was rejected. Stronger still (NEG_WEIGHT 1.5) lost
 language@10 (0.878) for no AUC. A nearest-skip penalty (max cosine to any
 skipped track) was measured too and lost to this on real-user AUC
 (0.645 at best).
+
+The skip overshoot (2026-10-20). With N subtracted whole and up to twice
+|S|, five listener sessions on the deployed DJ (revision 00028) went wrong
+once they skipped several times: two or three mood skips (Kannada love
+songs in a Kannada mass session) threw two Kannada sessions out of Kannada,
+a workout session that skipped 14 of 26 wandered through four languages,
+film BGM drowned in vocal songs. Two changes. The avoid term is bounded by
+an angle (AVOID_CAP): the query keeps cos >= 0.55 with S however many
+skips. And the language the taste holds is not avoided (AVOID_PERP
+"lang"). A first version removed ALL of N's component along S; that froze
+a session whose one finished song was the wrong vibe -- the skips were the
+taste, so every skip cancelled (indian-heartbreak-9c8502: Badtameez Dil,
+then fifteen party skips and the DJ never moved). Protecting only the
+language block keeps the skip working against the vibe.
+
+On scripts/dj_eval/replay_bench.py --final3 (a copy of
+prod_20261019T024426Z, with fused_vector's instrumental slot): the five
+sessions at 0.94-1.00 of the persona's language (film BGM: 0.94
+instrumentals, from 0.46); three mood skips inside Kannada keep Kannada
+(0.00 -> 1.00); six mixed English skips keep English (0.00 -> 1.00); a
+session that moved to Hindi still drops Kannada on two Kannada skips; the
+off-target seed above leaves party after three skips (party 1.00 -> 0.00
+of the top 10) and stays Hindi (1.00). Real-user AUC 0.746 -> 0.707 (95%
+block bootstrap -0.064..-0.014); the all-of-S version cost twice that
+(0.642). Real sessions are short, and a run of skips there mostly does mean
+"not this"; the listener sessions say that reading is wrong once a
+listener skips for mood. Cap 2.0 gained 0.006 AUC and lost film BGM (0.86);
+1.0 lost 0.013. PR #21's "three Kannada skips after three Kannada songs
+clear Kannada" no longer holds, and cannot together with "three mood skips
+keep the language".
 
 Offline evidence for the original constants (.claude/tmp/dj-compare/harness.py,
 local track_events 2026-10-02..09, 241 DJ-served tracks): finished-vs-
@@ -76,6 +115,18 @@ N_BETA_MAX = 0.8
 M_STEP = 0.5             # confidence gained per skip: 0.5 * depth * amp
 M_MAX = 2.0              # ... capped here
 M_FADE = 0.7             # confidence kept after each positive
+# What the avoid term may not push against. "lang": N's language block loses
+# its component along S's language block (the language the taste and the
+# skips share stays), the audio and scalar blocks are untouched. "full": the
+# whole of N loses its component along S (PR #23's first version; it froze a
+# session whose only accepted song was the wrong vibe). False: neither.
+AVOID_PERP = "lang"
+AVOID_PERP_RENORM = True # ... renormalised to unit length
+# The fused_v2 language block, ingest_pipeline/fused_vector.py: MERT (768) +
+# scalars (9), then 64 slots. "lang" applies to vectors of this width only
+# (tests/backend/test_dj_replay.py checks it against the recipe).
+LANG_BLOCK = (777, 841)
+AVOID_CAP = 1.5          # cap on NEG_WEIGHT * m, in units of |S| (None: no cap)
 
 POSITIVE = frozenset({"searched", "queued", "picked", "completed"})
 KNOWN = POSITIVE | {"next", "skipped"}
@@ -125,20 +176,35 @@ class ReplayResult:
 
 def replay(events: list[dict], vecs: dict, mu: np.ndarray,
            seed_vec: Optional[np.ndarray] = None, *, neg_weight: Optional[float] = None,
-           m_step: Optional[float] = None, m_max: Optional[float] = None) -> ReplayResult:
+           m_step: Optional[float] = None, m_max: Optional[float] = None,
+           avoid_perp: Optional[bool] = None, avoid_cap=...,
+           song_keys: Optional[dict] = None) -> ReplayResult:
     """Replay `events` (already resolved: e["id"] is an internal int) over
     `vecs` {track_id: raw vector}. Tracks with no vector still count toward
     the skip streak but contribute no direction. neg_weight / m_step / m_max
-    default to NEG_WEIGHT / M_STEP / M_MAX; the app passes the pre-fused_v2
-    values when it has to rank fused_v1 vectors (backend/app.py
-    _fused_v2_ready)."""
+    / avoid_perp / avoid_cap default to the module constants; the app passes
+    the pre-fused_v2 values when it has to rank fused_v1 vectors
+    (backend/app.py _fused_v2_ready). avoid_cap=None means no cap.
+
+    song_keys {track_id: same_song.song_key or None}: a skip of a track that
+    is another release of a song an EARLIER event already had (album, then
+    single) is left out entirely -- no avoid term, no skip streak. It says
+    "not again", not "not this vibe": in the Kannada vibe tests the skip of
+    a repeated Belakina Kavithe started a four-skip slide into mass songs."""
     neg_weight = NEG_WEIGHT if neg_weight is None else neg_weight
     m_step = M_STEP if m_step is None else m_step
     m_max = M_MAX if m_max is None else m_max
     S = N = None
     m, k, primed = 0.0, 0, 0.0
+    first_of: dict = {}                    # song key -> the first track id seen with it
     for e in events:
         a = e["action"]
+        if song_keys:
+            sk = song_keys.get(e["id"])
+            if sk is not None:
+                first = first_of.setdefault(sk, e["id"])
+                if a == "skipped" and first != e["id"]:
+                    continue
         v = vecs.get(e["id"])
         x = _unit(_unit(v) - mu) if v is not None else None
         ratio = e.get("played_ratio")
@@ -188,8 +254,67 @@ def replay(events: list[dict], vecs: dict, mu: np.ndarray,
         if seed_vec is None:
             return ReplayResult(None, True, k, m)
         S, from_seed = _unit(_unit(seed_vec) - mu), True
-    q = S if N is None else _unit(S - neg_weight * m * N)
+    perp = AVOID_PERP if avoid_perp is None else avoid_perp
+    cap = AVOID_CAP if avoid_cap is ... else avoid_cap
+    q = S if N is None else _unit(S - _avoid(S, N, neg_weight * m, perp, cap))
     return ReplayResult(q, from_seed, k, m)
+
+
+def _within(S: np.ndarray, A: np.ndarray, cap) -> np.ndarray:
+    """A, shrunk if need be so that S - A stays within atan(cap) of S: the
+    largest t <= 1 with cos(S - t*A, S) >= 1 / sqrt(1 + cap^2). With an A
+    orthogonal to S and |A| <= cap that is A itself; with an A that leans
+    along S (perp "lang": the audio of a skipped vibe is also the taste's)
+    a magnitude cap alone could reverse the taste."""
+    if cap is None:
+        return A
+    floor = 1.0 / np.sqrt(1.0 + cap * cap)
+
+    def cos(t):
+        v = S - t * A
+        n = float(np.linalg.norm(v))
+        return float(v @ S) / n if n > 1e-12 else -1.0
+    if cos(1.0) >= floor:
+        return A
+    lo, hi = 0.0, 1.0
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if cos(mid) >= floor else (lo, mid)
+    return lo * A
+
+
+def _avoid(S: np.ndarray, N: np.ndarray, coef: float, perp, cap) -> np.ndarray:
+    """The vector subtracted from S: coef * N, with coef capped at `cap`
+    unless that is None, and N first stripped of what it shares with S --
+    its language-block component along S's language block (perp "lang"),
+    or its whole component along S (perp "full" / True)."""
+    return _within(S, _avoid_raw(S, N, coef, perp, cap), cap)
+
+
+def _avoid_raw(S, N, coef, perp, cap):
+    if cap is not None:
+        coef = min(coef, cap)
+    if perp == "lang":
+        a, b = LANG_BLOCK
+        if S.shape[0] != b:
+            return coef * N
+        sl = S[a:b]
+        n_sl = float(np.linalg.norm(sl))
+        if n_sl < 1e-9:
+            return coef * N
+        P = N.copy()
+        P[a:b] = N[a:b] - float(N[a:b] @ sl) / n_sl ** 2 * sl
+        n = float(np.linalg.norm(P))
+        if n < 1e-9:
+            return np.zeros_like(S)
+        return coef * (P / n if AVOID_PERP_RENORM else P)
+    if perp:
+        P = N - float(N @ S) * S
+        n = float(np.linalg.norm(P))
+        if n < 1e-9:
+            return np.zeros_like(S)
+        N = P / n if AVOID_PERP_RENORM else P
+    return coef * N
 
 
 def library_mean(vectors) -> Optional[np.ndarray]:

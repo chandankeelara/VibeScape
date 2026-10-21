@@ -25,6 +25,13 @@ import { apiKey } from '../../lib/vibe';
 
 export const DJ_STORAGE_KEY = 'vibescape.sessionEvents';
 export const DJ_TOGGLE_KEY = 'vibescape.djEnabled';
+/**
+ * Discovery: recommendations drawn from the whole catalogue instead of the
+ * user's library. Independent of DJ mode — it widens what both the DJ picks
+ * and the plain vibe-similarity list are chosen from. Off is today's
+ * behaviour, byte for byte: the flag is only ever SENT when it is on.
+ */
+export const DJ_DISCOVER_KEY = 'vibescape.djDiscover';
 
 /** Entries kept in localStorage. The backend reads at most 30 of them. */
 export const DJ_MAX_EVENTS = 50;
@@ -44,6 +51,19 @@ export const DJ_MAX_SENT_EVENTS = 30;
  * restore the session in progress, not ban last week's tracks.
  */
 export const DJ_SEEN_RESEED_HOURS = 3;
+
+/**
+ * How recent the last play in the log must be for a page load to resume the
+ * DJ from it (see resumeSeed). The same window as the seen-set re-seed on
+ * purpose: both answer "is this the session in progress?", and a resumed
+ * start whose exclusions had already lapsed could replay what was just heard.
+ * Older than this, the first track is a vibe-band pull and the DJ takes over
+ * from the second one, still steered by the whole log.
+ */
+export const DJ_RESUME_HOURS = DJ_SEEN_RESEED_HOURS;
+
+/** Actions that mean the track actually played; `queued` is only an add. */
+const PLAYED = new Set(['searched', 'picked', 'completed', 'next', 'skipped']);
 
 /**
  * Exclude list cap. Must equal SEEN_MAX in PlayerContext.jsx — a smaller
@@ -148,6 +168,22 @@ export function persistEnabled(on) {
   }
 }
 
+export function loadDiscover() {
+  try {
+    return localStorage.getItem(DJ_DISCOVER_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function persistDiscover(on) {
+  try {
+    localStorage.setItem(DJ_DISCOVER_KEY, on ? '1' : '0');
+  } catch {
+    /* ignore */
+  }
+}
+
 /* ------------------------------------------------------------ classify */
 
 /**
@@ -196,6 +232,21 @@ export function recentIds(events, hours = DJ_SEEN_RESEED_HOURS, now = Date.now()
 }
 
 /**
+ * The seed a page load resumes the DJ from: the last track the log says was
+ * played, as a minimal track apiKey() turns back into the logged id — or null
+ * when the log is empty or its last play is older than DJ_RESUME_HOURS.
+ */
+export function resumeSeed(events, now = Date.now()) {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (!PLAYED.has(e.action)) continue;
+    if (!(e.ts >= now - DJ_RESUME_HOURS * 3_600_000)) return null;
+    return typeof e.id === 'number' ? { id: e.id } : { spotify_id: String(e.id) };
+  }
+  return null;
+}
+
+/**
  * Internal integer track ids the DJ must not pick again: the session
  * seen-set, plus whatever is currently queued.
  *
@@ -241,7 +292,7 @@ export const eventsSignature = (events) =>
  * track is the seed while it plays); the seed itself is still never returned.
  * api.js degrades to plain similarity if similarTracksDj is not wired yet.
  */
-export async function fetchDjPicks(seed, { events, seen = [], queue = [], limit = 8 }) {
+export async function fetchDjPicks(seed, { events, seen = [], queue = [], limit = 8, discover = false }) {
   const key = apiKey(seed);
   if (!key) return [];
 
@@ -251,18 +302,21 @@ export async function fetchDjPicks(seed, { events, seen = [], queue = [], limit 
       events: events.slice(-DJ_MAX_SENT_EVENTS),
       exclude_ids: excludeIds({ seen, queue }),
       limit,
+      // Omitted, not `false`, when off: an off request is the request the
+      // app sent before discovery existed.
+      ...(discover ? { discover: true } : null),
     });
     return res?.tracks || [];
   }
 
-  const res = await api.similarTracks(key, { limit });
+  const res = await api.similarTracks(key, { limit, ...(discover ? { discover: 1 } : null) });
   return res?.tracks || [];
 }
 
 /** Plain vibe-similarity list, used whenever DJ mode is off. */
-export async function fetchSimilar(seed, { limit = 8 } = {}) {
+export async function fetchSimilar(seed, { limit = 8, discover = false } = {}) {
   const key = apiKey(seed);
   if (!key) return [];
-  const res = await api.similarTracks(key, { limit });
+  const res = await api.similarTracks(key, { limit, ...(discover ? { discover: 1 } : null) });
   return res?.tracks || [];
 }

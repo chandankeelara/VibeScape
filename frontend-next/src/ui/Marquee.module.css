@@ -1,0 +1,36 @@
+/*
+ * The fade lives in padding on the leading side that is pulled back out by
+ * the same amount, into the gutter before the line. So at rest the first
+ * glyph sits exactly where an unscrolled title would, unfaded, and a line
+ * scrolled left dissolves into the gutter instead of being cut at the column
+ * edge. The trailing fade is inside the box: it is the sign there is more.
+ * A parent sets --mq-fade (a className) where its gutter is narrower; it is
+ * read only here, never declared, so the parent's value cannot lose a
+ * cascade-order race with this file.
+ *
+ * The block padding is the same trick for descenders: a mask clips at the
+ * border box, and a tight title line-height puts a "g" below it.
+ */
+.marquee {
+  --mq-bleed: 0.2em;
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  margin-inline-start: calc(-1 * var(--mq-fade, var(--marquee-fade)));
+  padding-inline-start: var(--mq-fade, var(--marquee-fade));
+  margin-block: calc(-1 * var(--mq-bleed));
+  padding-block: var(--mq-bleed);
+}
+/* Only the alpha of a mask counts; black is "fully shown". */
+.marquee[data-over] {
+  -webkit-mask-image: linear-gradient(to right, transparent, black var(--mq-fade, var(--marquee-fade)), black calc(100% - var(--mq-fade, var(--marquee-fade))), transparent);
+  mask-image: linear-gradient(to right, transparent, black var(--mq-fade, var(--marquee-fade)), black calc(100% - var(--mq-fade, var(--marquee-fade))), transparent);
+}
+.text { display: inline-block; width: max-content; }
+
+/* Still, and says so: the line ends in an ellipsis, the tooltip has the rest. */
+@media (prefers-reduced-motion: reduce) {
+  .marquee[data-over] { -webkit-mask-image: none; mask-image: none; }
+  .text { display: block; width: auto; overflow: hidden; text-overflow: ellipsis; }
+}

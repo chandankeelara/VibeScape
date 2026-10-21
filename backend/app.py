@@ -37,6 +37,7 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, Redirec
 from pydantic import BaseModel
 
 from db import ensure_db, get_conn
+import same_song as _same_song
 from dj_replay import library_mean as _dj_mean_of
 from dj_replay import parse_events as _dj_parse_events
 from dj_replay import replay as _dj_replay
@@ -852,6 +853,16 @@ def _row_to_dict(row):
     # activation_relative once library z-scores exist. Expose both; when
     # activation_relative is populated, mirror it into vibe_score for
     # backward-compat filter queries.
+    #
+    # in_library (the player's heart) costs no query: every caller passes a
+    # row its query took through `JOIN user_tracks ut ... ut.user_id = <the
+    # caller>` in the same request (tests/backend/test_library_heart.py
+    # checks each endpoint). A caller that returns rows from outside the
+    # caller's library must set it itself, and so must `discover` (true only
+    # for a song the caller owns no release of), false here for the same
+    # reason. Discovery mode's /similar sets both: _dj_tag_library.
+    out["in_library"] = True
+    out["discover"] = False
     return out
 
 
@@ -960,8 +971,12 @@ def search_tracks(
             return {"tracks": []}
         ids = [h["id"] for h in hits]
         select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
+        # Joined again because the narrow rows are cached and per process: a
+        # track unlinked on another instance stays in its cache for 60 s.
         rows = conn.execute(
-            f"SELECT {select} FROM tracks t WHERE t.id IN ({','.join('?' * len(ids))})", ids
+            f"SELECT {select} FROM tracks t JOIN user_tracks ut ON ut.track_id = t.id "
+            f"WHERE ut.user_id = ? AND t.id IN ({','.join('?' * len(ids))})",
+            [sess["user_id"], *ids],
         ).fetchall()
     except Exception as e:
         log.warning("search_tracks failed for q=%r: %s", query, e)
@@ -998,7 +1013,8 @@ FUSED_DIM = MERT_DIM + FUSED_SCALAR_DIMS + FUSED_LANG_DIMS  # 841
 FUSED_V1_MODEL_VERSION = "fused_v1_mert_scalar_lang"
 FUSED_V1_COLUMN = "fused_embedding"
 FUSED_V1_DIM = MERT_DIM + FUSED_SCALAR_DIMS + 11  # 788
-FUSED_V1_AVOID = {"neg_weight": 0.6, "m_step": 0.25, "m_max": 1.0}
+FUSED_V1_AVOID = {"neg_weight": 0.6, "m_step": 0.25, "m_max": 1.0,
+                  "avoid_perp": False, "avoid_cap": None}
 _FUSED_V2_RECHECK_S = 60.0
 _fused_v2_state = {"ready": None, "checked_at": 0.0, "warned": False}
 
@@ -1322,6 +1338,13 @@ _UTS_SELECT = (
 # per-candidate stats query would be one Hrana POST each (backlog 2.2) --
 # 150 HTTPS round trips per recommendation. That option is not on the table.
 _UTS_JOIN = "LEFT JOIN user_track_stats s ON s.user_id = ut.user_id AND s.track_id = t.id"
+# The same join for discovery mode, whose candidate query has no user_tracks
+# alias to borrow the user from: the user id is a parameter, and it binds
+# after anything in the SELECT list and before the WHERE's. With `_UTS_JOIN`
+# there instead, the Turso SQL fails ("no such column: ut.user_id"), the DJ
+# falls through to the numpy path, and on Turso that path reads every fused
+# vector in the catalogue (~20 MB) on each request.
+_UTS_JOIN_BY_USER = "LEFT JOIN user_track_stats s ON s.user_id = ? AND s.track_id = t.id"
 
 
 def _dj_recency_enabled(display_name=None) -> bool:
@@ -1644,10 +1667,15 @@ class SimilarBody(BaseModel):
     # [frontend contract] — new optional request field, new optional response
     # field `explain` on each track, plus `final_score` alongside `score`.
     explain: Optional[bool] = False
+    # Discovery mode: rank the whole catalogue, not only the caller's
+    # library; each track then says whether it is in the library and
+    # whether it is a discovery (_dj_tag_library). Off: unchanged.
+    # [frontend contract] new optional request field.
+    discover: Optional[bool] = False
 
 
 def _similar_vibe(track_key: str, limit: int, user_id,
-                  display_name=None, explain: bool = False):
+                  display_name=None, explain: bool = False, discover: bool = False):
     """Existing weighted L1 scalar-feature similarity. Returns response dict.
 
     Recency re-ranked on the same terms as DJ mode, and that is deliberate:
@@ -1696,7 +1724,10 @@ def _similar_vibe(track_key: str, limit: int, user_id,
         rerank = _dj_recency_enabled(display_name)
         # Kill switch / guest opt-out: emit exactly the pre-feature SQL.
         stats_select = (",\n" + _UTS_SELECT) if rerank else ""
-        stats_join = ("              " + _UTS_JOIN + "\n") if rerank else ""
+        stats_join = ("              " + (_UTS_JOIN_BY_USER if discover else _UTS_JOIN)
+                      + "\n") if rerank else ""
+        lib_join = "" if discover else "            JOIN user_tracks ut ON ut.track_id = t.id\n"
+        lib_where = "" if discover else "ut.user_id = ?\n              AND "
         fetch = _dj_recency_pool(limit) if rerank else limit
         sql = f"""
             SELECT {select},
@@ -1708,14 +1739,15 @@ def _similar_vibe(track_key: str, limit: int, user_id,
               - CASE WHEN t.mood = ? THEN 0.15 ELSE 0.0 END
               ) AS distance{stats_select}
             FROM tracks t
-            JOIN user_tracks ut ON ut.track_id = t.id
-{stats_join}            WHERE ut.user_id = ?
-              AND t.ingestion_status = 'done'
+{lib_join}{stats_join}            WHERE {lib_where}t.ingestion_status = 'done'
               AND t.id != ?
             ORDER BY distance ASC, t.title COLLATE NOCASE
             LIMIT ?
         """
-        rows = conn.execute(sql, (a_mood, user_id, anchor["id"], fetch)).fetchall()
+        # The user id binds once: in the WHERE, or (discovery, re-ranked) in
+        # the stats join; discovery without the re-rank has neither.
+        uid_args = () if discover and not rerank else (user_id,)
+        rows = conn.execute(sql, (a_mood, *uid_args, anchor["id"], fetch)).fetchall()
         anchor_out = {
             "spotify_id": anchor["spotify_id"],
             "apple_id": anchor["apple_id"],
@@ -1948,8 +1980,11 @@ def _dj_library_mean(conn, user_id, model_version: str, dim: int):
     return mean
 
 
-def _dj_events_query(conn, raw_events, user_id, seed_vec, model_version: str, dim: int):
-    """Resolve the client's event log and replay it. Returns (query, result)."""
+def _dj_events_query(conn, raw_events, user_id, seed_vec, model_version: str, dim: int,
+                     seed_id=None):
+    """Resolve the client's event log and replay it. Returns (query, result,
+    session song keys): the same_song keys of every track in the log, and of
+    the seed, which _dj_drop_repeats keeps out of the response."""
     events = _dj_parse_events(raw_events)
     str_keys = sorted({e["id"] for e in events
                        if isinstance(e["id"], str) and not e["id"].isdigit()})
@@ -1969,10 +2004,40 @@ def _dj_events_query(conn, raw_events, user_id, seed_vec, model_version: str, di
     mu = _dj_library_mean(conn, user_id, model_version, dim)
     if mu is None:
         mu = np.zeros(dim, dtype=np.float64)
+    song_keys = _dj_song_keys(conn, {e["id"] for e in resolved} | ({seed_id} if seed_id else set()))
     avoid = FUSED_V1_AVOID if model_version == FUSED_V1_MODEL_VERSION else {}
-    res = _dj_replay(resolved, vecs, mu, seed_vec, **avoid)
+    res = _dj_replay(resolved, vecs, mu, seed_vec, song_keys=song_keys, **avoid)
     q = res.query.astype(np.float32) if res.query is not None else None
-    return q, res
+    return q, res, {k for k in song_keys.values() if k is not None}
+
+
+def _dj_song_keys(conn, ids) -> dict:
+    """{track_id: same_song.song_key} for `ids`, one query."""
+    ids = sorted(int(i) for i in ids)
+    if not ids:
+        return {}
+    ph = ",".join("?" * len(ids))
+    return {int(r["id"]): _same_song.song_key(r["title"], r["artist"], r["language"])
+            for r in conn.execute(f"SELECT id, title, artist, language FROM tracks "
+                                  f"WHERE id IN ({ph})", ids).fetchall()}
+
+
+def _dj_drop_repeats(items, key_of, session_keys):
+    """`items` (best first) without another release of a song the session
+    already had, nor a second release of a song kept earlier in the list:
+    the DJ served Belakina Kavithe's album and single releases back to back,
+    and Mask Off right after its remix. Both ranking paths call this on
+    their candidate pool, before the recency re-rank and the cut to
+    `limit`, so the response still has `limit` tracks when the pool has."""
+    seen, out = set(session_keys), []
+    for it in items:
+        k = key_of(it)
+        if k is not None:
+            if k in seen:
+                continue
+            seen.add(k)
+        out.append(it)
+    return out
 
 
 def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
@@ -1990,6 +2055,12 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
     limit = max(1, min(int(limit), 25))
     rerank = _dj_recency_enabled(display_name)
     explain = bool(getattr(body, "explain", False))
+    # Discovery ranks the whole catalogue with the same query, re-ranks and
+    # pool; only the user_tracks restriction goes. The query is still
+    # centred on the caller's library mean. A track the caller never played
+    # carries no recency penalty, which leans the top K slightly toward
+    # discoveries; nothing compensates for that, on purpose.
+    discover = bool(getattr(body, "discover", False))
     pool = _dj_recency_pool(limit) if rerank else limit
 
     requested_variant = (body.variant or _DJ_VARIANT_DEFAULT).strip().lower()
@@ -2031,11 +2102,12 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
     # throws the whole session away.
     use_events = body.events is not None
     replay_res = None
+    session_keys = None
 
     if seed_vec is None and not use_events:
         conn.close()
         resp = _similar_vibe(track_key, limit, user_id,
-                             display_name=display_name, explain=explain)
+                             display_name=display_name, explain=explain, discover=discover)
         resp["mode_used"] = "vibe_fallback_no_seed_embedding"
         resp["variant_used"] = None
         return resp
@@ -2047,13 +2119,17 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
             # OWN events count — a search-and-play is the seed, and dropping
             # it (as the weighted path below does) threw away the strongest
             # signal there is. The seed is still excluded from candidates.
-            query_vec, replay_res = _dj_events_query(
-                conn, body.events, user_id, seed_vec, model_version, dim)
+            query_vec, replay_res, session_keys = _dj_events_query(
+                conn, body.events, user_id, seed_vec, model_version, dim, seed_id=anchor_id)
+            # Repeats are filtered out of a pool, so the pool must be deeper
+            # than `limit` even with the recency re-rank off.
+            pool = max(pool, _dj_recency_pool(limit))
             if query_vec is None:
                 # No usable event AND a seed with no vector: nothing to
                 # point a query at. Same fallback as a seed without a vector.
                 resp = _similar_vibe(track_key, limit, user_id,
-                                     display_name=display_name, explain=explain)
+                                     display_name=display_name, explain=explain,
+                                     discover=discover)
                 resp["mode_used"] = "vibe_fallback_no_signal"
                 resp["variant_used"] = None
                 return resp
@@ -2189,28 +2265,37 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
             # the query we were already issuing. With the kill switch set,
             # neither the join nor the wider LIMIT is emitted at all.
             stats_select = (", " + _UTS_SELECT.replace("\n", " ")) if rerank else ""
-            stats_join = (_UTS_JOIN + " ") if rerank else ""
+            stats_join = ((_UTS_JOIN_BY_USER if discover else _UTS_JOIN) + " ") if rerank else ""
+            lib_join = "" if discover else "JOIN user_tracks ut ON ut.track_id = t.id "
+            lib_where = "" if discover else "ut.user_id = ? AND "
             sql = (
                 f"SELECT {select}, "
                 f"       vector_distance_cos(te.{emb_col}, vector32(?)) AS distance"
                 f"{stats_select} "
                 f"FROM tracks t "
-                f"JOIN user_tracks ut ON ut.track_id = t.id "
+                f"{lib_join}"
                 f"JOIN track_embeddings te ON te.track_id = t.id "
                 f"{stats_join}"
-                f"WHERE ut.user_id = ? "
-                f"  AND t.ingestion_status = 'done' "
+                f"WHERE {lib_where}"
+                f"  t.ingestion_status = 'done' "
                 f"  AND te.{emb_col} IS NOT NULL "
                 f"  {excl_sql} "
                 f"ORDER BY distance ASC "
                 f"LIMIT ?"
             )
             try:
-                rows = conn.execute(sql, (qv_str, user_id, pool)).fetchall()
+                # The user id binds once, after the SELECT's vector: in the
+                # WHERE, or (discovery, re-ranked) in the stats join.
+                uid_args = () if discover and not rerank else (user_id,)
+                rows = conn.execute(sql, (qv_str, *uid_args, pool)).fetchall()
             except Exception as e:
                 log.warning("[dj] turso vector_distance_cos path failed: %s; "
                             "falling back to numpy", e)
                 rows = None
+            if rows is not None and session_keys is not None:
+                rows = _dj_drop_repeats(
+                    rows, lambda r: _same_song.song_key(r["title"], r["artist"], r["language"]),
+                    session_keys)
             if rows is not None:
                 # vector_distance_cos returns (1 - cos_sim), so cosine
                 # similarity = 1 - distance. Frontend expects similarity.
@@ -2259,19 +2344,29 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
             # else: fall through to numpy path
 
         # -------- numpy fallback (local dev / cold-start / turso error) --------
-        cand_rows = conn.execute(
-            "SELECT t.id, t.duration_ms FROM tracks t "
-            "JOIN user_tracks ut ON ut.track_id = t.id "
-            "JOIN track_embeddings te ON te.track_id = t.id "
-            "WHERE ut.user_id = ? "
-            "  AND t.ingestion_status = 'done' "
-            f" AND te.{emb_col} IS NOT NULL",
-            (user_id,),
-        ).fetchall()
+        if discover:
+            cand_rows = conn.execute(
+                "SELECT t.id, t.duration_ms, t.title, t.artist, t.language FROM tracks t "
+                "JOIN track_embeddings te ON te.track_id = t.id "
+                "WHERE t.ingestion_status = 'done' "
+                f" AND te.{emb_col} IS NOT NULL",
+            ).fetchall()
+        else:
+            cand_rows = conn.execute(
+                "SELECT t.id, t.duration_ms, t.title, t.artist, t.language FROM tracks t "
+                "JOIN user_tracks ut ON ut.track_id = t.id "
+                "JOIN track_embeddings te ON te.track_id = t.id "
+                "WHERE ut.user_id = ? "
+                "  AND t.ingestion_status = 'done' "
+                f" AND te.{emb_col} IS NOT NULL",
+                (user_id,),
+            ).fetchall()
         # duration_ms rides along on the query we were already issuing; it is
         # the denominator of the skip-depth term and the full track rows are
         # not fetched until after re-ranking on this path.
         cand_duration = {int(r["id"]): r["duration_ms"] for r in cand_rows}
+        cand_key = ({int(r["id"]): _same_song.song_key(r["title"], r["artist"], r["language"])
+                     for r in cand_rows} if session_keys is not None else {})
         cand_ids = [int(r["id"]) for r in cand_rows if int(r["id"]) not in exclude_ids]
         if not cand_ids:
             anchor_out = {
@@ -2345,15 +2440,19 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
             norms[norms < 1e-12] = 1.0
             mat_n = mat / norms
             sims = mat_n @ query_vec.astype(np.float32)
+            ranked = None
+            if session_keys is not None:
+                ranked = _dj_drop_repeats([int(i) for i in np.argsort(-sims)[:pool]],
+                                          lambda i: cand_key.get(int(ids_arr[i])), session_keys)
             if not rerank:
-                order = np.argsort(-sims)[:limit]
+                order = ranked[:limit] if ranked is not None else np.argsort(-sims)[:limit]
                 top_ids = [int(ids_arr[i]) for i in order]
                 top_scores = {int(ids_arr[i]): float(sims[i]) for i in order}
             else:
                 # Pool, not the whole library, so this path displaces ranks by
                 # the same amount the Turso path does -- otherwise local
                 # behaviour would not predict production's.
-                order = np.argsort(-sims)[:pool]
+                order = ranked if ranked is not None else np.argsort(-sims)[:pool]
                 cands = [_mk_cand(int(ids_arr[i]), float(sims[i])) for i in order]
                 top_ids = []
                 top_scores = {}
@@ -2403,6 +2502,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
 def similar_tracks(
     track_key: str,
     limit: int = Query(8, ge=1, le=25),
+    discover: bool = False,
     sess: dict = Depends(require_user),
 ):
     """
@@ -2413,9 +2513,11 @@ def similar_tracks(
     track is excluded from results.
 
     track_key can be a spotify_id (string) or a numeric internal tracks.id.
+    `discover=1` ranks the whole catalogue instead (see SimilarBody).
     """
-    return _similar_vibe(track_key, limit, sess["user_id"],
-                         display_name=sess.get("display_name"))
+    resp = _similar_vibe(track_key, limit, sess["user_id"],
+                         display_name=sess.get("display_name"), discover=discover)
+    return _discover_finish(resp, sess["user_id"]) if discover else resp
 
 
 @app.post("/api/tracks/{track_key}/similar")
@@ -2437,6 +2539,9 @@ def similar_tracks_post(
       explain: bool (default false) — attach a per-track `explain` block with
         the recency penalty breakdown and rank_before / rank_after. Opt-in;
         off by default so no existing client sees a change.
+      discover: bool (default false) — rank the whole catalogue, not only the
+        caller's library. Each track's `in_library` and `discover` are then
+        real, and `mode_used` ends in `_discover`.
 
     Each track carries `score` (cosine similarity on the DJ path, absent on
     the vibe path — unchanged meaning) and, when recency re-ranking is
@@ -2447,12 +2552,58 @@ def similar_tracks_post(
     limit = body.limit if body.limit else 8
     limit = max(1, min(int(limit), 25))
     mode = (body.mode or "vibe").lower()
+    discover = bool(body.discover)
     if mode == "dj":
-        return _similar_dj(track_key, body, sess["user_id"],
+        resp = _similar_dj(track_key, body, sess["user_id"],
                            display_name=sess.get("display_name"))
-    return _similar_vibe(track_key, limit, sess["user_id"],
-                         display_name=sess.get("display_name"),
-                         explain=bool(body.explain))
+    else:
+        resp = _similar_vibe(track_key, limit, sess["user_id"],
+                             display_name=sess.get("display_name"),
+                             explain=bool(body.explain), discover=discover)
+    return _discover_finish(resp, sess["user_id"]) if discover else resp
+
+
+def _dj_tag_library(conn, user_id, tracks) -> None:
+    """Set `in_library` and `discover` on discovery-mode tracks, in place.
+
+    in_library is this row's own link (what the heart's PUT / DELETE acts
+    on): one query over the <= 25 returned ids, never a per-candidate
+    EXISTS in the ranking scan. discover is "not in the library, and no
+    library song shares its same_song key", so another release of a song
+    the caller owns is neither: no tag, and an empty heart. The keys come
+    from _search_rows, cached 60 s and dropped by the heart, so they cost
+    no read on a warm cache. That cache holds analysed ('done') rows only:
+    a library song still in the pipeline does not hide its other releases.
+    """
+    ids = sorted({int(t["id"]) for t in tracks})
+    if not ids:
+        return
+    ph = ",".join("?" * len(ids))
+    linked = {int(r[0]) for r in conn.execute(
+        f"SELECT track_id FROM user_tracks WHERE user_id = ? AND track_id IN ({ph})",
+        (user_id, *ids)).fetchall()}
+    owned = {_same_song.song_key(r["title"], r["artist"], r["language"])
+             for r in _search_rows(conn, user_id)}
+    owned.discard(None)
+    for t in tracks:
+        t["in_library"] = int(t["id"]) in linked
+        t["discover"] = (not t["in_library"]
+                         and _same_song.song_key(t.get("title"), t.get("artist"),
+                                                 t.get("language")) not in owned)
+
+
+def _discover_finish(resp: dict, user_id) -> dict:
+    """Discovery mode's response: real library tags on every track, and a
+    `_discover` suffix on mode_used. At the endpoint, so the vibe fallbacks
+    inside _similar_dj (which overwrite mode_used) get both too."""
+    resp["mode_used"] = f"{resp.get('mode_used')}_discover"
+    if resp.get("tracks"):
+        conn = get_conn()
+        try:
+            _dj_tag_library(conn, user_id, resp["tracks"])
+        finally:
+            conn.close()
+    return resp
 
 
 @app.get("/api/tracks/random")
@@ -3476,6 +3627,63 @@ def ingest_clear(sess: dict = Depends(require_user)):
 
     log.info("ingest/clear user=%s removed %d user_tracks", sess["user_id"], n)
     return {"cleared": int(n), "tracks_pruned": 0, "audio_files_removed": 0}
+
+
+def _library_track_id(conn, track_key: str) -> int:
+    anchor = _resolve_anchor(conn, track_key)
+    if not anchor:
+        raise HTTPException(status_code=404, detail={"error": "track_not_found"})
+    return int(anchor["id"])
+
+
+@app.put("/api/me/library/{track_key}")
+def library_link(track_key: str, sess: dict = Depends(require_user)):
+    """Put one catalogue track in the caller's library (the player's heart).
+
+    Idempotent: a track already linked keeps its row, its added_at and its
+    source. The track need not be analysed; the DJ and the vibe lists pick
+    it up once the offline pipeline has marked it done.
+    """
+    uid = sess["user_id"]
+    conn = get_conn()
+    try:
+        tid = _library_track_id(conn, track_key)
+        # added_at written, not defaulted: production's tables were not made
+        # from schema.sql, and `tracks` there has no defaults (backlog 3.11).
+        conn.execute(
+            "INSERT OR IGNORE INTO user_tracks (user_id, track_id, added_at, source) "
+            "VALUES (?, ?, CURRENT_TIMESTAMP, 'heart')", (uid, tid))
+        conn.commit()
+    finally:
+        conn.close()
+    _search_rows_cache.pop(uid, None)
+    return {"in_library": True, "track_id": tid}
+
+
+@app.delete("/api/me/library/{track_key}")
+def library_unlink(track_key: str, sess: dict = Depends(require_user)):
+    """Take one track out of the caller's library, and nothing else.
+
+    Only the caller's `user_tracks` row goes. The catalogue row, its
+    embeddings, and the caller's track_events and user_track_stats stay, for
+    the reason ingest_clear gives (backlog 1.10): on Turso they cascade from
+    `tracks`, and history is the source of truth. Idempotent.
+
+    The DJ and every track list read `user_tracks` per request, so the next
+    one no longer offers the track. user_embedding_mean is not touched: it
+    is rebuilt past 5% drift in the library count, and one track is inside
+    that from the 50-track floor up (below it the global mean is used).
+    """
+    uid = sess["user_id"]
+    conn = get_conn()
+    try:
+        tid = _library_track_id(conn, track_key)
+        conn.execute("DELETE FROM user_tracks WHERE user_id = ? AND track_id = ?", (uid, tid))
+        conn.commit()
+    finally:
+        conn.close()
+    _search_rows_cache.pop(uid, None)
+    return {"in_library": False, "track_id": tid}
 
 
 class IngestSources(BaseModel):
@@ -4635,7 +4843,8 @@ _STATS_UPSERT_CHUNK = 20       # user_track_stats rows per statement (20 x 28 = 
 _EVENT_TYPES = ("play_start", "play_end", "pause", "resume", "seek", "queue_add")
 _PLAY_TYPES = ("play_start", "play_end")
 # App-level events with no track, stored in user_events (same envelope).
-_APP_EVENT_TYPES = ("session_start", "session_end", "search", "vibe_change", "dj_toggle")
+_APP_EVENT_TYPES = ("session_start", "session_end", "search", "vibe_change", "dj_toggle",
+                    "discover_toggle")
 _VIBE_SOURCES = ("user", "system")
 _EVENT_DATA_MAX_CHARS = 2000   # serialised `data` object; longer is dropped, not truncated
 _EVENT_DATA_MAX_KEYS = 12
@@ -5160,7 +5369,7 @@ async def post_track_events(request: Request, sess: dict = Depends(require_user)
                        "seek" | "queue_add"
                      app events -> user_events (no track):
                        "session_start" | "session_end" | "search" |
-                       "vibe_change" | "dj_toggle"
+                       "vibe_change" | "dj_toggle" | "discover_toggle"
         spotify_id   22-char Spotify id                    (track events: required unless track_id)
         track_id     internal tracks.id                    (alternative key)
         position_ms  play_end / pause / resume: the playhead
@@ -5175,8 +5384,9 @@ async def post_track_events(request: Request, sess: dict = Depends(require_user)
         tz_offset_min  client offset, minutes east of UTC
         data         flat JSON object of type-specific extras (seek from_ms /
                      to_ms, queue_add via, search query / counts / outcome,
-                     vibe_change from / to, dj_toggle on, session platform /
-                     duration_ms). Nested or oversized objects are dropped.
+                     vibe_change from / to, dj_toggle / discover_toggle on,
+                     play_start discover (a DJ pick from discovery),
+                     session platform / duration_ms). Nested or oversized objects are dropped.
         vibe         slider value 0-100 at the time
         vibe_source  "user" | "system" — who last set that slider value.
                      Expected on every event; an absent or unrecognised value
@@ -5595,14 +5805,49 @@ def serve_next_alias(_path: str = ""):
     return RedirectResponse(url="/", status_code=308)
 
 
+# Cache policy for the built SPA. Vite names everything under /assets/ by
+# content hash, so those bytes never change under one URL and may be cached
+# for a year. Every other file (index.html, sw.js, manifest.json, icons) keeps
+# its name across builds and must be revalidated, or a tab keeps the previous
+# build's index.html and asks for chunks the new dist/ no longer has.
+IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
+REVALIDATE_CACHE = "no-cache"
+
+
+def _not_modified(request: Request, headers) -> bool:
+    """True when the client's validators match the file. FileResponse sets
+    ETag and Last-Modified but never answers a conditional request itself
+    (Starlette 1.6; only StaticFiles does), so without this a no-cache
+    revalidation re-downloads index.html every time instead of getting a 304."""
+    inm = request.headers.get("if-none-match")
+    if inm is not None:
+        tags = {t.strip().removeprefix("W/") for t in inm.split(",")}
+        return "*" in tags or headers["etag"] in tags
+    ims = request.headers.get("if-modified-since")
+    return ims is not None and ims == headers["last-modified"]
+
+
+def _static_file(request: Request, file: Path, cache_control: str) -> Response:
+    resp = FileResponse(str(file), headers={"Cache-Control": cache_control},
+                        stat_result=os.stat(file))
+    if _not_modified(request, resp.headers):
+        return Response(status_code=304, headers={
+            k: resp.headers[k] for k in ("etag", "last-modified", "cache-control")})
+    return resp
+
+
 @app.get("/{path:path}", include_in_schema=False)
-def serve_react(path: str = ""):
+def serve_react(request: Request, path: str = ""):
     """
     Serve the built React SPA.
 
     A real file (hashed asset, manifest.json, sw.js, icons/*) is served
-    directly; anything else falls back to index.html so client-side routes
-    resolve on a hard refresh.
+    directly. A missing file is a 404 when the path is under /assets/ or has
+    an extension: answering index.html there (200, text/html) is what turned a
+    stale tab's lazy import of a chunk the last deploy deleted into "Failed to
+    fetch dynamically imported module" plus a MIME error, which the client
+    cannot tell from a real module (2026-10-21). Anything else is a client
+    route and falls back to index.html so a hard refresh resolves.
 
     This is a catch-all and MUST remain the last route registered.
     """
@@ -5613,7 +5858,13 @@ def serve_react(path: str = ""):
                     "hint": "cd frontend-next && npm install && npm run build"},
         )
     candidate = (NEXT_DIR / path).resolve()
+    is_asset = path.startswith("assets/")
     # Containment check — never serve outside the dist directory.
     if path and candidate.is_file() and NEXT_DIR.resolve() in candidate.parents:
-        return FileResponse(str(candidate))
-    return FileResponse(str(NEXT_DIR / "index.html"))
+        return _static_file(request, candidate,
+                            IMMUTABLE_CACHE if is_asset else REVALIDATE_CACHE)
+    if is_asset or "." in path.rsplit("/", 1)[-1]:
+        # no-store: a CDN must not keep this 404 for a name a newer build
+        # may yet serve.
+        return Response(status_code=404, headers={"Cache-Control": "no-store"})
+    return _static_file(request, NEXT_DIR / "index.html", REVALIDATE_CACHE)

@@ -4,6 +4,7 @@ import { useVolume } from '../../state/useVolume';
 import Icon from '../../ui/Icon';
 import Range from '../../ui/Range';
 import Equalizer from '../../ui/Equalizer';
+import Marquee from '../../ui/Marquee';
 import ui from '../../ui/controls.module.css';
 import MoodSlider from './MoodSlider';
 import { PipButton, PlayButton, Seek, Times, TransportButtons } from './Transport';
@@ -111,7 +112,7 @@ export default function PlayerBar({
           ) : (
             <span className={styles.text}>
               <span className={styles.title}>
-                <span className={styles.titleText}>{current?.title || 'Nothing playing'}</span>
+                <Marquee className={styles.titleText} text={current?.title || 'Nothing playing'} />
                 {current && <Equalizer />}
               </span>
               <span className={styles.artist}>{current?.artist || 'Move the vibe to begin'}</span>

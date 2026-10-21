@@ -272,8 +272,22 @@ language nothing to normalise (28 rows wait for a tag), fuse 8, youtube 8
 wrote 4,872 in 8 s. 71 s in all, exit 0; `ingestion_status` done went 4,882
 → 4,890. `--concurrent` has not run against production (10.1).
 
-### 1.13 Production's `tracks` has no indexes: every gate scans, and the app can insert a track twice (it has) — app side DONE (2026-10-17), prod scripts ready and dry-run (2026-10-18), prod run pending approval
+### 1.13 Production's `tracks` has no indexes: every gate scans, and the app can insert a track twice (it has) — DONE (app 2026-10-17; prod dedupe + indexes 2026-10-18)
 `backend/app.py` `_process_track` / `_link_track`, `schema.sql` (`idx_tracks_spotify_id`, `idx_tracks_apple_id`, `idx_tracks_ingestion_status`, `idx_tracks_isrc`)
+
+**Prod run, done 2026-10-18** (approved by the owner, run from the main
+checkout after PR #16 merged, pipeline stopped):
+
+- `scripts/backup_prod_db.py` first, then `scripts/_dedupe_tracks.py --target
+  prod` dry run (271 groups, 292 rows to delete, 47 apple_id cleared, 557
+  user_tracks on losers: 76 re-pointed, 481 folded), then `--apply`. It ended
+  "verified: no duplicates, no orphans, no recording or event lost, stats
+  equal a rebuild"; tracks went 6,262 -> 5,970.
+- `scripts/_turso_create_track_indexes.py --target prod --apply` then built
+  UNIQUE `idx_tracks_spotify_id` and `idx_tracks_apple_id` (partial, NOT
+  NULL), plain `idx_tracks_isrc` and `idx_tracks_ingestion_status`; a
+  re-run reported all four "exists". So a spotify_id now names exactly one
+  row on prod, and the double-insert race is closed by the index.
 
 **App side, done 2026-10-17** (branch `backend/ingest-dedupe`,
 `tests/backend/test_process_track.py` and the `_process_track` tests at the
@@ -655,7 +669,7 @@ the DJ until a second source exists. The chain is iTunes-only on purpose —
 Deezer audio shifts MERT embeddings — so the choice (Deezer, or a 30 s clip
 from the `youtube_id` already on the row) is a design decision, not a fix.
 
-### 3.9 The same song stored twice under different ISRCs is recommended twice
+### 3.9 ~~The same song stored twice under different ISRCs is recommended twice~~ — DONE in the DJ (2026-10-20, see 12.4); the catalogue still holds both
 `backend/app.py` `_similar_dj`
 
 **verified by querying the 2026-10-12 prod backup.** 78 groups share a
@@ -1305,10 +1319,12 @@ what production should use.
 `backend/lyrics.py`), cached per track in `track_lyrics`
 (`tests/backend/test_lyrics.py`).
 
-### 11.1 `track_lyrics` must be created on Turso before deploy
+### 11.1 ~~`track_lyrics` must be created on Turso before deploy~~ — DONE (2026-10-18)
 `schema.sql` (end), `scripts/_turso_create_track_lyrics.py`
 
-**verified locally, not run on prod.** `ensure_db()` no-ops on Turso.
+**Run on prod 2026-10-18** (dry run, then `--apply`: "created
+track_lyrics"), before the deploy that shipped the endpoint (revision
+vibescape-00027). Kept for the record: `ensure_db()` no-ops on Turso.
 Without the table the endpoint still answers (it logs a warning and skips
 the cache), but asks LRCLIB on every request. Run
 `python scripts/_turso_create_track_lyrics.py --target prod` (dry run),
@@ -1334,6 +1350,20 @@ behind. Harmless (a cache, keyed by an id nothing will look up again), but
 the keeper does not inherit the loser's lyrics either and is fetched anew.
 Add the table to the dedupe script's list if that ever costs anything.
 
+### 11.4 `tests/frontend/lyricsProvider.test.jsx` is flaky
+`tests/frontend/lyricsProvider.test.jsx`
+
+**verified 2026-10-19 by running it three times on main, unchanged code:**
+one run passed all 5 tests, one failed 2 ("the active line follows the
+clock and the offset", "a preview plays plain lyrics"), one failed a third
+("the YouTube path stays plain until the video length matches"). A
+different test failing each run points at timing in the test, not at the
+feature, which works in use (local preview and prod, 2026-10-18/19).
+Likely a missing `await`/`act`, or real and fake timers racing. It makes
+`python tests/run_all.py` fail at random, which teaches people to ignore
+red. Fix by making the test wait properly; prove it with ~20 consecutive
+green runs. Deferred by the owner, 2026-10-19.
+
 ## 12. DJ language — built 2026-10-19 (branch `backend/dj-language`), what is left
 
 The fused space is now `fused_v2`, 841 wide, in its own column
@@ -1346,21 +1376,9 @@ session language re-rank was built and measured, and lost
 (`scripts/dj_eval/language_rerank.py`). Measured offline with
 `scripts/dj_eval/replay_bench.py --final`; the PR has the tables.
 
-### 12.1 Production needs the migration before the deploy
-`scripts/refuse_vectors.py`, `deploy/cloud-run/deploy.ps1`
-
-**verified on a local copy only** (dry run, apply, re-run, then the app and
-the HTTP eval on it). On Turso nothing adds `fused_v2_embedding` but the
-migration (`ensure_db()` no-ops there). Deployed first, the app ranks
-fused_v1 instead (`_fused_v2_ready`: one zero-row probe, cached, re-checked
-every minute while missing, one warning): v1 column, 788 wide, v1 mean key,
-pre-fused_v2 avoid constants, never mixed with v2 in a request. That is the
-previous revision's DJ, so the order is still backup, migrate, deploy; a
-wrong order degrades instead of failing (tested on a Turso-shaped SQLite
-file, where without the fallback every request dies on "no such column"). The migration
-is an ALTER TABLE ADD COLUMN (no row rewrite) and ~5.3k UPDATEs in
-execute_batch chunks of 200; it reads every fused row's MERT blob raw (what
-FuseStage does on every prod run). Nothing in it has run against Turso.
+### 12.1 ~~Production needs the migration before the deploy~~ — DONE (2026-10-19)
+Prod was migrated and runs fused_v2 (revision 00028). The pre-migration
+fallback (`_fused_v2_ready`) stays until 12.2's cleanup.
 
 ### 12.2 Drop `fused_embedding` once fused_v2 has run on prod — the rollback path until then
 `schema.sql`, `scripts/refuse_vectors.py`
@@ -1376,26 +1394,28 @@ Until then a fuse from a checkout that has not pulled writes only the old
 column and the track stays out of the DJ pool; re-running the migration
 fills it.
 
-### 12.3 Two skips of one sound take its language with it
-`backend/dj_replay.py` (NEG_WEIGHT, M_STEP, M_MAX)
+### 12.3 ~~Two skips of one sound take its language with it~~ — DONE (2026-10-20)
+`backend/dj_replay.py` (AVOID_PERP "lang")
 
-**verified on synthetic vectors.** Four Kannada songs of one sound, then
-two Kannada songs of another sound skipped (a mood skip): the top 10 turns
-Hindi. The skipped tracks share sound and language, and the avoid direction
-carries both. The session re-rank did the same (its Kannada score went
-negative). On the recorded listener sessions, whose skips are mostly about
-mood, language@10 is 0.952 (0.983 in v1), so it bites rarely, but a
-listener who skips two songs in their own language can lose it.
+The avoid term no longer pushes against the language the taste holds: N's
+language block loses its component along S's. Mood skips and skips of an
+entirely different sound in the session's language both keep the language
+(`test_mood_skips_inside_a_language_keep_the_language`,
+`test_skips_of_another_sound_in_the_same_language_keep_the_language`),
+while a session that has moved to Hindi still drops Kannada on Kannada
+skips.
 
-### 12.4 A skipped track's other release can stay
-`scripts/dj_eval/replay_bench.py` (scenario `twin`)
+### 12.4 ~~A skipped track's other release can stay~~ — DONE (2026-10-20)
+`backend/same_song.py`, `backend/app.py` `_dj_drop_repeats`
 
-**verified offline.** Search a track and skip it: its other release (same
-cleaned title and primary artist) is in the top 10 in 0.68 of draws before
-and after. With only that one track in the session S and N point the same
-way and the avoid term only shrinks the query. A nearest-skip penalty took
-it to 0.33 but lost on real-user AUC (0.644). Belongs with the duplicate
-filtering work.
+The DJ drops any candidate that is another release of a song in the
+session's log or of the seed, and any second release of a song already in
+the response, on both ranking paths; a skip of such a repeat no longer
+feeds the avoid term. Same-song repeats in the served top 10 went 0.189 ->
+0.000 of listener moments and 0.252 -> 0.000 of real-user ones
+(`replay_bench.py --final4`). It is per session only: a different release
+of a song played yesterday can still come back (that is the recency
+re-rank's job, by track id).
 
 ### 12.5 What the language work saw for the out-of-scope items
 `scripts/dj_eval/replay_bench.py`
@@ -1411,12 +1431,75 @@ filtering work.
   0.61 -> 0.75 from the avoid term alone. Item-level skip negatives are the
   obvious next measurement.
 
-## 13. DJ score — built 2026-10-19 (branch `backend/dj-score`), what is left
+### 12.6 The skip fix costs some real-user AUC; real-user replay and listener sessions pull opposite ways
+`backend/dj_replay.py`, `scripts/dj_eval/replay_bench.py`
+
+**verified offline (2026-10-20).** The angle-bounded avoid term that keeps
+the taste's language fixes the five regressed listener sessions, the
+skip-heavy scenarios and the off-target seed, and real-user
+finished-vs-skipped AUC drops 0.746 -> 0.707 (block bootstrap
+-0.064..-0.014). Protecting all of S instead cost 0.104. The real users'
+logs are short skip runs where "skipped three songs" mostly does mean "not
+this", and an unbounded avoid term ranked the next skip low; the listener
+sessions show the same term overshooting once someone skips for mood.
+Before tuning the avoid term again: real-user AUC rewards it
+monotonically, the listener sessions punish it past a point, and the
+benchmark reports both (`replay_bench.py --final3`). PR #21's scenario
+"three Kannada skips after three Kannada songs clear Kannada" (`skip3`) no
+longer holds and cannot together with "three mood skips keep the
+language".
+
+### 12.8 A search is 80% of the taste, so a chill session that searched lo-fi gets instrumentals
+`backend/dj_replay.py` ETA_SEARCHED
+
+**verified offline (2026-10-20, by the team lead).** english-chill-aef5e7
+searched SYML, SYML, then a lo-fi track: the last search makes up ~80% of S
+(ETA_SEARCHED = 0.8), and the top 20 was 0 English / 20 instrumental with
+the instrumental slot and 0 / 17 without it -- not the slot's doing. Lower
+ETA_SEARCHED, or weight a search by how many searches came before it;
+measure on `replay_bench.py --final3` before changing it.
+
+### 12.7 The instrumental slot is set by the "no language" verdict, which also covers uncallable titles
+`ingest_pipeline/fused_vector.py` (INSTRUMENTAL, lang_code)
+
+**suspected.** `language_tagging.tag(clear=True)` is documented as "an
+instrumental, or a title that genuinely cannot be called", so a vocal track
+whose language the tagger could not call gets the instrumental slot. Of the
+235 verdict tracks on the 2026-10-20 copy a title sample was all
+instrumental (EDM, film themes, drones). Cheap check: list the verdict
+tracks whose titles do not look instrumental and listen to a few.
+
+## 13. Discovery mode — built 2026-10-21 (branch `backend/discovery`), what is left
+
+`discover` on `/api/tracks/{key}/similar` ranks the whole catalogue with the
+DJ's own query, re-ranks and pool, and tags each track `in_library` /
+`discover` (`backend/app.py:2566`). Off is unchanged.
+
+### 13.1 The Turso SQL has only run on SQLite with stand-in vector functions
+
+`backend/app.py:1347` — the discovery query (no `user_tracks` join, the stats
+join bound by a parameter) is tested through the Turso-shaped harness
+(`tests/backend/test_dj_discover.py`), which proves the SQL parses and binds
+on SQLite, not on libSQL. If libSQL rejects it, the except at the Turso call
+falls through to the numpy path, which on Turso reads every fused vector in
+the catalogue per request. **Suspected-safe.** Cheap check after deploy: one
+discovery request, `mode_used` must end `_turso_discover`, and a WARNING
+`turso vector_distance_cos path failed` must not appear.
+
+### 13.2 The query is centred on the library mean, not measured with discovery on
+
+`backend/app.py:2004` — mu is the caller's library mean, as with discovery
+off. Candidates from outside the library can sit far from that mean, and
+nothing has measured whether language@10 holds. **Suspected.** Check:
+`replay_bench.py` with the pool widened to the catalogue; the pre-approved
+fallback, if it leaks, is the global mean (`_dj_library_mean(conn, 0, ...)`).
+
+## 14. DJ score — built 2026-10-19 (branch `backend/dj-score`), what is left
 
 `scripts/dj_eval/score_dj.py` scores a DJ version from listener sessions on
 the three vibe tests in `scenarios.json` and keeps `scoreboard.json`.
 
-### 13.2 Steer tests are not built yet
+### 14.2 Steer tests are not built yet
 `scripts/dj_eval/scenarios.json`, `scripts/dj_eval/score_dj.py`
 
 **by decision (2026-10-19).** The suite measures only whether the DJ keeps a
@@ -1426,7 +1509,7 @@ vibe leaks back) is unmeasured. A design was built and set aside in PR #24's
 history (commit d9f52fd): phase A 5 picks, phase B 10, a `feedback --vibe
 A|B|other` tag for leak.
 
-### 13.1 The scoreboard's commit is whatever `--commit` says
+### 14.1 The scoreboard's commit is whatever `--commit` says
 `scripts/dj_eval/score_dj.py` `main`, `scripts/dj_eval/serve.py`
 
 **verified by reading.** Nothing records which code served a round:

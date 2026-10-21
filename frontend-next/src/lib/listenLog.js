@@ -246,9 +246,10 @@ const PLAYBACKS = new Set(['spotify', 'preview', 'youtube']);
 /**
  * A track started playing. `source` is where the pick came from, `playback`
  * what is about to play it. Unknown values are dropped rather than sent as
- * something the contract doesn't define.
+ * something the contract doesn't define. `data` is the event's free-form
+ * object (the backend keeps it, capped at 12 keys); sent only when given.
  */
-export function startPlay(track, { source, playback } = {}) {
+export function startPlay(track, { source, playback, data } = {}) {
   install();
   recoverAbandoned();
   const id = identify(track);
@@ -260,7 +261,13 @@ export function startPlay(track, { source, playback } = {}) {
   const src = SOURCES.has(source) ? source : undefined;
   const pb = PLAYBACKS.has(playback) ? playback : undefined;
   open = { id, source: src, playback: pb, startedAt: Date.now(), listenedMs: 0, playingSince: null };
-  emit({ type: 'play_start', ...id, ...(src ? { source: src } : null), ...(pb ? { playback: pb } : null) });
+  emit({
+    type: 'play_start',
+    ...id,
+    ...(src ? { source: src } : null),
+    ...(pb ? { playback: pb } : null),
+    ...(data && typeof data === 'object' ? { data } : null),
+  });
   saveOpen();
 }
 

@@ -39,6 +39,8 @@ python scripts/dj_eval/report.py                                                
 | `report.py` | per-persona transcripts, acceptance by DJ step, reviews, side by side |
 | `replay_bench.py` | replays the recorded listener sessions and the real users' `track_events` through `dj_replay`, in vector spaces it rebuilds in memory; finished-vs-skipped AUC, language match, duplicates, the 'single' scenario's group precision offline, and synthetic scenarios (a 70/30 library, skips, a language switch, mixed skips, another release of a skipped track). `--final` is the PR #21 table |
 | `scenarios.json`, `score_dj.py`, `scoreboard.json` | the vibe tests and their listener prompts; one score per DJ version; the committed scoreboard (below) |
+| `replay_bench.py --final3` | the skip-overshoot table (2026-10-20; `--final2` is its first version): the old DJ, revision 00028, the candidates; also prints the five regression sessions (`REGRESSION`, scored on the persona's language, film BGM on instrumentals) and the skip-heavy scenarios (mood3, wander6, moved, seedoff3-5, film3 / drone3). A config that wins real-user AUC but fails these is not a candidate: that gap is how the overshoot shipped |
+| `replay_bench.py --final4` | the same-song filter (2026-10-20) on PR #23, with `repeat@10`: the share of moments whose top 10 holds another release of a session song or two releases of one song |
 | `language_rerank.py` | the session language re-rank that was measured against the vector-only DJ and not shipped; kept so the comparison reproduces |
 | `dj-listener.agent.md` | the agent definition |
 

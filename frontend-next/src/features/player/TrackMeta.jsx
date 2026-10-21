@@ -5,13 +5,16 @@ import {
 import { languageLabel } from '../queue/labels';
 import Icon from '../../ui/Icon';
 import Equalizer from '../../ui/Equalizer';
+import Marquee from '../../ui/Marquee';
+import { HeartButton } from '../library';
 import ui from '../../ui/controls.module.css';
 import Skeleton from './Skeleton';
 import styles from './TrackMeta.module.css';
 
 /**
- * Title / artist · album / genre, the badge row, and the two quiet actions
- * (verify, metrics). S2: content is loud, secondary items recede.
+ * Title (one line, scrolling when it must) with its actions (the heart),
+ * artist · album / genre, the badge row, and the two quiet actions (verify,
+ * metrics). S2: content is loud, secondary items recede.
  *
  * The VIBE badge and the mood badge describe THIS track, so they are coloured
  * and named by the track's own score — not by the user's slider.
@@ -22,17 +25,25 @@ export default function TrackMeta({ onShowMetrics, compact = false }) {
   // Checked BEFORE `current`, because during a track change `current` is still
   // the track that just finished — so without this the title would name the
   // previous song under a "picking" stage. Bar widths deliberately mismatch so
-  // the block reads as text, not as a form.
+  // the block reads as text, not as a form. Every bar stands in the SAME box
+  // the real line uses, quiet row included, so the column does not shrink and
+  // regrow around a track change.
   if (loadingTrack) {
     return (
-      <section className={styles.meta} aria-busy="true">
-        <Skeleton w="64%" h="clamp(26px, 3.6dvh, 42px)" />
+      <section className={`${styles.meta} ${compact ? styles.compact : ''}`} aria-busy="true">
+        <p className={styles.overline}><Equalizer />Now playing</p>
+        <div className={styles.titleRow}>
+          <div className={styles.titleBox}><Skeleton w="64%" h="0.8em" /></div>
+          <div className={styles.actions}><HeartButton track={null} /></div>
+        </div>
         <div className={styles.byline}><Skeleton w="38%" h="16px" /></div>
+        <p className={styles.genre} />
         <div className={styles.badges}>
           <Skeleton w="62px" h="22px" r="var(--r-sm)" />
           <Skeleton w="36px" h="22px" r="var(--r-sm)" />
           <Skeleton w="72px" h="22px" r="var(--r-sm)" />
         </div>
+        <div className={styles.quiet} />
       </section>
     );
   }
@@ -40,7 +51,9 @@ export default function TrackMeta({ onShowMetrics, compact = false }) {
   if (!current) {
     return (
       <section className={styles.meta}>
-        <h1 className={styles.title}>Move the slider to begin</h1>
+        <div className={styles.titleRow}>
+          <div className={styles.titleBox}><h1 className={styles.title}><Marquee text="Move the slider to begin" /></h1></div>
+        </div>
         <p className={styles.byline}>Pick a vibe and the DJ will find something.</p>
       </section>
     );
@@ -53,8 +66,17 @@ export default function TrackMeta({ onShowMetrics, compact = false }) {
   return (
     <section className={`${styles.meta} ${compact ? styles.compact : ''}`}>
       <p className={styles.overline}><Equalizer />Now playing</p>
-      <h1 className={styles.title}>{current.title || 'Untitled'}</h1>
-      <p className={styles.byline}>
+      {/* The title takes what the actions leave, and the actions are always
+          the same buttons, so the box is one width whatever the song. */}
+      <div className={styles.titleRow}>
+        <div className={styles.titleBox}>
+          <h1 className={styles.title}><Marquee text={current.title || 'Untitled'} /></h1>
+        </div>
+        <div className={styles.actions}>
+          <HeartButton track={current} />
+        </div>
+      </div>
+      <p className={styles.byline} title={[current.artist, current.album].filter(Boolean).join(' · ') || undefined}>
         <span className={styles.artist}>{current.artist || 'Unknown artist'}</span>
         {current.album && (
           <>
@@ -63,7 +85,8 @@ export default function TrackMeta({ onShowMetrics, compact = false }) {
           </>
         )}
       </p>
-      {current.genre && <p className={styles.genre}>{current.genre}</p>}
+      {/* Rendered when empty too: the line's box is part of the fixed column. */}
+      <p className={styles.genre}>{current.genre || ''}</p>
 
       <div className={styles.badges}>
         {vibe != null ? (

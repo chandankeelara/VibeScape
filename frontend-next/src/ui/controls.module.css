@@ -68,7 +68,7 @@
 }
 
 .badge {
-  height: 22px;
+  height: var(--badge-h);
   padding: 0 var(--sp-2);
   border-radius: var(--r-sm);
   display: inline-flex;
@@ -90,6 +90,14 @@
   font-variant-numeric: tabular-nums;
 }
 .badgeMood { text-transform: capitalize; }
+/* A Discovery find: not in the user's library. Outlined, not filled, so it
+   never reads as a second VIBE badge, and in --text so it holds the same
+   contrast in both themes whatever the vibe accent is. */
+.badgeDiscover {
+  color: var(--text);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--line-2);
+}
 .badgeSmall { height: 18px; padding: 0 5px; font-size: var(--fs-2xs); }
 .badgeDot { width: 6px; height: 6px; border-radius: 50%; background: var(--spotify); flex: none; }
 

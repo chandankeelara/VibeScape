@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { usePlayer } from '../../state/PlayerContext';
 import { useApplyTheme } from '../../state/ThemeContext';
 import { applyAccent } from '../../lib/vibe';
+import { importWithReload } from '../../lib/chunkReload';
 import useMediaQuery, { PHONE, WIDE } from '../../lib/useMediaQuery';
 import { QueueSidebar, QueueStateProvider } from '../queue';
 import { SyncJobProvider, SyncPill, useSyncJob } from '../sync';
@@ -11,6 +12,7 @@ import NowPlaying from './NowPlaying';
 import PhoneHome from './PhoneHome';
 import PlayerBar from './PlayerBar';
 import useKeyboardShortcuts from './useKeyboardShortcuts';
+import useFirstTrack from './useFirstTrack';
 import useTheaterMode from './useTheaterMode';
 import usePictureInPicture from './usePictureInPicture';
 import MiniPlayer from './MiniPlayer';
@@ -51,7 +53,7 @@ function readQueuePref() {
 }
 
 function PlayerStage() {
-  const { current, fetchForVibe, vibe, mode } = usePlayer();
+  const { vibe, mode } = usePlayer();
   const [metricsOpen, setMetricsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
@@ -118,11 +120,7 @@ function PlayerStage() {
     onToggleQueue: toggleQueue,
   });
 
-  // Seed the first track once, on mount.
-  useEffect(() => {
-    if (!current) fetchForVibe(vibe);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  useFirstTrack();
 
   useAutoMinimise(syncOpen, () => setSyncOpen(false));
 
@@ -142,7 +140,7 @@ function PlayerStage() {
       />
 
       <div className={styles.content}>
-        <PhoneHome />
+        <PhoneHome bitPaused={!isPhone || npOpen} />
         <NowPlaying
           theater={theater}
           canTheater={canTheater}
@@ -195,8 +193,8 @@ function LazyPanels({ metricsOpen, onCloseMetrics, helpOpen, onCloseHelp, syncOp
   useEffect(() => {
     if (!anyOpen || mods) return;
     Promise.all([
-      import('../sync').catch(() => ({})),
-      import('../panels').catch(() => ({})),
+      importWithReload(() => import('../sync'), {}),
+      importWithReload(() => import('../panels'), {}),
     ]).then(([sync, panels]) => setMods({ ...sync, ...panels }));
   }, [anyOpen, mods]);
 

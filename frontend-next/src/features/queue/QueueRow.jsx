@@ -10,17 +10,34 @@
  * The whole row is the hit area for "play" (the main button's ::before covers
  * it); grip and actions sit above that layer.
  *
+ * A track the backend marks `discover: true` (Discovery mode: from the
+ * catalogue, not the user's library) carries a "Discover" badge until the
+ * user hearts it — membership is read live from the library store, so the
+ * badge goes the moment the heart fills, on every copy of the track.
+ *
  * The drag engine (useQueueDrag) finds rows by data-drag-* attributes and the
  * grip by data-drag-handle — keep both.
  */
 
-import { memo } from 'react';
+import { memo, useSyncExternalStore } from 'react';
 import { isMetadataOnly, trackAccentStyle, trackKey, trackVibe } from '../../lib/vibe';
+import { inLibrary, subscribe as subscribeLibrary } from '../library/libraryStore';
 import { languageLabel } from './labels';
 import Icon from '../../ui/Icon';
 import Equalizer from '../../ui/Equalizer';
 import ui from '../../ui/controls.module.css';
 import styles from './QueueRow.module.css';
+
+/**
+ * True while `track` is a Discovery find that is still not in the library.
+ * Reads the store directly rather than through useInLibrary, which would ask
+ * GET /contains for every row without an `in_library`; a row that is not a
+ * find never needs to know.
+ */
+function useDiscovered(track) {
+  const snap = () => track?.discover === true && inLibrary(track) !== true;
+  return useSyncExternalStore(subscribeLibrary, snap, snap);
+}
 
 const langCode = (code) => (code ? String(code).trim().slice(0, 4).toUpperCase() : '');
 
@@ -36,6 +53,7 @@ function QueueRow({
   const title = track.title || '(unknown)';
   const artist = track.artist || track.album || '';
   const hasGrip = isQueue && draggable;
+  const discovered = useDiscovered(track) && !isNow;
 
   const onGripKeyDown = (ev) => {
     if (!isQueue || !onMove) return;
@@ -87,6 +105,14 @@ function QueueRow({
               SDK
             </span>
           )}
+          {discovered && (
+            <span
+              className={`${ui.badge} ${ui.badgeSmall} ${ui.badgeDiscover}`}
+              title="Not in your library — found by Discovery"
+            >
+              Discover
+            </span>
+          )}
           <span className={styles.artist}>{artist}</span>
         </span>
       </span>
@@ -115,7 +141,7 @@ function QueueRow({
           type="button"
           className={`${styles.main} ${styles.mainBtn}`}
           onClick={() => onActivate?.(track, index)}
-          aria-label={isQueue ? `Play ${title} now and skip ahead` : `Play ${title} now`}
+          aria-label={`${isQueue ? `Play ${title} now and skip ahead` : `Play ${title} now`}${discovered ? ' (Discover: not in your library)' : ''}`}
         >
           {body}
         </button>

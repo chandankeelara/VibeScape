@@ -30,7 +30,7 @@ import styles from './QueueSidebar.module.css';
 export default function QueueSidebar({ variant = 'panel', open = true, onClose }) {
   const { queue, clearQueue, reorderQueue, current, vibe } = usePlayer();
   const {
-    djEnabled, djToggle, recs, recsLoading, hasAnchor, consumingKey,
+    djEnabled, djToggle, discover, toggleDiscover, recs, recsLoading, hasAnchor, consumingKey,
     jumpTo, removeAt, playRec, addRec, insertAt,
   } = useQueueState();
 
@@ -85,6 +85,17 @@ export default function QueueSidebar({ variant = 'panel', open = true, onClose }
               title="DJ mode — picks shaped by what you play, skip and add"
             >
               <span>DJ mode</span>
+              <span className={ui.switchTrack} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className={ui.switch}
+              role="switch"
+              aria-checked={discover}
+              onClick={toggleDiscover}
+              title="Discovery — recommend from the whole catalogue, not just your library. Shuffle (no DJ, empty queue) still plays from your library."
+            >
+              <span>Discovery</span>
               <span className={ui.switchTrack} aria-hidden="true" />
             </button>
             {overlay && (
@@ -145,6 +156,7 @@ export default function QueueSidebar({ variant = 'panel', open = true, onClose }
               {djEnabled
                 ? 'Shaped by what you play, skip and add'
                 : `Picked by sound, near vibe ${vibe}`}
+              {discover && ' · whole catalogue'}
             </p>
             {recsLoading ? (
               <p className={styles.loading}>
@@ -153,9 +165,13 @@ export default function QueueSidebar({ variant = 'panel', open = true, onClose }
               </p>
             ) : recs.length === 0 ? (
               <p className={styles.note}>
-                {hasAnchor
-                  ? 'No similar tracks in your library yet.'
-                  : 'Play a track to see similar songs from your library.'}
+                {discover
+                  ? (hasAnchor
+                    ? 'No similar tracks found in the catalogue.'
+                    : 'Play a track to see similar songs from the catalogue.')
+                  : (hasAnchor
+                    ? 'No similar tracks in your library yet.'
+                    : 'Play a track to see similar songs from your library.')}
               </p>
             ) : (
               <ul className={styles.list}>

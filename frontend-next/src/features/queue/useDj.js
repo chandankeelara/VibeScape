@@ -20,8 +20,10 @@ import {
   appendEvent,
   classifyTransition,
   eventsSignature,
+  loadDiscover,
   loadEnabled,
   loadEvents,
+  persistDiscover,
   persistEnabled,
   persistEvents,
   recentIds,
@@ -50,6 +52,7 @@ export function useDj() {
   const toast = useToast();
 
   const [enabled, setEnabled] = useState(loadEnabled);
+  const [discover, setDiscover] = useState(loadDiscover);
   const [events, setEvents] = useState(loadEvents);
 
   /**
@@ -210,12 +213,32 @@ export function useDj() {
     );
   }, [enabled, toast]);
 
+  // Logged like dj_toggle (the backend accepts `discover_toggle` since PR
+  // #30). Which mode served a given DJ play also rides on that play's
+  // play_start (QueueState passes it through setNextFallback).
+  const toggleDiscover = useCallback(() => {
+    const next = !discover;
+    setDiscover(next);
+    persistDiscover(next);
+    logEvent('discover_toggle', { data: { on: next } });
+    toast(
+      next
+        ? 'Discovery on — recommendations from the whole catalogue, not just your library.'
+        : 'Discovery off — recommendations from your library.',
+      next ? 'success' : 'info'
+    );
+  }, [discover, toast]);
+
   const signature = useMemo(() => eventsSignature(events), [events]);
 
   // Stable identity: the sidebar passes these straight into memoized rows, and
   // a fresh object every render would defeat that.
   return useMemo(
-    () => ({ enabled, toggle, events, signature, recordQueued, recordSearched, recordPicked, recordTransitionNow, onSample }),
-    [enabled, toggle, events, signature, recordQueued, recordSearched, recordPicked, recordTransitionNow, onSample]
+    () => ({
+      enabled, toggle, discover, toggleDiscover, events, signature,
+      recordQueued, recordSearched, recordPicked, recordTransitionNow, onSample,
+    }),
+    [enabled, toggle, discover, toggleDiscover, events, signature,
+      recordQueued, recordSearched, recordPicked, recordTransitionNow, onSample]
   );
 }

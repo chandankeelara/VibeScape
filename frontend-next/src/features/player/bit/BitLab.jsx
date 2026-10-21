@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import BitRig from './BitRig';
 import { ANIMATIONS, META, SUGGESTED_PROP, classFor } from './manifest';
 import dock from './BitDock.module.css';
+import line from '../DjLine.module.css';
 import styles from './BitLab.module.css';
 
 /**
@@ -17,11 +18,11 @@ import styles from './BitLab.module.css';
  *      timings, because each beat is only as good as its hand-off.
  *   3. EVERY VARIANT — the full grid, for choosing between options.
  *
- * The in-context stage imports the REAL BitDock.module.css rather than
- * approximating it. CSS Modules hash per file, so reusing the module yields
- * the identical hashed classes and this preview cannot drift from what ships.
- * Only `position` is overridden, since the dock is fixed to the viewport and
- * here it has to sit in the page.
+ * The in-context stage imports the REAL DjLine.module.css and
+ * BitDock.module.css rather than approximating them. CSS Modules hash per
+ * file, so reusing a module yields the identical hashed classes and this
+ * preview cannot drift from what ships. Two widths: the desktop side column
+ * and a phone, each with the sentence he stands beside.
  */
 
 const STATES = Object.keys(ANIMATIONS);
@@ -80,14 +81,24 @@ export default function BitLab() {
         <Head
           n="01"
           title="In the player"
-          note="Real dock stylesheet, real scale. Nothing here is a mock-up."
+          note="Beside the DJ line, with the real DjLine and dock stylesheets, at ship scale: the desktop side column, then a phone. Nothing here is a mock-up."
         />
 
         <div className={styles.stageWrap}>
-          <div className={`${dock.dock} ${styles.stageDock}`}>
-            <div className={dock.spot}>
-              <BitRig className={`${dock.rig} ${classFor(animKey)}`} prop={prop} />
-            </div>
+          <div className={styles.stageRow}>
+            {[['desktop', styles.stageDesk], ['phone', styles.stagePhone]].map(([label, cls]) => (
+              <div key={label} className={`${styles.stageCard} ${cls}`}>
+                <span className={styles.stageLabel}>{label}</span>
+                <div className={`${line.line} ${line.withBit}`}>
+                  <span className={line.bit}>
+                    <span className={dock.dock} style={{ '--beat': `${beat}s` }}>
+                      <BitRig className={`${dock.rig} ${classFor(animKey)}`} prop={prop} />
+                    </span>
+                  </span>
+                  <p className={line.say}>DJ is off. Playing near your vibe</p>
+                </div>
+              </div>
+            ))}
           </div>
           <Routine onStep={pick} />
         </div>
@@ -181,12 +192,30 @@ export default function BitLab() {
 /* ----------------------------------------------------------------- chrome */
 
 function TopBar({ total, bpm, setBpm, speed, setSpeed }) {
+  const [theme, setTheme] = useState('dark');
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
   const reduced =
     typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   return (
     <header className={styles.bar}>
       <span className={styles.brand}>Bit<em>{total} animations</em></span>
+
+      {/* The player sets data-theme only while it is mounted, and this page
+          replaces it, so the lab carries its own switch for checking light. */}
+      <span className={styles.seg}>
+        {['dark', 'light'].map((t) => (
+          <button
+            key={t} type="button"
+            className={theme === t ? styles.segOn : styles.segBtn}
+            onClick={() => setTheme(t)}
+          >
+            {t}
+          </button>
+        ))}
+      </span>
 
       <label className={styles.ctl}>
         <span>tempo</span>

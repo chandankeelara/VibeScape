@@ -126,6 +126,8 @@ export function PlayerProvider({ children }) {
   // shapes the next choice. Deliberately a ref, not state: registering must not
   // re-render, and DJ must never write into the user's visible queue.
   const nextFallbackRef = useRef(null);
+  /** `data` for the play_start of a track the fallback serves; see setNextFallback. */
+  const nextFallbackDataRef = useRef(null);
 
   // `next` changes identity whenever the queue does, but the media layer's
   // onEnded handler must be registered exactly once. Route through a ref so
@@ -319,10 +321,12 @@ export function PlayerProvider({ children }) {
    * Until 2026-10-10 the default was 'search', so older rows mix the two.
    * `endReason` defaults to 'skipped' inside the media layer — see the note on
    * player.loadTrack() for why that default is the correct one. `trigger` is
-   * how the user ended the previous track.
+   * how the user ended the previous track. `data` rides on the play_start
+   * event as its free-form `data` object (the DJ path stamps the discovery
+   * mode there).
    */
   const loadTrack = useCallback(
-    (t, { syncVibe = true, source = 'pick', endReason, trigger, reason } = {}) => {
+    (t, { syncVibe = true, source = 'pick', endReason, trigger, reason, data } = {}) => {
       if (!t) return;
       // Supersedes any pick still in flight, and ends its loading overlay:
       // that pick will now drop its result instead of loading it.
@@ -341,7 +345,7 @@ export function PlayerProvider({ children }) {
       // but NOT on the random vibe fetch — that track is already inside the
       // requested band, so snapping would drift the slider on every skip.
       if (syncVibe) setVibeFromTrack(t);
-      player.loadTrack(t, { mode, source, endReason, trigger });
+      player.loadTrack(t, { mode, source, endReason, trigger, data });
     },
     [mode, pushRecent, setVibeFromTrack, markSeen]
   );
@@ -512,8 +516,51 @@ export function PlayerProvider({ children }) {
     });
   }, []);
 
-  /** Register an async () => track|null used instead of a random vibe pull. */
-  const setNextFallback = useCallback((fn) => { nextFallbackRef.current = fn; }, []);
+  /**
+   * Register an async () => track|null used instead of a random vibe pull.
+   * `playData` is attached to the play_start of every track it serves — the
+   * DJ registers `{ discover }`, so served plays can be split by mode later.
+   */
+  const setNextFallback = useCallback((fn, playData = null) => {
+    nextFallbackRef.current = fn;
+    nextFallbackDataRef.current = fn ? playData : null;
+  }, []);
+
+  /**
+   * Play what an async DJ `picker` returns, or a vibe-band pull if it returns
+   * nothing or fails. Used by next() with the registered fallback, and by the
+   * first track of a resumed DJ session (QueueState's startFirst), which
+   * passes `reason: 'resume'` for the DJ line.
+   *
+   * The picker is a round trip to POST /similar, so this is the one path
+   * where a track change can take a visible moment with nothing on screen to
+   * say so. fetchForVibe() raises the loading flag itself; the DJ branch of
+   * next() once did not, which left the hero card on the previous track's art.
+   *
+   * The round trip can lose a race. If anything loads a track (a search
+   * pick, a queue jump, prev) or starts another pick while /similar is in
+   * flight, the generation moves and this result is dropped whole: no
+   * load, no fallback to fetchForVibe, and so no play_start / play_end
+   * either, since those are only emitted from player.loadTrack().
+   */
+  const djPick = useCallback((picker, { trigger, reason, data } = {}) => {
+    const gen = ++loadGen.current;
+    const stale = () => gen !== loadGen.current;
+    setLoadingTrack(true);
+    // Called synchronously, as next() always has; a synchronous throw still
+    // lands in the catch below.
+    new Promise((resolve) => resolve(picker()))
+      .then((t) => {
+        if (stale()) return;
+        if (t) loadTrack(t, { source: 'dj', trigger, reason, data });
+        else fetchForVibe(undefined, { trigger });
+      })
+      .catch(() => { if (!stale()) fetchForVibe(undefined, { trigger }); })
+      // Normally stale by now: loadTrack cleared the flag, or fetchForVibe
+      // took it over, or a newer load superseded this one. Still current
+      // only if something threw before either ran, and then it is ours.
+      .finally(() => { if (!stale()) setLoadingTrack(false); });
+  }, [loadTrack, fetchForVibe]);
 
   /*
    * `trigger` defaults to the on-screen next button. Media keys pass their own
@@ -531,34 +578,11 @@ export function PlayerProvider({ children }) {
     }
     const fallback = nextFallbackRef.current;
     if (fallback) {
-      // The DJ fallback is a round trip to POST /similar, so it is the one
-      // path where "next" can take a visible moment with nothing on screen
-      // to say so. fetchForVibe() raises this flag itself; this branch never
-      // did, which left the hero card sitting on the previous track's art.
-      //
-      // The round trip can lose a race. If anything loads a track (a search
-      // pick, a queue jump, prev) or starts another pick while /similar is in
-      // flight, the generation moves and this result is dropped whole: no
-      // load, no fallback to fetchForVibe, and so no play_start / play_end
-      // either, since those are only emitted from player.loadTrack().
-      const gen = ++loadGen.current;
-      const stale = () => gen !== loadGen.current;
-      setLoadingTrack(true);
-      Promise.resolve(fallback())
-        .then((t) => {
-          if (stale()) return;
-          if (t) loadTrack(t, { source: 'dj', trigger });
-          else fetchForVibe(undefined, { trigger });
-        })
-        .catch(() => { if (!stale()) fetchForVibe(undefined, { trigger }); })
-        // Normally stale by now: loadTrack cleared the flag, or fetchForVibe
-        // took it over, or a newer load superseded this one. Still current
-        // only if something threw before either ran, and then it is ours.
-        .finally(() => { if (!stale()) setLoadingTrack(false); });
+      djPick(fallback, { trigger, data: nextFallbackDataRef.current || undefined });
       return;
     }
     fetchForVibe(undefined, { trigger });
-  }, [queue, loadTrack, fetchForVibe]);
+  }, [queue, djPick, fetchForVibe]);
 
   /*
    * prev() used to do its work INSIDE the setRecent updater, so that it could
@@ -605,7 +629,7 @@ export function PlayerProvider({ children }) {
   const value = useMemo(
     () => ({
       vibe, setVibe, shiftVibe, mood: moodFor(vibe).name,
-      current, loadTrack, fetchForVibe, loadingTrack, setVibeFromTrack,
+      current, loadTrack, fetchForVibe, djPick, loadingTrack, setVibeFromTrack,
       playing, togglePlay, seek, next, prev, setNextFallback,
       mode, setPlaybackMode, videoState, resolveYoutubeId,
       verifying, startVerify, stopVerify, canVerify: canVerify(current),
@@ -614,7 +638,7 @@ export function PlayerProvider({ children }) {
       markSeen, getSeenIds,
       recent, startInfo,
     }),
-    [vibe, setVibe, shiftVibe, current, loadTrack, fetchForVibe, loadingTrack, setVibeFromTrack,
+    [vibe, setVibe, shiftVibe, current, loadTrack, fetchForVibe, djPick, loadingTrack, setVibeFromTrack,
      playing, togglePlay, seek, next, prev, setNextFallback, mode, setPlaybackMode, videoState, resolveYoutubeId, verifying, startVerify, stopVerify, source,
      queue, enqueue, enqueueAt, dequeueAt, clearQueue, reorderQueue, markSeen, getSeenIds, recent, startInfo]
   );

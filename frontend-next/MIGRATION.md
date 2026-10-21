@@ -319,6 +319,26 @@ Screenshots were taken against a build with `media/player.js` swapped for a
 fake and every `/api` call mocked; nothing here has run against the real
 endpoint, the Spotify SDK's clock or a real YouTube video yet.
 
+## Discovery mode (`src/features/queue/`)
+
+A "Discovery" switch beside "DJ mode" in the queue header (persisted as
+`vibescape.djDiscover`, independent of DJ mode). On, both recommendation
+paths ask the backend to search the whole catalogue: `POST /similar` gets
+`discover: true`, `GET /similar` gets `?discover=1`. Off sends exactly the
+pre-discovery request (the field is omitted, not `false`).
+
+- The recs query key is built once, `recsQueryKey()` in `useRecs.js`, and
+  carries the flag; the DJ autoplay picker fetches under the same key.
+- Each returned track has `in_library` (the heart's state) and `discover`
+  (not in the library and no library song shares its same_song key). A row
+  shows a "Discover" badge while `discover` is true and the track is not
+  hearted; the badge reads the library store, so it goes when the heart fills.
+- DJ-served plays carry `data: { discover }` on their `play_start`
+  (`setNextFallback(fn, playData)` in PlayerContext), so real listening can be
+  split by pool.
+- `/api/tracks/random` (shuffle with DJ off and an empty queue) stays
+  library-only; the switch's tooltip says so.
+
 ## Gotchas discovered during the port
 
 **`trackKey()` must stay spotify_id-first.** `_resolve_anchor`
@@ -371,3 +391,6 @@ so nothing breaks at import time — it 404s.
 - DJ mode's `natural` end flag is inferred from played ratio rather than the
   media `ended` event. `player.js` exposes a real seam (`setHooks.onEnded`) if
   that's ever worth tightening.
+- **Toggling Discovery logs no event.** The backend's app-event types are a
+  closed list (`dj_toggle` but no `discover_toggle`); the mode is recoverable
+  from DJ-served `play_start.data.discover` only.
