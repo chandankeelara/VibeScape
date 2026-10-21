@@ -11,6 +11,7 @@ import NowPlaying from './NowPlaying';
 import PhoneHome from './PhoneHome';
 import PlayerBar from './PlayerBar';
 import useKeyboardShortcuts from './useKeyboardShortcuts';
+import useFirstTrack from './useFirstTrack';
 import useTheaterMode from './useTheaterMode';
 import usePictureInPicture from './usePictureInPicture';
 import MiniPlayer from './MiniPlayer';
@@ -51,7 +52,7 @@ function readQueuePref() {
 }
 
 function PlayerStage() {
-  const { current, fetchForVibe, vibe, mode } = usePlayer();
+  const { vibe, mode } = usePlayer();
   const [metricsOpen, setMetricsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
@@ -118,11 +119,7 @@ function PlayerStage() {
     onToggleQueue: toggleQueue,
   });
 
-  // Seed the first track once, on mount.
-  useEffect(() => {
-    if (!current) fetchForVibe(vibe);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  useFirstTrack();
 
   useAutoMinimise(syncOpen, () => setSyncOpen(false));
 

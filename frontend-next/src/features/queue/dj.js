@@ -53,6 +53,19 @@ export const DJ_MAX_SENT_EVENTS = 30;
 export const DJ_SEEN_RESEED_HOURS = 3;
 
 /**
+ * How recent the last play in the log must be for a page load to resume the
+ * DJ from it (see resumeSeed). The same window as the seen-set re-seed on
+ * purpose: both answer "is this the session in progress?", and a resumed
+ * start whose exclusions had already lapsed could replay what was just heard.
+ * Older than this, the first track is a vibe-band pull and the DJ takes over
+ * from the second one, still steered by the whole log.
+ */
+export const DJ_RESUME_HOURS = DJ_SEEN_RESEED_HOURS;
+
+/** Actions that mean the track actually played; `queued` is only an add. */
+const PLAYED = new Set(['searched', 'picked', 'completed', 'next', 'skipped']);
+
+/**
  * Exclude list cap. Must equal SEEN_MAX in PlayerContext.jsx — a smaller
  * value here would silently drop entries the seen-set still remembers,
  * making tracks eligible again while the frontend believed they were excluded.
@@ -216,6 +229,21 @@ export function recentIds(events, hours = DJ_SEEN_RESEED_HOURS, now = Date.now()
   const ids = new Set();
   for (const e of events) if (e.ts >= cutoff) ids.add(e.id);
   return [...ids];
+}
+
+/**
+ * The seed a page load resumes the DJ from: the last track the log says was
+ * played, as a minimal track apiKey() turns back into the logged id — or null
+ * when the log is empty or its last play is older than DJ_RESUME_HOURS.
+ */
+export function resumeSeed(events, now = Date.now()) {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (!PLAYED.has(e.action)) continue;
+    if (!(e.ts >= now - DJ_RESUME_HOURS * 3_600_000)) return null;
+    return typeof e.id === 'number' ? { id: e.id } : { spotify_id: String(e.id) };
+  }
+  return null;
 }
 
 /**
