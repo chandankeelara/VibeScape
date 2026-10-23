@@ -50,6 +50,19 @@ METRICS
                for the language work; reported so a change that worsens
                them shows.
   p@10         group precision, as run_eval.py's 'single' scenario.
+  genre@10     share of the top 10 whose primary genre is the seed's
+               (scripts/dj_eval/genres.py), over listener and real-user
+               moments whose seed is genre-tagged; n says how many.
+
+GENRE WEIGHT GRID
+  --w-genre 0,0.10,0.15,0.20,0.25 runs only the shipped fused_v2 space
+  (AZ) and one fused_v3 space per weight (G<w>: fused_vector.v3_weights(w),
+  the genre block's weight taken from MERT's), all with the shipped
+  dj_replay and the same-song filter, and prints genre@10, language@10,
+  real-user AUC and the regression sessions side by side. G0 is fused_v2
+  padded with zeros and must equal AZ on every number
+  (tests/dj_real/test_replay_bench.py). Genre is read from the copy's
+  genre_scores; a copy without the columns has no tagged seed.
 
 Writes data/dj_eval/reports/replay_bench_<stamp>.json and prints tables.
 """
@@ -74,6 +87,7 @@ sys.path.insert(0, str(_REPO / "backend"))
 sys.path.insert(0, str(_REPO / "scripts"))
 
 from dj_eval import language_rerank as dj_language  # noqa: E402  (measured, not shipped)
+from dj_eval.genres import genre_share, primary_genre  # noqa: E402
 import dj_replay  # noqa: E402
 import same_song  # noqa: E402
 from dj_replay import MAX_EVENTS, library_mean, parse_events, replay  # noqa: E402
@@ -119,9 +133,13 @@ def build_space(rows, mert, langs, weights, v1=False, instrumental=False,
 
 
 def _build_space(rows, mert, langs, weights, v1=False, instrumental=False) -> np.ndarray:
-    """langs None: the shipped slot table (fused_vector.LANG_CODES, 64 wide)."""
+    """langs None: the shipped slot table (fused_vector.LANG_CODES, 64 wide).
+    Three weights build fused_v2 (_build_fused_v2), four build fused_v3
+    (_build_fused: + the genre block, read from the row's genre_scores)."""
+    v3 = weights is not None and len(weights) == 4
     width = fv.LANG_BLOCK if langs is None else len(langs) + 1
-    out = np.empty((len(rows), fv.MERT_DIM + len(fv.SCALAR_COLS) + width))
+    out = np.empty((len(rows), fv.MERT_DIM + len(fv.SCALAR_COLS) + width
+                    + (fv.GENRE_DIMS if v3 else 0)))
     for i, r in enumerate(rows):
         if v1:
             sc = np.array([fv._norm_scalar(c, r.get(c)) for c in fv.SCALAR_COLS], dtype=np.float32)
@@ -131,7 +149,8 @@ def _build_space(rows, mert, langs, weights, v1=False, instrumental=False) -> np
             # Without `instrumental` a 'no language' verdict stays all zeros, as
             # in every recipe before the zxx slot (2026-10-20).
             row = r if instrumental else {**r, "language_status": None}
-            out[i] = fv._build_fused(row, mert[i], langs=langs, weights=weights)
+            build = fv._build_fused if v3 else fv._build_fused_v2
+            out[i] = build(row, mert[i], langs=langs, weights=weights)
     return out
 
 
@@ -143,10 +162,14 @@ def load(db: Path):
     conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     cols = ", ".join(f"t.{c}" for c in fv.SCALAR_COLS)
+    # A copy from before the genre columns still loads: no track is tagged.
+    have = {r[1] for r in conn.execute("PRAGMA table_info(tracks)")}
+    genre = ", ".join(f"t.{c}" if c in have else f"NULL AS {c}"
+                      for c in ("genre_scores", "genre_status"))
     rows, mert, stored = [], [], []
     for r in conn.execute(
             f"SELECT t.id, t.title, t.artist, t.album, t.language, t.language_status, "
-            f"       t.duration_ms, t.vibe_score_ml, {cols}, "
+            f"       t.duration_ms, t.vibe_score_ml, {genre}, {cols}, "
             f"       te.mert_embedding AS m, te.fused_embedding AS f "
             f"FROM tracks t JOIN track_embeddings te ON te.track_id = t.id "
             f"WHERE t.ingestion_status = 'done' AND te.fused_embedding IS NOT NULL "
@@ -500,7 +523,7 @@ class Ranker:
         seed = self.vecs.get(m["seed"])
         mu = self.mu.copy()
         if center == "nolang":
-            mu[fv.MERT_DIM + len(fv.SCALAR_COLS):] = 0.0
+            mu[fv.MERT_DIM + len(fv.SCALAR_COLS):fv.FUSED_V2_DIM] = 0.0
         replay_kw = dict(replay_kw or {})
         same = replay_kw.pop("SAME_SONG", False)
         saved = {k: getattr(dj_replay, k) for k in replay_kw}
@@ -521,8 +544,18 @@ class Ranker:
             if i is not None:
                 elig[i] = False
         cand = np.flatnonzero(elig)
-        order = cand[np.argsort(-sims[cand], kind="stable")]
-        rank = np.empty(len(self.ids), dtype=np.int64)
+        # Cosines rounded to 1e-9, ties by position: otherwise float64 noise
+        # (~1e-16, which the vector's width alone changes) orders two
+        # candidates that tie, and fused_v3 at W_GENRE 0 -- fused_v2 padded
+        # with zeros -- differed from fused_v2 at one real-user moment of
+        # 3,579 on the 2026-10-20 copy (2026-10-23).
+        order = cand[np.argsort(-np.round(sims[cand], 9), kind="stable")]
+        # -1: not eligible (the seed, or seen in the window), so not ranked.
+        # It was np.empty, and a served track that was also the seed or
+        # excluded (a repeat) read uninitialised memory as its rank: 19 of
+        # 3,579 real-user moments on the 2026-10-20 copy, which moved
+        # real-user AUC from run to run (2026-10-23).
+        rank = np.full(len(self.ids), -1, dtype=np.int64)
         rank[order] = np.arange(len(order))
         top = order[:POOL_MAX]
         return {"events": events, "order": order, "rank": rank, "n": len(order), "mu": mu,
@@ -592,7 +625,9 @@ class Ranker:
             if t in pool_rank:
                 return pool_rank[t]
             i = self.pos.get(t)
-            return None if i is None else int(P["rank"][i])
+            if i is None or P["rank"][i] < 0:
+                return None
+            return int(P["rank"][i])
         return new_pool[:K], rank_of
 
 
@@ -644,6 +679,7 @@ def evaluate(rankers, moments, pools, rr, meta, nearest=None):
     served = defaultdict(list)
     fut, lang_hit, untag, dup_skip, dup_seen, top8, offered = [], [], [], [], [], [], []
     repeat, repeat_real = [], []
+    genre10 = defaultdict(list)
     grp = defaultdict(list)
     scen = defaultdict(list)
     reg = defaultdict(lambda: defaultdict(list))
@@ -664,6 +700,9 @@ def evaluate(rankers, moments, pools, rr, meta, nearest=None):
             key = m["group"] if m["family"] == "lang" else "band:" + m["group"]
             grp[key].append(sum(t in m["members"] for t in top) / K)
             continue
+        g = genre_share(m["seed"], top, meta.get("primary_genre", {}))
+        if g is not None:
+            genre10[m["src"]].append(g)
         r = rank_of(m["served"])
         if r is not None:
             served[m["src"]].append((r / P["n"], m["label"]))
@@ -732,6 +771,10 @@ def evaluate(rankers, moments, pools, rr, meta, nearest=None):
         # already had, or two releases of one song, in the top 10.
         "repeat10_listener": mean(repeat),
         "repeat10_real": mean(repeat_real),
+        # The seed's primary genre in the top 10, tagged seeds only.
+        "genre10_listener": mean(genre10["listener"]),
+        "genre10_real": mean(genre10["real"]),
+        "n_genre": {"listener": len(genre10["listener"]), "real": len(genre10["real"])},
         "groups": {g: mean(v) for g, v in sorted(grp.items())},
         "scenarios": {k: mean(v) for k, v in sorted(scen.items())},
         "regression": {sid: {k: mean(v) for k, v in d.items()} for sid, d in sorted(reg.items())},
@@ -746,11 +789,11 @@ SPACES = {
     # name: (langs, weights, v1)
     "v1_stored": None,
     "v1_rebuilt": (V1_LANGS, None, True),
-    "A": (None, (fv.W_MERT, fv.W_SCALAR, fv.W_LANG), False),       # prod (2026-10-19): 64 slots
-    "AZ": (None, (fv.W_MERT, fv.W_SCALAR, fv.W_LANG), False, True), # + the instrumental slot
-    "AZ1": (None, (fv.W_MERT, fv.W_SCALAR, fv.W_LANG), False, True, 1.0),   # ... at full weight
-    "AZ50": (None, (fv.W_MERT, fv.W_SCALAR, fv.W_LANG), False, True, 0.5),
-    "A10": (TEN, (fv.W_MERT, fv.W_SCALAR, fv.W_LANG), False),      # ... with ten slots + other
+    "A": (None, (fv.W_MERT_V2, fv.W_SCALAR, fv.W_LANG), False),       # prod (2026-10-19): 64 slots
+    "AZ": (None, (fv.W_MERT_V2, fv.W_SCALAR, fv.W_LANG), False, True), # + the instrumental slot
+    "AZ1": (None, (fv.W_MERT_V2, fv.W_SCALAR, fv.W_LANG), False, True, 1.0),   # ... at full weight
+    "AZ50": (None, (fv.W_MERT_V2, fv.W_SCALAR, fv.W_LANG), False, True, 0.5),
+    "A10": (TEN, (fv.W_MERT_V2, fv.W_SCALAR, fv.W_LANG), False),      # ... with ten slots + other
     "W20": (TEN, (0.55, 0.25, 0.20), False),                       # fused_v2's first weights
     "C_lang0.10": (TEN, (0.55, 0.25, 0.10), False),
     "C_lang0": (TEN, (0.55, 0.25, 0.0), False),
@@ -846,6 +889,18 @@ def final_table4():
     ]
 
 
+def genre_grid(weights):
+    """--w-genre: the shipped fused_v2 (AZ) and fused_v3 at each genre
+    weight, all with the shipped dj_replay and the same-song filter the
+    endpoint applies. Registers the G<w> spaces it names."""
+    out = [{"space": "AZ", "replay": {"SAME_SONG": True}}]
+    for w in weights:
+        name = f"G{w:g}"
+        SPACES[name] = (None, fv.v3_weights(w), False, True)
+        out.append({"space": name, "replay": {"SAME_SONG": True}})
+    return out
+
+
 def skip_grid2():
     """Round 2: between the configs that pass the skip-heavy checks and prod."""
     out = [{"space": "AZ", "replay": {}}]
@@ -912,6 +967,9 @@ def main(argv=None) -> int:
     ap.add_argument("--final4", action="store_true", help="only the rows of final_table4()")
     ap.add_argument("--only-vector-grid", action="store_true",
                     help="run vector_grid() and the session re-rank on A as the reference")
+    ap.add_argument("--w-genre", default=None, metavar="W,W,...",
+                    help="only the genre-weight grid: fused_v2 (AZ) and fused_v3 at each "
+                         "W_GENRE, e.g. 0,0.10,0.15,0.20,0.25 (see GENRE WEIGHT GRID)")
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     a = ap.parse_args(argv)
 
@@ -966,11 +1024,17 @@ def main(argv=None) -> int:
         cfgs = final_table3()
     if a.final4:
         cfgs = final_table4()
+    if a.w_genre:
+        cfgs = genre_grid(floats(a.w_genre))
     SONG_KEYS.update({r["id"]: same_song.song_key(r["title"], r["artist"], r["language"])
                       for r in rows})
     meta = {"lang_of": lang_of, "dup_key": dup_key,
             "instrumental": {r["id"] for r in rows
-                             if not r["language"] and r["language_status"] == "done"}}
+                             if not r["language"] and r["language_status"] == "done"},
+            "primary_genre": {r["id"]: primary_genre(r["genre_scores"], r["genre_status"])
+                              for r in rows}}
+    n_tagged = sum(g is not None for g in meta["primary_genre"].values())
+    print(f"{n_tagged} of {len(rows)} tracks genre-tagged")
     results = []
     for name in dict.fromkeys(c["space"] for c in cfgs):
         spec = SPACES[name]
@@ -1006,6 +1070,7 @@ def main(argv=None) -> int:
 
     _print(results)
     _print_regression(results)
+    _print_genre(results)
     print("\n| config | repeat@10 listener | repeat@10 real |")
     print("|---|---|---|")
     for r in results:
@@ -1038,6 +1103,25 @@ def _label(r):
         return f"{r['space']} +rr(b: library prior, no skips) w={rr['weight']:g}"
     return (f"{r['space']} +rr w={rr['weight']:g} half-life={rr['half_life']:g} "
             f"skip={rr['skip_penalty']:g} demote={rr['demote']:g}")
+
+
+def _print_genre(results):
+    """The genre-weight table: genre@10 (n = tagged seeds), language@10,
+    real-user served AUC, and the regression sessions' main number."""
+    sids = sorted({s for r in results for s in r.get("regression", {})})
+    print("\n| config | genre@10 listener (n) | genre@10 real (n) | lang@10 listener "
+          "| served AUC real | served AUC listener | "
+          + " | ".join(f"{s.rsplit('-', 1)[0]} {'instr' if 'bgm' in s else 'lang'}@10"
+                       for s in sids) + " |")
+    print("|---" * (6 + len(sids)) + "|")
+    for r in results:
+        n = r.get("n_genre", {})
+        cells = [f"{r['regression'].get(s, {}).get('instr10' if 'bgm' in s else 'lang10', float('nan')):.2f}"
+                 for s in sids]
+        print(f"| {_label(r)} | {r.get('genre10_listener', float('nan')):.3f} ({n.get('listener', 0)}) "
+              f"| {r.get('genre10_real', float('nan')):.3f} ({n.get('real', 0)}) "
+              f"| {r['lang10_listener']:.3f} | {r['served_auc_real']:.3f} "
+              f"| {r['served_auc_listener']:.3f} | " + " | ".join(cells) + " |")
 
 
 def _print_regression(results):
