@@ -26,6 +26,11 @@ Claude Code session tags those rows by querying the database directly (see
 § Tagging languages); the next run sees `'done'` and proceeds. `fuse` waits
 for **both** lanes.
 
+`genre` (2026-10-23) is a third stage outside the chain, and it waits for
+nothing and nothing waits for it: it parks live rows, finished ones
+included, at `genre_status='pending'` for a session to score (§ Tagging
+genres). It is not drawn above because no arrow leaves it.
+
 | stage | status column | does | cost |
 |---|---|---|---|
 | `preview` | `preview_status` | resolves a 30s preview URL (iTunes) | network, rate-limited |
@@ -33,6 +38,7 @@ for **both** lanes.
 | `librosa` | `librosa_status` | 18-column DSP feature bank | CPU |
 | `classify` | `ml_status` | MERT forward pass → vibe scalars **and** the 768-d embedding | GPU |
 | `language` | `language_status` | parks rows at `'pending'` for a tagging session; classifies nothing | none (no model, no audio) |
+| `genre` | `genre_status` | parks live rows at `'pending'` for genre scores; gates nothing | none |
 | `fuse` | `fuse_status` | builds the 788-d retrieval vector | trivial |
 | `youtube` | `youtube_status` | first `ytsearch` hit, then settles `ingestion_status` | network |
 
@@ -332,6 +338,116 @@ are unaffected.
   2026-10-15, 799 of them pending rows that had never entered the pipeline,
   which a pass normalises as its cohorts reach them.
 
+## Tagging genres
+
+**The interface between the pipeline and whoever scores genres**, built
+like § Tagging languages: the database is the queue, a Claude Code session
+reads metadata and writes scores back, and nothing needs a GPU. Since
+2026-10-23. Files: `genre_taxonomy.py` (the genres), `genre_tagging.py`
+(the predicate and the write), `stage_genre.py` (the queue), and
+`scripts/genre_tags.py` (the CLI).
+
+**Genre blocks nothing.** Unlike language, no stage waits for it: fuse,
+youtube and every DJ query ignore `genre_status`, so an unscored track
+reaches the DJ pool exactly as before. The DJ vector does not use genre yet;
+a later PR adds a genre block (and with it a fuse cascade on changed scores,
+the TODO in `genre_tagging.py`).
+
+### The predicate
+
+```sql
+SELECT id, spotify_id, title, artist, album, language, energy_pred, danceability_pred
+FROM tracks
+WHERE genre_status = 'pending'
+ORDER BY id ASC;
+```
+
+`genre_status` is NULL (not asked), `'pending'` (waiting) or `'done'`. The
+column has no default, locally or on production, so new rows land NULL;
+`GenreStage` normalises NULL to `'pending'` for **live** rows:
+`ingestion_status` `'pending'`, NULL or `'done'`, with a title. Finished
+tracks are included, unlike language, because when the columns arrive the
+whole analysed catalogue needs scores. Rows at `'no_preview'` keep NULL;
+they never reach the DJ pool. The session never sees the iTunes `genre`
+column, on purpose: it is one store's label for the release ("Soundtrack",
+"Indian Pop") and would anchor the scores on the coarse label this
+replaces. `language`, `energy_pred` and `danceability_pred` are hints.
+
+On a database where the columns are new, the first normalisation touches
+every finished track (about 5,500 on production). Run it as its own pass
+with a big batch, so it does not fill the default run's cohorts 50 at a
+time: `run_ingest_v2.py --stages genre --batch 1000 --until-drained`.
+
+### The scale
+
+Per genre, independently, **0, 50 or 100**, against the 17 genres in
+`genre_taxonomy.py` (each with a one-line definition by sound; read them
+before a session):
+
+| score | means |
+|---|---|
+| 100 | squarely this genre |
+| 50 | partly, or a clear influence |
+| 0 | not this genre: **omitted**, never written |
+
+Scores do not sum to anything: a Kannada film duet can be `film_melody` 100
+and `folk` 50; a devotional song set to a film tune can be 100 on both.
+There is no confidence field (50 already says "partly") and **no skip and
+no clear verdict**: every track gets at least one genre at 50 or 100, and
+`other` exists for a sound the taxonomy does not name. An empty object is
+invalid and is refused.
+
+The order of the taxonomy is **append-only**: the DJ-vector block will
+index by it. A new genre goes at the end with a `GENRE_TAXONOMY_VERSION`
+bump; tracks scored against an older version carry it in
+`genre_model_version` (`claude_session_metadata_v1+taxonomy_v1`).
+
+### The file, and writing it
+
+Scores go back as a JSON-lines file, one track per line, rather than as
+command-line arguments: one permission rule, no giant command lines.
+
+```json
+{"id": 812, "spotify_id": "4u1aBcDeFgHiJkLmNoPqRs", "scores": {"film_melody": 100, "folk": 50}}
+{"id": 813, "scores": {"hiphop_rap": 100}}
+```
+
+`spotify_id` is optional; when present the row is written only if it
+matches, so a file made from one database's ids cannot tag the wrong songs
+in another (local and prod ids diverge, § Prod). Copy it from `--waiting`.
+
+```bash
+python scripts/genre_tags.py --status                 # counts; exit 1 if anything waits
+python scripts/genre_tags.py --waiting --limit 50     # the rows, JSON lines
+python scripts/genre_tags.py --apply-file s.jsonl     # check the file; writes nothing
+python scripts/genre_tags.py --apply-file s.jsonl --apply
+```
+
+The whole file is validated first (known slug, 50 or 100, non-empty, no id
+twice): one bad line writes nothing. Then it is written in batches of 200,
+each one `execute_batch` (one transaction; on Turso one request), with a
+count per batch. An id that matched no row is listed and the exit status
+is 1. A write sets `genre_scores` (compact JSON, taxonomy order),
+`genre_status='done'`, `genre_model_version` and `genre_tagged_at`; it is
+an UPDATE of absolute values, so re-applying a file is harmless.
+
+### On production
+
+```bash
+python scripts/backup_prod_db.py                                     # 1. always first
+python scripts/_turso_add_genre_columns.py --target prod             # 2. what it would add
+python scripts/_turso_add_genre_columns.py --target prod --apply     #    add them
+python scripts/run_ingest_v2.py --target prod --stages genre --batch 1000 --until-drained
+python scripts/genre_tags.py --target prod --waiting --limit 50      # 3. score, file by file
+python scripts/genre_tags.py --target prod --apply-file s.jsonl --apply
+```
+
+**Step 2 comes before any other production run.** `genre` is in
+`run_ingest_v2.py`'s default stages, and every pass reads every selected
+gate, so until the columns exist a default run against production stops at
+its first query with `no such column: genre_status` (nothing is written;
+it does not start). `--stages` without `genre` still runs.
+
 ## Re-runs are cheap
 
 Every stage short-circuits on what is already on the row — `preview` on
@@ -454,8 +570,10 @@ the script, which rewrites only that language's tracks.
 base.py              Stage ABC — arming, finalizes, failure handling, batching
 fused_vector.py      the 788-d recipe: dims, weights, _build_fused
 language_tagging.py  the waiting predicate + the safe write (the tagging interface)
+genre_taxonomy.py    the append-only genre list, one definition each
+genre_tagging.py     genre's waiting predicate + the validated batch write
 preview_providers.py provider chain + iTunes rate limiting/backoff
-stage_*.py           the seven stages
+stage_*.py           the eight stages
 ```
 
 `ingest/` next door is **not** an older copy of this. Despite the name it is
@@ -611,6 +729,11 @@ python scripts/language_tags.py --target prod --set <spotify_id>=kn --apply
 python scripts/run_ingest_v2.py --target prod --until-drained            # 5. fuse + youtube the tagged rows
 python scripts/run_ingest_v2.py --target prod --recompute-only           # 6. scores, if a run stopped short
 ```
+
+Since 2026-10-23 the default stages include `genre`, whose columns
+production lacks until `scripts/_turso_add_genre_columns.py --target prod
+--apply` has run; before that, step 2 stops at once with `no such column:
+genre_status`. See § Tagging genres, "On production".
 
 `--until-drained`, not `--loop`, against production: every idle pass scans
 `tracks`, Turso bills rows read, and a loop left running keeps paying

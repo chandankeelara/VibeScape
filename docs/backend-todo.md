@@ -1520,6 +1520,58 @@ worktree under test) files the score under the wrong version, silently. Fix:
 start` copies it into the session, and `score_dj.py` refuses a round whose
 sessions disagree with each other or with `--commit`.
 
+## 15. Genre scores — built 2026-10-23 (branch `feat/genre-tags`), what is left
+
+Storage and tagging only: four `tracks` columns (`genre_scores` JSON slug ->
+50|100, `genre_status`, `genre_model_version`, `genre_tagged_at`), the
+append-only 17-genre taxonomy (`ingest_pipeline/genre_taxonomy.py`),
+`GenreStage` (parks live rows at `'pending'`, gates nothing),
+`genre_tagging.tag_many` and `scripts/genre_tags.py --apply-file`. Nothing
+reads the scores yet. Procedure: `ingest_pipeline/README.md` § Tagging
+genres.
+
+### 15.1 Production lacks the columns, and the default runner stages now need them
+`scripts/run_ingest_v2.py` `--stages` default, `scripts/_turso_add_genre_columns.py`
+
+**verified by reading** (not run against production). `genre` is a default
+stage, and every pass reads every selected gate, so until
+`python scripts/_turso_add_genre_columns.py --target prod --apply` has run
+(after `backup_prod_db.py`), a default `--target prod` run stops at its
+first query with `no such column: genre_status`. Nothing is written, the
+run just does not start; `--stages` without `genre` still works. Do this
+before the next production drain. The app does not read the columns, so the
+deploy does not depend on it.
+
+### 15.2 The first normalisation touches the whole finished catalogue
+`ingest_pipeline/stage_genre.py` `gate_sql`
+
+**verified by reading and the local test.** The gate admits finished rows
+(they all need scores), so on the first run after 15.1 roughly every
+finished track on production (5,483 done on 2026-10-16, per the lead
+session) is in genre's gate. Inside a default run at `--batch 50` that is
+~110 passes whose cohorts are all genre's, each a scan of `tracks` per
+stage. Run `--target prod --stages genre --batch 1000 --until-drained`
+once first.
+
+### 15.3 Tag the catalogue
+`scripts/genre_tags.py`
+
+**by decision.** Every live track is to be scored, 50 a session file at a
+time: `--waiting --limit 50`, score against `genre_taxonomy.DEFINITIONS`,
+write a JSON-lines file (with `spotify_id`), `--apply-file F` then
+`--apply`. Not started. The tag write needs the same local permission rule
+the language tags use.
+
+### 15.4 DJ-vector genre block and its evaluation — a later PR
+`ingest_pipeline/genre_tagging.py` (the TODO), `ingest_pipeline/fused_vector.py`
+
+**by decision.** A genre block in the fused vector, indexed by
+`genre_taxonomy.GENRES` with spare slots for appends, then `tag_many` must
+re-arm fuse (`fuse_status='pending'`) for every row whose scores changed,
+like `language_tagging.tag`. A new block is a `FUSED_MODEL_VERSION` bump and
+a width change, so a new column (backend/CLAUDE.md, DJ replay). Judge it
+with `scripts/dj_eval/replay_bench.py` and the DJ score before shipping.
+
 ## Checked and clean
 
 Recorded so the next audit does not redo them.
@@ -1534,8 +1586,8 @@ Recorded so the next audit does not redo them.
   only instance** of the `_update_job` / `_bump` / `_is_cancelled` failure
   mode, and it is repaired at `backend/app.py:2332-2354`.
 - **Operational scripts default to dry-run.**
-  `_dedupe_tracks.py`, `_turso_create_track_indexes.py`, `_fix_language_tags.py`, `_llm_verify_apply.py`
-  and `language_tags.py` all require an explicit `--apply` and print
+  `_dedupe_tracks.py`, `_turso_create_track_indexes.py`, `_fix_language_tags.py`, `_llm_verify_apply.py`,
+  `language_tags.py`, `genre_tags.py` and `_turso_add_genre_columns.py` all require an explicit `--apply` and print
   "dry-run — nothing was modified" otherwise. (`run_ingest_v2.py` is not a
   dry-run script; `--target local` is its default.)
 - **Secret hygiene.** `scripts/_load_gcp_secrets.ps1` is excluded from the

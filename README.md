@@ -40,7 +40,7 @@
   - [Phase 1 — online, synchronous](#phase-1--online-synchronous-backendapppy)
   - [Phase 2 — offline, batch](#phase-2--offline-batch-ingest_pipeline--scriptsrun_ingest_v2py)
   - [Why async, not synchronous](#why-async-not-synchronous)
-  - [The Seven Stages](#the-seven-stages)
+  - [The Eight Stages](#the-eight-stages)
   - [Status vocabulary + promotion cascade](#status-vocabulary--promotion-cascade)
   - [Preview Provider Chain](#preview-provider-chain)
   - [Local Audio Cache](#local-audio-cache)
@@ -276,7 +276,7 @@ A 2×5 **mood grid** is derived from these two axes:
 
 ## Ingestion Pipeline
 
-Ingest is split into a **fast online metadata pass** (runs inside the FastAPI request that a user's Spotify sync fires) and an **offline pipeline of seven modular stages** (a separate worker process that drains queued work). The sync-modal returns in seconds — the library becomes visible immediately with metadata — while the heavy per-track work happens out of band.
+Ingest is split into a **fast online metadata pass** (runs inside the FastAPI request that a user's Spotify sync fires) and an **offline pipeline of eight modular stages** (a separate worker process that drains queued work). The sync-modal returns in seconds — the library becomes visible immediately with metadata — while the heavy per-track work happens out of band.
 
 ### Why async, not synchronous
 
@@ -310,9 +310,9 @@ A 500-track playlist re-sync where every track is already known completes in a f
 
 ### Phase 2 — offline, batch (`ingest_pipeline/` + `scripts/run_ingest_v2.py`)
 
-A background worker walks the seven stages. Each pass picks **one cohort** of tracks and carries it through every stage in order, so the same tracks advance together; stages still batch internally (I/O-bound → thread pool). Full design notes live in `ingest_pipeline/README.md`.
+A background worker walks the eight stages. Each pass picks **one cohort** of tracks and carries it through every stage in order, so the same tracks advance together; stages still batch internally (I/O-bound → thread pool). Full design notes live in `ingest_pipeline/README.md`.
 
-### The Seven Stages
+### The Eight Stages
 
 Each stage lives in its own module under `ingest_pipeline/`, is gated by exactly one status column on `tracks`, and writes only its own domain columns + its own status column.
 
@@ -323,8 +323,9 @@ Each stage lives in its own module under `ingest_pipeline/`, is gated by exactly
 | 3 | **librosa** | `stage_librosa.py` | `librosa_status` | `download_status='done'` | 3 | The DSP feature bank — 18 columns: `tempo`, `energy`, `brightness`, `bandwidth`, `rolloff`, `spectral_contrast`, `flatness`, `zcr`, `tonnetz_std`, `acousticness`, `mfcc_json`, `chroma_mean_json`, … |
 | 4 | **classify** | `stage_classify.py` | `ml_status` | `librosa_status='done'` | 1 (GPU) | **One** MERT pass over the full 30 s preview with the fine-tuned checkpoint, yielding **both** the vibe scalars and the 768-d mean-pooled embedding. |
 | 5 | **language** | `stage_language.py` | `language_status` | none — armed at ingest entry | 1 (no model) | **The pipeline stops here.** Classifies nothing: parks live rows at `language_status='pending'`, the single predicate a Claude Code session queries. The session reads title/artist/album, writes the tag and the `fuse_status='pending'` cascade (`ingest_pipeline/README.md` § Tagging languages). Whisper was removed 2026-10-10 — it mispredicted routinely on sung audio. |
-| 6 | **fuse** | `stage_fuse.py` | `fuse_status` | `language_status` terminal | 4 | Builds the 788-d retrieval vector from the stored MERT vector + 9 scalars + language one-hot. Pure numpy — a corrected language tag rebuilds in ms, no GPU. |
-| 7 | **youtube** | `stage_youtube.py` | `youtube_status` | all of the above | 6 | `yt-dlp ytsearch`, first hit, no embed/age check. Skips if `youtube_id` is set. **Finisher** — settles `ingestion_status='done'`. |
+| 6 | **genre** | `stage_genre.py` | `genre_status` | none | 1 (no model) | Gates nothing and nothing waits for it. Parks live rows (finished ones included) at `genre_status='pending'` for a Claude Code session, which scores each track 50 or 100 on the genres of an append-only 17-genre taxonomy and writes them back from a JSON-lines file (`scripts/genre_tags.py`, `ingest_pipeline/README.md` § Tagging genres). Not the iTunes `genre` column. |
+| 7 | **fuse** | `stage_fuse.py` | `fuse_status` | `language_status` terminal | 4 | Builds the 788-d retrieval vector from the stored MERT vector + 9 scalars + language one-hot. Pure numpy — a corrected language tag rebuilds in ms, no GPU. |
+| 8 | **youtube** | `stage_youtube.py` | `youtube_status` | all of the above | 6 | `yt-dlp ytsearch`, first hit, no embed/age check. Skips if `youtube_id` is set. **Finisher** — settles `ingestion_status='done'`. |
 
 **Constraint-collision retry.** An UPDATE that hits the legacy `UNIQUE (user_id, apple_id)` index retries once with `apple_id / track_view_url / genre` stripped. The row's own status column always lands so the pipeline never loops on the same row.
 
@@ -378,7 +379,7 @@ The app never streams from `audio_path` — the frontend streams directly from `
 ### Orchestrator
 
 ```bash
-# One pass across all seven stages, up to 50 rows per stage per pass:
+# One pass across all eight stages, up to 50 rows per stage per pass:
 python scripts/run_ingest_v2.py --batch 50
 
 # Pass after pass until nothing is left, then exit:
