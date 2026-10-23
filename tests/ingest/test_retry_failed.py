@@ -53,7 +53,7 @@ def test_all_rearms_every_stage_in_one_go(sql, parked):
     finally:
         conn.close()
     assert counts == {"preview": 1, "download": 0, "librosa": 0, "classify": 1,
-                      "language": 0, "fuse": 0, "youtube": 0}
+                      "language": 0, "genre": 0, "fuse": 0, "youtube": 0}
     assert state(sql, parked["preview"], "preview_status") == ("pending", "pending", None)
 
 

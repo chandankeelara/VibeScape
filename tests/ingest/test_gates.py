@@ -36,6 +36,9 @@ def rows(sql):
                           "vibe_score) VALUES (?, 'A', ?, 'pending', 0.0)", (name, name))
         tid = int(cur.lastrowid)
         values = {c: None for c in STATUS}          # production's shape: no defaults
+        # Already waiting for genre scores, which genre's gate leaves alone;
+        # the `genre` row below is the one still NULL.
+        values["genre_status"] = "pending"
         values.update(cols)
         sql.execute(f"UPDATE tracks SET {', '.join(f'{k} = ?' for k in values)} WHERE id = ?",
                     (*values.values(), tid))
@@ -52,6 +55,7 @@ def rows(sql):
                         librosa_status="done", ml_status="pending", audio_path="a.m4a",
                         language_status="pending"),
         "language": add("lg", preview_status="done"),
+        "genre": add("g", **{**done, "genre_status": None}),
         "fuse": add("f", **{**done, "fuse_status": "pending", "youtube_status": None}),
         "youtube": add("y", **{**done, "youtube_status": "pending"}),
         "none": add("n", **{**done, "language_status": "pending", "fuse_status": "pending",

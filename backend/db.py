@@ -181,6 +181,22 @@ _EXTENDED_COLUMNS = [
     "activation_relative",
 ]
 
+# Per-track genre scores (ingest_pipeline/genre_tagging.py), added to
+# `tracks` by _migrate locally and by scripts/_turso_add_genre_columns.py on
+# Turso, which imports this list so the two cannot differ. The iTunes
+# `genre` column is a different thing and stays as it is.
+#
+# NO DEFAULT on genre_status, like librosa_status / fuse_status: ADD COLUMN
+# ... DEFAULT 'pending' would write 'pending' into every existing row,
+# no_preview ones included, and production's column has no default anyway.
+# NULL means "not asked yet"; GenreStage normalises live rows to 'pending'.
+TRACKS_GENRE_COLUMNS = (
+    ("genre_scores", "TEXT"),           # JSON object, slug -> 50 | 100
+    ("genre_status", "TEXT"),           # NULL | 'pending' | 'done'
+    ("genre_model_version", "TEXT"),    # e.g. claude_session_metadata_v1+taxonomy_v1
+    ("genre_tagged_at", "TIMESTAMP"),
+)
+
 
 DEFAULT_USER_NAME = "chandan"
 
@@ -635,6 +651,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     ]
     for c in _EXTENDED_COLUMNS:
         stmts.append(f"ALTER TABLE tracks ADD COLUMN {c} REAL")
+    for col, decl in TRACKS_GENRE_COLUMNS:
+        stmts.append(f"ALTER TABLE tracks ADD COLUMN {col} {decl}")
     for stmt in stmts:
         try:
             conn.execute(stmt)

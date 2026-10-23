@@ -108,6 +108,18 @@ CREATE TABLE IF NOT EXISTS tracks (
     language_model_version TEXT,
     language_predicted_at  TIMESTAMP,
 
+    -- genre scores. JSON object slug -> 50 | 100 over the append-only
+    -- taxonomy in ingest_pipeline/genre_taxonomy.py, read from metadata by a
+    -- Claude Code session like language. genre_status: NULL (not asked) |
+    -- 'pending' | 'done', no default (GenreStage normalises live rows).
+    -- Not the iTunes `genre` above. See ingest_pipeline/README.md, section
+    -- Tagging genres. Existing databases gain these from db.py (SQLite) or
+    -- scripts/_turso_add_genre_columns.py (Turso).
+    genre_scores          TEXT,
+    genre_status          TEXT,
+    genre_model_version   TEXT,
+    genre_tagged_at       TIMESTAMP,
+
     features_extracted_at TIMESTAMP,
     ml_predicted_at       TIMESTAMP,
     created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
