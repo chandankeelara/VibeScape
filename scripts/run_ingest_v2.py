@@ -14,6 +14,7 @@ Wired stages, in order:
   librosa   (stage_librosa.py)   — DSP feature bank
   classify  (stage_classify.py)  — MERT: vibe/mood scalars + the 768-d vector
   language  (stage_language.py)  — the stopping point; classifies nothing
+  genre     (stage_genre.py)     — parks live rows for genre scores; gates nothing
   fuse      (stage_fuse.py)      — builds the 788-d retrieval vector
   youtube   (stage_youtube.py)   — first ytsearch hit, then settles ingestion_status
 
@@ -21,6 +22,12 @@ Dependencies: preview -> download -> librosa -> classify -> fuse -> youtube
 is one armed chain. `language` sits outside it — since 2026-10-10 it is
 read off metadata rather than audio, so it needs no preview, no cached
 file and no GPU, and is armed at ingest entry in parallel with preview.
+`genre` (2026-10-23) sits outside it the same way, but blocks nothing:
+it only leaves rows at genre_status='pending' for a tagging session
+(ingest_pipeline/genre_tagging.py), and no stage waits for that. Its
+columns must exist on the target first; on production that is
+scripts/_turso_add_genre_columns.py --apply, or every default-stage pass
+stops at its first query with "no such column: genre_status".
 
 A pipeline run STOPS at language. The stage classifies nothing; it only
 normalises every live row into one unambiguous waiting state,
@@ -192,8 +199,9 @@ Shared state, read 2026-10-16: each stage object is used by its own thread
 only, and process_row by that stage's pool, as in a pass. ItunesPreview's
 throttle lock is class-level and only preview's pool takes it. ml_backend
 loads MERT lazily without a lock, and only classify's single pool thread
-calls it. logging's handlers lock per record. LanguageStage.run_batch counts
-waiting rows on the connection it is given, its own thread's.
+calls it. logging's handlers lock per record. LanguageStage.run_batch and
+GenreStage.run_batch count waiting rows on the connection they are given,
+their own thread's.
 """
 from __future__ import annotations
 
@@ -229,6 +237,7 @@ from ingest_pipeline.stage_download import DownloadStage  # noqa: E402
 from ingest_pipeline.stage_classify import ClassifyStage  # noqa: E402
 from ingest_pipeline.stage_youtube import YoutubeStage  # noqa: E402
 from ingest_pipeline.stage_language import LanguageStage  # noqa: E402
+from ingest_pipeline.stage_genre import GenreStage  # noqa: E402
 from ingest_pipeline.stage_librosa import LibrosaStage  # noqa: E402
 from ingest_pipeline.stage_fuse import FuseStage  # noqa: E402
 from ingest_pipeline.base import (  # noqa: E402
@@ -258,6 +267,7 @@ STAGE_CLASSES: dict[str, type] = {
     "librosa":   LibrosaStage,
     "classify":  ClassifyStage,
     "language":  LanguageStage,
+    "genre":     GenreStage,
     "fuse":      FuseStage,
     "youtube":   YoutubeStage,
 }
@@ -945,8 +955,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="max rows per stage per pass, or per batch with --concurrent "
                              "(default 50)")
     parser.add_argument("--stages", type=str,
-                        default="preview,download,librosa,classify,language,fuse,youtube",
-                        help="comma-separated stage names (default: all seven in order)")
+                        default="preview,download,librosa,classify,language,genre,fuse,youtube",
+                        help="comma-separated stage names (default: all eight in order)")
     parser.add_argument("--concurrent", action="store_true",
                         help="run the stages at the same time, a thread each, each through "
                              "its own gate. Alone: every stage works until it and the "

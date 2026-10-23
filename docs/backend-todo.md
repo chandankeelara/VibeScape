@@ -1520,6 +1520,130 @@ worktree under test) files the score under the wrong version, silently. Fix:
 start` copies it into the session, and `score_dj.py` refuses a round whose
 sessions disagree with each other or with `--commit`.
 
+## 15. Genre scores and fused_v3 — built 2026-10-23 (branch `feat/genre-tags`), what is left
+
+Four `tracks` columns (`genre_scores` JSON slug -> 50|100, `genre_status`,
+`genre_model_version`, `genre_tagged_at`), the append-only 17-genre
+taxonomy (`ingest_pipeline/genre_taxonomy.py`), `GenreStage` (parks live
+rows at `'pending'`, gates nothing), `genre_tagging.tag_many` and
+`scripts/genre_tags.py --apply-file`. Procedure: `ingest_pipeline/README.md`
+§ Tagging genres. Then the DJ vector: **fused_v3**, fused_v2's 841 dims plus
+a 24-slot genre block (`fused_vector.py`, W_GENRE 0.15 taken from MERT), in
+its own column `track_embeddings.fused_v3_embedding F32_BLOB(865)`. The
+fuse stage and `scripts/refuse_vectors.py` write v3 and v2; `tag_many`
+re-arms fuse for a fused row whose scores changed; the app ranks v3 once
+the column holds a vector and v2 until then (`_fused_v3_ready`);
+`dj_replay` protects only the language block, so skips push against genre.
+Measured with `scripts/dj_eval/replay_bench.py --w-genre`.
+
+### 15.1 Production: the migration order
+`scripts/_turso_add_genre_columns.py`, `scripts/refuse_vectors.py`, `deploy/cloud-run/deploy.ps1`
+
+**verified by reading and the local run** (nothing run against production).
+In this order, each after a backup:
+
+1. `backup_prod_db.py`, then `_turso_add_genre_columns.py --target prod
+   --apply`. Until then a default `--target prod` run stops at its first
+   query (`no such column: genre_status`); `--stages` without `genre` runs.
+2. `run_ingest_v2.py --target prod --stages genre --batch 1000
+   --until-drained` once (15.2), then tag (15.3).
+3. `refuse_vectors.py --target prod` (dry run), then `--apply`: adds
+   `fused_v3_embedding`, writes every v3 vector (and any stale v2, see
+   15.6), drops the cached means. It also runs before 1 and 2 (no genre
+   columns: neutral genre blocks, and later tags re-arm fuse), but after
+   them it writes the genres in one go. Until it has run, a fuse against
+   production fails its write ("no column named fused_v3_embedding": the
+   run stops, nothing parked, `tests/ingest/test_stage_writes.py`), so it
+   comes before the next production drain that fuses anything.
+4. Deploy, with approval. A deploy that lands earlier ranks fused_v2
+   exactly as today (absent or empty v3 column,
+   `tests/backend/test_dj_paths.py`), so the order protects the DJ, not
+   the deploy; but only after step 3 does the DJ use genre.
+
+Between 3's ALTER and its last batch the column is partly filled; an app
+that already has this code would rank only the written rows for those
+minutes. Deploying after 3, as above, avoids it.
+
+### 15.2 The first normalisation touches the whole finished catalogue
+`ingest_pipeline/stage_genre.py` `gate_sql`
+
+**verified by reading and the local test.** The gate admits finished rows
+(they all need scores), so on the first run after 15.1's step 1 roughly
+every finished track on production (5,483 done on 2026-10-16, per the lead
+session) is in genre's gate. Inside a default run at `--batch 50` that is
+~110 passes whose cohorts are all genre's, each a scan of `tracks` per
+stage. Run `--target prod --stages genre --batch 1000 --until-drained`
+once first.
+
+### 15.3 Tag the production catalogue
+`scripts/genre_tags.py`
+
+**by decision.** Every live track is to be scored: `--waiting --limit 50`,
+score against `genre_taxonomy.DEFINITIONS`, write a JSON-lines file (with
+`spotify_id`), `--apply-file F` then `--apply`. The local copy
+(`data/genre_dev.db`, prod's 2026-10-20 backup) was fully tagged on
+2026-10-23 by a separate session; those tags were not reviewed, and they
+are keyed to that copy's ids, so re-apply them to production by
+`spotify_id` only. Each tag on a fused row now re-arms fuse (the cascade):
+on production that is ~5,300 re-fuses on the next drain, milliseconds
+each, or run step 3 of 15.1 after tagging and they re-fuse to the same
+bytes. The tag write needs the same local permission rule the language
+tags use.
+
+### 15.4 W_GENRE is a starting value: choose it with the listener runs
+`ingest_pipeline/fused_vector.py` `W_GENRE`
+
+**verified offline (2026-10-23)**, on the fully tagged copy above:
+W_GENRE 0 / 0.10 / 0.15 / 0.20 / 0.25 gave genre@10 0.500 / 0.594 / 0.611
+/ 0.625 / 0.642 (listener) and 0.350 / 0.378 / 0.389 / 0.399 / 0.415
+(real users), real-user served AUC 0.711 / 0.711 / 0.706 / 0.696 / 0.687,
+language x energy p@10 0.694 / 0.677 / 0.646 / 0.624 / 0.610; lang@10 and
+the five regression sessions held at every weight (the table is in the
+fused_vector docstring). Genre and the listener AUC rise with the weight,
+real-user AUC and energy fit fall: the same tension as 12.6. The listener
+sessions were recorded on another copy (top8 fidelity 0.71 here, not
+~1.0), so they are the weaker half. Before shipping: the DJ score's three
+vibe tests (`scripts/dj_eval/README.md`) on 0.10 and 0.15 at least, twice
+each, on a copy migrated with this branch's `refuse_vectors.py`. Changing
+W_GENRE is a FUSED_MODEL_VERSION bump and a re-run of
+`refuse_vectors.py`, no width change.
+
+### 15.5 `backend/CLAUDE.md` still describes fused_v2 as what the DJ ranks
+`backend/CLAUDE.md` § DJ replay (gitignored, so not in this branch)
+
+**verified by reading.** It says fused_v2 is 841 wide in
+`fused_v2_embedding` and that the app falls back with `_fused_v2_ready`;
+since this branch the DJ ranks fused_v3 (865, `fused_v3_embedding`) with
+`_fused_v3_ready` falling back to v2, and the avoid term deliberately
+pushes against genre. Update it when the branch merges: the file is local
+to each checkout.
+
+### 15.6 The 2026-10-20 copy's fused_v2 vectors lack the instrumental slot for 235 tracks
+`ingest_pipeline/fused_vector.py` (INSTRUMENTAL), `scripts/refuse_vectors.py`
+
+**verified on the copy, suspected on production.** `refuse_vectors.py`'s
+dry run on `data/genre_dev.db` (a copy of prod's 2026-10-20 backup) found
+235 fused_v2 vectors that differ from the recipe, all `language` NULL with
+`language_status='done'` (the "no language" verdict) and all only in the
+language block (max difference 0.404): stored without the `zxx` slot
+(PR #23, 2026-10-20). Either the backup predates that re-fuse or production
+never had it, in which case the instrumental slot is not live there and
+film-BGM sessions behave as before it. Cheap check: `refuse_vectors.py
+--target prod` (dry run, reads only) and look at `fused_v2 rewrite`. Step
+3 of 15.1 rewrites them either way.
+
+### 15.7 `replay_bench.py` ranked a repeated track from uninitialised memory — fixed, numbers moved
+`scripts/dj_eval/replay_bench.py` `Ranker.pool`
+
+**fixed 2026-10-23.** A real-user moment whose served track was the seed or
+in the seen window (a repeat) is not in the ranked set, but its rank was
+read from an `np.empty` array: garbage, different on each run, inside
+real-user AUC. 19 of 3,579 moments on the copy. It now has no rank and the
+moment is left out. Cosines are also ranked rounded to 1e-9, so float noise
+cannot order a tie. Real-user AUC from earlier runs (12.6's 0.746 -> 0.707,
+for one) carried this noise; re-run `--final3` before comparing a new
+number against them.
+
 ## Checked and clean
 
 Recorded so the next audit does not redo them.
@@ -1534,8 +1658,8 @@ Recorded so the next audit does not redo them.
   only instance** of the `_update_job` / `_bump` / `_is_cancelled` failure
   mode, and it is repaired at `backend/app.py:2332-2354`.
 - **Operational scripts default to dry-run.**
-  `_dedupe_tracks.py`, `_turso_create_track_indexes.py`, `_fix_language_tags.py`, `_llm_verify_apply.py`
-  and `language_tags.py` all require an explicit `--apply` and print
+  `_dedupe_tracks.py`, `_turso_create_track_indexes.py`, `_fix_language_tags.py`, `_llm_verify_apply.py`,
+  `language_tags.py`, `genre_tags.py` and `_turso_add_genre_columns.py` all require an explicit `--apply` and print
   "dry-run — nothing was modified" otherwise. (`run_ingest_v2.py` is not a
   dry-run script; `--target local` is its default.)
 - **Secret hygiene.** `scripts/_load_gcp_secrets.ps1` is excluded from the

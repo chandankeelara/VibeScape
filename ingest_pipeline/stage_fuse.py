@@ -19,11 +19,20 @@ pass. Two reasons:
    the stored mert_embedding.
 
 Reads mert_embedding from track_embeddings (written by ClassifyStage),
-the scalar columns from tracks, and writes back FUSED_COLUMN (fused_v2,
-841 wide). It never touches fused_v1's 'fused_embedding', so a checkout from
-before fused_v2 that still runs this stage writes only that old column: the
-new one stays NULL for that row (out of the DJ pool, never wrong) until
-scripts/refuse_vectors.py, re-run, fills it.
+the scalar, language and genre columns from tracks, and writes back both
+FUSED_COLUMN (fused_v3, 865 wide) and FUSED_V2_COLUMN (fused_v2, 841): the
+app serves fused_v2 while a database has no fused_v3 yet, so both must stay
+right. It never touches fused_v1's 'fused_embedding'. A checkout from
+before fused_v3 that still runs this stage writes only fused_v2, so that
+row's fused_v3 is left stale or NULL until scripts/refuse_vectors.py,
+re-run, rewrites it.
+
+A database without the fused_v3 column (production until its migration,
+docs/backend-todo.md 15) fails this stage's write with "no such column":
+the runner raises a schema error and parks nothing (tests/ingest/
+test_stage_writes.py), so the run stops loudly rather than half-writing.
+Genre does not gate fuse: an untagged row fuses with a neutral genre block,
+and genre_tagging.tag_many re-arms fuse when a fused row's scores change.
 """
 from __future__ import annotations
 
@@ -32,7 +41,8 @@ import logging
 import numpy as np
 
 from .base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, iso_now
-from .fused_vector import FUSED_COLUMN, FUSED_DIM, MERT_DIM, SCALAR_COLS, _build_fused
+from .fused_vector import (FUSED_COLUMN, FUSED_DIM, FUSED_V2_COLUMN, FUSED_V2_DIM, MERT_DIM,
+                           SCALAR_COLS, _build_fused, _build_fused_v2)
 
 log = logging.getLogger("vibescape.ingest.fuse")
 
@@ -91,7 +101,8 @@ class FuseStage(Stage):
     )
     gate_params = (CURRENT_MERT_VERSION,)
     # Qualified with the table alias because of the join.
-    fetch_cols = ", ".join(["t.id", "t.spotify_id", "t.language", "t.language_status"]
+    fetch_cols = ", ".join(["t.id", "t.spotify_id", "t.language", "t.language_status",
+                            "t.genre_scores", "t.genre_status"]
                            + [f"t.{c}" for c in SCALAR_COLS]
                            + ["te.mert_embedding AS mert_blob"])
     fetch_join = "JOIN track_embeddings te ON te.track_id = t.id "
@@ -109,15 +120,17 @@ class FuseStage(Stage):
                              error=f"unexpected MERT dim {mert_vec.size}")
         row_dict = {k: row[k] for k in row.keys()}
         fused = _build_fused(row_dict, mert_vec.astype(np.float32, copy=True))
-        if fused.shape[0] != FUSED_DIM:
+        fused_v2 = _build_fused_v2(row_dict, mert_vec.astype(np.float32, copy=True))
+        if fused.shape[0] != FUSED_DIM or fused_v2.shape[0] != FUSED_V2_DIM:
             return RowResult(int(row["id"]), STATUS_FAILED,
                              {"ingestion_attempted_at": iso_now()},
-                             error=f"unexpected fused dim {fused.shape[0]}")
+                             error=f"unexpected fused dims {fused.shape[0]}, {fused_v2.shape[0]}")
         return RowResult(
             track_id=int(row["id"]),
             status=STATUS_DONE,
             fields={
                 "__fused_blob__": fused.astype(np.float32, copy=False).tobytes(),
+                "__fused_v2_blob__": fused_v2.astype(np.float32, copy=False).tobytes(),
                 "ingestion_attempted_at": iso_now(),
             },
         )
@@ -137,13 +150,15 @@ class FuseStage(Stage):
         """
         fields = dict(res.fields or {})
         fused_blob = fields.pop("__fused_blob__", None)
-        if res.status != STATUS_DONE or not fused_blob:
+        v2_blob = fields.pop("__fused_v2_blob__", None)
+        if res.status != STATUS_DONE or not fused_blob or not v2_blob:
             return fields, []
         return fields, [(
-            f"INSERT INTO track_embeddings (track_id, {FUSED_COLUMN}, updated_at) "
-            "VALUES (?, ?, ?) "
+            f"INSERT INTO track_embeddings (track_id, {FUSED_COLUMN}, {FUSED_V2_COLUMN}, updated_at) "
+            "VALUES (?, ?, ?, ?) "
             "ON CONFLICT(track_id) DO UPDATE SET "
             f"  {FUSED_COLUMN} = excluded.{FUSED_COLUMN}, "
+            f"  {FUSED_V2_COLUMN} = excluded.{FUSED_V2_COLUMN}, "
             "  updated_at      = excluded.updated_at",
-            (int(res.track_id), fused_blob, iso_now()),
+            (int(res.track_id), fused_blob, v2_blob, iso_now()),
         )]

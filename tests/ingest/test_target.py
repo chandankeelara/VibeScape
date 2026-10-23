@@ -11,6 +11,7 @@ import pytest
 
 import _target
 import backup_prod_db
+import genre_tags
 import language_tags
 import run_ingest_v2 as runner
 
@@ -77,6 +78,8 @@ def test_every_prod_script_refuses_without_its_file(env):
         runner.main(["--target", "prod", "--recompute-only"])
     with pytest.raises(SystemExit, match="does not exist"):
         language_tags.main(["--target", "prod", "--status"])
+    with pytest.raises(SystemExit, match="does not exist"):
+        genre_tags.main(["--target", "prod", "--status"])
     # The restore point is taken with the same credentials the run writes
     # with; it used to regex them out of scripts/_load_gcp_secrets.ps1.
     with pytest.raises(SystemExit, match="does not exist"):
@@ -84,7 +87,8 @@ def test_every_prod_script_refuses_without_its_file(env):
 
 
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="python -P is 3.11+")
-@pytest.mark.parametrize("script", ["run_ingest_v2.py", "language_tags.py"])
+@pytest.mark.parametrize("script", ["run_ingest_v2.py", "language_tags.py",
+                                    "genre_tags.py"])
 def test_the_scripts_find_target_without_their_directory_on_sys_path(script):
     # -P (PYTHONSAFEPATH) drops the script's own directory from sys.path,
     # which is the only reason `import _target` used to work.
