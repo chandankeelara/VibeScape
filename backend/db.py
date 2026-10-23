@@ -739,13 +739,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # embedding) → Option A (track_id, mert_embedding, fused_embedding).
     # Runs on any DB backend; idempotent (detects current shape first).
     _migrate_track_embeddings_option_a(conn)
-    # fused_v2 has its own, wider column (ingest_pipeline/fused_vector.py);
-    # schema.sql's CREATE ... IF NOT EXISTS never widens an existing table.
-    # On Turso scripts/refuse_vectors.py adds it.
-    if _table_exists(conn, "track_embeddings") and \
-            not _has_column(conn, "track_embeddings", FUSED_V2_COLUMN):
-        conn.execute(f"ALTER TABLE track_embeddings ADD COLUMN {FUSED_V2_DDL}")
-        conn.commit()
+    # fused_v2 and fused_v3 each have their own, wider column
+    # (ingest_pipeline/fused_vector.py); schema.sql's CREATE ... IF NOT
+    # EXISTS never widens an existing table. On Turso
+    # scripts/refuse_vectors.py adds them.
+    if _table_exists(conn, "track_embeddings"):
+        for col, ddl in ((FUSED_V2_COLUMN, FUSED_V2_DDL), (FUSED_V3_COLUMN, FUSED_V3_DDL)):
+            if not _has_column(conn, "track_embeddings", col):
+                conn.execute(f"ALTER TABLE track_embeddings ADD COLUMN {ddl}")
+                conn.commit()
 
     # Split per-user tracks into global tracks + user_tracks. Must run
     # BEFORE schema.sql executes CREATE UNIQUE INDEX on spotify_id/apple_id,
@@ -804,10 +806,12 @@ def _backfill_ingestion_status(conn: sqlite3.Connection) -> int:
         return 0
 
 
-# Must match ingest_pipeline/fused_vector.py FUSED_COLUMN / FUSED_DIM
-# (tests/backend/test_dj_paths.py checks).
+# Must match ingest_pipeline/fused_vector.py FUSED_V2_COLUMN / FUSED_V2_DIM
+# and FUSED_COLUMN / FUSED_DIM (tests/backend/test_dj_paths.py checks).
 FUSED_V2_COLUMN = "fused_v2_embedding"
 FUSED_V2_DDL = f"{FUSED_V2_COLUMN} F32_BLOB(841)"
+FUSED_V3_COLUMN = "fused_v3_embedding"
+FUSED_V3_DDL = f"{FUSED_V3_COLUMN} F32_BLOB(865)"
 
 _MERT_MV_LEGACY  = "mert_v1_95m_fp32_30s"
 _FUSED_MV_LEGACY = "fused_v1_mert_scalar_lang"

@@ -171,7 +171,37 @@ def test_library_mean():
 
 def test_the_language_block_is_the_recipes():
     """AVOID_PERP 'lang' protects dims LANG_BLOCK; they must be the fused
-    recipe's language block, or it protects audio dims instead."""
+    recipe's language block, in fused_v2 and fused_v3 alike, or it protects
+    audio dims instead -- and it must apply at both widths."""
     from ingest_pipeline import fused_vector as fv
     a, b = R.LANG_BLOCK
-    assert a == fv.MERT_DIM + len(fv.SCALAR_COLS) and b == fv.FUSED_DIM
+    assert a == fv.MERT_DIM + len(fv.SCALAR_COLS) and b == a + fv.LANG_DIMS
+    assert b == fv.FUSED_V2_DIM and fv.FUSED_DIM == b + fv.GENRE_DIMS
+    assert set(R.LANG_BLOCK_WIDTHS) == {fv.FUSED_V2_DIM, fv.FUSED_DIM}
+
+
+def _v3_session():
+    """Unit taste S and skip direction N in the fused_v3 layout that share
+    one language slot and one genre slot, plus some audio each."""
+    from ingest_pipeline import fused_vector as fv
+    rng = np.random.default_rng(11)
+    lang0, genre0 = R.LANG_BLOCK[0], fv.FUSED_V2_DIM
+    S, N = np.zeros(fv.FUSED_DIM), np.zeros(fv.FUSED_DIM)
+    S[:fv.MERT_DIM] = rng.normal(size=fv.MERT_DIM) * 0.05
+    N[:fv.MERT_DIM] = rng.normal(size=fv.MERT_DIM) * 0.05
+    S[lang0 + 2] = N[lang0 + 2] = 1.0         # the same language
+    S[genre0 + 6] = N[genre0 + 6] = 0.6       # the same genre
+    return unit(S), unit(N), lang0 + 2, genre0 + 6
+
+
+def test_in_fused_v3_skips_keep_the_language_but_push_against_the_genre():
+    """By decision (2026-10-23): only the language block is protected, so a
+    skip of songs in the taste's own genre pushes against that genre. And
+    the language block is protected at fused_v3's width, not only v2's."""
+    S, N, lang, genre = _v3_session()
+    A = R._avoid(S, N, 1.0, "lang", R.AVOID_CAP)
+    assert abs(A[lang]) < 1e-9                 # nothing taken off the language
+    assert A[genre] > 0.1                      # the genre is pushed against
+    q = S - A
+    assert q[lang] == pytest.approx(S[lang])
+    assert q[genre] / q[lang] < 0.5 * S[genre] / S[lang]

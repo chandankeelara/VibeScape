@@ -20,9 +20,10 @@ catalogue needs scores, and those rows are finished. A row parked at
 about it buys nothing; one parked at '<stage>_stage_error' is normalised
 once --retry-failed brings it back.
 
-It does NOT gate anything. Nothing reads genre_status but this stage and
-the tagging tools: fuse, youtube and every DJ query ignore it, so an
-untagged track is in the DJ pool as before. It arms nothing (`arms = ()`),
+It does NOT gate anything. Fuse reads genre_scores / genre_status into the
+fused_v3 genre block but does not wait for them (an untagged row gets a
+neutral block), youtube and every DJ query ignore them, so an untagged
+track is in the DJ pool as before. It arms nothing (`arms = ()`),
 and no stage lists it in `after`, so a concurrent run never holds another
 stage's row back for it. A tagging session writes 'done' through
 genre_tagging.tag_many(); this stage never does.

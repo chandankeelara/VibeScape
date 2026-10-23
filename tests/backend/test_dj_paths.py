@@ -9,6 +9,7 @@ language. What separates Kannada from Hindi is the language block at its
 real weight, and what pushes a skipped language out is dj_replay's avoid
 term at its real strength.
 """
+import json
 import secrets
 import sqlite3
 
@@ -35,12 +36,19 @@ def _title():
 def test_the_app_the_schema_and_the_recipe_agree_on_the_space(app_module, sql):
     import db
     assert app_module.FUSED_MODEL_VERSION == fv.FUSED_MODEL_VERSION
-    assert app_module.FUSED_DIM == fv.FUSED_DIM == 841
-    assert app_module.FUSED_LANG_DIMS == fv.LANG_DIMS == 64
-    assert app_module.FUSED_COLUMN == db.FUSED_V2_COLUMN == fv.FUSED_COLUMN
-    assert db.FUSED_V2_DDL == f"{fv.FUSED_COLUMN} F32_BLOB({fv.FUSED_DIM})"
+    assert app_module.FUSED_V2_MODEL_VERSION == fv.FUSED_V2_MODEL_VERSION
+    assert app_module.FUSED_MODEL_VERSION != app_module.FUSED_V2_MODEL_VERSION
+    assert app_module.FUSED_DIM == fv.FUSED_DIM
+    assert app_module.FUSED_V2_DIM == fv.FUSED_V2_DIM
+    assert app_module.FUSED_LANG_DIMS == fv.LANG_DIMS
+    assert app_module.FUSED_GENRE_DIMS == fv.GENRE_DIMS
+    assert app_module.FUSED_COLUMN == db.FUSED_V3_COLUMN == fv.FUSED_COLUMN
+    assert app_module.FUSED_V2_COLUMN == db.FUSED_V2_COLUMN == fv.FUSED_V2_COLUMN
+    assert db.FUSED_V3_DDL == f"{fv.FUSED_COLUMN} F32_BLOB({fv.FUSED_DIM})"
+    assert db.FUSED_V2_DDL == f"{fv.FUSED_V2_COLUMN} F32_BLOB({fv.FUSED_V2_DIM})"
     cols = {r["name"]: r["type"] for r in sql.execute("PRAGMA table_info(track_embeddings)")}
     assert cols[fv.FUSED_COLUMN] == f"F32_BLOB({fv.FUSED_DIM})"
+    assert cols[fv.FUSED_V2_COLUMN] == f"F32_BLOB({fv.FUSED_V2_DIM})"
     # fused_v1's column stays, untouched, for a rollback
     assert cols["fused_embedding"] == "F32_BLOB(788)"
 
@@ -63,6 +71,9 @@ def library(make_user, make_tracks, sql):
             row["language"] = lang
             (tid,) = make_tracks(uid, [fv._build_fused(row, mert)], titles={0: _title()})
             sql.execute("UPDATE tracks SET language = ? WHERE id = ?", (lang, tid))
+            # fused_v2 beside it, as the fuse stage writes both
+            sql.execute(f"UPDATE track_embeddings SET {fv.FUSED_V2_COLUMN} = ? WHERE track_id = ?",
+                        (fv._build_fused_v2(row, mert).astype(np.float32).tobytes(), tid))
             by_lang[lang].append(tid)
             by_lang.setdefault((lang, snd), []).append(tid)
     sql.commit()
@@ -245,36 +256,43 @@ def test_both_ranking_paths_return_the_same_order(client, library, app_module, d
         assert a["score"] == pytest.approx(b["score"], abs=1e-5)
 
 
-def test_before_the_migration_the_dj_ranks_fused_v1_instead_of_failing(
-        client, library, app_module, db, sql, monkeypatch, caplog):
-    """A deploy that lands before scripts/refuse_vectors.py: production's
-    shape, no fused_v2 column, fused_v1 vectors in fused_embedding. Turso-
-    shaped (no ensure_db, which would add the column on SQLite). Without the
-    fallback every request is a 500 (no such column)."""
-    import logging
+def _turso_shaped(db):
+    """The test file opened as db_client opens SQLite, with libSQL's vector
+    functions and no ensure_db (which would add missing columns back)."""
     import db_client
-    h, L = library
-    # fused_v1 vectors: the same MERT and scalars, the 11-slot language block
-    ten = ["en", "hi", "kn", "te", "ta", "pa", "ml", "es", "fr", "pt"]
-    for tid, lang, blob in sql.execute(
-            f"SELECT te.track_id, t.language, te.{fv.FUSED_COLUMN} FROM track_embeddings te "
-            f"JOIN tracks t ON t.id = te.track_id").fetchall():
-        v2 = np.frombuffer(blob, dtype=np.float32)
-        head = v2[:fv.MERT_DIM + len(fv.SCALAR_COLS)]
-        onehot = np.zeros(11, dtype=np.float32)
-        onehot[ten.index(lang)] = 0.2
-        v1 = np.concatenate([head, onehot])
-        sql.execute("UPDATE track_embeddings SET fused_embedding = ? WHERE track_id = ?",
-                    ((v1 / np.linalg.norm(v1)).astype(np.float32).tobytes(), tid))
-    sql.execute(f"ALTER TABLE track_embeddings DROP COLUMN {fv.FUSED_COLUMN}")
-    sql.commit()
 
-    def turso_shaped():
+    def connect():
         conn = sqlite3.connect(str(db), check_same_thread=False,
                                factory=db_client._SqliteConnection)
         conn.row_factory = sqlite3.Row
         _register_turso_functions(conn)
         return conn
+    return connect
+
+
+def _means(sql):
+    return {r["model_version"]: len(json.loads(r["mean_json"]))
+            for r in sql.execute("SELECT model_version, mean_json FROM user_embedding_mean")}
+
+
+@pytest.mark.parametrize("v3_column", ["absent", "empty"])
+def test_without_fused_v3_the_dj_ranks_fused_v2(client, library, app_module, db, sql,
+                                                 monkeypatch, caplog, v3_column):
+    """A deploy that lands before scripts/refuse_vectors.py has filled
+    fused_v3: production's shape, fused_v2 vectors in fused_v2_embedding and
+    the fused_v3 column missing, or present with nothing in it (db.py adds
+    it to every local file). The DJ must rank fused_v2 -- its column, width
+    and mean-cache key -- as the previous revision did. Without the
+    fallback an absent column is a 500 on every request (no such column)
+    and an empty one serves nothing."""
+    import logging
+    h, L = library
+    if v3_column == "absent":
+        sql.execute(f"ALTER TABLE track_embeddings DROP COLUMN {fv.FUSED_COLUMN}")
+    else:
+        sql.execute(f"UPDATE track_embeddings SET {fv.FUSED_COLUMN} = NULL")
+    sql.commit()
+    turso_shaped = _turso_shaped(db)
     monkeypatch.setattr(app_module, "get_conn", turso_shaped)
     monkeypatch.setenv("DB_BACKEND", "turso")
     caplog.set_level(logging.WARNING, logger="vibescape")
@@ -285,15 +303,84 @@ def test_before_the_migration_the_dj_ranks_fused_v1_instead_of_failing(
         out = _post(client, h, played[-1], body)
         assert out["mode_used"] == "dj_replay_fused_turso"
         assert _share(out, L["hi"]) >= 0.9
-    warnings = [r for r in caplog.records if fv.FUSED_COLUMN in r.getMessage()]
+    assert _means(sql) == {fv.FUSED_V2_MODEL_VERSION: fv.FUSED_V2_DIM}
+    warnings = [r for r in caplog.records
+                if r.getMessage().startswith(f"[dj] {fv.FUSED_COLUMN} ")]
     assert len(warnings) == 1
 
-    # The migration adds the column: picked up at the next check, no restart.
-    sql.execute(f"ALTER TABLE track_embeddings ADD COLUMN {fv.FUSED_COLUMN} F32_BLOB({fv.FUSED_DIM})")
+    # The migration fills the column: picked up at the next check, no restart.
+    if v3_column == "absent":
+        sql.execute(f"ALTER TABLE track_embeddings ADD COLUMN "
+                    f"{fv.FUSED_COLUMN} F32_BLOB({fv.FUSED_DIM})")
+    sql.execute(f"UPDATE track_embeddings SET {fv.FUSED_COLUMN} = ? WHERE track_id = ?",
+                (np.ones(fv.FUSED_DIM, dtype=np.float32).tobytes(), L["hi"][0]))
     sql.commit()
-    app_module._fused_v2_state["checked_at"] = 0.0
+    app_module._fused_v3_state["checked_at"] = 0.0
     conn = turso_shaped()
     try:
         assert app_module._variant_spec("fused", conn) == (fv.FUSED_MODEL_VERSION, fv.FUSED_DIM)
+    finally:
+        conn.close()
+
+
+def test_with_fused_v3_the_dj_ranks_fused_v3(client, library, sql):
+    """A database where fused_v3 holds vectors: the DJ ranks those."""
+    h, L = library
+    played = L["hi"][:3]
+    out = _post(client, h, played[-1], {"events": [done(t) for t in played],
+                                        "exclude_ids": played})
+    assert _share(out, L["hi"]) >= 0.9
+    assert _means(sql) == {fv.FUSED_MODEL_VERSION: fv.FUSED_DIM}
+
+
+def test_before_the_v2_migration_the_dj_ranks_fused_v1_instead_of_failing(
+        client, library, app_module, db, sql, monkeypatch, caplog):
+    """A deploy that lands on a database from before fused_v2: no fused_v2
+    or fused_v3 column, fused_v1 vectors in fused_embedding. Turso-shaped
+    (no ensure_db, which would add the columns on SQLite). Without the
+    fallback every request is a 500 (no such column)."""
+    import logging
+    h, L = library
+    # fused_v1 vectors: the same MERT and scalars, the 11-slot language block
+    ten = ["en", "hi", "kn", "te", "ta", "pa", "ml", "es", "fr", "pt"]
+    for tid, lang, blob in sql.execute(
+            f"SELECT te.track_id, t.language, te.{fv.FUSED_V2_COLUMN} FROM track_embeddings te "
+            f"JOIN tracks t ON t.id = te.track_id").fetchall():
+        v2 = np.frombuffer(blob, dtype=np.float32)
+        head = v2[:fv.MERT_DIM + len(fv.SCALAR_COLS)]
+        onehot = np.zeros(11, dtype=np.float32)
+        onehot[ten.index(lang)] = 0.2
+        v1 = np.concatenate([head, onehot])
+        sql.execute("UPDATE track_embeddings SET fused_embedding = ? WHERE track_id = ?",
+                    ((v1 / np.linalg.norm(v1)).astype(np.float32).tobytes(), tid))
+    sql.execute(f"ALTER TABLE track_embeddings DROP COLUMN {fv.FUSED_COLUMN}")
+    sql.execute(f"ALTER TABLE track_embeddings DROP COLUMN {fv.FUSED_V2_COLUMN}")
+    sql.commit()
+
+    turso_shaped = _turso_shaped(db)
+    monkeypatch.setattr(app_module, "get_conn", turso_shaped)
+    monkeypatch.setenv("DB_BACKEND", "turso")
+    caplog.set_level(logging.WARNING, logger="vibescape")
+
+    played = L["hi"][:3]
+    body = {"events": [done(t) for t in played], "exclude_ids": played}
+    for _ in range(2):
+        out = _post(client, h, played[-1], body)
+        assert out["mode_used"] == "dj_replay_fused_turso"
+        assert _share(out, L["hi"]) >= 0.9
+    warnings = [r for r in caplog.records
+                if r.getMessage().startswith(f"[dj] {fv.FUSED_V2_COLUMN} ")]
+    assert len(warnings) == 1
+
+    # The v2 migration adds its column: picked up at the next check.
+    sql.execute(f"ALTER TABLE track_embeddings ADD COLUMN "
+                f"{fv.FUSED_V2_COLUMN} F32_BLOB({fv.FUSED_V2_DIM})")
+    sql.commit()
+    app_module._fused_v2_state["checked_at"] = 0.0
+    app_module._fused_v3_state["checked_at"] = 0.0
+    conn = turso_shaped()
+    try:
+        assert app_module._variant_spec("fused", conn) == (fv.FUSED_V2_MODEL_VERSION,
+                                                           fv.FUSED_V2_DIM)
     finally:
         conn.close()

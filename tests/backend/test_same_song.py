@@ -9,7 +9,7 @@ import pytest
 import dj_replay as R
 import same_song as ss
 
-FUSED_DIM = 841
+from ingest_pipeline.fused_vector import FUSED_DIM  # noqa: E402
 
 
 # ------------------------------------------------------------------ the key

@@ -24,16 +24,17 @@ A JSON object, slug -> score, stored in tracks.genre_scores:
     'other' exists for a sound the taxonomy does not name.
   - no confidence field. 50 already says "partly".
 
-Genre does not gate anything
-----------------------------
-Unlike language, genre is not in the fused vector yet, so a tag re-arms
-nothing and an untagged track still reaches the DJ pool.
-
-TODO(dj-vector genre block): when the DJ vector gains a genre block (a
-later PR, indexed by genre_taxonomy.GENRES with spare slots), tag_many must
-re-arm fuse (`fuse_status='pending'`) for every row whose scores CHANGED,
-exactly like language_tagging.tag's cascade, or a corrected genre leaves a
-stale vector that nothing flags.
+Genre does not gate anything, but it re-arms fuse
+-------------------------------------------------
+No stage waits for a genre tag: an untagged track fuses with an all-zero
+genre block (fused_vector.py, fused_v3) and reaches the DJ pool. But the
+block is part of the stored vector, so THE CASCADE: when tag_many changes a
+row's scores and that row is already fused (`fuse_status='done'`), the same
+UPDATE sets `fuse_status='pending'`, and the next pipeline run rebuilds its
+vector (milliseconds, no GPU), as language_tagging.tag does for a changed
+language. A row whose genre_status was not 'done' counts as changed (its
+block was neutral). Re-applying the same scores re-arms nothing.
+A row not fused yet is left alone: fuse reads its scores whenever it runs.
 """
 from __future__ import annotations
 
@@ -121,7 +122,8 @@ def tag_many(conn, items) -> dict:
     Every item is validated before anything is written, so one bad score
     writes nothing at all. Then every UPDATE goes out in one
     conn.execute_batch: one transaction, and on Turso one request. A write
-    is an UPDATE of absolute values, so re-running a file is harmless.
+    is an UPDATE of absolute values, so re-running a file is harmless, and
+    it re-arms fuse for a fused row whose scores it changed (the cascade).
 
     Returns {"written": n, "missing": [track ids that matched no row]}.
     A missing id is not an error here: the rows that matched are written,
@@ -143,16 +145,22 @@ def tag_many(conn, items) -> dict:
             encoded = encode_scores(scores)
         except ValueError as e:
             raise ValueError(f"item {n} (track {track_id}): {e}") from None
-        sql = ("UPDATE tracks SET genre_scores = ?, genre_status = 'done', "
+        # The cascade (module docstring), in the same statement: every SET
+        # expression reads the row as it was before this UPDATE, so
+        # `genre_scores IS NOT ?` compares the stored scores with the new
+        # ones (both encode_scores' canonical text). A status that was not
+        # 'done' meant a neutral block, so it changes the vector too.
+        sql = ("UPDATE tracks SET "
+               "fuse_status = CASE WHEN fuse_status = 'done' AND (genre_scores IS NOT ? "
+               "OR genre_status IS NOT 'done') THEN 'pending' ELSE fuse_status END, "
+               "genre_scores = ?, genre_status = 'done', "
                "genre_model_version = ?, genre_tagged_at = ? WHERE id = ?")
-        params = [encoded, MODEL_VERSION, stamp, track_id]
+        params = [encoded, encoded, MODEL_VERSION, stamp, track_id]
         if spotify_id:
             sql += " AND spotify_id = ?"
             params.append(str(spotify_id))
         stmts.append((sql, params))
         ids.append(track_id)
-    # TODO(dj-vector genre block): add the fuse cascade here; see the module
-    # docstring. Nothing reads genre_scores into a vector yet.
     if not stmts:
         return {"written": 0, "missing": []}
     cursors = conn.execute_batch(stmts)

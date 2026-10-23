@@ -17,6 +17,7 @@ import requests
 import run_ingest_v2 as runner
 from ingest_pipeline import base
 from ingest_pipeline.base import RowResult, Stage, STATUS_DONE, STATUS_FAILED, id_filter
+from ingest_pipeline import fused_vector as fv
 from ingest_pipeline.fused_vector import FUSED_COLUMN, FUSED_DIM, MERT_DIM
 from ingest_pipeline.stage_classify import ClassifyStage
 from ingest_pipeline.stage_fuse import CURRENT_MERT_VERSION, FuseStage
@@ -474,3 +475,45 @@ def test_fuse_never_marks_a_row_done_without_its_vector(sql, app_module, monkeyp
     fused = sql.execute(f"SELECT LENGTH({FUSED_COLUMN}) FROM track_embeddings WHERE track_id = ?",
                         (tid,)).fetchone()
     assert status == "done" and fused is not None and fused[0] == FUSED_DIM * 4
+
+
+def test_fuse_writes_fused_v3_with_the_genre_block_and_fused_v2_beside_it(sql, app_module):
+    """fused_v3 reads the row's genre scores; fused_v2 is written too, so a
+    database whose app still serves fused_v2 stays right."""
+    a, b = add_rows(sql, 2)
+    for tid in (a, b):
+        ready_to_fuse(sql, tid)
+    sql.execute("UPDATE tracks SET genre_status = 'done', genre_scores = '{\"film_mass\":100}' "
+                "WHERE id = ?", (a,))
+    sql.commit()
+    conn = app_module.get_conn()
+    try:
+        assert FuseStage().run_batch(conn, 10, log)["done"] == 2
+    finally:
+        conn.close()
+    genre = slice(fv.FUSED_V2_DIM, fv.FUSED_DIM)
+    for tid in (a, b):
+        r = sql.execute(f"SELECT t.*, te.{fv.FUSED_COLUMN} AS v3, te.{fv.FUSED_V2_COLUMN} AS v2 "
+                        "FROM tracks t JOIN track_embeddings te ON te.track_id = t.id "
+                        "WHERE t.id = ?", (tid,)).fetchone()
+        row = {k: r[k] for k in r.keys()}
+        mert = np.ones(MERT_DIM, dtype=np.float32)
+        v3 = np.frombuffer(r["v3"], dtype=np.float32)
+        assert np.array_equal(v3, fv._build_fused(row, mert.copy()).astype(np.float32))
+        assert np.array_equal(np.frombuffer(r["v2"], dtype=np.float32),
+                              fv._build_fused_v2(row, mert.copy()).astype(np.float32))
+        assert v3[genre].any() == (tid == a)
+
+
+def test_fuse_on_a_database_without_fused_v3_stops_and_parks_nothing(sql, conn, sleeps):
+    """Production until its migration: the write names a column the
+    database lacks. The stage raises, nothing is parked, nothing retried."""
+    (tid,) = add_rows(sql, 1)
+    ready_to_fuse(sql, tid)
+    sql.execute(f"ALTER TABLE track_embeddings DROP COLUMN {fv.FUSED_COLUMN}")
+    sql.commit()
+    with pytest.raises(sqlite3.OperationalError, match=fv.FUSED_COLUMN):
+        FuseStage().run_batch(conn, 10, log)
+    assert sql.execute("SELECT fuse_status FROM tracks WHERE id = ?",
+                       (tid,)).fetchone()[0] == "pending"
+    assert sleeps == []

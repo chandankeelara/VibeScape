@@ -143,6 +143,48 @@ def test_ids_that_match_no_row_or_not_their_spotify_id_are_reported(sql):
     assert genre_row(sql, a)[1] == "done"
 
 
+def test_a_changed_score_re_arms_fuse_for_a_fused_row_in_the_same_statement(sql, batches):
+    """The genre block is part of the fused vector (fused_v3), so a fused
+    row whose scores change must be re-fused, or the stored vector is stale
+    and nothing flags it. Same scores again: nothing re-armed. A row not
+    fused yet is left alone (fuse reads the scores when it runs)."""
+    fused_new = add_track(sql, genre_status="pending", fuse_status="done")
+    fused_same = add_track(sql, genre_status="done", genre_scores='{"pop":100}',
+                           fuse_status="done")
+    fused_changed = add_track(sql, genre_status="done", genre_scores='{"pop":100}',
+                              fuse_status="done")
+    not_fused = add_track(sql, genre_status="pending")
+    parked = add_track(sql, genre_status="pending", fuse_status="fuse_stage_error")
+    conn = get_conn()
+    try:
+        gt.tag_many(conn, [(fused_new, {"folk": 100}), (fused_same, {"pop": 100}),
+                           (fused_changed, {"pop": 100, "folk": 50}), (not_fused, {"pop": 50}),
+                           (parked, {"pop": 50})])
+    finally:
+        conn.close()
+    assert len(batches) == 1 and len(batches[0]) == 5     # no extra statement
+
+    def fuse(t):
+        return sql.execute("SELECT fuse_status FROM tracks WHERE id = ?", (t,)).fetchone()[0]
+    assert fuse(fused_new) == "pending"
+    assert fuse(fused_same) == "done"
+    assert fuse(fused_changed) == "pending"
+    assert fuse(not_fused) is None
+    assert fuse(parked) == "fuse_stage_error"
+
+
+def test_a_status_that_was_not_done_counts_as_a_change(sql):
+    """Scores left on a row whose status was set back to pending fused as
+    a neutral block; tagging it again changes the vector."""
+    tid = add_track(sql, genre_status="pending", genre_scores='{"pop":100}', fuse_status="done")
+    conn = get_conn()
+    try:
+        gt.tag_many(conn, [(tid, {"pop": 100})])
+    finally:
+        conn.close()
+    assert sql.execute("SELECT fuse_status FROM tracks WHERE id = ?", (tid,)).fetchone()[0] == "pending"
+
+
 def test_fetch_waiting_never_returns_the_itunes_genre(sql):
     tid = add_track(sql, genre="Soundtrack", genre_status="pending", language="kn",
                     energy_pred=0.7, danceability_pred=0.4, album="Film")

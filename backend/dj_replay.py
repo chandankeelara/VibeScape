@@ -122,10 +122,17 @@ M_FADE = 0.7             # confidence kept after each positive
 # session whose only accepted song was the wrong vibe). False: neither.
 AVOID_PERP = "lang"
 AVOID_PERP_RENORM = True # ... renormalised to unit length
-# The fused_v2 language block, ingest_pipeline/fused_vector.py: MERT (768) +
-# scalars (9), then 64 slots. "lang" applies to vectors of this width only
-# (tests/backend/test_dj_replay.py checks it against the recipe).
+# The language block, ingest_pipeline/fused_vector.py: MERT (768) + scalars
+# (9), then 64 slots. It sits at the same place in fused_v2 (841 wide) and
+# fused_v3 (865: a genre block follows it), and "lang" applies to vectors of
+# those widths only (tests/backend/test_dj_replay.py checks both against the
+# recipe). Only the language block is protected: fused_v3's genre block is
+# left to the avoid term by decision (2026-10-23), so skips push against the
+# skipped songs' genres even when the taste holds them, as they push against
+# their sound. Measured only as part of replay_bench --w-genre, not on its
+# own (backlog 15.4).
 LANG_BLOCK = (777, 841)
+LANG_BLOCK_WIDTHS = (841, 865)
 AVOID_CAP = 1.5          # cap on NEG_WEIGHT * m, in units of |S| (None: no cap)
 
 POSITIVE = frozenset({"searched", "queued", "picked", "completed"})
@@ -296,7 +303,7 @@ def _avoid_raw(S, N, coef, perp, cap):
         coef = min(coef, cap)
     if perp == "lang":
         a, b = LANG_BLOCK
-        if S.shape[0] != b:
+        if S.shape[0] not in LANG_BLOCK_WIDTHS:
             return coef * N
         sl = S[a:b]
         n_sl = float(np.linalg.norm(sl))
