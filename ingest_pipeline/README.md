@@ -39,7 +39,7 @@ genres). It is not drawn above because no arrow leaves it.
 | `classify` | `ml_status` | MERT forward pass → vibe scalars **and** the 768-d embedding | GPU |
 | `language` | `language_status` | parks rows at `'pending'` for a tagging session; classifies nothing | none (no model, no audio) |
 | `genre` | `genre_status` | parks live rows at `'pending'` for genre scores; gates nothing | none |
-| `fuse` | `fuse_status` | builds the 788-d retrieval vector | trivial |
+| `fuse` | `fuse_status` | builds the fused retrieval vectors (fused_v3 865-d, fused_v2 841-d) | trivial |
 | `youtube` | `youtube_status` | first `ytsearch` hit, then settles `ingestion_status` | network |
 
 ## How a stage becomes eligible: arming
@@ -347,11 +347,19 @@ reads metadata and writes scores back, and nothing needs a GPU. Since
 (the predicate and the write), `stage_genre.py` (the queue), and
 `scripts/genre_tags.py` (the CLI).
 
-**Genre blocks nothing.** Unlike language, no stage waits for it: fuse,
-youtube and every DJ query ignore `genre_status`, so an unscored track
-reaches the DJ pool exactly as before. The DJ vector does not use genre yet;
-a later PR adds a genre block (and with it a fuse cascade on changed scores,
-the TODO in `genre_tagging.py`).
+**Genre blocks nothing, but it is in the vector.** Unlike language, no
+stage waits for it: an unscored track fuses with an all-zero (neutral)
+genre block and reaches the DJ pool. Since fused_v3 (2026-10-23) the fused
+vector has a 24-slot genre block (`fused_vector.py`, "The genre block"), so
+**a tag re-arms fuse**: `tag_many` sets `fuse_status='pending'`, in the
+same UPDATE, on every row that is already fused (`fuse_status='done'`) and
+whose scores it changed (or whose `genre_status` was not `'done'`).
+Re-applying the same scores re-arms nothing; a row not fused yet is left
+alone, since fuse reads its scores when it runs. The next pipeline run
+rebuilds the re-armed vectors (milliseconds each, no GPU), or
+`scripts/refuse_vectors.py` rewrites every vector at once (it does not
+clear `fuse_status`, so the next run re-fuses those rows again, to the
+same bytes).
 
 ### The predicate
 
@@ -397,8 +405,8 @@ no clear verdict**: every track gets at least one genre at 50 or 100, and
 `other` exists for a sound the taxonomy does not name. An empty object is
 invalid and is refused.
 
-The order of the taxonomy is **append-only**: the DJ-vector block will
-index by it. A new genre goes at the end with a `GENRE_TAXONOMY_VERSION`
+The order of the taxonomy is **append-only**: the fused_v3 genre block
+indexes by it (slot i is `GENRES[i]`; 17 genres, 7 spare slots). A new genre goes at the end with a `GENRE_TAXONOMY_VERSION`
 bump; tracks scored against an older version carry it in
 `genre_model_version` (`claude_session_metadata_v1+taxonomy_v1`).
 
@@ -447,6 +455,22 @@ python scripts/genre_tags.py --target prod --apply-file s.jsonl --apply
 gate, so until the columns exist a default run against production stops at
 its first query with `no such column: genre_status` (nothing is written;
 it does not start). `--stages` without `genre` still runs.
+
+**Then fused_v3, before the next fuse and before the deploy.** The fuse
+stage reads `genre_scores` and writes `fused_v3_embedding`, so on a
+database without that column its write fails ("no column named
+fused_v3_embedding": the run stops, nothing parked). The order:
+
+```bash
+python scripts/backup_prod_db.py
+python scripts/refuse_vectors.py --target prod            # what it would add and write
+python scripts/refuse_vectors.py --target prod --apply    # adds fused_v3_embedding, writes v3 (and any stale v2), drops cached means
+# then deploy the app (with approval): it ranks fused_v3 once the column holds vectors
+```
+
+The app deployed before this step keeps ranking fused_v2 (it checks
+`fused_v3_embedding` exists and holds a vector, `_fused_v3_ready`), so the
+deploy cannot break the DJ; it only does not use genre yet.
 
 ## Re-runs are cheap
 
@@ -540,18 +564,23 @@ replace a usable retrieval space with a nearly-degenerate one.
 
 ## The vectors
 
-`fused_vector.py` owns the recipe. `track_embeddings` holds two columns per
-track:
+`fused_vector.py` owns the recipe (its docstring has the layout and the
+evidence for each weight). `track_embeddings` holds, per track:
 
 - `mert_embedding` (768) — mean-pooled hidden state, 30s, fine-tuned encoder
-- `fused_embedding` (788) — `0.55*L2(mert) ‖ 0.25*L2(scalars 9) ‖ 0.20*lang(11)`, then L2'd
+- `fused_v3_embedding` (865) — MERT ‖ scalars 9 ‖ language 64 ‖ genre 24, each
+  block weighted, then L2'd. What `/similar` ranks by once it holds vectors.
+- `fused_v2_embedding` (841) — the same without the genre block. Still
+  written by fuse; ranked while fused_v3 is absent or empty.
+- `fused_embedding` (788) — fused_v1, untouched, for a rollback (backlog 12.2).
 
-`/similar` ranks on `fused` by cosine. Only the 768 block is a model output;
-the other 20 dims are engineered features, which is why correcting a
-language tag needs a `fuse` re-run (milliseconds) and never a GPU re-encode
-— set `fuse_status='pending'`.
+`/similar` ranks on the fused vector by cosine. Only the 768 block is a
+model output; the rest are engineered features or tags, which is why
+correcting a language or genre tag needs a `fuse` re-run (milliseconds) and
+never a GPU re-encode — set `fuse_status='pending'` (both tag writers do it
+for a changed tag).
 
-Changing `SCALAR_COLS`, the order of `LANG_CODES`, `LANG_BLOCK` or the weights changes the vector
+Changing `SCALAR_COLS`, the order of `LANG_CODES` or of `genre_taxonomy.GENRES`, `LANG_BLOCK`, `GENRE_BLOCK` or the weights (`W_GENRE` included) changes the vector
 **space**. Cosine across two spaces is meaningless, so every stored vector
 must be rebuilt, and `backend/app.py`'s `MERT_DIM`/`FUSED_DIM` must move in
 step or `/similar` silently returns nothing. Bump `FUSED_MODEL_VERSION` in
@@ -562,13 +591,14 @@ means. A change of width also needs its own column (`FUSED_COLUMN`; the
 script adds it): libSQL types a vector column by width. A new language is
 not a space change: append its code to `LANG_CODES` (never reorder;
 `scripts/language_slots.py --db <copy>` lists what is missing) and re-run
-the script, which rewrites only that language's tracks.
+the script, which rewrites only that language's tracks. A new genre is the
+same: append it to `genre_taxonomy.py` (with its version bump) and re-run.
 
 ## Files
 
 ```
 base.py              Stage ABC — arming, finalizes, failure handling, batching
-fused_vector.py      the 788-d recipe: dims, weights, _build_fused
+fused_vector.py      the fused recipes (v3, v2): dims, weights, _build_fused
 language_tagging.py  the waiting predicate + the safe write (the tagging interface)
 genre_taxonomy.py    the append-only genre list, one definition each
 genre_tagging.py     genre's waiting predicate + the validated batch write

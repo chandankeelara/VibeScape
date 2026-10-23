@@ -684,7 +684,7 @@ VibeScape/
 ├── ingest_pipeline/          # v2 modular offline pipeline (6 stages)
 │   ├── README.md             # pipeline design notes: arming, invariant, cohorts
 │   ├── base.py               # Stage ABC: arming, finalizes, failure handling, batching
-│   ├── fused_vector.py       # the 788-d recipe: dims, weights, _build_fused
+│   ├── fused_vector.py       # the fused recipes (v3 865-d, v2 841-d): dims, weights
 │   ├── preview_providers.py  # PreviewChain + iTunes rate limiting/backoff
 │   ├── stage_preview.py      # 1. resolve preview_url
 │   ├── stage_download.py     # 2. fetch preview → data/audio/<spotify_id>.<ext>
