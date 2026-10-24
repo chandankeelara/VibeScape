@@ -1,0 +1,44 @@
+/*
+ * Genre chips (ui/GenreChips.jsx). One chip tall; a chip that does not fit
+ * wraps into a second row that the overflow hides (the row gap keeps even a
+ * sliver of it out of the box). Neutral tokens only, readable in both themes:
+ * --line-2 is a translucent fill, so it shows on --panel, --raised and a
+ * hovered row alike.
+ */
+.chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-1);
+  height: var(--chip-h);
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  vertical-align: top;
+}
+
+.chip {
+  flex: none;
+  height: var(--chip-h);
+  padding: 0 5px;
+  border-radius: var(--r-sm);
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.02em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.primary {
+  font-weight: 600;
+  color: var(--text-2);
+  background: var(--line-2);
+}
+
+.secondary {
+  font-weight: 500;
+  color: var(--text-3);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--line-2);
+}

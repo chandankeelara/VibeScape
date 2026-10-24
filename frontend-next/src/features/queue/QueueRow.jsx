@@ -15,6 +15,9 @@
  * user hearts it — membership is read live from the library store, so the
  * badge goes the moment the heart fills, on every copy of the track.
  *
+ * The primary genre (lib/genres.js) shows as one chip, only in a row wide
+ * enough to keep the artist readable beside it.
+ *
  * The drag engine (useQueueDrag) finds rows by data-drag-* attributes and the
  * grip by data-drag-handle — keep both.
  */
@@ -25,6 +28,8 @@ import { inLibrary, subscribe as subscribeLibrary } from '../library/libraryStor
 import { languageLabel } from './labels';
 import Icon from '../../ui/Icon';
 import Equalizer from '../../ui/Equalizer';
+import GenreChips from '../../ui/GenreChips';
+import { primaryGenre } from '../../lib/genres';
 import ui from '../../ui/controls.module.css';
 import styles from './QueueRow.module.css';
 
@@ -54,6 +59,7 @@ function QueueRow({
   const artist = track.artist || track.album || '';
   const hasGrip = isQueue && draggable;
   const discovered = useDiscovered(track) && !isNow;
+  const genre = primaryGenre(track);
 
   const onGripKeyDown = (ev) => {
     if (!isQueue || !onMove) return;
@@ -112,6 +118,11 @@ function QueueRow({
             >
               Discover
             </span>
+          )}
+          {/* Shown only where the row is wide enough (the container query
+              in QueueRow.module.css): never at the desktop column's width. */}
+          {genre && (
+            <span className={styles.genre}><GenreChips genres={[genre]} /></span>
           )}
           <span className={styles.artist}>{artist}</span>
         </span>

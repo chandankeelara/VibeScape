@@ -1644,6 +1644,21 @@ cannot order a tie. Real-user AUC from earlier runs (12.6's 0.746 -> 0.707,
 for one) carried this noise; re-run `--final3` before comparing a new
 number against them.
 
+### 15.8 Track payloads carry `genres`; production answers `[]` until 15.1 step 1
+`backend/app.py` `_track_select`, `_genre_scores_ready`, `backend/track_genres.py`
+
+**verified by the local test** (`tests/backend/test_track_genres.py`; nothing
+run against production). Every track dict (`_row_to_dict`) has `genres`, a
+list of `{slug, score}` sorted by score then taxonomy order, `[]` when
+untagged. The player's SELECTs name `genre_scores` only once a zero-row
+`SELECT genre_scores FROM tracks LIMIT 0` succeeds (cached for the process;
+a no is re-asked every 60 s and warned once), so a deploy before
+`_turso_add_genre_columns.py` serves `genres: []` and no list breaks. The
+raw `genre_scores` is not in the payload. `track_genres.GENRE_ORDER` copies
+the taxonomy because the image ships without `ingest_pipeline/`; the test
+fails when they or frontend-next's label map (`src/lib/genres.js`) drift,
+so appending a genre means touching all three.
+
 ## Checked and clean
 
 Recorded so the next audit does not redo them.

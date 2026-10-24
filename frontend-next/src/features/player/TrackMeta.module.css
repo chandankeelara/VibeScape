@@ -71,6 +71,8 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Genre chips (ui/GenreChips, inline, --chip-h tall) sit in this one
+     line's box (1.4 x --fs-sm); the iTunes text fallback keeps its ellipsis. */
 }
 /* One row of chips. Wrapping inside a one-chip-tall box means a chip that
    does not fit drops whole into the clipped second row, never half-cut; the

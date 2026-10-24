@@ -52,7 +52,17 @@
 }
 .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
-.text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+/* A size container, so the genre chip can ask whether the row has room. It
+   takes the row's free width (flex: 1): inline-size containment alone would
+   size it to nothing. */
+.text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  container-type: inline-size;
+}
 .title {
   font-size: var(--fs-md);
   font-weight: 600;
@@ -74,6 +84,14 @@
   white-space: nowrap;
 }
 .artist { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* The primary genre chip, where the text column is at least 360px: past the
+   VIBE and language badges and the longest label (~110px) the artist keeps
+   ~150px. The desktop queue column (--queue-w 352px) is far below that, so
+   the chip appears on the wider phone list and tablet widths only. */
+.genre { display: none; flex: none; }
+@container (min-width: 360px) {
+  .genre { display: inline-flex; }
+}
 
 .grip {
   position: relative;
