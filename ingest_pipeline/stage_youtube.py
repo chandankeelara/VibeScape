@@ -1,8 +1,11 @@
 """
 YouTube ID resolution stage — first search hit, no playability check.
 
-Per user directive: take the first ytsearch5 result and store it. Skip
-the embed / age / availability filters the interactive endpoint uses.
+Per user directive: take the first search hit and store it (ytsearch1 on
+"title artist", then on the title alone; see _first_hit). Skip the embed /
+age / availability filters scripts/prewarm_youtube.py applies. No endpoint
+searches: the backend's copy of that ladder, _yt_search_sync, had no caller
+and was deleted 2026-10-25.
 Bad IDs are cheap to replace later; missing IDs cost nothing more than
 a video-panel fallback.
 
