@@ -1,7 +1,7 @@
 """Resolve and cache the YouTube video ID for every track that hasn't been
 queried yet.
 
-Runs the same yt-dlp search ladder as backend/app.py::_yt_search_sync so the
+Runs the same yt-dlp search ladder as backend/routers/youtube.py::_yt_search_sync so the
 prewarmed IDs match what the endpoint would have produced. Writes directly
 to `data/vibescape.db`. Resume-safe: re-running skips anything already
 queried (whether hit or miss).

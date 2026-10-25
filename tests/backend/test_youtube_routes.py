@@ -7,6 +7,8 @@ import time
 
 import pytest
 
+from routers import youtube as youtube_routes  # backend/routers/youtube.py
+
 
 @pytest.fixture
 def track(sql):
@@ -26,7 +28,7 @@ def search(monkeypatch, app_module):
         if isinstance(state["results"], Exception):
             raise state["results"]
         return state["results"]
-    monkeypatch.setattr(app_module, "_yt_manual_search_sync", fake)
+    monkeypatch.setattr(youtube_routes, "_yt_manual_search_sync", fake)
     return calls, state
 
 
@@ -91,8 +93,8 @@ def test_a_failing_search_is_an_empty_200(client, make_user, track, search):
 
 
 def test_a_slow_search_times_out_to_an_empty_200(client, make_user, track, monkeypatch, app_module):
-    monkeypatch.setattr(app_module, "_YT_SEARCH_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(app_module, "_yt_manual_search_sync", lambda q, n: time.sleep(0.5) or ["late"])
+    monkeypatch.setattr(youtube_routes, "_YT_SEARCH_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(youtube_routes, "_yt_manual_search_sync", lambda q, n: time.sleep(0.5) or ["late"])
     _, h = make_user()
     r = client.get(f"/api/tracks/{track}/youtube/search", params={"q": "x"}, headers=h)
     assert r.status_code == 200 and r.json() == {"results": []}
