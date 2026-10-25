@@ -4,11 +4,13 @@ refuses to delete the admin). Pinned as on main at 535efff.
 """
 import pytest
 
+import deps  # backend/deps.py: ADMIN_USER_ID and the session helpers live there
+
 
 @pytest.fixture
 def admin(monkeypatch, app_module, make_user):
     uid, h = make_user("admin")
-    monkeypatch.setattr(app_module, "ADMIN_USER_ID", uid)
+    monkeypatch.setattr(deps, "ADMIN_USER_ID", uid)
     return uid, h
 
 

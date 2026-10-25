@@ -34,6 +34,10 @@ from pydantic import BaseModel
 # Through the module, never `from db import get_conn`: db.get_conn is the one
 # seam tests patch (conftest.use_conn), and a copied name would not see it.
 import db
+# Auth dependencies. ADMIN_USER_ID is patched by tests, so it is read as
+# deps.ADMIN_USER_ID and never copied here.
+import deps
+from deps import _extract_bearer, _issue_session, require_admin, require_user, require_user_stream
 import same_song as _same_song
 from dj_replay import library_mean as _dj_mean_of
 from dj_replay import parse_events as _dj_parse_events
@@ -157,111 +161,6 @@ def _display_name_from_email(email: Optional[str]) -> Optional[str]:
     return prefix[:7] + "..." if len(prefix) > 7 else prefix
 
 
-def _issue_session(conn, user_id: int) -> str:
-    token = secrets.token_hex(32)
-    conn.execute(
-        "INSERT INTO sessions (token, user_id) VALUES (?, ?)",
-        (token, user_id),
-    )
-    conn.commit()
-    return token
-
-
-def _lookup_session(conn, token: str) -> Optional[dict]:
-    if not token:
-        return None
-    row = conn.execute(
-        "SELECT s.token, s.user_id, u.display_name, u.spotify_user_id, u.spotify_display_name, "
-        "u.spotify_email, u.spotify_country, u.spotify_product, u.spotify_avatar_url, u.spotify_profile_url, "
-        "u.created_at, u.last_login_at "
-        "FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?",
-        (token,),
-    ).fetchone()
-    if not row:
-        return None
-    # bump last_used_at, best-effort
-    try:
-        conn.execute("UPDATE sessions SET last_used_at = CURRENT_TIMESTAMP WHERE token = ?", (token,))
-        conn.commit()
-    except Exception:
-        pass
-    return dict(row)
-
-
-def _extract_bearer(auth_header: Optional[str]) -> Optional[str]:
-    if not auth_header:
-        return None
-    parts = auth_header.split(None, 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        return None
-    tok = parts[1].strip()
-    return tok or None
-
-
-def require_user(request: Request, authorization: Optional[str] = Header(None)) -> dict:
-    """
-    FastAPI dependency. Returns the auth session dict {user_id, display_name, ...}
-    or raises 401. Attaches user_id onto request.state for logging.
-    """
-    token = _extract_bearer(authorization)
-    if not token:
-        raise HTTPException(status_code=401, detail={"error": "missing_authorization"})
-    conn = db.get_conn()
-    try:
-        sess = _lookup_session(conn, token)
-    finally:
-        conn.close()
-    if not sess:
-        raise HTTPException(status_code=401, detail={"error": "invalid_session"})
-    request.state.user_id = sess["user_id"]
-    request.state.session_token = token
-    return sess
-
-
-# Defined next to require_user because a Depends() default is evaluated at
-# def time: an endpoint above the old home of this function (the admin
-# section, ~line 5340) would NameError on import.
-#
-# The user_id of the single admin is stored in an env var so it's
-# configurable per environment. Default = 1 (chandan on prod as of
-# 2026-08-23; verified against the downloaded prod DB).
-ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "1"))
-
-
-def require_admin(sess: dict = Depends(require_user)) -> dict:
-    if int(sess["user_id"]) != ADMIN_USER_ID:
-        raise HTTPException(status_code=403, detail={"error": "admin_only"})
-    return sess
-
-
-def require_user_stream(request: Request, authorization: Optional[str] = Header(None)) -> dict:
-    """
-    Stream-only variant of require_user. Accepts EITHER:
-      * Authorization: Bearer <session_token>  (normal path, curl/tooling)
-      * ?token=<session_token>                 (fallback for <audio>, which
-                                                cannot set custom headers)
-    Do NOT use this on any endpoint other than /api/stream/*. The query-string
-    fallback is a controlled compromise for browser <audio> tags — other
-    endpoints should keep header-only auth so tokens don't leak into
-    server logs / referer / URL-shaped caches.
-    """
-    token = _extract_bearer(authorization)
-    if not token:
-        token = (request.query_params.get("token") or "").strip() or None
-    if not token:
-        raise HTTPException(status_code=401, detail={"error": "missing_authorization"})
-    conn = db.get_conn()
-    try:
-        sess = _lookup_session(conn, token)
-    finally:
-        conn.close()
-    if not sess:
-        raise HTTPException(status_code=401, detail={"error": "invalid_session"})
-    request.state.user_id = sess["user_id"]
-    request.state.session_token = token
-    return sess
-
-
 class SpotifyLinkBody(BaseModel):
     spotify_user_id: str
     spotify_display_name: Optional[str] = None
@@ -315,7 +214,7 @@ def auth_email_signup(body: EmailSignupBody):
             conn.execute(
                 "INSERT OR IGNORE INTO user_tracks (user_id, track_id, source) "
                 "SELECT ?, track_id, 'email_signup_seed' FROM user_tracks WHERE user_id = ?",
-                (user_id, ADMIN_USER_ID),
+                (user_id, deps.ADMIN_USER_ID),
             )
             conn.commit()
         except Exception as e:
@@ -330,7 +229,7 @@ def auth_email_signup(body: EmailSignupBody):
         "session_token": token,
         "spotify_connected": False,
         "is_premium": False,
-        "is_admin": user_id == ADMIN_USER_ID,
+        "is_admin": user_id == deps.ADMIN_USER_ID,
         "is_guest": False,
     }
 
@@ -368,7 +267,7 @@ def auth_email_login(body: EmailLoginBody):
         "session_token": token,
         "spotify_connected": bool(row["spotify_user_id"]),
         "is_premium": row["spotify_product"] == "premium",
-        "is_admin": user_id == ADMIN_USER_ID,
+        "is_admin": user_id == deps.ADMIN_USER_ID,
         "is_guest": False,
     }
 
@@ -400,7 +299,7 @@ def auth_me(sess: dict = Depends(require_user)):
         "profile_url": sess.get("spotify_profile_url"),
         "created_at": sess.get("created_at"),
         "last_login_at": sess.get("last_login_at"),
-        "is_admin": int(sess["user_id"]) == ADMIN_USER_ID,
+        "is_admin": int(sess["user_id"]) == deps.ADMIN_USER_ID,
         "is_guest": sess.get("display_name") == "Guest",
     }
 
@@ -568,7 +467,7 @@ def auth_spotify_oauth(body: SpotifyOAuthBody):
         "is_premium": sp_product == "premium",
         "avatar_url": sp_avatar_url,
         "profile_url": sp_profile_url,
-        "is_admin": user_id == ADMIN_USER_ID,
+        "is_admin": user_id == deps.ADMIN_USER_ID,
         # Pass the raw Spotify access token back so the frontend can call
         # /v1/me, /v1/me/tracks, etc. without a second consent round-trip.
         "spotify_access_token": access_token,
@@ -4252,7 +4151,7 @@ def admin_list_users(sess: dict = Depends(require_admin)):
                 "created_at": r["created_at"],
                 "last_login_at": r["last_login_at"],
                 "track_count": int(r["track_count"] or 0),
-                "is_admin": int(r["id"]) == ADMIN_USER_ID,
+                "is_admin": int(r["id"]) == deps.ADMIN_USER_ID,
                 "is_guest": r["display_name"] == "Guest",
             }
             for r in rows
@@ -4404,7 +4303,7 @@ def admin_user_tracks(
 @app.delete("/api/admin/users/{user_id}", status_code=204)
 def admin_delete_user(user_id: int, sess: dict = Depends(require_admin)):
     # Guardrail: admin can't delete themselves.
-    if int(user_id) == ADMIN_USER_ID:
+    if int(user_id) == deps.ADMIN_USER_ID:
         raise HTTPException(status_code=400, detail={"error": "cannot_delete_admin"})
     conn = db.get_conn()
     try:

@@ -215,9 +215,10 @@ def make_user(sql, app_module):
         cur = sql.execute("INSERT INTO users (display_name) VALUES (?)", (name,))
         sql.commit()
         uid = int(cur.lastrowid)
+        import deps
         conn = backend_db.get_conn()
         try:
-            token = app_module._issue_session(conn, uid)
+            token = deps._issue_session(conn, uid)
         finally:
             conn.close()
         return uid, {"Authorization": f"Bearer {token}"}
