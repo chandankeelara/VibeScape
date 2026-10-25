@@ -12,6 +12,7 @@ import pytest
 import playlist_import as P
 import score_recompute
 import deps  # backend/deps.py: ADMIN_USER_ID and the session helpers live there
+from services import spotify_auth  # _get_app_token and its cache live there
 import db as backend_db  # backend/db.py; `db` is the fixture with the test database path
 
 # Three librosa feature banks: loud/fast, quiet/slow, in between.
@@ -154,7 +155,7 @@ def test_an_import_job_leaves_catalogue_scores_alone(client, sql, make_user, app
     ids = add_featured(sql)
     playlist = P.Playlist("List", [P.Item(title="New", artist="Ann", spotify_id="NEWSID")])
     monkeypatch.setattr(P, "fetch", lambda source, get, ytdlp_extract=None: playlist)
-    monkeypatch.setattr(app_module, "_get_app_token", lambda force_refresh=False: "app-token")
+    monkeypatch.setattr(spotify_auth, "_get_app_token", lambda force_refresh=False: "app-token")
 
     r = client.post("/api/ingest/playlist-url",
                     json={"url": "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"}, headers=h)
