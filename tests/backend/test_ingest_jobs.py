@@ -18,6 +18,7 @@ import pytest
 
 import bootstrap  # backend/bootstrap.py: app_config and PROJECT_ROOT live there
 from services import jobs
+from services import library_ingest  # _process_track lives there
 from services import spotify_auth  # _get_app_token and its cache live there
 import requests
 
@@ -207,13 +208,13 @@ def test_sync_a_second_time_is_already_in_library(client, make_user, spotify_lib
 
 def test_sync_a_track_that_fails_is_skipped_and_the_job_completes(client, make_user, spotify_lib,
                                                                    monkeypatch, app_module):
-    real = app_module._process_track
+    real = library_ingest._process_track
 
     def flaky(conn, track, job_id, user_id, source="manual"):
         if track["id"] == "BAD":
             raise ValueError("bad row")
         return real(conn, track, job_id, user_id, source=source)
-    monkeypatch.setattr(app_module, "_process_track", flaky)
+    monkeypatch.setattr(library_ingest, "_process_track", flaky)
     _, h = make_user()
     spotify_lib.liked = [sp("BAD"), sp("OK")]
     s = wait(client, h, start_sync(client, h, liked=True).json()["job_id"])

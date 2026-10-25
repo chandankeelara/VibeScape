@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 import db_client
+from services import library_ingest  # backend/services/library_ingest.py
 
 
 def _arg(v):
@@ -387,7 +388,7 @@ def _sp(cid):
 
 def test_a_new_track_and_its_link_are_one_turso_request(turso_catalogue, app_module):
     conn, server = turso_catalogue
-    result, tid = app_module._link_track(conn, _sp("new"), 1, "search")
+    result, tid = library_ingest._link_track(conn, _sp("new"), 1, "search")
     assert result == "queued_for_analysis"
     # Check, insert, link and read back in one transactional batch.
     assert [[r["type"] for r in req] for req in server.requests] == [["batch", "close"]]
@@ -396,7 +397,7 @@ def test_a_new_track_and_its_link_are_one_turso_request(turso_catalogue, app_mod
     assert server.db.execute("SELECT id FROM tracks WHERE spotify_id = 'new'").fetchone()[0] == tid
     assert server.db.execute("SELECT user_id, track_id FROM user_tracks").fetchall() == [(1, tid)]
     # The link's rowcount is what says "already": 0 on the second add.
-    assert app_module._link_track(conn, _sp("new"), 1, "search") == ("already_in_library", tid)
+    assert library_ingest._link_track(conn, _sp("new"), 1, "search") == ("already_in_library", tid)
     assert server.db.execute("SELECT COUNT(*) FROM tracks").fetchone()[0] == 1
 
 
@@ -419,7 +420,7 @@ def test_losing_on_the_unique_index_on_turso_retries_onto_the_winner(turso_catal
                 {"type": "ok", "response": {"type": "close"}}]}
         return real(requests_list, timeout)
     conn._post = collides_once
-    result, tid = app_module._link_track(conn, _sp("raced"), 2, "search")
+    result, tid = library_ingest._link_track(conn, _sp("raced"), 2, "search")
     assert len(server.requests) == 2
     assert server.db.execute("SELECT COUNT(*) FROM tracks").fetchone()[0] == 1
     winner = server.db.execute("SELECT id FROM tracks").fetchone()[0]

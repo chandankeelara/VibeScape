@@ -34,7 +34,7 @@ Audit date: 2026-10-02. No automated tests exist anywhere in the repo
 ## Refactor in progress — splitting `backend/app.py` (started 2026-10-25)
 
 `backend/app.py` was ~6,000 lines and 49 routes (5,954 before PR 2, 4,508
-after PR 2, 2,289 after PR 3). It is being moved, without changing any API
+after PR 2, 2,289 after PR 3, 1,158 after PR 4). It is being moved, without changing any API
 behaviour, into `routers/`, `services/`, `deps.py` (auth dependencies),
 `track_rows.py` (the track SELECT and dict helpers) and `bootstrap.py`, over
 six PRs:
@@ -69,7 +69,7 @@ six PRs:
    called `services`, the Dockerfile copies `backend/` whole, and both ways
    the app starts (`uvicorn app:app` from `backend/`, tests with `backend/`
    on the path) resolve it.
-3. **Deps and routers** (branch `refactor/pr3-deps-routers`). Module map:
+3. **Deps and routers** (PR #36, merged). Module map:
    - `deps.py`: `require_user`, `require_admin`, `require_user_stream`,
      `ADMIN_USER_ID`, `_issue_session`, `_lookup_session`, `_extract_bearer`.
      Imports `bootstrap` first, since `ADMIN_USER_ID` is read from the
@@ -99,15 +99,41 @@ six PRs:
    SPA last); 1,468 probe paths under six methods resolve to the same
    endpoint as before, and the OpenAPI document is equal except for the
    order its paths are listed in.
-4. and 5. Ingest, then the DJ, into routers and services.
+4. **Ingest** (branch `refactor/pr4-ingest`). Module map:
+   - `services/library_ingest.py`: `_process_track`, `_link_track` and
+     the `_TRACK_MATCH` / `_TRACK_PICK` fragments: the online half of the
+     two-phase ingest, also the synchronous path of `/api/ingest/single`.
+   - `services/ingest_jobs.py`: the three job workers
+     (`_run_ingest_job`, `_run_public_playlist_job`,
+     `_run_playlist_url_job`) with `_iter_tracks`, `_playable_first`,
+     `_catalog_match`, `_UNMATCHED_REPORT_CAP` and `IngestSources` (the
+     sync worker's parameter type). A module apart from library_ingest
+     because that one has no thread, paging or job state.
+     `services/jobs.py` stays the registry.
+   - `routers/ingest.py`: the seven `/api/ingest/*` routes with their
+     request bodies; the clear and cancel logic stays in its routes (each
+     is the route's body), and the three initial job dicts stay written
+     out per route.
+   The ingest router is registered after the other routers, so its routes
+   now precede the two `/similar` routes still in `app.py` instead of
+   following them. No path overlaps: 2,808 probed method and path pairs
+   resolve to the same endpoint, and the OpenAPI document is identical,
+   path order included. Still in `app.py`: the DJ and both `/similar`
+   routes (PR 5), startup and LAN logging, and the SPA routes.
+5. The DJ into routers and services.
 6. **Cleanup PR**: delete the plain re-imports `app.py` keeps only for
    tests; decide the three initial ingest job dicts (a shared
    `jobs.create()` was not done in PR 2: the dicts place their extra keys
    in different positions, so a shared base would reorder the
    `/api/ingest/status` JSON); merge the duplicated session lookup in
    `require_user` / `require_user_stream`. Dead code found by the PR 3
-   sweep, moved or left as it was rather than deleted inside a move:
-   `_bearer_token` and `_itunes_lookup_by_isrc` (app.py, no callers),
+   and PR 4 sweeps, moved or left as it was rather than deleted inside a move:
+   `_bearer_token` (now routers/ingest.py) and `_itunes_lookup_by_isrc`
+   (now services/library_ingest.py), no callers; `_collect_tracks` (now
+   services/ingest_jobs.py, 4.5); app.py's `feat = None`, which nothing
+   reads (its comment names an ingest hot path that is offline now);
+   `ingest/deezer_client.py`'s docstring, which says `_process_track` calls
+   its lookups (it calls no lookup at all);
    `_yt_search_sync` / `_yt_search_with_timeout` (routers/youtube.py, no
    callers: the YouTube GET never searches, so `scripts/prewarm_youtube.py`'s
    "what the endpoint would have produced" is not true of any endpoint), and
@@ -127,9 +153,10 @@ of patching nothing. Patched today: `bootstrap.app_config`,
 `bootstrap.PROJECT_ROOT`, `services.recency._DJ_RECENCY_WEIGHT`,
 `deps.ADMIN_USER_ID`, `services.spotify_auth._get_app_token` and
 `_APP_TOKEN_STATE`, `routers.youtube._yt_manual_search_sync` and
-`_YT_SEARCH_TIMEOUT_S`, and on `app.py` `NEXT_DIR` and `_process_track`.
-Moving either of the last two means retargeting its patches in the same
-commit. FastAPI resolves `Depends(fn)` by identity: a
+`_YT_SEARCH_TIMEOUT_S`, `services.library_ingest._process_track`, and on
+`app.py` `NEXT_DIR`; moving it means retargeting its patch in the same
+commit. `spotify_library` functions are patched on that module itself,
+never through another module's `splib` alias. FastAPI resolves `Depends(fn)` by identity: a
 `dependency_overrides` entry must key on the function in `deps.py`.
 
 `file:line` references to `backend/app.py` in the entries below predate the
@@ -921,7 +948,7 @@ all 20 `_TRACK_COLS` from `track_data.get(c)`, nulling every column absent
 from the caller's dict.
 
 ### 4.5 `_collect_tracks` is unreachable
-`backend/app.py:2814`
+`backend/services/ingest_jobs.py` (was `backend/app.py:2814`)
 
 **verified** — superseded by `_iter_tracks` (`backend/app.py:2773`) in
 `d2440a8`; `_run_ingest_job` only calls the streaming form. `fetch_liked` /

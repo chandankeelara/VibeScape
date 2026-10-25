@@ -164,12 +164,15 @@ way the app does, call `db.get_conn()` (imported as `backend_db`: `db` is the
 fixture with the test database's path). `backend/app.py` has no `get_conn`
 of its own, so `monkeypatch.setattr(app, "get_conn", ...)` raises rather
 than patching a name nothing calls. The same holds for names that moved
-out of `app.py` (refactor PRs 2 and 3, 2026-10-25): patch them on the
+out of `app.py` (refactor PRs 2 to 4, 2026-10-25): patch them on the
 module that reads them, `bootstrap.app_config`, `bootstrap.PROJECT_ROOT`,
 `services.recency._DJ_RECENCY_WEIGHT`, `deps.ADMIN_USER_ID`,
 `services.spotify_auth._get_app_token` and `_APP_TOKEN_STATE`,
-`routers.youtube._yt_manual_search_sync` and `_YT_SEARCH_TIMEOUT_S`;
-`app_module` keeps no copy, so a stale patch on it raises. Sessions for a
+`routers.youtube._yt_manual_search_sync` and `_YT_SEARCH_TIMEOUT_S`,
+`services.library_ingest._process_track`; Spotify library calls on
+`spotify_library` itself (`import spotify_library as splib`), never
+through another module's `splib`. `app_module` keeps no copy, so a stale
+patch on it raises. Sessions for a
 test are minted with `deps._issue_session` (conftest's `make_user` does). Frontend: no bare `import ... from 'vitest'` (files here sit
 outside the package) — `describe` / `it` / `expect` / `vi` are globals, and
 `tests/frontend/setup.js` gives each test a fresh `localStorage`, `window`

@@ -10,6 +10,7 @@ import pytest
 
 import playlist_import as P
 from services import spotify_auth  # _get_app_token and its cache live there
+import spotify_library as splib  # ingest/
 
 
 @pytest.fixture
@@ -227,7 +228,7 @@ def test_a_spotify_token_is_used_for_spotify_links_first(client, make_user, impo
     def fake_api(playlist_id, token):
         seen["args"] = (playlist_id, token)
         return [sp("API1", "Via API", "Ann")]
-    monkeypatch.setattr(app_module.splib, "fetch_public_playlist_tracks", fake_api)
+    monkeypatch.setattr(splib, "fetch_public_playlist_tracks", fake_api)
     _, s = run(client, h, url="https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M", access_token="user-tok")
     assert seen["args"] == ("37i9dQZF1DXcBWIGoYBM5M", "user-tok")
     assert s["queued_for_analysis"] == 1 and importer.searches == []
@@ -237,8 +238,8 @@ def test_when_the_spotify_api_refuses_the_embed_is_used(client, make_user, impor
     _, h = make_user()
 
     def refused(playlist_id, token):
-        raise app_module.splib.PlaylistPrivateError("403")
-    monkeypatch.setattr(app_module.splib, "fetch_public_playlist_tracks", refused)
+        raise splib.PlaylistPrivateError("403")
+    monkeypatch.setattr(splib, "fetch_public_playlist_tracks", refused)
     importer.playlist = P.Playlist("From embed", [P.Item(title="E", artist="F", spotify_id="EMB1")])
     _, s = run(client, h, url="https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M", access_token="user-tok")
     assert s["status"] == "complete" and s["playlist_name"] == "From embed" and s["queued_for_analysis"] == 1

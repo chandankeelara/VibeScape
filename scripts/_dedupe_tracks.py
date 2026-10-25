@@ -36,7 +36,7 @@ is what the pipeline itself does on a collision locally
 are untouched.
 
 THE KEEPER is ingestion_status='done' first, then the lowest id: the same
-order backend/app.py's _TRACK_PICK uses to choose a row for a new add, so
+order backend/services/library_ingest.py's _TRACK_PICK uses to choose a row for a new add, so
 the app and this script agree on which release stands for a recording.
 
 WHAT POINTS AT tracks(id), all ON DELETE CASCADE (schema.sql):
@@ -54,7 +54,7 @@ WHAT POINTS AT tracks(id), all ON DELETE CASCADE (schema.sql):
   track_embeddings  the losers' rows are deleted; the keeper's stays.
 
 EACH GROUP IS ONE execute_batch: one transaction on both backends (see
-backend/app.py _link_track's docstring for what that is on each), so a
+backend/services/library_ingest.py _link_track's docstring for what that is on each), so a
 group is merged entirely or not at all and a crash or a failure stops
 between groups. Re-running carries on: merged groups no longer exist.
 Every move happens before the delete in the same transaction, so the

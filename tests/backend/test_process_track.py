@@ -7,6 +7,8 @@ import sqlite3
 
 import pytest
 import db as backend_db  # backend/db.py; `db` is the fixture with the test database path
+from services import library_ingest  # backend/services/library_ingest.py
+import spotify_library as splib  # ingest/
 
 
 def sp(cid, isrc=None, name="Song", artist="Artist"):
@@ -36,7 +38,7 @@ def process(app_module, db):
     def _run(track, user_id):
         conn = backend_db.get_conn()
         try:
-            return app_module._process_track(conn, track, "no-job", user_id, source="search")
+            return library_ingest._process_track(conn, track, "no-job", user_id, source="search")
         finally:
             conn.close()
     return _run
@@ -145,7 +147,7 @@ def counted(app_module, db):
     def _run(track, user_id):
         conn = CountingConn(backend_db.get_conn())
         try:
-            return app_module._process_track(conn, track, "no-job", user_id), conn
+            return library_ingest._process_track(conn, track, "no-job", user_id), conn
         finally:
             conn.close()
     return _run
@@ -198,7 +200,7 @@ def test_a_double_submit_inserts_once_with_no_unique_index(sql, make_user, app_m
 
     def ours():
         try:
-            out["result"] = app_module._process_track(conn, sp("raced", isrc="X1"), "no-job", uid)
+            out["result"] = library_ingest._process_track(conn, sp("raced", isrc="X1"), "no-job", uid)
         except Exception as e:  # surfaced by the asserts below
             out["error"] = e
     t = threading.Thread(target=ours)
@@ -247,7 +249,7 @@ def test_losing_on_the_unique_index_retries_onto_the_winner(sql, make_user, app_
     uid, _ = make_user()
     conn = CollidesOnce(backend_db.get_conn(), db, uid if same_user else None)
     try:
-        assert app_module._process_track(conn, sp("raced"), "no-job", uid) == bucket
+        assert library_ingest._process_track(conn, sp("raced"), "no-job", uid) == bucket
     finally:
         conn.close()
     assert conn.batches == 2 and track_count(sql) == 1
@@ -266,7 +268,7 @@ def spotify(app_module, monkeypatch):
         if url.endswith("/search"):
             return {"tracks": {"items": State.search}}
         return State.tracks[url.rsplit("/", 1)[-1]]
-    monkeypatch.setattr(app_module.splib, "_get", fake_get)
+    monkeypatch.setattr(splib, "_get", fake_get)
     return State
 
 
