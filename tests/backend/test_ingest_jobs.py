@@ -15,6 +15,8 @@ import time
 from types import SimpleNamespace
 
 import pytest
+
+import bootstrap  # backend/bootstrap.py: app_config and PROJECT_ROOT live there
 import requests
 
 import spotify_library as splib
@@ -462,7 +464,7 @@ def test_public_preflight_network_errors_are_502s(client, make_user, public):
 def test_public_without_app_credentials_is_a_500(client, make_user, monkeypatch, app_module):
     """The real _get_app_token: its HTTPException is not caught by the
     preflight, so it reaches the client as is."""
-    monkeypatch.setattr(app_module, "app_config", None)
+    monkeypatch.setattr(bootstrap, "app_config", None)
     monkeypatch.setattr(app_module, "_APP_TOKEN_STATE", {"token": None, "expires_at": 0.0})
     _, h = make_user()
     r = start_public(client, h, token=None)

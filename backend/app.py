@@ -2,14 +2,12 @@ import glob
 import hashlib
 import hmac
 import json
-import logging
 import os
 import re
 import secrets
 import shutil
 import socket
 import sqlite3
-import sys
 import tempfile
 import threading
 import time as _time
@@ -18,13 +16,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
-# Load .env before any env-var reads (config.py, ADMIN_USER_ID, VIBESCAPE_ML_MODE).
-# No-op on platforms where python-dotenv isn't installed or no .env exists.
-try:
-    from dotenv import load_dotenv
-    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
-except ImportError:
-    pass
+# First: loads .env, imports backend/db.py, then puts the repo root and
+# ingest/ on sys.path, in that order (see its docstring).
+import bootstrap
+from bootstrap import AUDIO_DIR, log
 
 import asyncio
 import numpy as np
@@ -48,15 +43,6 @@ import library_search as _libsearch
 import lyrics as _lyrics
 import track_genres as _track_genres
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT / "ingest"))
-try:
-    import config as app_config
-except Exception:
-    app_config = None
-
 import scoring  # noqa: E402
 import score_recompute  # noqa: E402
 import spotify_guard  # noqa: E402  — every api.spotify.com call goes through it
@@ -67,10 +53,6 @@ import spotify_matcher  # noqa: E402
 # playback-only prod deployment. Import lazily at call sites that need it
 # (only the ingest hot path, and only when Modal ML backend is unavailable).
 feat = None
-
-log = logging.getLogger("vibescape")
-if not log.handlers:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 TRACK_COLUMNS = [
     "id",
@@ -155,9 +137,7 @@ def _track_select(conn, alias: str = "t") -> str:
 
 MOODS = list(scoring.MOODS)
 
-AUDIO_DIR = PROJECT_ROOT / "data" / "audio"
-
-app = FastAPI(title="VibeScape API")
+app =FastAPI(title="VibeScape API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -510,8 +490,7 @@ class SpotifyRefreshBody(BaseModel):
 
 
 def _spotify_token_exchange(code: str, redirect_uri: str) -> dict:
-    client_id = getattr(app_config, "SPOTIFY_CLIENT_ID", "") if app_config else ""
-    client_secret = getattr(app_config, "SPOTIFY_CLIENT_SECRET", "") if app_config else ""
+    client_id, client_secret, _ = bootstrap.spotify_creds()
     if not client_id or not client_secret:
         raise HTTPException(status_code=500, detail={"error": "spotify_not_configured"})
     r = requests.post(
@@ -598,9 +577,7 @@ def auth_spotify_oauth(body: SpotifyOAuthBody):
     """
     if not body.code:
         raise HTTPException(status_code=422, detail={"error": "code required"})
-    redirect_uri = body.redirect_uri or (
-        getattr(app_config, "SPOTIFY_REDIRECT_URI", "") if app_config else ""
-    )
+    redirect_uri = body.redirect_uri or bootstrap.spotify_creds()[2]
     if not redirect_uri:
         raise HTTPException(status_code=422, detail={"error": "redirect_uri required"})
 
@@ -692,8 +669,7 @@ def spotify_refresh(body: SpotifyRefreshBody, sess: dict = Depends(require_user)
     """
     if not body.refresh_token:
         raise HTTPException(status_code=422, detail={"error": "refresh_token required"})
-    client_id = getattr(app_config, "SPOTIFY_CLIENT_ID", "") if app_config else ""
-    client_secret = getattr(app_config, "SPOTIFY_CLIENT_SECRET", "") if app_config else ""
+    client_id, client_secret, _ = bootstrap.spotify_creds()
     if not client_id or not client_secret:
         raise HTTPException(status_code=500, detail={"error": "spotify_not_configured"})
     r = requests.post(
@@ -2751,8 +2727,7 @@ def spotify_status():
 
 @app.get("/api/spotify/config")
 def spotify_config():
-    client_id = getattr(app_config, "SPOTIFY_CLIENT_ID", "") if app_config else ""
-    redirect_uri = getattr(app_config, "SPOTIFY_REDIRECT_URI", "") if app_config else ""
+    client_id, _, redirect_uri = bootstrap.spotify_creds()
     return {"client_id": client_id or "", "redirect_uri": redirect_uri or ""}
 
 
@@ -2860,13 +2835,13 @@ def _resolve_audio_path(audio_path: str) -> Optional[Path]:
         return None
     p = Path(audio_path)
     if not p.is_absolute():
-        p = PROJECT_ROOT / p
+        p = bootstrap.PROJECT_ROOT / p
     try:
         p = p.resolve()
     except OSError:
         return None
     try:
-        p.relative_to(PROJECT_ROOT.resolve())
+        p.relative_to(bootstrap.PROJECT_ROOT.resolve())
     except ValueError:
         return None
     return p
@@ -3811,8 +3786,7 @@ def _get_app_token(force_refresh: bool = False) -> str:
         exp = float(_APP_TOKEN_STATE.get("expires_at") or 0.0)
         if tok and not force_refresh and now < (exp - 60):
             return tok
-        client_id = getattr(app_config, "SPOTIFY_CLIENT_ID", "") if app_config else ""
-        client_secret = getattr(app_config, "SPOTIFY_CLIENT_SECRET", "") if app_config else ""
+        client_id, client_secret, _ = bootstrap.spotify_creds()
         if not client_id or not client_secret:
             raise HTTPException(
                 status_code=500,
