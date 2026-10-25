@@ -1,12 +1,14 @@
 """The track row: which columns a track dict carries, the SELECT list that
-reads them, the dict every track endpoint returns (_row_to_dict), and the
-narrow per-user rows library search scores against.
+reads them, the dict every track endpoint returns (_row_to_dict), the
+narrow per-user rows library search scores against, and the ISRC a Spotify
+track is matched to catalogue rows by.
 
 Moved out of app.py unchanged (refactor PR 2, 2026-10-25). Mutable state
 here (_genre_scores_state, _search_rows_cache) is mutated in place by
 callers and tests, never rebound.
 """
 import time as _time
+from typing import Optional
 
 from bootstrap import log  # first: puts ingest/ on sys.path for `scoring`
 
@@ -152,3 +154,10 @@ def _search_rows(conn, user_id: int) -> list:
         _search_rows_cache.clear()
     _search_rows_cache[user_id] = (now, out)
     return out
+
+
+# Shared by the ingest path's _link_track (app.py) and Spotify search's
+# in_library flag (routers/spotify.py), so it lives with neither.
+def _isrc_of(track: dict) -> Optional[str]:
+    """A Spotify track's ISRC, None when it has none (or an empty one)."""
+    return (track.get("external_ids") or {}).get("isrc") or None
