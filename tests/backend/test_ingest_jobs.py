@@ -9,6 +9,7 @@ calls are replaced, spotify_guard's requests.request is a fake where a route
 calls it directly, and any other request raises. The job threads,
 _process_track and the database are real.
 """
+import sqlite3
 import threading
 import time
 from types import SimpleNamespace
@@ -236,6 +237,22 @@ def test_a_crashed_worker_still_writes_a_terminal_status(client, make_user, spot
     spotify_lib.liked = [sp("L1"), RuntimeError("mid-stream")]
     s = wait(client, h, start_sync(client, h, liked=True).json()["job_id"])
     assert (s["status"], s["error_message"], s["collecting"]) == ("error", "RuntimeError: mid-stream", True)
+
+
+def test_a_worker_that_cannot_connect_ends_in_error(client, make_user, spotify_lib, use_conn):
+    """The same rule when the database is what fails: only the worker
+    thread's db.get_conn() raises, so the status route still answers."""
+    _, h = make_user()
+    spotify_lib.liked = [sp("L1")]
+    real = use_conn.real
+
+    def opener():
+        if "_run_ingest_job" in threading.current_thread().name:
+            raise sqlite3.OperationalError("database is locked")
+        return real()
+    use_conn(opener)
+    s = wait(client, h, start_sync(client, h, liked=True).json()["job_id"])
+    assert (s["status"], s["error_message"]) == ("error", "OperationalError: database is locked")
 
 
 def test_a_preflight_me_that_fails_otherwise_is_ignored(client, make_user, spotify_lib):

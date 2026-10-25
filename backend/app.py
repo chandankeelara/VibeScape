@@ -36,7 +36,9 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, Redirec
                                Response, StreamingResponse)
 from pydantic import BaseModel
 
-from db import ensure_db, get_conn
+# Through the module, never `from db import get_conn`: db.get_conn is the one
+# seam tests patch (conftest.use_conn), and a copied name would not see it.
+import db
 import same_song as _same_song
 from dj_replay import library_mean as _dj_mean_of
 from dj_replay import parse_events as _dj_parse_events
@@ -168,7 +170,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 def _startup():
-    ensure_db()
+    db.ensure_db()
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     _log_lan_bind_info()
 
@@ -299,7 +301,7 @@ def require_user(request: Request, authorization: Optional[str] = Header(None)) 
     token = _extract_bearer(authorization)
     if not token:
         raise HTTPException(status_code=401, detail={"error": "missing_authorization"})
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         sess = _lookup_session(conn, token)
     finally:
@@ -343,7 +345,7 @@ def require_user_stream(request: Request, authorization: Optional[str] = Header(
         token = (request.query_params.get("token") or "").strip() or None
     if not token:
         raise HTTPException(status_code=401, detail={"error": "missing_authorization"})
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         sess = _lookup_session(conn, token)
     finally:
@@ -386,7 +388,7 @@ def auth_email_signup(body: EmailSignupBody):
     pw_hash = _hash_password(body.password)
     display = _display_name_from_email(email) or "listener"
 
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         exists = conn.execute(
             "SELECT 1 FROM users WHERE email = ?", (email,)
@@ -436,7 +438,7 @@ def auth_email_login(body: EmailLoginBody):
         raise HTTPException(status_code=422, detail={"error": "invalid_email"})
     if not body.password:
         raise HTTPException(status_code=422, detail={"error": "password_required"})
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         row = conn.execute(
             "SELECT id, display_name, email, password_hash, spotify_user_id, spotify_product "
@@ -468,7 +470,7 @@ def auth_email_login(body: EmailLoginBody):
 
 @app.post("/api/auth/logout", status_code=204)
 def auth_logout(sess: dict = Depends(require_user)):
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         conn.execute("DELETE FROM sessions WHERE token = ?", (sess["token"],))
         conn.commit()
@@ -619,7 +621,7 @@ def auth_spotify_oauth(body: SpotifyOAuthBody):
     images = me.get("images") or []
     sp_avatar_url = images[0]["url"] if images and images[0].get("url") else None
 
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         row = conn.execute(
             "SELECT id, display_name FROM users WHERE spotify_user_id = ?",
@@ -735,7 +737,7 @@ def demo_moods():
         ("beast",  80.0, 100.0, 90.0),
     ]
     out = []
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         for mood, lo, hi, target in bands:
             row = conn.execute(
@@ -776,7 +778,7 @@ def auth_guest():
     share the same library — treat this as a demo profile, not a real
     account.
     """
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         row = conn.execute(
             "SELECT id, display_name FROM users WHERE display_name = 'Guest'",
@@ -834,7 +836,7 @@ def auth_guest():
 def auth_spotify_link(body: SpotifyLinkBody, sess: dict = Depends(require_user)):
     if not body.spotify_user_id:
         raise HTTPException(status_code=422, detail={"error": "spotify_user_id required"})
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         """
         This used to be a bare UPDATE, which had two problems.
@@ -916,7 +918,7 @@ def _row_to_dict(row):
 
 @app.get("/api/health")
 def health():
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         count = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
     except Exception:
@@ -954,7 +956,7 @@ def list_tracks(
     order = "ORDER BY RANDOM()" if shuffle else f"ORDER BY {vibe_expr}"
     params.append(limit)
 
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         sql = (
             f"SELECT {_track_select(conn)} FROM tracks t "
@@ -1011,7 +1013,7 @@ def search_tracks(
     if not query:
         return {"tracks": []}
 
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         hits = _libsearch.search(_search_rows(conn, sess["user_id"]), query, limit)
         if not hits:
@@ -1773,7 +1775,7 @@ def _similar_vibe(track_key: str, limit: int, user_id,
     no special-casing -- but lambda here is far larger in absolute terms than
     on the cosine path. That is correct. Do not compare the two.
     """
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         anchor = _resolve_anchor(conn, track_key)
         if not anchor:
@@ -2149,7 +2151,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
     if requested_variant not in ("fused", "mert"):
         requested_variant = _DJ_VARIANT_DEFAULT
 
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         anchor = _resolve_anchor(conn, track_key)
     except Exception:
@@ -2680,7 +2682,7 @@ def _discover_finish(resp: dict, user_id) -> dict:
     inside _similar_dj (which overwrite mode_used) get both too."""
     resp["mode_used"] = f"{resp.get('mode_used')}_discover"
     if resp.get("tracks"):
-        conn = get_conn()
+        conn = db.get_conn()
         try:
             _dj_tag_library(conn, user_id, resp["tracks"])
         finally:
@@ -2706,7 +2708,7 @@ def random_track(
             except ValueError:
                 continue
 
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         select = _track_select(conn)
         lo, hi = vibe - tolerance, vibe + tolerance
@@ -2770,7 +2772,7 @@ def client_config():
 
 @app.get("/api/track/{apple_id}/spotify")
 def get_track_spotify(apple_id: int, sess: dict = Depends(require_user)):
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         row = conn.execute(
             "SELECT t.spotify_id FROM tracks t "
@@ -2957,7 +2959,7 @@ def _stream_audio_row(row, request: Request):
 
 @app.get("/api/stream/spotify/{spotify_id}")
 def stream_track_by_spotify(spotify_id: str, request: Request, sess: dict = Depends(require_user_stream)):
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         row = conn.execute(
             "SELECT audio_path FROM tracks WHERE spotify_id = ?",
@@ -2970,7 +2972,7 @@ def stream_track_by_spotify(spotify_id: str, request: Request, sess: dict = Depe
 
 @app.get("/api/stream/{track_key}")
 def stream_track(track_key: str, request: Request, sess: dict = Depends(require_user_stream)):
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         row = conn.execute(
             "SELECT audio_path FROM tracks WHERE spotify_id = ?",
@@ -2991,7 +2993,7 @@ def api_recompute_scores(sess: dict = Depends(require_admin)):
     No audio re-analysis; rows whose scores are unchanged are not written.
     The offline runner does the same after a pass that scored tracks.
     """
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         summary = score_recompute.recompute_axes_and_zscores(conn)
     finally:
@@ -3005,7 +3007,7 @@ def get_track_features(track_key: str, sess: dict = Depends(require_user)):
     Return the full stored feature blob plus derived axes for a track,
     keyed by spotify_id (string) or numeric internal tracks.id. Per-user.
     """
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         anchor = _resolve_anchor(conn, track_key)
         if not anchor:
@@ -3098,7 +3100,7 @@ def get_track_lyrics(track_key: str, sess: dict = Depends(require_user)):
     LRCLIB call happens with no DB connection open; it can take ~11 s in
     the worst case (two 5 s timeouts).
     """
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         anchor = _resolve_anchor(conn, track_key)
         track = conn.execute(
@@ -3127,7 +3129,7 @@ def get_track_lyrics(track_key: str, sess: dict = Depends(require_user)):
     found = _lyrics.lookup(track["title"], track["artist"], track["album"], track["duration_ms"])
     row = {**found, "fetched_at": _lyrics.now_ts()}
     if cache_ok:
-        conn = get_conn()
+        conn = db.get_conn()
         try:
             conn.execute_batch([(
                 "INSERT INTO track_lyrics (track_id, " + _LYRICS_COLS + ") "
@@ -3242,7 +3244,7 @@ async def get_track_youtube(track_id: int, sess: dict = Depends(require_user)):
     one. Never triggers a search — resolution is done offline by
     scripts/prewarm_youtube.py so users never eat the ~3–5s yt-dlp latency.
     """
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         row = conn.execute(
             "SELECT youtube_id FROM tracks WHERE id = ?",
@@ -3349,7 +3351,7 @@ async def search_track_youtube(
     limit: int = Query(5),
     sess: dict = Depends(require_user),
 ):
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         row = conn.execute("SELECT id FROM tracks WHERE id = ?", (track_id,)).fetchone()
     finally:
@@ -3404,7 +3406,7 @@ async def set_track_youtube(
     if not isinstance(vid, str) or not _YT_ID_RE.match(vid):
         raise HTTPException(status_code=400, detail={"error": "invalid_youtube_id"})
 
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         row = conn.execute("SELECT id FROM tracks WHERE id = ?", (track_id,)).fetchone()
         if not row:
@@ -3623,7 +3625,7 @@ def spotify_search(
     if spotify_ids:
         placeholders = ",".join("?" * len(spotify_ids))
         isrc_ph = ",".join("?" * len(isrcs))
-        conn = get_conn()
+        conn = db.get_conn()
         try:
             rows = conn.execute(
                 f"SELECT t.spotify_id, t.isrc, t.vibe_score, t.vibe_score_ml, "
@@ -3697,7 +3699,7 @@ def ingest_clear(sess: dict = Depends(require_user)):
     `tracks_pruned` and `audio_files_removed` are always 0 and kept only so
     existing clients that parse the body keep working.
     """
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         n = conn.execute(
             "SELECT COUNT(*) FROM user_tracks WHERE user_id = ?", (sess["user_id"],)
@@ -3727,7 +3729,7 @@ def library_link(track_key: str, sess: dict = Depends(require_user)):
     it up once the offline pipeline has marked it done.
     """
     uid = sess["user_id"]
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         tid = _library_track_id(conn, track_key)
         # added_at written, not defaulted: production's tables were not made
@@ -3757,7 +3759,7 @@ def library_unlink(track_key: str, sess: dict = Depends(require_user)):
     that from the 50-track floor up (below it the global mean is used).
     """
     uid = sess["user_id"]
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         tid = _library_track_id(conn, track_key)
         conn.execute("DELETE FROM user_tracks WHERE user_id = ? AND track_id = ?", (uid, tid))
@@ -4139,7 +4141,7 @@ def _run_ingest_job(job_id: str, token: str, sources: IngestSources, user_id: in
         except Exception as e:
             log.warning("[ingest job=%s] /v1/me preflight failed: %s", job_id, e)
 
-        conn = get_conn()
+        conn = db.get_conn()
         by_src: dict[str, int] = {}
         try:
             """
@@ -4286,7 +4288,7 @@ async def ingest_single(
 
     user_id = sess["user_id"]
 
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         row = conn.execute(
             f"SELECT {_track_select(conn)} FROM tracks t "
@@ -4322,7 +4324,7 @@ async def ingest_single(
 
     try:
         def _do_process() -> tuple[str, Optional[int]]:
-            conn = get_conn()
+            conn = db.get_conn()
             try:
                 return _link_track(conn, track_obj, user_id, source="search")
             finally:
@@ -4337,7 +4339,7 @@ async def ingest_single(
 
     # By id: the row may be another release of the same recording, whose
     # spotify_id is not the one asked for (_link_track).
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         row = conn.execute(
             f"SELECT {_track_select(conn)} FROM tracks t "
@@ -4475,7 +4477,7 @@ def _run_public_playlist_job(job_id: str, playlist_id: str, user_id: int,
         # status went 'complete'.
         _update_job(job_id, total=len(unique_tracks), collecting=False)
 
-        conn = get_conn()
+        conn = db.get_conn()
         try:
             cancelled = False
             src_label = f"playlist:{playlist_id}"
@@ -4775,7 +4777,7 @@ def _run_playlist_url_job(job_id: str, src, user_id: int, user_token: Optional[s
             work = [(None, it) for it in pl.items]
         _update_job(job_id, total=len(work), collecting=False)
 
-        conn = get_conn()
+        conn = db.get_conn()
         cancelled = False
         rate_limited = None
         seen: set = set()
@@ -5295,7 +5297,7 @@ def _record_track_events(user_id: int, items: list, display_name: str = "") -> t
         return 0, rejected
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         accepted = 0
         # App-level events have no track to resolve and feed no aggregate:
@@ -5553,7 +5555,7 @@ def my_listening_stats(days: int = Query(30, ge=1, le=_STATS_WINDOW_DAYS_MAX),
     uid = int(sess["user_id"])
     now = datetime.now(timezone.utc)
     since = (now - timedelta(days=max(days, 7))).strftime("%Y-%m-%d %H:%M:%S")
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         tot = conn.execute(
             "SELECT COALESCE(SUM(total_listened_ms), 0) AS listened, "
@@ -5666,7 +5668,7 @@ def my_listening_stats(days: int = Query(30, ge=1, le=_STATS_WINDOW_DAYS_MAX),
 # ---------------- Admin (chandan-only) ----------------
 @app.get("/api/admin/users")
 def admin_list_users(sess: dict = Depends(require_admin)):
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         rows = conn.execute(
             """
@@ -5706,7 +5708,7 @@ def admin_list_users(sess: dict = Depends(require_admin)):
 
 @app.get("/api/admin/users/{user_id}/stats")
 def admin_user_stats(user_id: int, sess: dict = Depends(require_admin)):
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         u = conn.execute(
             "SELECT id, display_name, spotify_display_name, created_at FROM users WHERE id = ?",
@@ -5794,7 +5796,7 @@ def admin_user_tracks(
     offset: int = Query(0, ge=0),
     sess: dict = Depends(require_admin),
 ):
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         # 'last_played' in the response is MAX(last_played, last_skipped_at) --
         # the DB column 'last_played' now means 'qualified listen' only (play_end
@@ -5850,7 +5852,7 @@ def admin_delete_user(user_id: int, sess: dict = Depends(require_admin)):
     # Guardrail: admin can't delete themselves.
     if int(user_id) == ADMIN_USER_ID:
         raise HTTPException(status_code=400, detail={"error": "cannot_delete_admin"})
-    conn = get_conn()
+    conn = db.get_conn()
     try:
         exists = conn.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone()
         if not exists:

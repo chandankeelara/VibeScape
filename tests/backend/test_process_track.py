@@ -6,6 +6,7 @@ only Spotify is faked, for the two endpoints at the end.
 import sqlite3
 
 import pytest
+import db as backend_db  # backend/db.py; `db` is the fixture with the test database path
 
 
 def sp(cid, isrc=None, name="Song", artist="Artist"):
@@ -33,7 +34,7 @@ def add_track(sql):
 def process(app_module, db):
     """process(track, user_id) -> the bucket, on a connection of the app's own."""
     def _run(track, user_id):
-        conn = app_module.get_conn()
+        conn = backend_db.get_conn()
         try:
             return app_module._process_track(conn, track, "no-job", user_id, source="search")
         finally:
@@ -142,7 +143,7 @@ class CountingConn:
 @pytest.fixture
 def counted(app_module, db):
     def _run(track, user_id):
-        conn = CountingConn(app_module.get_conn())
+        conn = CountingConn(backend_db.get_conn())
         try:
             return app_module._process_track(conn, track, "no-job", user_id), conn
         finally:
@@ -188,7 +189,7 @@ def test_a_double_submit_inserts_once_with_no_unique_index(sql, make_user, app_m
     import threading
     import time
     uid, _ = make_user()
-    conn = app_module.get_conn()            # runs ensure_db(), which makes the index
+    conn = backend_db.get_conn()            # runs ensure_db(), which makes the index
     sql.execute("DROP INDEX idx_tracks_spotify_id")
     sql.commit()
     sql.execute("INSERT INTO tracks (title, artist, spotify_id, isrc, ingestion_status, vibe_score) "
@@ -244,7 +245,7 @@ class CollidesOnce:
 def test_losing_on_the_unique_index_retries_onto_the_winner(sql, make_user, app_module, db,
                                                             same_user, bucket):
     uid, _ = make_user()
-    conn = CollidesOnce(app_module.get_conn(), db, uid if same_user else None)
+    conn = CollidesOnce(backend_db.get_conn(), db, uid if same_user else None)
     try:
         assert app_module._process_track(conn, sp("raced"), "no-job", uid) == bucket
     finally:

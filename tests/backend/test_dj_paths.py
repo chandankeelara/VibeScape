@@ -222,7 +222,7 @@ def _register_turso_functions(conn):
 
 @pytest.mark.parametrize("recency", [True, False])
 def test_both_ranking_paths_return_the_same_order(client, library, app_module, db,
-                                                  monkeypatch, recency):
+                                                  monkeypatch, use_conn, recency):
     """The numpy path (SQLite) and the vector_distance_cos path (Turso), on a
     session with accepts and skips. The Turso SQL runs on SQLite with
     libSQL's vector functions stood in for; what it cannot show is libSQL's
@@ -245,7 +245,7 @@ def test_both_ranking_paths_return_the_same_order(client, library, app_module, d
         conn.row_factory = sqlite3.Row
         _register_turso_functions(conn)
         return conn
-    monkeypatch.setattr(app_module, "get_conn", turso_shaped)
+    use_conn(turso_shaped)
     monkeypatch.setenv("DB_BACKEND", "turso")
     app_module._dj_mean_cache.clear()
     turso = _post(client, h, session[-1], body)
@@ -277,7 +277,7 @@ def _means(sql):
 
 @pytest.mark.parametrize("v3_column", ["absent", "empty"])
 def test_without_fused_v3_the_dj_ranks_fused_v2(client, library, app_module, db, sql,
-                                                 monkeypatch, caplog, v3_column):
+                                                 monkeypatch, use_conn, caplog, v3_column):
     """A deploy that lands before scripts/refuse_vectors.py has filled
     fused_v3: production's shape, fused_v2 vectors in fused_v2_embedding and
     the fused_v3 column missing, or present with nothing in it (db.py adds
@@ -293,7 +293,7 @@ def test_without_fused_v3_the_dj_ranks_fused_v2(client, library, app_module, db,
         sql.execute(f"UPDATE track_embeddings SET {fv.FUSED_COLUMN} = NULL")
     sql.commit()
     turso_shaped = _turso_shaped(db)
-    monkeypatch.setattr(app_module, "get_conn", turso_shaped)
+    use_conn(turso_shaped)
     monkeypatch.setenv("DB_BACKEND", "turso")
     caplog.set_level(logging.WARNING, logger="vibescape")
 
@@ -334,7 +334,7 @@ def test_with_fused_v3_the_dj_ranks_fused_v3(client, library, sql):
 
 
 def test_before_the_v2_migration_the_dj_ranks_fused_v1_instead_of_failing(
-        client, library, app_module, db, sql, monkeypatch, caplog):
+        client, library, app_module, db, sql, monkeypatch, use_conn, caplog):
     """A deploy that lands on a database from before fused_v2: no fused_v2
     or fused_v3 column, fused_v1 vectors in fused_embedding. Turso-shaped
     (no ensure_db, which would add the columns on SQLite). Without the
@@ -358,7 +358,7 @@ def test_before_the_v2_migration_the_dj_ranks_fused_v1_instead_of_failing(
     sql.commit()
 
     turso_shaped = _turso_shaped(db)
-    monkeypatch.setattr(app_module, "get_conn", turso_shaped)
+    use_conn(turso_shaped)
     monkeypatch.setenv("DB_BACKEND", "turso")
     caplog.set_level(logging.WARNING, logger="vibescape")
 

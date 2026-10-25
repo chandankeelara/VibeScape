@@ -162,7 +162,7 @@ def _register_turso_functions(conn):
 
 @pytest.mark.parametrize("recency", [True, False])
 def test_both_ranking_paths_filter_repeats_alike(client, releases, app_module, db,
-                                                 monkeypatch, recency):
+                                                 monkeypatch, use_conn, recency):
     import db_client
     h, songs, _ = releases
     if not recency:
@@ -179,7 +179,7 @@ def test_both_ranking_paths_filter_repeats_alike(client, releases, app_module, d
         conn.row_factory = sqlite3.Row
         _register_turso_functions(conn)
         return conn
-    monkeypatch.setattr(app_module, "get_conn", turso_shaped)
+    use_conn(turso_shaped)
     monkeypatch.setenv("DB_BACKEND", "turso")
     app_module._dj_mean_cache.clear()
     turso = _post(client, h, played[-1], body)

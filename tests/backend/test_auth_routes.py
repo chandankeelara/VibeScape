@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 import requests
+import db as backend_db  # backend/db.py; `db` is the fixture with the test database path
 
 
 class FakeResponse:
@@ -148,7 +149,7 @@ def test_login_validation_is_a_422(client, email, password, error):
 
 def test_logout_ends_only_that_session(client, sql, make_user, app_module):
     uid, h = make_user()
-    conn = app_module.get_conn()
+    conn = backend_db.get_conn()
     other = app_module._issue_session(conn, uid)
     conn.close()
     r = client.post("/api/auth/logout", headers=h)

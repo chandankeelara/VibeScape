@@ -21,6 +21,7 @@ from ingest_pipeline import fused_vector as fv
 from ingest_pipeline.fused_vector import FUSED_COLUMN, FUSED_DIM, MERT_DIM
 from ingest_pipeline.stage_classify import ClassifyStage
 from ingest_pipeline.stage_fuse import CURRENT_MERT_VERSION, FuseStage
+import db as backend_db  # backend/db.py; `db` is the fixture with the test database path
 
 log = logging.getLogger("test")
 
@@ -86,7 +87,7 @@ def finished(sql, n):
 @pytest.fixture
 def conn(app_module, db):
     """What the runner hands a stage: get_conn()'s connection."""
-    c = app_module.get_conn()
+    c = backend_db.get_conn()
     yield c
     c.close()
 
@@ -354,7 +355,7 @@ def test_a_pass_that_only_left_finished_tracks_armed_is_not_progress(sql):
 def test_a_clean_batch_is_one_execute_batch(sql, app_module, batches):
     ids = add_rows(sql, 4)
     stage = Scripted({i: {"album": "X"} for i in ids})
-    conn = app_module.get_conn()
+    conn = backend_db.get_conn()
     try:
         stage.run_batch(conn, 10, log)
     finally:
@@ -378,7 +379,7 @@ def test_classify_writes_its_vector_with_the_row(sql, app_module, batches, tmp_p
         {"energy": 0.5, "danceability": 0.5, "valence": 0.5, "vibe_score": 0.5,
          "model_version": CURRENT_MERT_VERSION}, vec))
 
-    conn = app_module.get_conn()
+    conn = backend_db.get_conn()
     try:
         assert stage.run_batch(conn, 10, log)["done"] == 1
     finally:
@@ -413,7 +414,7 @@ def test_classify_fails_a_row_whose_model_output_is_not_finite(sql, app_module, 
     monkeypatch.setattr(stage._ml, "predict_and_embed_from_path",
                         lambda path: ({**preds, "model_version": CURRENT_MERT_VERSION}, vector))
 
-    conn = app_module.get_conn()
+    conn = backend_db.get_conn()
     try:
         assert stage.run_batch(conn, 10, log)["failed"] == 1
     finally:
@@ -440,7 +441,7 @@ def ready_to_fuse(sql, tid):
 def test_fuse_writes_the_vector_and_arms_youtube(sql, app_module):
     (tid,) = add_rows(sql, 1)
     ready_to_fuse(sql, tid)
-    conn = app_module.get_conn()
+    conn = backend_db.get_conn()
     try:
         assert FuseStage().run_batch(conn, 10, log)["done"] == 1
     finally:
@@ -466,7 +467,7 @@ def test_fuse_never_marks_a_row_done_without_its_vector(sql, app_module, monkeyp
         return rows
     monkeypatch.setattr(stage, "fetch_pending", fetch_then_lose_the_row)
 
-    conn = app_module.get_conn()
+    conn = backend_db.get_conn()
     try:
         stage.run_batch(conn, 10, log)
     finally:
@@ -486,7 +487,7 @@ def test_fuse_writes_fused_v3_with_the_genre_block_and_fused_v2_beside_it(sql, a
     sql.execute("UPDATE tracks SET genre_status = 'done', genre_scores = '{\"film_mass\":100}' "
                 "WHERE id = ?", (a,))
     sql.commit()
-    conn = app_module.get_conn()
+    conn = backend_db.get_conn()
     try:
         assert FuseStage().run_batch(conn, 10, log)["done"] == 2
     finally:

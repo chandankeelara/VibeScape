@@ -151,7 +151,12 @@ app.
 Python: use the fixtures in `conftest.py` — `client` (FastAPI TestClient),
 `make_user()` (returns `user_id, auth_headers`), `make_tracks(user_id,
 vectors)`, `sql` (a raw connection to the test DB), `clusters` (synthetic
-embedding groups). Frontend: no bare `import ... from 'vitest'` (files here sit
+embedding groups), `use_conn(opener)` (every `db.get_conn()` returns
+`opener()`; `use_conn.real` is the unpatched one). To open a connection the
+way the app does, call `db.get_conn()` (imported as `backend_db`: `db` is the
+fixture with the test database's path). `backend/app.py` has no `get_conn`
+of its own, so `monkeypatch.setattr(app, "get_conn", ...)` raises rather
+than patching a name nothing calls. Frontend: no bare `import ... from 'vitest'` (files here sit
 outside the package) — `describe` / `it` / `expect` / `vi` are globals, and
 `tests/frontend/setup.js` gives each test a fresh `localStorage`, `window`
 and `document`.
