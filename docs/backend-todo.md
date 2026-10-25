@@ -1528,7 +1528,7 @@ taxonomy (`ingest_pipeline/genre_taxonomy.py`), `GenreStage` (parks live
 rows at `'pending'`, gates nothing), `genre_tagging.tag_many` and
 `scripts/genre_tags.py --apply-file`. Procedure: `ingest_pipeline/README.md`
 § Tagging genres. Then the DJ vector: **fused_v3**, fused_v2's 841 dims plus
-a 24-slot genre block (`fused_vector.py`, W_GENRE 0.15 taken from MERT), in
+a 24-slot genre block (`fused_vector.py`, W_GENRE 0.10 taken from MERT, chosen 2026-10-25), in
 its own column `track_embeddings.fused_v3_embedding F32_BLOB(865)`. The
 fuse stage and `scripts/refuse_vectors.py` write v3 and v2; `tag_many`
 re-arms fuse for a fused row whose scores changed; the app ranks v3 once

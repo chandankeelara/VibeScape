@@ -13,12 +13,13 @@ local column is added without one too, so a new row's genre_status is
 NULL in both: not asked yet. The stage folds NULL into 'pending' for live
 rows and writes nothing else.
 
-Live means ingestion_status 'pending', NULL or 'done'. Unlike language,
-'done' is included: when the columns arrive every analysed track in the
-catalogue needs scores, and those rows are finished. A row parked at
-'no_preview' keeps its NULL, since it never reaches the DJ pool and asking
-about it buys nothing; one parked at '<stage>_stage_error' is normalised
-once --retry-failed brings it back.
+Live means ingestion_status 'pending', NULL, 'done' or 'no_preview'.
+Unlike language, 'done' is included: when the columns arrive every
+analysed track in the catalogue needs scores, and those rows are finished.
+'no_preview' is included too (2026-10-25, owner's call): such a track never
+reaches the DJ pool, but it is still in libraries and search, where its
+genre chips show, and tagging needs only title/artist/album. One parked at
+'<stage>_stage_error' is normalised once --retry-failed brings it back.
 
 It does NOT gate anything. Fuse reads genre_scores / genre_status into the
 fused_v3 genre block but does not wait for them (an untagged row gets a
@@ -46,13 +47,14 @@ class GenreStage(Stage):
     arms = ()
     max_workers = 1
     # As LanguageStage: in a concurrent run a pending row waits until
-    # preview and download are done with it, since either can settle it
-    # 'no_preview', and such a row keeps its NULL.
+    # preview and download are done with it, so it is asked once, with its
+    # final ingestion_status known.
     after = ("preview", "download")
 
     gate_sql = (
         "genre_status IS NULL "
-        "AND (ingestion_status IS NULL OR ingestion_status IN ('pending', 'done')) "
+        "AND (ingestion_status IS NULL "
+        "     OR ingestion_status IN ('pending', 'done', 'no_preview')) "
         "AND title IS NOT NULL AND title != ''"
     )
     gate_params = ()

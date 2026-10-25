@@ -40,13 +40,16 @@ needed 28 codes by 2026-10-19. Seven spare slots are 40% headroom for 96 bytes a
 re-fuse and a deploy. There is no 'other' slot of the block's own: the
 taxonomy has 'other'.
 
-W_GENRE (default 0.15) is taken from MERT alone: W_MERT = W_MERT_V2 -
+W_GENRE (default 0.10) is taken from MERT alone: W_MERT = W_MERT_V2 -
 W_GENRE, with scalars and language unchanged (W_LANG stays 0.40). So
 W_GENRE = 0 is fused_v2 exactly, padded with 24 zeros
 (tests/ingest/test_fused_vector.py), and replay_bench scores it the same
 as fused_v2 on every number.
 
-0.15 is a starting value, not yet a decision. replay_bench --w-genre
+0.10 was chosen on 2026-10-25 from the grid below: it is the largest
+weight that leaves real-user served AUC unchanged (0.711) while genre@10
+and listener AUC rise. Listener runs (backlog 15.4) may still move it.
+replay_bench --w-genre
 (2026-10-23, a copy of prod's 2026-10-20 backup, all 5,270 fused tracks
 genre-tagged that day by one tagging session, the tags not reviewed),
 shipped dj_replay and same-song filter, W_GENRE 0 / 0.10 / 0.15 / 0.20 /
@@ -193,7 +196,7 @@ GENRE_DIMS = GENRE_BLOCK
 W_MERT_V2, W_SCALAR, W_LANG = 0.4125, 0.1875, 0.40
 # fused_v3: the genre block's weight comes out of MERT's. The one knob: a
 # starting value, the grid and what is left are under "The genre block".
-W_GENRE = 0.15
+W_GENRE = 0.10
 W_MERT = W_MERT_V2 - W_GENRE
 FUSED_V2_DIM = MERT_DIM + len(SCALAR_COLS) + LANG_DIMS
 FUSED_DIM = FUSED_V2_DIM + GENRE_DIMS

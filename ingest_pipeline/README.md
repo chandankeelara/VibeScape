@@ -373,10 +373,12 @@ ORDER BY id ASC;
 `genre_status` is NULL (not asked), `'pending'` (waiting) or `'done'`. The
 column has no default, locally or on production, so new rows land NULL;
 `GenreStage` normalises NULL to `'pending'` for **live** rows:
-`ingestion_status` `'pending'`, NULL or `'done'`, with a title. Finished
-tracks are included, unlike language, because when the columns arrive the
-whole analysed catalogue needs scores. Rows at `'no_preview'` keep NULL;
-they never reach the DJ pool. The session never sees the iTunes `genre`
+`ingestion_status` `'pending'`, NULL, `'done'` or `'no_preview'`, with a
+title. Finished tracks are included, unlike language, because when the
+columns arrive the whole analysed catalogue needs scores. `'no_preview'`
+rows are included too (2026-10-25): they never reach the DJ pool, but they
+sit in libraries and search, where the genre chips show, and tagging needs
+no audio. The session never sees the iTunes `genre`
 column, on purpose: it is one store's label for the release ("Soundtrack",
 "Indian Pop") and would anchor the scores on the coarse label this
 replaces. `language`, `energy_pred` and `danceability_pred` are hints.

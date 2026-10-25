@@ -203,10 +203,10 @@ def test_fetch_waiting_never_returns_the_itunes_genre(sql):
 # ------------------------------------------------------------- the stage
 
 def test_the_stage_normalises_null_for_live_rows_only(sql):
-    live = {s: add_track(sql, ingestion_status=s) for s in ("pending", "done")}
+    live = {s: add_track(sql, ingestion_status=s) for s in ("pending", "done", "no_preview")}
     live["null"] = add_track(sql, ingestion_status=None)
     left = {
-        "no_preview": add_track(sql, ingestion_status="no_preview"),
+        "stage_error": add_track(sql, ingestion_status="classify_stage_error"),
         "untitled": add_track(sql, title=""),
         "tagged": add_track(sql, ingestion_status="done", genre_status="done"),
     }
@@ -215,10 +215,10 @@ def test_the_stage_normalises_null_for_live_rows_only(sql):
         counts = GenreStage().run_batch(conn, 50, runner.log)
     finally:
         conn.close()
-    assert counts.get("pending") == 3
+    assert counts.get("pending") == 4
     assert {k: genre_row(sql, t)[1] for k, t in live.items()} == dict.fromkeys(live, "pending")
     assert {k: genre_row(sql, t)[1] for k, t in left.items()} == {
-        "no_preview": None, "untitled": None, "tagged": "done"}
+        "stage_error": None, "untitled": None, "tagged": "done"}
     # It writes its own column and nothing else: no fuse arming, no
     # ingestion_status change.
     assert sql.execute("SELECT COUNT(*) FROM tracks WHERE fuse_status IS NOT NULL").fetchone()[0] == 0
