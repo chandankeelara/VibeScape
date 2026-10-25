@@ -13,7 +13,8 @@ Use `D:\Softwares\MiniConda\python.exe` (the PATH python lacks librosa).
 # 1. the copy: a file copy of the backup, plus 4 eval users and one user per persona
 python scripts/dj_eval/setup_copy.py --backup data/backups/prod_<stamp>.db      # -> data/dj_eval/eval.db
 
-# 1b. the copy is fused_v1 (as prod is until the migration): migrate it
+# 1b. give the copy the current recipes (fused_v2 and fused_v3; a copy without
+#     genre columns gets neutral genre blocks)
 VIBESCAPE_DB_PATH=data/dj_eval/eval.db python scripts/refuse_vectors.py --apply
 
 # 2a. the deterministic eval: starts and stops its own server (~1 h for every group)
@@ -41,6 +42,8 @@ python scripts/dj_eval/report.py                                                
 | `scenarios.json`, `score_dj.py`, `scoreboard.json` | the vibe tests and their listener prompts; one score per DJ version; the committed scoreboard (below) |
 | `replay_bench.py --final3` | the skip-overshoot table (2026-10-20; `--final2` is its first version): the old DJ, revision 00028, the candidates; also prints the five regression sessions (`REGRESSION`, scored on the persona's language, film BGM on instrumentals) and the skip-heavy scenarios (mood3, wander6, moved, seedoff3-5, film3 / drone3). A config that wins real-user AUC but fails these is not a candidate: that gap is how the overshoot shipped |
 | `replay_bench.py --final4` | the same-song filter (2026-10-20) on PR #23, with `repeat@10`: the share of moments whose top 10 holds another release of a session song or two releases of one song |
+| `replay_bench.py --w-genre 0,0.10,0.15,0.20,0.25` | the genre-weight grid (2026-10-23): shipped fused_v2 (`AZ`) against fused_v3 at each W_GENRE (`G<w>`), shipped dj_replay and same-song filter; prints genre@10 (listener and real users, with n), lang@10, real-user and listener AUC and the regression sessions side by side, and the usual tables. `G0` must equal `AZ` on every number (`tests/dj_real/test_replay_bench.py`). Needs a copy with `genre_scores`; on one without, no seed is tagged and genre@10 is NaN |
+| `genres.py` | genre@10: a track's primary genre is its top-scored slug, ties to taxonomy order; the share of the top 10 sharing the seed's, over tagged seeds only (an untagged candidate counts as not sharing) |
 | `language_rerank.py` | the session language re-rank that was measured against the vector-only DJ and not shipped; kept so the comparison reproduces |
 | `dj-listener.agent.md` | the agent definition |
 
@@ -66,9 +69,17 @@ The replay benchmark ranks with the same pure functions the endpoint calls
 (`backend/dj_replay.py`) and the endpoint's pool
 size, so it judges a change without the server or an LLM. On the baseline it
 reproduces run_eval.py's language precision to within 0.01 and ranks every
-DJ-served listener track inside its top 8 (the `top8` column). It does not
-run the recency re-rank: `user_track_stats` holds the final state, which
-would leak the future into the replay.
+DJ-served listener track inside its top 8 (the `top8` column) -- on the
+copy the sessions were recorded on; on another copy (the 2026-10-20 one
+the genre grid ran on) top8 was 0.71, so the listener metrics there are
+weaker evidence. It does not run the recency re-rank: `user_track_stats`
+holds the final state, which would leak the future into the replay.
+
+Real-user AUC before 2026-10-23 carried noise: a served track that was the
+seed or in the seen window (a repeat) took its rank from uninitialised
+memory, 19 of 3,579 moments on the 2026-10-20 copy. Fixed (it has no rank
+now); re-run an old configuration before comparing a new number with an
+old one (docs/backend-todo.md 15.7).
 
 ## Scoring a DJ version
 

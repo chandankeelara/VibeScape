@@ -108,6 +108,18 @@ CREATE TABLE IF NOT EXISTS tracks (
     language_model_version TEXT,
     language_predicted_at  TIMESTAMP,
 
+    -- genre scores. JSON object slug -> 50 | 100 over the append-only
+    -- taxonomy in ingest_pipeline/genre_taxonomy.py, read from metadata by a
+    -- Claude Code session like language. genre_status: NULL (not asked) |
+    -- 'pending' | 'done', no default (GenreStage normalises live rows).
+    -- Not the iTunes `genre` above. See ingest_pipeline/README.md, section
+    -- Tagging genres. Existing databases gain these from db.py (SQLite) or
+    -- scripts/_turso_add_genre_columns.py (Turso).
+    genre_scores          TEXT,
+    genre_status          TEXT,
+    genre_model_version   TEXT,
+    genre_tagged_at       TIMESTAMP,
+
     features_extracted_at TIMESTAMP,
     ml_predicted_at       TIMESTAMP,
     created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -164,10 +176,14 @@ CREATE INDEX IF NOT EXISTS idx_user_tracks_track ON user_tracks(track_id);
 --                         fused_v2; kept for a rollback until a cleanup
 --                         drops it.
 -- fused_v2_embedding: 841-D  fused_v2 (ingest_pipeline/fused_vector.py):
---                         a 64-slot language block. This is what DJ mode
---                         ranks by. Existing databases gain the column from
---                         db.py (SQLite) or scripts/refuse_vectors.py
---                         (Turso), not from this file.
+--                         a 64-slot language block. DJ mode ranks by it
+--                         while fused_v3 is absent or empty.
+-- fused_v3_embedding: 865-D  fused_v3: fused_v2's blocks plus a 24-slot
+--                         genre block. What DJ mode ranks by once it holds
+--                         vectors (backend/app.py _fused_v3_ready).
+--                         Existing databases gain both columns from db.py
+--                         (SQLite) or scripts/refuse_vectors.py (Turso),
+--                         not from this file.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS track_embeddings (
     track_id         INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
@@ -175,6 +191,7 @@ CREATE TABLE IF NOT EXISTS track_embeddings (
     fused_embedding  F32_BLOB(788),
     model_version    TEXT,          -- provenance: which regressor produced the scalars
     fused_v2_embedding F32_BLOB(841),
+    fused_v3_embedding F32_BLOB(865),
     updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

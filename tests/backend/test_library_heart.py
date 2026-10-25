@@ -6,7 +6,7 @@ else (the catalogue, embeddings and the caller's history stay, as with
 track on its next request.
 """
 import numpy as np
-from ingest_pipeline.fused_vector import FUSED_DIM
+from ingest_pipeline.fused_vector import FUSED_COLUMN, FUSED_DIM
 
 ENV = {"session_id": "s-heart", "tz_offset_min": 0, "vibe": 50, "vibe_source": "user", "dj_mode": False}
 
@@ -69,7 +69,7 @@ def test_delete_unlinks_only_the_callers_row_and_keeps_history(client, sql, make
     assert linked(sql, me, a) == 0
     assert linked(sql, other, a) == 1
     assert count(sql, "SELECT COUNT(*) FROM tracks WHERE id=?", a) == 1
-    assert count(sql, "SELECT LENGTH(fused_v2_embedding) FROM track_embeddings WHERE track_id=?", a) == FUSED_DIM * 4
+    assert count(sql, f"SELECT LENGTH({FUSED_COLUMN}) FROM track_embeddings WHERE track_id=?", a) == FUSED_DIM * 4
     assert count(sql, "SELECT COUNT(*) FROM track_events WHERE user_id=? AND track_id=?", me, a) == 2
     assert count(sql, "SELECT COUNT(*) FROM user_track_stats WHERE user_id=? AND track_id=?", me, a) == 1
 

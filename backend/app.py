@@ -44,6 +44,7 @@ from dj_replay import replay as _dj_replay
 import playlist_import as _pli
 import library_search as _libsearch
 import lyrics as _lyrics
+import track_genres as _track_genres
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -109,6 +110,46 @@ TRACK_COLUMNS = [
     "ingestion_status",
 ]
 TRACK_SELECT = ", ".join(TRACK_COLUMNS)
+
+# tracks.genre_scores, read into every track dict as `genres`
+# (track_genres.genres_list). Not in TRACK_COLUMNS because production's
+# `tracks` has no such column until scripts/_turso_add_genre_columns.py has
+# run there, and a SELECT naming it would fail every player list. Whether it
+# exists is asked once per process (_genre_scores_ready); a no is re-asked
+# every _GENRE_RECHECK_S so the migration is picked up without a restart.
+GENRE_SCORES_COLUMN = "genre_scores"
+_GENRE_RECHECK_S = 60.0
+_genre_scores_state = {"ready": None, "checked_at": 0.0, "warned": False}
+
+
+def _genre_scores_ready(conn) -> bool:
+    """Does `tracks` have the genre_scores column? A zero-row SELECT, which
+    fails the same way on SQLite and over Hrana and reads no rows."""
+    st = _genre_scores_state
+    now = _time.time()
+    if st["ready"] or (st["ready"] is False and now - st["checked_at"] < _GENRE_RECHECK_S):
+        return bool(st["ready"])
+    try:
+        conn.execute(f"SELECT {GENRE_SCORES_COLUMN} FROM tracks LIMIT 0").fetchall()
+        ready = True
+    except Exception as e:
+        ready = False
+        if not st["warned"]:
+            st["warned"] = True
+            log.warning("tracks.%s missing (%s): track payloads carry genres: [] "
+                        "until scripts/_turso_add_genre_columns.py has run",
+                        GENRE_SCORES_COLUMN, e)
+    st["ready"], st["checked_at"] = ready, now
+    return ready
+
+
+def _track_select(conn, alias: str = "t") -> str:
+    """The SELECT list for a track dict (_row_to_dict): TRACK_COLUMNS, plus
+    genre_scores where the database has it."""
+    cols = list(TRACK_COLUMNS)
+    if _genre_scores_ready(conn):
+        cols.append(GENRE_SCORES_COLUMN)
+    return ", ".join(f"{alias}.{c}" for c in cols)
 
 MOODS = list(scoring.MOODS)
 
@@ -849,6 +890,13 @@ def _row_to_dict(row):
             out[col] = row[col]
         except (IndexError, KeyError):
             out[col] = None
+    # Absent from the row when the database has no genre_scores column
+    # (_track_select), or the caller selected its own columns.
+    try:
+        raw_genres = row[GENRE_SCORES_COLUMN]
+    except (IndexError, KeyError):
+        raw_genres = None
+    out["genres"] = _track_genres.genres_list(raw_genres)
     # frontend slider works against vibe_score, but callers may prefer
     # activation_relative once library z-scores exist. Expose both; when
     # activation_relative is populated, mirror it into vibe_score for
@@ -904,16 +952,15 @@ def list_tracks(
         params.append(mood)
 
     order = "ORDER BY RANDOM()" if shuffle else f"ORDER BY {vibe_expr}"
-    select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
-    sql = (
-        f"SELECT {select} FROM tracks t "
-        f"JOIN user_tracks ut ON ut.track_id = t.id "
-        f"WHERE {' AND '.join(where)} {order} LIMIT ?"
-    )
     params.append(limit)
 
     conn = get_conn()
     try:
+        sql = (
+            f"SELECT {_track_select(conn)} FROM tracks t "
+            f"JOIN user_tracks ut ON ut.track_id = t.id "
+            f"WHERE {' AND '.join(where)} {order} LIMIT ?"
+        )
         rows = conn.execute(sql, params).fetchall()
     except Exception:
         rows = []
@@ -970,7 +1017,7 @@ def search_tracks(
         if not hits:
             return {"tracks": []}
         ids = [h["id"] for h in hits]
-        select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
+        select = _track_select(conn)
         # Joined again because the narrow rows are cached and per process: a
         # track unlinked on another instance stays in its cache for 60 s.
         rows = conn.execute(
@@ -990,26 +1037,34 @@ def search_tracks(
 MERT_MODEL_VERSION = "mert_v1_95m_fp32_30s"
 MERT_DIM = 768
 
-# Fused variant: MERT (768) + scalar features (9) + a 64-slot language block
-# (one slot per tagged language, untagged all zeros). The recipe is
-# ingest_pipeline/fused_vector.py, and these must match it
-# (tests/backend/test_dj_paths.py checks). fused_v2 lives in its own column,
-# FUSED_COLUMN; fused_v1's 788-wide vectors stay in 'fused_embedding' for a
+# Fused variant, fused_v3: MERT (768) + scalar features (9) + a 64-slot
+# language block (one slot per tagged language, untagged all zeros) + a
+# 24-slot genre block (one slot per genre_taxonomy genre, untagged all
+# zeros). The recipe is ingest_pipeline/fused_vector.py, and these must match
+# it (tests/backend/test_dj_paths.py checks). Each width lives in its own
+# column; fused_v1's 788-wide vectors stay in 'fused_embedding' for a
 # rollback until a cleanup drops them. The version also keys the
 # user_embedding_mean cache, so bumping it is what stops a mean of old-space
 # vectors being reused.
-FUSED_MODEL_VERSION = "fused_v2_mert_scalar_lang64"
-FUSED_COLUMN = "fused_v2_embedding"
+FUSED_MODEL_VERSION = "fused_v3_mert_scalar_lang64_genre24"
+FUSED_COLUMN = "fused_v3_embedding"
 FUSED_SCALAR_DIMS = 9
 FUSED_LANG_DIMS = 64
-FUSED_DIM = MERT_DIM + FUSED_SCALAR_DIMS + FUSED_LANG_DIMS  # 841
+FUSED_GENRE_DIMS = 24
+FUSED_DIM = MERT_DIM + FUSED_SCALAR_DIMS + FUSED_LANG_DIMS + FUSED_GENRE_DIMS  # 865
 
-# fused_v1, ranked only while FUSED_COLUMN does not exist yet: a deploy that
-# lands before scripts/refuse_vectors.py has migrated the database degrades to
-# what the previous revision did instead of failing every DJ request. The
-# whole request then stays in v1 -- its column, width, mean-cache key and the
-# avoid constants it was tuned with -- so a query is never ranked against
-# vectors of the other width.
+# fused_v2, ranked while FUSED_COLUMN is missing or holds no vector yet
+# (_fused_v3_ready): a deploy that lands before scripts/refuse_vectors.py has
+# filled fused_v3 serves exactly what the previous revision did. Same avoid
+# constants as v3 (dj_replay protects the same language block in both).
+FUSED_V2_MODEL_VERSION = "fused_v2_mert_scalar_lang64"
+FUSED_V2_COLUMN = "fused_v2_embedding"
+FUSED_V2_DIM = MERT_DIM + FUSED_SCALAR_DIMS + FUSED_LANG_DIMS  # 841
+
+# fused_v1, ranked only while fused_v2's column does not exist yet either.
+# The whole request then stays in one version -- its column, width,
+# mean-cache key and, for v1, the avoid constants it was tuned with -- so a
+# query is never ranked against vectors of another width.
 FUSED_V1_MODEL_VERSION = "fused_v1_mert_scalar_lang"
 FUSED_V1_COLUMN = "fused_embedding"
 FUSED_V1_DIM = MERT_DIM + FUSED_SCALAR_DIMS + 11  # 788
@@ -1017,29 +1072,51 @@ FUSED_V1_AVOID = {"neg_weight": 0.6, "m_step": 0.25, "m_max": 1.0,
                   "avoid_perp": False, "avoid_cap": None}
 _FUSED_V2_RECHECK_S = 60.0
 _fused_v2_state = {"ready": None, "checked_at": 0.0, "warned": False}
+_fused_v3_state = {"ready": None, "checked_at": 0.0, "warned": False}
 
 
-def _fused_v2_ready(conn) -> bool:
-    """Does track_embeddings have FUSED_COLUMN? Once it does, that is cached
-    for the life of the process; a missing column is re-checked every
-    _FUSED_V2_RECHECK_S, so a migration run while instances are up is picked
-    up without a restart. A zero-row SELECT, not PRAGMA: it fails the same
-    way on SQLite and over Hrana."""
-    st = _fused_v2_state
+def _column_ready(conn, st: dict, col: str, needs_rows: bool, fallback: str) -> bool:
+    """Is `col` usable for ranking? Once it is, that is cached for the life
+    of the process; a no is re-checked every _FUSED_V2_RECHECK_S, so a
+    migration run while instances are up is picked up without a restart.
+    Without `needs_rows` the column only has to exist (a zero-row SELECT, not
+    PRAGMA: it fails the same way on SQLite and over Hrana); with it, one row
+    must hold a vector. That second query stops at its first hit, so it is a
+    scan only while the column exists and is empty -- on Turso, the minutes
+    between refuse_vectors.py adding the column and writing it, or a
+    database where it was added and never filled."""
     now = datetime.now(timezone.utc).timestamp()
     if st["ready"] or (st["ready"] is False and now - st["checked_at"] < _FUSED_V2_RECHECK_S):
         return bool(st["ready"])
     try:
-        conn.execute(f"SELECT {FUSED_COLUMN} FROM track_embeddings LIMIT 0").fetchall()
-        ready = True
+        if needs_rows:
+            ready = conn.execute(f"SELECT 1 FROM track_embeddings WHERE {col} IS NOT NULL "
+                                 f"LIMIT 1").fetchone() is not None
+            why = "no vectors"
+        else:
+            conn.execute(f"SELECT {col} FROM track_embeddings LIMIT 0").fetchall()
+            ready, why = True, ""
     except Exception as e:
-        ready = False
-        if not st["warned"]:
-            st["warned"] = True
-            log.warning("[dj] %s missing (%s): ranking fused_v1 (%s) until "
-                        "scripts/refuse_vectors.py has run", FUSED_COLUMN, e, FUSED_V1_COLUMN)
+        ready, why = False, str(e)
+    if not ready and not st["warned"]:
+        st["warned"] = True
+        log.warning("[dj] %s not ready (%s): ranking %s until "
+                    "scripts/refuse_vectors.py has run", col, why, fallback)
     st["ready"], st["checked_at"] = ready, now
     return ready
+
+
+def _fused_v2_ready(conn) -> bool:
+    """Does track_embeddings have fused_v2's column?"""
+    return _column_ready(conn, _fused_v2_state, FUSED_V2_COLUMN, False, FUSED_V1_COLUMN)
+
+
+def _fused_v3_ready(conn) -> bool:
+    """Does track_embeddings have fused_v3's column, with vectors in it?
+    Empty counts as not ready: db.py adds the column to every local file
+    and refuse_vectors.py adds it before it writes, and an empty column
+    ranked would leave the DJ nothing to serve."""
+    return _column_ready(conn, _fused_v3_state, FUSED_COLUMN, True, FUSED_V2_COLUMN)
 
 # Default DJ variant; override per-request with SimilarBody.variant.
 _DJ_VARIANT_DEFAULT = (os.environ.get("DJ_EMBEDDING_VARIANT") or "fused").strip().lower()
@@ -1049,12 +1126,15 @@ if _DJ_VARIANT_DEFAULT not in ("fused", "mert"):
 
 def _variant_spec(variant: str, conn=None):
     """Return (model_version, dim) for the requested variant. 'fused' is
-    fused_v1 while the database has no FUSED_COLUMN (_fused_v2_ready)."""
+    fused_v3 once the database holds it (_fused_v3_ready), else fused_v2,
+    else fused_v1 while there is no fused_v2 column (_fused_v2_ready)."""
     v = (variant or "").strip().lower()
     if v == "mert":
         return MERT_MODEL_VERSION, MERT_DIM
-    if conn is not None and not _fused_v2_ready(conn):
-        return FUSED_V1_MODEL_VERSION, FUSED_V1_DIM
+    if conn is not None and not _fused_v3_ready(conn):
+        if not _fused_v2_ready(conn):
+            return FUSED_V1_MODEL_VERSION, FUSED_V1_DIM
+        return FUSED_V2_MODEL_VERSION, FUSED_V2_DIM
     return FUSED_MODEL_VERSION, FUSED_DIM
 
 
@@ -1107,6 +1187,8 @@ def _embedding_column_for(model_version: str) -> Optional[str]:
         return "mert_embedding"
     if model_version == FUSED_MODEL_VERSION:
         return FUSED_COLUMN
+    if model_version == FUSED_V2_MODEL_VERSION:
+        return FUSED_V2_COLUMN
     if model_version == FUSED_V1_MODEL_VERSION:
         return FUSED_V1_COLUMN
     return None
@@ -1720,7 +1802,7 @@ def _similar_vibe(track_key: str, limit: int, user_id,
         # ranking rather than being excluded entirely. Mood match gives a
         # discount of 0.15 (roughly one dimension's worth of distance) to
         # nudge same-mood tracks up the list.
-        select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
+        select = _track_select(conn)
         rerank = _dj_recency_enabled(display_name)
         # Kill switch / guest opt-out: emit exactly the pre-feature SQL.
         stats_select = (",\n" + _UTS_SELECT) if rerank else ""
@@ -2260,7 +2342,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
                 excl_sql = " AND t.id NOT IN ("
                 excl_sql += ",".join(str(int(x)) for x in exclude_ids)
                 excl_sql += ") "
-            select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
+            select = _track_select(conn)
             # Zero extra round trips: the stats arrive on a LEFT JOIN added to
             # the query we were already issuing. With the kill switch set,
             # neither the join nor the wider LIMIT is emitted at all.
@@ -2467,7 +2549,7 @@ def _similar_dj(track_key: str, body: SimilarBody, user_id, display_name=None):
                         explains[tid] = block
 
         # Fetch full track rows for the top ids, preserve order.
-        select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
+        select = _track_select(conn)
         placeholders = ",".join("?" for _ in top_ids)
         rows = conn.execute(
             f"SELECT {select} FROM tracks t WHERE t.id IN ({placeholders})",
@@ -2626,7 +2708,7 @@ def random_track(
 
     conn = get_conn()
     try:
-        select = ", ".join(f"t.{c}" for c in TRACK_COLUMNS)
+        select = _track_select(conn)
         lo, hi = vibe - tolerance, vibe + tolerance
         # Prefer ML-predicted vibe (0-1 -> 0-100), fall back to formula.
         sql = (
@@ -4207,7 +4289,7 @@ async def ingest_single(
     conn = get_conn()
     try:
         row = conn.execute(
-            f"SELECT {', '.join('t.' + c for c in TRACK_COLUMNS)} FROM tracks t "
+            f"SELECT {_track_select(conn)} FROM tracks t "
             f"JOIN user_tracks ut ON ut.track_id = t.id "
             f"WHERE t.spotify_id = ? AND ut.user_id = ?",
             (spotify_id, user_id),
@@ -4258,7 +4340,7 @@ async def ingest_single(
     conn = get_conn()
     try:
         row = conn.execute(
-            f"SELECT {', '.join('t.' + c for c in TRACK_COLUMNS)} FROM tracks t "
+            f"SELECT {_track_select(conn)} FROM tracks t "
             f"JOIN user_tracks ut ON ut.track_id = t.id "
             f"WHERE t.id = ? AND ut.user_id = ?",
             (track_id, user_id),

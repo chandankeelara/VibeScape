@@ -121,17 +121,18 @@ def test_old_telemetry_tables_are_widened_in_place(tmp_path, monkeypatch, app_mo
     assert c.execute("SELECT play_count, total_listened_ms FROM user_track_stats").fetchone() == (7, 0)
 
 
-def test_an_old_track_embeddings_gains_the_fused_v2_column(tmp_path, monkeypatch, app_module):
+def test_an_old_track_embeddings_gains_the_fused_v2_and_v3_columns(tmp_path, monkeypatch, app_module):
     """schema.sql's CREATE ... IF NOT EXISTS never widens a table, so a local
-    database from before fused_v2 gets fused_v2_embedding from db.py, and
-    keeps its fused_v1 vectors."""
-    from db import FUSED_V2_COLUMN, FUSED_V2_DDL
+    database from before fused_v2 gets fused_v2_embedding and
+    fused_v3_embedding from db.py, and keeps its fused_v1 vectors."""
+    from db import FUSED_V2_COLUMN, FUSED_V2_DDL, FUSED_V3_COLUMN, FUSED_V3_DDL
     path = tmp_path / "old.db"
-    old_schema = SCHEMA.replace(f"    {FUSED_V2_DDL},\n", "")
-    assert old_schema != SCHEMA
+    old_schema = SCHEMA.replace(f"    {FUSED_V2_DDL},\n", "").replace(f"    {FUSED_V3_DDL},\n", "")
+    assert FUSED_V2_DDL not in old_schema and FUSED_V3_DDL not in old_schema
     c = sqlite3.connect(path)
     c.executescript(old_schema)
     assert FUSED_V2_COLUMN not in columns(c, "track_embeddings")
+    assert FUSED_V3_COLUMN not in columns(c, "track_embeddings")
     c.execute("INSERT INTO track_embeddings (track_id, fused_embedding) VALUES (1, x'0102')")
     c.commit()
     c.close()
@@ -140,4 +141,5 @@ def test_an_old_track_embeddings_gains_the_fused_v2_column(tmp_path, monkeypatch
     c = sqlite3.connect(path)
     types = {r[1]: r[2] for r in c.execute("PRAGMA table_info(track_embeddings)")}
     assert types[FUSED_V2_COLUMN] == "F32_BLOB(841)"
+    assert types[FUSED_V3_COLUMN] == "F32_BLOB(865)"
     assert c.execute("SELECT fused_embedding FROM track_embeddings").fetchone()[0] == b"\x01\x02"

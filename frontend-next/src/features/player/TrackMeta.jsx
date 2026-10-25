@@ -6,6 +6,8 @@ import { languageLabel } from '../queue/labels';
 import Icon from '../../ui/Icon';
 import Equalizer from '../../ui/Equalizer';
 import Marquee from '../../ui/Marquee';
+import GenreChips from '../../ui/GenreChips';
+import { trackGenres } from '../../lib/genres';
 import { HeartButton } from '../library';
 import ui from '../../ui/controls.module.css';
 import Skeleton from './Skeleton';
@@ -62,6 +64,7 @@ export default function TrackMeta({ onShowMetrics, compact = false }) {
   const vibe = trackVibe(current);
   const mood = vibe != null ? moodFor(vibe).name : null;
   const lang = current.language ? String(current.language).trim().slice(0, 4).toUpperCase() : '';
+  const genres = trackGenres(current);
 
   return (
     <section className={`${styles.meta} ${compact ? styles.compact : ''}`}>
@@ -85,8 +88,12 @@ export default function TrackMeta({ onShowMetrics, compact = false }) {
           </>
         )}
       </p>
-      {/* Rendered when empty too: the line's box is part of the fixed column. */}
-      <p className={styles.genre}>{current.genre || ''}</p>
+      {/* Rendered when empty too: the line's box is part of the fixed column.
+          The tagged genres as chips; an untagged track keeps the iTunes
+          genre text. Hidden with the line on the phone and short screens. */}
+      <p className={styles.genre}>
+        {genres.length ? <GenreChips genres={genres} /> : (current.genre || '')}
+      </p>
 
       <div className={styles.badges}>
         {vibe != null ? (

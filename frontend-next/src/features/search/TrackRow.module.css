@@ -46,6 +46,8 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  /* Lets the genre chip ask whether the row has room (below). */
+  container-type: inline-size;
 }
 
 .titleRow {
@@ -80,6 +82,14 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The primary genre chip, only where the text column is at least 360px:
+   past the VIBE and language badges and the longest label (~110px) the
+   artist · album text keeps ~150px. Narrower, the chip is left out. */
+.genre { display: none; flex: none; }
+@container (min-width: 360px) {
+  .genre { display: inline-flex; }
 }
 
 .badge {

@@ -156,6 +156,8 @@
   --hit-min: 44px;
   /* A chip, and the now-playing badge row that is exactly one chip tall. */
   --badge-h: 22px;
+  /* A small chip: row badges, genre chips (ui/GenreChips). */
+  --chip-h: 18px;
   /* The now-playing quiet actions (verify, metrics); the phone uses --hit-min. */
   --quiet-h: 32px;
   /* A scrolling title's soft edge (ui/Marquee). Pulled into the gutter on

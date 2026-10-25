@@ -181,6 +181,22 @@ _EXTENDED_COLUMNS = [
     "activation_relative",
 ]
 
+# Per-track genre scores (ingest_pipeline/genre_tagging.py), added to
+# `tracks` by _migrate locally and by scripts/_turso_add_genre_columns.py on
+# Turso, which imports this list so the two cannot differ. The iTunes
+# `genre` column is a different thing and stays as it is.
+#
+# NO DEFAULT on genre_status, like librosa_status / fuse_status: ADD COLUMN
+# ... DEFAULT 'pending' would write 'pending' into every existing row,
+# no_preview ones included, and production's column has no default anyway.
+# NULL means "not asked yet"; GenreStage normalises live rows to 'pending'.
+TRACKS_GENRE_COLUMNS = (
+    ("genre_scores", "TEXT"),           # JSON object, slug -> 50 | 100
+    ("genre_status", "TEXT"),           # NULL | 'pending' | 'done'
+    ("genre_model_version", "TEXT"),    # e.g. claude_session_metadata_v1+taxonomy_v1
+    ("genre_tagged_at", "TIMESTAMP"),
+)
+
 
 DEFAULT_USER_NAME = "chandan"
 
@@ -635,6 +651,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     ]
     for c in _EXTENDED_COLUMNS:
         stmts.append(f"ALTER TABLE tracks ADD COLUMN {c} REAL")
+    for col, decl in TRACKS_GENRE_COLUMNS:
+        stmts.append(f"ALTER TABLE tracks ADD COLUMN {col} {decl}")
     for stmt in stmts:
         try:
             conn.execute(stmt)
@@ -721,13 +739,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # embedding) → Option A (track_id, mert_embedding, fused_embedding).
     # Runs on any DB backend; idempotent (detects current shape first).
     _migrate_track_embeddings_option_a(conn)
-    # fused_v2 has its own, wider column (ingest_pipeline/fused_vector.py);
-    # schema.sql's CREATE ... IF NOT EXISTS never widens an existing table.
-    # On Turso scripts/refuse_vectors.py adds it.
-    if _table_exists(conn, "track_embeddings") and \
-            not _has_column(conn, "track_embeddings", FUSED_V2_COLUMN):
-        conn.execute(f"ALTER TABLE track_embeddings ADD COLUMN {FUSED_V2_DDL}")
-        conn.commit()
+    # fused_v2 and fused_v3 each have their own, wider column
+    # (ingest_pipeline/fused_vector.py); schema.sql's CREATE ... IF NOT
+    # EXISTS never widens an existing table. On Turso
+    # scripts/refuse_vectors.py adds them.
+    if _table_exists(conn, "track_embeddings"):
+        for col, ddl in ((FUSED_V2_COLUMN, FUSED_V2_DDL), (FUSED_V3_COLUMN, FUSED_V3_DDL)):
+            if not _has_column(conn, "track_embeddings", col):
+                conn.execute(f"ALTER TABLE track_embeddings ADD COLUMN {ddl}")
+                conn.commit()
 
     # Split per-user tracks into global tracks + user_tracks. Must run
     # BEFORE schema.sql executes CREATE UNIQUE INDEX on spotify_id/apple_id,
@@ -786,10 +806,12 @@ def _backfill_ingestion_status(conn: sqlite3.Connection) -> int:
         return 0
 
 
-# Must match ingest_pipeline/fused_vector.py FUSED_COLUMN / FUSED_DIM
-# (tests/backend/test_dj_paths.py checks).
+# Must match ingest_pipeline/fused_vector.py FUSED_V2_COLUMN / FUSED_V2_DIM
+# and FUSED_COLUMN / FUSED_DIM (tests/backend/test_dj_paths.py checks).
 FUSED_V2_COLUMN = "fused_v2_embedding"
 FUSED_V2_DDL = f"{FUSED_V2_COLUMN} F32_BLOB(841)"
+FUSED_V3_COLUMN = "fused_v3_embedding"
+FUSED_V3_DDL = f"{FUSED_V3_COLUMN} F32_BLOB(865)"
 
 _MERT_MV_LEGACY  = "mert_v1_95m_fp32_30s"
 _FUSED_MV_LEGACY = "fused_v1_mert_scalar_lang"

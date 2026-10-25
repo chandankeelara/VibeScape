@@ -497,13 +497,16 @@ def test_who_feeds_whom_and_nothing_across_a_gap():
     run = runner._ConcurrentRun([bare(c) for c in runner.STAGE_CLASSES.values()], 50, None,
                                 "single")
     fed = {w.name: [v.name for v in w.fed] for w in run.workers}
-    assert fed == {"preview": ["download", "language"], "download": ["librosa", "language"],
-                   "librosa": ["classify"], "classify": ["fuse"], "language": [],
+    assert fed == {"preview": ["download", "language", "genre"],
+                   "download": ["librosa", "language", "genre"],
+                   "librosa": ["classify"], "classify": ["fuse"], "language": [], "genre": [],
                    "fuse": ["youtube"], "youtube": []}
     chain = ["preview", "download", "librosa", "classify", "fuse", "youtube"]
     upstream = {w.name: {a.name for a in w.ancestors} for w in run.workers}
+    # Genre feeds nothing and is upstream of nothing: it never holds back a
+    # row for fuse, youtube or any other stage.
     assert upstream == {**{s: set(chain[:i]) for i, s in enumerate(chain)},
-                        "language": {"preview", "download"}}
+                        "language": {"preview", "download"}, "genre": {"preview", "download"}}
     gap = runner._ConcurrentRun([bare(PreviewStage), bare(runner.STAGE_CLASSES["fuse"])], 50,
                                 None, "single")
     assert [(w.name, w.feeders, w.fed, w.ancestors) for w in gap.workers] == [
@@ -541,7 +544,7 @@ def test_a_stage_upstream_of_another_never_shares_a_row_with_it(sql):
     # Upstream, spelled out here rather than read off the run under test.
     chain = ["preview", "download", "librosa", "classify", "fuse", "youtube"]
     upstream = {**{s: chain[:i] for i, s in enumerate(chain)},
-                "language": ["preview", "download"]}
+                "language": ["preview", "download"], "genre": ["preview", "download"]}
     shared = {(a, b): len(looks[a] & looks[b])
               for b, above in upstream.items() for a in above if looks[a] & looks[b]}
     assert shared == {}
@@ -653,10 +656,10 @@ def test_a_feeder_gate_that_is_null_for_a_row_does_not_hide_it(sql, recomputes):
                        (tid,)).fetchone()[0] == "pending"
 
 
-def test_an_idle_look_is_one_ids_only_query_for_all_seven_real_gates(sql, monkeypatch,
-                                                                     recomputes):
+def test_an_idle_look_is_one_ids_only_query_for_every_real_gate(sql, monkeypatch,
+                                                                recomputes):
     # What an idle stage costs per look, on Turso billed by rows read: one
-    # ids-only query, no fetch and no language waiting count.
+    # ids-only query, no fetch and no language or genre waiting count.
     statements = []
     real = runner._concurrent_conn
 
@@ -666,7 +669,7 @@ def test_an_idle_look_is_one_ids_only_query_for_all_seven_real_gates(sql, monkey
         conn.set_trace_callback(lambda s: statements.append((name, s)))
         return conn
     monkeypatch.setattr(runner, "_concurrent_conn", traced)
-    add(sql, 3, ingestion_status="done", **{c: "done" for c in STATUS})
+    add(sql, 3, ingestion_status="done", genre_status="done", **{c: "done" for c in STATUS})
 
     assert runner.run_concurrent([bare(c) for c in runner.STAGE_CLASSES.values()], 50) == 0
 

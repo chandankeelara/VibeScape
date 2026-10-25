@@ -2,6 +2,8 @@ import { memo } from 'react';
 import { isMetadataOnly, trackAccentStyle } from '../../lib/vibe';
 import { trackVibe } from './trackVibe';
 import { languageLabel } from '../queue/labels';
+import { primaryGenre } from '../../lib/genres';
+import GenreChips from '../../ui/GenreChips';
 import { PlusIcon } from './icons';
 import styles from './TrackRow.module.css';
 
@@ -48,6 +50,8 @@ function TrackRow({
   // Two-letter code in the badge; the full name lives in the title tooltip.
   const lang = track.language ? String(track.language).trim().slice(0, 4).toUpperCase() : '';
   const interactive = typeof onActivate === 'function';
+  // Library rows only carry `genres`; a Spotify result has none.
+  const genre = primaryGenre(track);
 
   const rowClass = [
     styles.row,
@@ -120,6 +124,10 @@ function TrackRow({
             <span className={styles.badge} title="No local audio — playable only via Spotify Premium">
               SDK only
             </span>
+          )}
+          {/* Only where the row has room (TrackRow.module.css). */}
+          {genre && (
+            <span className={styles.genre}><GenreChips genres={[genre]} /></span>
           )}
           <span className={styles.subText}>
             {artist}

@@ -26,6 +26,11 @@ Claude Code session tags those rows by querying the database directly (see
 § Tagging languages); the next run sees `'done'` and proceeds. `fuse` waits
 for **both** lanes.
 
+`genre` (2026-10-23) is a third stage outside the chain, and it waits for
+nothing and nothing waits for it: it parks live rows, finished ones
+included, at `genre_status='pending'` for a session to score (§ Tagging
+genres). It is not drawn above because no arrow leaves it.
+
 | stage | status column | does | cost |
 |---|---|---|---|
 | `preview` | `preview_status` | resolves a 30s preview URL (iTunes) | network, rate-limited |
@@ -33,7 +38,8 @@ for **both** lanes.
 | `librosa` | `librosa_status` | 18-column DSP feature bank | CPU |
 | `classify` | `ml_status` | MERT forward pass → vibe scalars **and** the 768-d embedding | GPU |
 | `language` | `language_status` | parks rows at `'pending'` for a tagging session; classifies nothing | none (no model, no audio) |
-| `fuse` | `fuse_status` | builds the 788-d retrieval vector | trivial |
+| `genre` | `genre_status` | parks live rows at `'pending'` for genre scores; gates nothing | none |
+| `fuse` | `fuse_status` | builds the fused retrieval vectors (fused_v3 865-d, fused_v2 841-d) | trivial |
 | `youtube` | `youtube_status` | first `ytsearch` hit, then settles `ingestion_status` | network |
 
 ## How a stage becomes eligible: arming
@@ -332,6 +338,142 @@ are unaffected.
   2026-10-15, 799 of them pending rows that had never entered the pipeline,
   which a pass normalises as its cohorts reach them.
 
+## Tagging genres
+
+**The interface between the pipeline and whoever scores genres**, built
+like § Tagging languages: the database is the queue, a Claude Code session
+reads metadata and writes scores back, and nothing needs a GPU. Since
+2026-10-23. Files: `genre_taxonomy.py` (the genres), `genre_tagging.py`
+(the predicate and the write), `stage_genre.py` (the queue), and
+`scripts/genre_tags.py` (the CLI).
+
+**Genre blocks nothing, but it is in the vector.** Unlike language, no
+stage waits for it: an unscored track fuses with an all-zero (neutral)
+genre block and reaches the DJ pool. Since fused_v3 (2026-10-23) the fused
+vector has a 24-slot genre block (`fused_vector.py`, "The genre block"), so
+**a tag re-arms fuse**: `tag_many` sets `fuse_status='pending'`, in the
+same UPDATE, on every row that is already fused (`fuse_status='done'`) and
+whose scores it changed (or whose `genre_status` was not `'done'`).
+Re-applying the same scores re-arms nothing; a row not fused yet is left
+alone, since fuse reads its scores when it runs. The next pipeline run
+rebuilds the re-armed vectors (milliseconds each, no GPU), or
+`scripts/refuse_vectors.py` rewrites every vector at once (it does not
+clear `fuse_status`, so the next run re-fuses those rows again, to the
+same bytes).
+
+### The predicate
+
+```sql
+SELECT id, spotify_id, title, artist, album, language, energy_pred, danceability_pred
+FROM tracks
+WHERE genre_status = 'pending'
+ORDER BY id ASC;
+```
+
+`genre_status` is NULL (not asked), `'pending'` (waiting) or `'done'`. The
+column has no default, locally or on production, so new rows land NULL;
+`GenreStage` normalises NULL to `'pending'` for **live** rows:
+`ingestion_status` `'pending'`, NULL, `'done'` or `'no_preview'`, with a
+title. Finished tracks are included, unlike language, because when the
+columns arrive the whole analysed catalogue needs scores. `'no_preview'`
+rows are included too (2026-10-25): they never reach the DJ pool, but they
+sit in libraries and search, where the genre chips show, and tagging needs
+no audio. The session never sees the iTunes `genre`
+column, on purpose: it is one store's label for the release ("Soundtrack",
+"Indian Pop") and would anchor the scores on the coarse label this
+replaces. `language`, `energy_pred` and `danceability_pred` are hints.
+
+On a database where the columns are new, the first normalisation touches
+every finished track (about 5,500 on production). Run it as its own pass
+with a big batch, so it does not fill the default run's cohorts 50 at a
+time: `run_ingest_v2.py --stages genre --batch 1000 --until-drained`.
+
+### The scale
+
+Per genre, independently, **0, 50 or 100**, against the 17 genres in
+`genre_taxonomy.py` (each with a one-line definition by sound; read them
+before a session):
+
+| score | means |
+|---|---|
+| 100 | squarely this genre |
+| 50 | partly, or a clear influence |
+| 0 | not this genre: **omitted**, never written |
+
+Scores do not sum to anything: a Kannada film duet can be `film_melody` 100
+and `folk` 50; a devotional song set to a film tune can be 100 on both.
+There is no confidence field (50 already says "partly") and **no skip and
+no clear verdict**: every track gets at least one genre at 50 or 100, and
+`other` exists for a sound the taxonomy does not name. An empty object is
+invalid and is refused.
+
+The order of the taxonomy is **append-only**: the fused_v3 genre block
+indexes by it (slot i is `GENRES[i]`; 17 genres, 7 spare slots). A new genre goes at the end with a `GENRE_TAXONOMY_VERSION`
+bump; tracks scored against an older version carry it in
+`genre_model_version` (`claude_session_metadata_v1+taxonomy_v1`).
+
+### The file, and writing it
+
+Scores go back as a JSON-lines file, one track per line, rather than as
+command-line arguments: one permission rule, no giant command lines.
+
+```json
+{"id": 812, "spotify_id": "4u1aBcDeFgHiJkLmNoPqRs", "scores": {"film_melody": 100, "folk": 50}}
+{"id": 813, "scores": {"hiphop_rap": 100}}
+```
+
+`spotify_id` is optional; when present the row is written only if it
+matches, so a file made from one database's ids cannot tag the wrong songs
+in another (local and prod ids diverge, § Prod). Copy it from `--waiting`.
+
+```bash
+python scripts/genre_tags.py --status                 # counts; exit 1 if anything waits
+python scripts/genre_tags.py --waiting --limit 50     # the rows, JSON lines
+python scripts/genre_tags.py --apply-file s.jsonl     # check the file; writes nothing
+python scripts/genre_tags.py --apply-file s.jsonl --apply
+```
+
+The whole file is validated first (known slug, 50 or 100, non-empty, no id
+twice): one bad line writes nothing. Then it is written in batches of 200,
+each one `execute_batch` (one transaction; on Turso one request), with a
+count per batch. An id that matched no row is listed and the exit status
+is 1. A write sets `genre_scores` (compact JSON, taxonomy order),
+`genre_status='done'`, `genre_model_version` and `genre_tagged_at`; it is
+an UPDATE of absolute values, so re-applying a file is harmless.
+
+### On production
+
+```bash
+python scripts/backup_prod_db.py                                     # 1. always first
+python scripts/_turso_add_genre_columns.py --target prod             # 2. what it would add
+python scripts/_turso_add_genre_columns.py --target prod --apply     #    add them
+python scripts/run_ingest_v2.py --target prod --stages genre --batch 1000 --until-drained
+python scripts/genre_tags.py --target prod --waiting --limit 50      # 3. score, file by file
+python scripts/genre_tags.py --target prod --apply-file s.jsonl --apply
+```
+
+**Step 2 comes before any other production run.** `genre` is in
+`run_ingest_v2.py`'s default stages, and every pass reads every selected
+gate, so until the columns exist a default run against production stops at
+its first query with `no such column: genre_status` (nothing is written;
+it does not start). `--stages` without `genre` still runs.
+
+**Then fused_v3, before the next fuse and before the deploy.** The fuse
+stage reads `genre_scores` and writes `fused_v3_embedding`, so on a
+database without that column its write fails ("no column named
+fused_v3_embedding": the run stops, nothing parked). The order:
+
+```bash
+python scripts/backup_prod_db.py
+python scripts/refuse_vectors.py --target prod            # what it would add and write
+python scripts/refuse_vectors.py --target prod --apply    # adds fused_v3_embedding, writes v3 (and any stale v2), drops cached means
+# then deploy the app (with approval): it ranks fused_v3 once the column holds vectors
+```
+
+The app deployed before this step keeps ranking fused_v2 (it checks
+`fused_v3_embedding` exists and holds a vector, `_fused_v3_ready`), so the
+deploy cannot break the DJ; it only does not use genre yet.
+
 ## Re-runs are cheap
 
 Every stage short-circuits on what is already on the row — `preview` on
@@ -424,18 +566,23 @@ replace a usable retrieval space with a nearly-degenerate one.
 
 ## The vectors
 
-`fused_vector.py` owns the recipe. `track_embeddings` holds two columns per
-track:
+`fused_vector.py` owns the recipe (its docstring has the layout and the
+evidence for each weight). `track_embeddings` holds, per track:
 
 - `mert_embedding` (768) — mean-pooled hidden state, 30s, fine-tuned encoder
-- `fused_embedding` (788) — `0.55*L2(mert) ‖ 0.25*L2(scalars 9) ‖ 0.20*lang(11)`, then L2'd
+- `fused_v3_embedding` (865) — MERT ‖ scalars 9 ‖ language 64 ‖ genre 24, each
+  block weighted, then L2'd. What `/similar` ranks by once it holds vectors.
+- `fused_v2_embedding` (841) — the same without the genre block. Still
+  written by fuse; ranked while fused_v3 is absent or empty.
+- `fused_embedding` (788) — fused_v1, untouched, for a rollback (backlog 12.2).
 
-`/similar` ranks on `fused` by cosine. Only the 768 block is a model output;
-the other 20 dims are engineered features, which is why correcting a
-language tag needs a `fuse` re-run (milliseconds) and never a GPU re-encode
-— set `fuse_status='pending'`.
+`/similar` ranks on the fused vector by cosine. Only the 768 block is a
+model output; the rest are engineered features or tags, which is why
+correcting a language or genre tag needs a `fuse` re-run (milliseconds) and
+never a GPU re-encode — set `fuse_status='pending'` (both tag writers do it
+for a changed tag).
 
-Changing `SCALAR_COLS`, the order of `LANG_CODES`, `LANG_BLOCK` or the weights changes the vector
+Changing `SCALAR_COLS`, the order of `LANG_CODES` or of `genre_taxonomy.GENRES`, `LANG_BLOCK`, `GENRE_BLOCK` or the weights (`W_GENRE` included) changes the vector
 **space**. Cosine across two spaces is meaningless, so every stored vector
 must be rebuilt, and `backend/app.py`'s `MERT_DIM`/`FUSED_DIM` must move in
 step or `/similar` silently returns nothing. Bump `FUSED_MODEL_VERSION` in
@@ -446,16 +593,19 @@ means. A change of width also needs its own column (`FUSED_COLUMN`; the
 script adds it): libSQL types a vector column by width. A new language is
 not a space change: append its code to `LANG_CODES` (never reorder;
 `scripts/language_slots.py --db <copy>` lists what is missing) and re-run
-the script, which rewrites only that language's tracks.
+the script, which rewrites only that language's tracks. A new genre is the
+same: append it to `genre_taxonomy.py` (with its version bump) and re-run.
 
 ## Files
 
 ```
 base.py              Stage ABC — arming, finalizes, failure handling, batching
-fused_vector.py      the 788-d recipe: dims, weights, _build_fused
+fused_vector.py      the fused recipes (v3, v2): dims, weights, _build_fused
 language_tagging.py  the waiting predicate + the safe write (the tagging interface)
+genre_taxonomy.py    the append-only genre list, one definition each
+genre_tagging.py     genre's waiting predicate + the validated batch write
 preview_providers.py provider chain + iTunes rate limiting/backoff
-stage_*.py           the seven stages
+stage_*.py           the eight stages
 ```
 
 `ingest/` next door is **not** an older copy of this. Despite the name it is
@@ -611,6 +761,11 @@ python scripts/language_tags.py --target prod --set <spotify_id>=kn --apply
 python scripts/run_ingest_v2.py --target prod --until-drained            # 5. fuse + youtube the tagged rows
 python scripts/run_ingest_v2.py --target prod --recompute-only           # 6. scores, if a run stopped short
 ```
+
+Since 2026-10-23 the default stages include `genre`, whose columns
+production lacks until `scripts/_turso_add_genre_columns.py --target prod
+--apply` has run; before that, step 2 stops at once with `no such column:
+genre_status`. See § Tagging genres, "On production".
 
 `--until-drained`, not `--loop`, against production: every idle pass scans
 `tracks`, Turso bills rows read, and a loop left running keeps paying

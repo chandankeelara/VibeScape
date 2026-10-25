@@ -339,6 +339,28 @@ pre-discovery request (the field is omitted, not `false`).
 - `/api/tracks/random` (shuffle with DJ off and an empty queue) stays
   library-only; the switch's tooltip says so.
 
+## Genre tags (`src/lib/genres.js`, `src/ui/GenreChips.jsx`)
+
+Every track payload carries `genres`: `[{slug, score}]`, score 100 primary,
+50 secondary, `[]` when untagged or when the database has no genre column
+yet (production until its migration; backend-todo 15.8). `lib/genres.js` is
+the one place the 17 labels and their order live; `trackGenres()` re-sorts
+(score, then taxonomy order) and drops unknown slugs and scores.
+
+- **Now playing** (`TrackMeta`): every tag as a chip in the genre line's
+  fixed one-line box; primary filled (`--line-2`, `--text-2`), secondary
+  outlined and in `--text-3`. Chips that do not fit wrap into a hidden second
+  row, never half-cut. Untagged: the iTunes `genre` text, unchanged.
+  The chips **follow the genre line's existing hiding** (phone `<=767px` and
+  short screens `<800px` tall): that line's room is budgeted to the pixel.
+- **Queue rows and search rows**: one chip, the first genre, shown only when
+  the row's text column is `>=360px` (a container query on the row's own
+  text box). The desktop queue column (352px) never shows it; the phone home
+  list at 375px does not either; the phone list from ~500px wide does, and
+  so does the desktop search dropdown once the field is near its 520px
+  maximum (estimated from the CSS, not measured). Spotify search results
+  have no `genres`.
+
 ## Gotchas discovered during the port
 
 **`trackKey()` must stay spotify_id-first.** `_resolve_anchor`
