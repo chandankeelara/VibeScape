@@ -8,6 +8,7 @@ import pytest
 
 import dj_replay as R
 import same_song as ss
+from services import recency as recency_service  # `recency` is a test parameter here
 
 from ingest_pipeline.fused_vector import FUSED_DIM  # noqa: E402
 
@@ -125,7 +126,7 @@ def test_the_response_still_has_limit_tracks(client, releases, app_module, monke
     `limit`, so filtering would leave a short response."""
     h, songs, _ = releases
     if not recency:
-        monkeypatch.setattr(app_module, "_DJ_RECENCY_WEIGHT", 0.0)
+        monkeypatch.setattr(recency_service, "_DJ_RECENCY_WEIGHT", 0.0)
     played = [ids[0] for ids in songs[:10]]
     events = [{"id": t, "action": "completed", "played_ratio": 1.0} for t in played]
     got = _post(client, h, played[-1], {"events": events, "exclude_ids": played})
@@ -166,7 +167,7 @@ def test_both_ranking_paths_filter_repeats_alike(client, releases, app_module, d
     import db_client
     h, songs, _ = releases
     if not recency:
-        monkeypatch.setattr(app_module, "_DJ_RECENCY_WEIGHT", 0.0)
+        monkeypatch.setattr(recency_service, "_DJ_RECENCY_WEIGHT", 0.0)
     played = [ids[0] for ids in songs[:6]]
     body = {"events": [{"id": t, "action": "completed", "played_ratio": 1.0} for t in played]
             + [{"id": songs[0][1], "action": "skipped", "played_ratio": 0.1}],

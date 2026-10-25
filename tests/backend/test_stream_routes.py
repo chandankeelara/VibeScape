@@ -7,13 +7,15 @@ against it and anything outside it is refused.
 """
 import pytest
 
+import bootstrap  # backend/bootstrap.py: app_config and PROJECT_ROOT live there
+
 AUDIO = bytes(range(256)) * 4          # 1024 bytes
 
 
 @pytest.fixture
 def root(tmp_path, monkeypatch, app_module):
     root = tmp_path / "root"
-    monkeypatch.setattr(app_module, "PROJECT_ROOT", root)
+    monkeypatch.setattr(bootstrap, "PROJECT_ROOT", root)
     (root / "data" / "audio").mkdir(parents=True)
     (root / "data" / "audio" / "a.mp3").write_bytes(AUDIO)
     (root / "data" / "audio" / "b.m4a").write_bytes(AUDIO[:10])

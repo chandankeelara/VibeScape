@@ -163,7 +163,11 @@ embedding groups), `use_conn(opener)` (every `db.get_conn()` returns
 way the app does, call `db.get_conn()` (imported as `backend_db`: `db` is the
 fixture with the test database's path). `backend/app.py` has no `get_conn`
 of its own, so `monkeypatch.setattr(app, "get_conn", ...)` raises rather
-than patching a name nothing calls. Frontend: no bare `import ... from 'vitest'` (files here sit
+than patching a name nothing calls. The same holds for names that moved
+out of `app.py` (refactor PR 2, 2026-10-25): patch them on the module that
+reads them, `bootstrap.app_config`, `bootstrap.PROJECT_ROOT`,
+`services.recency._DJ_RECENCY_WEIGHT`; `app_module` keeps no copy, so a
+stale patch on it raises. Frontend: no bare `import ... from 'vitest'` (files here sit
 outside the package) — `describe` / `it` / `expect` / `vi` are globals, and
 `tests/frontend/setup.js` gives each test a fresh `localStorage`, `window`
 and `document`.

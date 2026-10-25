@@ -11,6 +11,8 @@ raises.
 from types import SimpleNamespace
 
 import pytest
+
+import bootstrap  # backend/bootstrap.py: app_config and PROJECT_ROOT live there
 import requests
 import db as backend_db  # backend/db.py; `db` is the fixture with the test database path
 
@@ -201,7 +203,7 @@ def test_me_calls_any_user_named_guest_a_guest(client, make_user):
 def spotify(monkeypatch, app_module):
     """Configured app credentials; .token is the token-exchange answer,
     .me the /v1/me answer, .calls every request made."""
-    monkeypatch.setattr(app_module, "app_config", SimpleNamespace(
+    monkeypatch.setattr(bootstrap, "app_config", SimpleNamespace(
         SPOTIFY_CLIENT_ID="cid", SPOTIFY_CLIENT_SECRET="secret", SPOTIFY_REDIRECT_URI="https://cfg/callback"))
     state = SimpleNamespace(calls=[],
                             token=FakeResponse(200, {"access_token": "AT", "refresh_token": "RT",
@@ -295,7 +297,7 @@ def test_oauth_without_an_access_token_or_id_is_a_400(client, spotify):
 
 
 def test_oauth_without_server_credentials_is_a_500(client, spotify, monkeypatch, app_module):
-    monkeypatch.setattr(app_module, "app_config", SimpleNamespace(SPOTIFY_REDIRECT_URI="https://cfg"))
+    monkeypatch.setattr(bootstrap, "app_config", SimpleNamespace(SPOTIFY_REDIRECT_URI="https://cfg"))
     r = oauth(client)
     assert r.status_code == 500
     assert r.json()["detail"] == {"error": "spotify_not_configured"}
@@ -303,7 +305,7 @@ def test_oauth_without_server_credentials_is_a_500(client, spotify, monkeypatch,
 
 
 def test_oauth_with_no_redirect_uri_anywhere_is_a_422(client, spotify, monkeypatch, app_module):
-    monkeypatch.setattr(app_module, "app_config",
+    monkeypatch.setattr(bootstrap, "app_config",
                         SimpleNamespace(SPOTIFY_CLIENT_ID="cid", SPOTIFY_CLIENT_SECRET="secret"))
     r = oauth(client)
     assert r.status_code == 422

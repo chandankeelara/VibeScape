@@ -103,8 +103,8 @@ except Exception:
 
 BACKUPS = _REPO / "data" / "backups"
 DEFAULT_OUT = _REPO / "data" / "dj_eval" / "reports"
-POOL = 150          # backend/app.py _dj_recency_pool(10): max(10, min(300, max(150, 120)))
-POOL_MAX = 300      # backend/app.py _DJ_RECENCY_POOL_MAX: the pool while a language is demoted
+POOL = 150          # backend/services/recency.py _dj_recency_pool(10): max(10, min(300, max(150, 120)))
+POOL_MAX = 300      # backend/services/recency.py _DJ_RECENCY_POOL_MAX: the pool while a language is demoted
 K = 10
 SEEN_WINDOW_MS = 4 * 3_600_000
 MIN_LIBRARY = 50    # backend/app.py _DJ_MEAN_MIN_TRACKS

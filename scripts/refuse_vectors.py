@@ -23,7 +23,7 @@ cannot change a column's type in place, so each recipe has its own column:
 added with ALTER TABLE ... ADD COLUMN -- the one table change SQLite and
 libSQL both do in place, with no rewrite of existing rows. Both are kept
 current: the app ranks fused_v3 once that column holds vectors and fused_v2
-until then (backend/app.py _fused_v3_ready), so a rollback to a revision
+until then (backend/services/vectors.py _fused_v3_ready), so a rollback to a revision
 that reads fused_v2 needs no data step. 'fused_embedding' (fused_v1) is
 left exactly as it is, for the same reason, until a cleanup drops it. Prod
 had no vector index on any of these columns on prod_20261019T024426Z (no

@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+import bootstrap  # backend/bootstrap.py: app_config and PROJECT_ROOT live there
+
 
 def add_track(sql, user_id=None, **cols):
     cols.setdefault("title", "Song")
@@ -81,7 +83,7 @@ def test_client_config_follows_vibescape_env(client, monkeypatch, env, expected)
 
 
 def test_spotify_config_exposes_the_id_and_redirect_never_the_secret(client, monkeypatch, app_module):
-    monkeypatch.setattr(app_module, "app_config", SimpleNamespace(
+    monkeypatch.setattr(bootstrap, "app_config", SimpleNamespace(
         SPOTIFY_CLIENT_ID="cid", SPOTIFY_CLIENT_SECRET="secret", SPOTIFY_REDIRECT_URI="https://x/callback"))
     r = client.get("/api/spotify/config")
     assert r.json() == {"client_id": "cid", "redirect_uri": "https://x/callback"}
@@ -89,7 +91,7 @@ def test_spotify_config_exposes_the_id_and_redirect_never_the_secret(client, mon
 
 
 def test_spotify_config_is_empty_strings_without_a_config(client, monkeypatch, app_module):
-    monkeypatch.setattr(app_module, "app_config", None)
+    monkeypatch.setattr(bootstrap, "app_config", None)
     assert client.get("/api/spotify/config").json() == {"client_id": "", "redirect_uri": ""}
 
 

@@ -584,7 +584,7 @@ for a changed tag).
 
 Changing `SCALAR_COLS`, the order of `LANG_CODES` or of `genre_taxonomy.GENRES`, `LANG_BLOCK`, `GENRE_BLOCK` or the weights (`W_GENRE` included) changes the vector
 **space**. Cosine across two spaces is meaningless, so every stored vector
-must be rebuilt, and `backend/app.py`'s `MERT_DIM`/`FUSED_DIM` must move in
+must be rebuilt, and `backend/services/vectors.py`'s `MERT_DIM`/`FUSED_DIM` must move in
 step or `/similar` silently returns nothing. Bump `FUSED_MODEL_VERSION` in
 both files (it keys the `user_embedding_mean` cache), then run
 `scripts/refuse_vectors.py` (dry-run by default; `--target prod --apply`

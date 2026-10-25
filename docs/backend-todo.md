@@ -33,20 +33,45 @@ Audit date: 2026-10-02. No automated tests exist anywhere in the repo
 
 ## Refactor in progress — splitting `backend/app.py` (started 2026-10-25)
 
-`backend/app.py` is ~6,000 lines and 49 routes. It is being moved, without
-changing any API behaviour, into `routers/`, `services/`, `deps.py` (auth
-dependencies), `track_rows.py` (the track SELECT and dict helpers) and
-`bootstrap.py`, over five PRs:
+`backend/app.py` was ~6,000 lines and 49 routes (5,954 before PR 2, 4,508
+after). It is being moved, without changing any API behaviour, into
+`routers/`, `services/`, `deps.py` (auth dependencies), `track_rows.py` (the
+track SELECT and dict helpers) and `bootstrap.py`, over five PRs:
 
-1. **Safety net** (branch `refactor/pr1-safety-net`). No code moves.
+1. **Safety net** (PR #34, merged). No code moves.
    `tests/backend/test_route_table.py` pins every (methods, path), its auth
    dependency and the catch-all's place; characterisation tests cover the
    routes nothing tested (auth, admin, meta, streams, YouTube GET/search,
    library sync and public-playlist jobs, job cancel); `db.get_conn` becomes
    the one connection seam (`app.py` calls `db.get_conn()` and keeps no
    alias; tests patch it with conftest's `use_conn`).
-2. to 5. The moves themselves, in that direction. The order and split are a
-   plan, not settled here.
+2. **Leaf modules** (branch `refactor/pr2-leaf-modules`). Code with no route
+   of its own leaves `app.py`, unchanged, one move per commit. Module map
+   (all under `backend/`, which is the import root):
+   - `bootstrap.py`: `.env` load, `import db`, then the repo root and
+     `ingest/` on `sys.path` (that order: `ingest/db.py` would shadow
+     `backend/db.py`), the `vibescape` logger, `PROJECT_ROOT`, `AUDIO_DIR`,
+     `app_config`, `spotify_creds()`. `app.py` imports it first.
+   - `track_rows.py`: `TRACK_COLUMNS`, the genre_scores readiness check,
+     `_track_select`, `MOODS`, `_row_to_dict`, `_search_rows` and its cache.
+   - `services/vectors.py`: MERT and `FUSED_*` constants, column readiness
+     (`_fused_v2_ready`, `_fused_v3_ready`), `_variant_spec`,
+     `_resolve_anchor`, the embedding loaders, `_l2_normalize`, `_is_turso`.
+   - `services/recency.py`: the `DJ_*` env knobs, `_UTS_*` SQL, the penalty,
+     re-ranker and the two stats reads.
+   - `services/telemetry.py`: event normalisation, the stats rollups,
+     `_record_track_events`. `POST /api/events` itself is still in `app.py`.
+   - `services/jobs.py`: `JOBS`, `JOBS_LOCK`, `_update_job`, `_bump`,
+     `_is_cancelled`.
+   `services/` is a package, not more flat modules: nothing on `sys.path` is
+   called `services`, the Dockerfile copies `backend/` whole, and both ways
+   the app starts (`uvicorn app:app` from `backend/`, tests with `backend/`
+   on the path) resolve it. Later PRs put services there too.
+3. to 5. Routers and `deps.py`, then the cleanup PR: delete the plain
+   re-imports `app.py` keeps only for tests, and decide the three
+   initial ingest job dicts (a shared `jobs.create()` was not done in PR 2:
+   the dicts place their extra keys in different positions, so a shared base
+   would reorder the `/api/ingest/status` JSON).
 
 Rules for every move: `test_route_table.py` stays green unedited unless a
 route deliberately changes (it should not); patch connections with
@@ -54,6 +79,17 @@ route deliberately changes (it should not); patch connections with
 name, diff defined-vs-called names with `ast`, as `1be1c59` taught. The
 characterisation tests pin odd current behaviour on purpose (each is marked
 ODD in its docstring and has an entry below); fixing one is its own change.
+**A name a test patches is read as `module.name` at call time, in the module
+that owns it**, never copied with `from module import name`, and `app.py`
+keeps no alias of it, so a stale `setattr(app_module, ...)` raises instead
+of patching nothing. Patched today: `bootstrap.app_config`,
+`bootstrap.PROJECT_ROOT`, `services.recency._DJ_RECENCY_WEIGHT`, and on
+`app.py` `ADMIN_USER_ID`, `NEXT_DIR`, `_get_app_token`, `_APP_TOKEN_STATE`,
+`_process_track`, `_YT_SEARCH_TIMEOUT_S`, `_yt_manual_search_sync`. Moving
+any of the latter means retargeting its patches in the same commit.
+
+`file:line` references to `backend/app.py` in the entries below predate the
+split; search for the name.
 
 ---
 

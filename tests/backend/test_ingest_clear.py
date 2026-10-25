@@ -7,6 +7,8 @@ SQLite may not enforce the cascade, so these tests assert the rows directly
 rather than observing it.
 """
 import numpy as np
+
+import bootstrap  # backend/bootstrap.py: app_config and PROJECT_ROOT live there
 from ingest_pipeline.fused_vector import FUSED_COLUMN, FUSED_DIM
 
 ENV = {"session_id": "s-clear", "tz_offset_min": 0, "vibe": 50, "vibe_source": "user", "dj_mode": False}
@@ -55,13 +57,13 @@ def test_clear_does_not_unlink_audio_files(client, sql, make_user, make_tracks, 
     me, h = make_user()
     (tid,) = make_tracks(me, [None])
     # Must sit under PROJECT_ROOT or the old code would refuse to resolve it.
-    scratch = app_module.PROJECT_ROOT / "tests" / f".tmp-clear-audio-{tid}-{me}"
+    scratch = bootstrap.PROJECT_ROOT / "tests" / f".tmp-clear-audio-{tid}-{me}"
     scratch.mkdir(exist_ok=True)
     audio = scratch / "track.mp3"
     audio.write_bytes(b"ID3")
     try:
         sql.execute("UPDATE tracks SET audio_path=? WHERE id=?",
-                    (str(audio.relative_to(app_module.PROJECT_ROOT)), tid))
+                    (str(audio.relative_to(bootstrap.PROJECT_ROOT)), tid))
         sql.commit()
         assert client.post("/api/ingest/clear", headers=h).status_code == 200
         assert audio.exists()

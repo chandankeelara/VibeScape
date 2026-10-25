@@ -176,11 +176,13 @@ def db(tmp_path, monkeypatch, app_module):
     """Path of a fresh, bootstrapped database for this test."""
     path = tmp_path / "test.db"
     monkeypatch.setenv("VIBESCAPE_DB_PATH", str(path))
+    import track_rows
+    from services import vectors
     app_module._dj_mean_cache.clear()
-    app_module._search_rows_cache.clear()
-    app_module._fused_v2_state.update(ready=None, checked_at=0.0, warned=False)
-    app_module._fused_v3_state.update(ready=None, checked_at=0.0, warned=False)
-    app_module._genre_scores_state.update(ready=None, checked_at=0.0, warned=False)
+    track_rows._search_rows_cache.clear()
+    vectors._fused_v2_state.update(ready=None, checked_at=0.0, warned=False)
+    vectors._fused_v3_state.update(ready=None, checked_at=0.0, warned=False)
+    track_rows._genre_scores_state.update(ready=None, checked_at=0.0, warned=False)
     conn = backend_db.get_conn()  # runs ensure_db() -> schema.sql + migrations
     opened = conn.execute("PRAGMA database_list").fetchall()[0][2]
     conn.close()

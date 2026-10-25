@@ -4,7 +4,7 @@ The fused-vector recipe: dimensions, weights and construction.
 Extracted from the retired stage_embedding.py so the recipe has a home of
 its own. Shared by stage_fuse.py (builds the vector during ingest) and
 scripts/_backfill_fused_embeddings.py (historical backfills). It must stay
-in step with backend/app.py's FUSED_DIM / MERT_DIM, which /similar uses to
+in step with backend/services/vectors.py's FUSED_DIM / MERT_DIM, which /similar uses to
 validate the vectors it loads — a mismatch there makes every lookup return
 nothing, silently.
 
@@ -18,7 +18,7 @@ stored in track_embeddings.FUSED_COLUMN ('fused_v3_embedding',
 F32_BLOB(865)). fused_v2 is the same without the genre block and with
 W_MERT_V2 in place of W_MERT: 841 dims in 'fused_v2_embedding'
 (_build_fused_v2). The fuse stage and scripts/refuse_vectors.py write both,
-so a database whose app still serves fused_v2 (backend/app.py falls back to
+so a database whose app still serves fused_v2 (backend/services/vectors.py falls back to
 it while fused_v3 is absent or empty) stays correct. fused_v1's
 'fused_embedding' (F32_BLOB(788)) is left untouched, for a rollback, until a
 cleanup drops it.
@@ -110,7 +110,7 @@ to either is not a space change: only the tracks that use the new entry
 move): every stored vector must be rebuilt, and cosine
 against un-rebuilt rows is meaningless. Rebuilding is cheap -- no GPU, since
 the MERT half is already stored -- but it is not optional: bump
-FUSED_MODEL_VERSION (and backend/app.py's copy, which keys the
+FUSED_MODEL_VERSION (and backend/services/vectors.py's copy, which keys the
 user_embedding_mean cache on it), then run scripts/refuse_vectors.py, which
 rewrites every fused vector and drops every cached mean. A change of width
 also needs a new column (see scripts/refuse_vectors.py).
@@ -133,7 +133,7 @@ SAMPLE_RATE = 24_000
 MAX_DURATION_S = 30
 MERT_DIM = 768
 MERT_MODEL_VERSION = "mert_v1_95m_fp32_30s"
-# The recipe the DJ ranks by (backend/app.py keeps a copy of all three).
+# The recipe the DJ ranks by (backend/services/vectors.py keeps a copy of all three).
 FUSED_MODEL_VERSION = "fused_v3_mert_scalar_lang64_genre24"
 FUSED_COLUMN = "fused_v3_embedding"
 # fused_v2: still written beside fused_v3, served while fused_v3 is not.

@@ -1,5 +1,5 @@
 """`genres` on every track dict the player reads (backend/track_genres.py,
-app._track_select / _row_to_dict).
+track_rows._track_select / _row_to_dict).
 
 `tracks.genre_scores` exists locally (db.py adds it) but not on production
 until scripts/_turso_add_genre_columns.py has run there, so the SELECTs name
@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 import track_genres
+import track_rows
 from ingest_pipeline.genre_taxonomy import GENRES
 from test_dj_paths import _turso_shaped
 
@@ -132,7 +133,7 @@ def test_without_the_column_every_list_answers_with_no_genres(client, sql, db, a
     sql.execute("ALTER TABLE tracks ADD COLUMN genre_scores TEXT")
     sql.execute("UPDATE tracks SET genre_scores = ? WHERE id = ?", (json.dumps(SCORES), ids[0]))
     sql.commit()
-    app_module._genre_scores_state["checked_at"] = 0.0
+    track_rows._genre_scores_state["checked_at"] = 0.0
     out = client.get("/api/tracks/search", params={"q": "genresong"}, headers=h).json()["tracks"]
     assert out[0]["genres"] == EXPECTED
 
@@ -154,5 +155,5 @@ def test_the_column_check_is_cached(sql, db, app_module):
 
     conn = Counting()
     for _ in range(3):
-        assert "t.genre_scores" in app_module._track_select(conn)
+        assert "t.genre_scores" in track_rows._track_select(conn)
     assert len(calls) == 1

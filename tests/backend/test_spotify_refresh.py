@@ -3,6 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
+import bootstrap  # backend/bootstrap.py: app_config and PROJECT_ROOT live there
+
 
 class FakeResponse:
     def __init__(self, status, payload=None):
@@ -17,7 +19,7 @@ class FakeResponse:
 @pytest.fixture
 def spotify(monkeypatch, app_module):
     """Configured client id/secret and a recorder in place of requests.post."""
-    monkeypatch.setattr(app_module, "app_config",
+    monkeypatch.setattr(bootstrap, "app_config",
                         SimpleNamespace(SPOTIFY_CLIENT_ID="cid", SPOTIFY_CLIENT_SECRET="secret"))
     calls = []
     state = {"response": FakeResponse(200, {"access_token": "new", "expires_in": 3600})}
