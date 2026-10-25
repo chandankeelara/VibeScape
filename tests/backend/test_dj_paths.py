@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 from ingest_pipeline import fused_vector as fv
+from services import dj as dj_service
 from services import vectors
 from services import recency as recency_service  # `recency` is a test parameter here
 
@@ -249,7 +250,7 @@ def test_both_ranking_paths_return_the_same_order(client, library, app_module, d
         return conn
     use_conn(turso_shaped)
     monkeypatch.setenv("DB_BACKEND", "turso")
-    app_module._dj_mean_cache.clear()
+    dj_service._dj_mean_cache.clear()
     turso = _post(client, h, session[-1], body)
     assert turso["mode_used"] == "dj_replay_fused_turso"
 

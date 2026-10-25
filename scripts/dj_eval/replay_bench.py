@@ -107,7 +107,7 @@ POOL = 150          # backend/services/recency.py _dj_recency_pool(10): max(10, 
 POOL_MAX = 300      # backend/services/recency.py _DJ_RECENCY_POOL_MAX: the pool while a language is demoted
 K = 10
 SEEN_WINDOW_MS = 4 * 3_600_000
-MIN_LIBRARY = 50    # backend/app.py _DJ_MEAN_MIN_TRACKS
+MIN_LIBRARY = 50    # backend/services/dj.py _DJ_MEAN_MIN_TRACKS
 GROUP_SEEDS = 40    # run_eval.py --seed-cap
 V1_LANGS = ["en", "kn", "te", "hi", "pa", "sa", "ta", "ur", "km", "pt"]
 
@@ -607,7 +607,7 @@ class Ranker:
                                                           rr["close"], rr.get("demote", rr["weight"]))]
         new_pool = [P["pool_ids"][i] for i in perm]
         if P.get("same_song"):
-            # backend/app.py _dj_drop_repeats, on the same pool
+            # backend/services/dj.py _dj_drop_repeats, on the same pool
             sess = {self.song_keys.get(e["id"]) for e in P["events"]} | {self.song_keys.get(m["seed"])}
             sess.discard(None)
             seen, kept = set(sess), []
