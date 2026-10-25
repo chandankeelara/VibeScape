@@ -7,6 +7,8 @@ assets are immutable, everything else is revalidated, and a missing file is a
 
 import pytest
 
+from routers import spa
+
 INDEX = "<!doctype html><script src=/assets/index-NEW.js></script>"
 
 
@@ -16,7 +18,7 @@ def dist(tmp_path, monkeypatch, app_module):
     (tmp_path / "index.html").write_text(INDEX)
     (tmp_path / "assets" / "LyricsPanel-NEW.js").write_text("export default 1")
     (tmp_path / "sw.js").write_text("// sw")
-    monkeypatch.setattr(app_module, "NEXT_DIR", tmp_path)
+    monkeypatch.setattr(spa, "NEXT_DIR", tmp_path)
     return tmp_path
 
 
