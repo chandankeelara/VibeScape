@@ -111,7 +111,32 @@ def test_the_header_wins_over_the_query_token(client, make_user, tracks, route):
 
 
 @pytest.mark.parametrize("route", ROUTES)
+def test_a_bearer_header_that_fails_does_not_fall_back_to_the_query(client, make_user, tracks,
+                                                                    route):
+    """A well-formed bearer is the only token tried, even when it is wrong
+    and ?token= would have worked. Pins the order require_user_stream shares
+    with require_user (refactor PR 6 merged their bodies)."""
+    _, h = make_user()
+    token = h["Authorization"].split()[1]
+    r = client.get(route.format("SPMP3") + f"?token={token}",
+                   headers={"Authorization": "Bearer bogus"})
+    assert r.status_code == 401
+    assert r.json()["detail"] == {"error": "invalid_session"}
+
+
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("header", ["Token abc", "Bearer", "Bearer   "])
+def test_a_header_that_is_not_a_bearer_falls_back_to_the_query(client, make_user, tracks, route,
+                                                                 header):
+    _, h = make_user()
+    token = h["Authorization"].split()[1]
+    r = client.get(route.format("SPMP3") + f"?token={token}", headers={"Authorization": header})
+    assert r.status_code == 200 and r.content == AUDIO
+
+
+@pytest.mark.parametrize("route", ROUTES)
 @pytest.mark.parametrize("suffix,headers,error", [
+    ("?token=%20%20", {}, "missing_authorization"),     # blank after strip()
     ("", {}, "missing_authorization"),
     ("?token=", {}, "missing_authorization"),
     ("?token=bogus", {}, "invalid_session"),
