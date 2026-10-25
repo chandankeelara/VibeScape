@@ -10,6 +10,8 @@ import sqlite3
 
 import pytest
 
+from services import recency as recency_service  # `recency` is a test parameter here
+
 ENV = {"session_id": "s-disc", "tz_offset_min": 0, "vibe": 50, "vibe_source": "user", "dj_mode": True}
 
 
@@ -80,7 +82,7 @@ def test_the_turso_path_ranks_the_catalogue_without_the_numpy_fallback(
     stats join and the user id binds nowhere."""
     h, a, b = two
     if not recency:
-        monkeypatch.setattr(app_module, "_DJ_RECENCY_WEIGHT", 0.0)
+        monkeypatch.setattr(recency_service, "_DJ_RECENCY_WEIGHT", 0.0)
     log = b[:3]
     body = {"events": [done(t) for t in log], "exclude_ids": log, "discover": True}
     local = _post(client, h, log[-1], body)
@@ -98,7 +100,7 @@ def test_get_similar_with_discover_returns_catalogue_tracks(client, sql, two, ap
     Without the re-rank there is no stats join to bind the user id to."""
     h, a, b = two
     if not recency:
-        monkeypatch.setattr(app_module, "_DJ_RECENCY_WEIGHT", 0.0)
+        monkeypatch.setattr(recency_service, "_DJ_RECENCY_WEIGHT", 0.0)
     seed = a[0]
     sql.execute(f"UPDATE tracks SET vibe_score_ml = 0.1 WHERE id IN ({','.join('?' * len(a))})", a)
     sql.execute(f"UPDATE tracks SET vibe_score_ml = 0.9 WHERE id IN ({','.join('?' * (len(b) + 1))})",

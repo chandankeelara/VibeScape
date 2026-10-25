@@ -18,6 +18,7 @@ import pytest
 
 from ingest_pipeline import fused_vector as fv
 from services import vectors
+from services import recency as recency_service  # `recency` is a test parameter here
 
 
 def done(t):
@@ -234,7 +235,7 @@ def test_both_ranking_paths_return_the_same_order(client, library, app_module, d
     events = [done(t) for t in session[:4]] + [skip(t) for t in session[4:]]
     body = {"events": events, "exclude_ids": session}
     if not recency:
-        monkeypatch.setattr(app_module, "_DJ_RECENCY_WEIGHT", 0.0)
+        monkeypatch.setattr(recency_service, "_DJ_RECENCY_WEIGHT", 0.0)
     local = _post(client, h, session[-1], body)
     assert local["mode_used"] == "dj_replay_fused"
 
