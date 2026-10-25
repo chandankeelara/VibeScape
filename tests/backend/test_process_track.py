@@ -8,6 +8,7 @@ import sqlite3
 import pytest
 import db as backend_db  # backend/db.py; `db` is the fixture with the test database path
 from services import library_ingest  # backend/services/library_ingest.py
+import spotify_library as splib  # ingest/
 
 
 def sp(cid, isrc=None, name="Song", artist="Artist"):
@@ -267,7 +268,7 @@ def spotify(app_module, monkeypatch):
         if url.endswith("/search"):
             return {"tracks": {"items": State.search}}
         return State.tracks[url.rsplit("/", 1)[-1]]
-    monkeypatch.setattr(app_module.splib, "_get", fake_get)
+    monkeypatch.setattr(splib, "_get", fake_get)
     return State
 
 
