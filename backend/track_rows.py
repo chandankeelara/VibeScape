@@ -54,7 +54,6 @@ TRACK_COLUMNS = [
     # library / mood-grid endpoints filter to 'done'.
     "ingestion_status",
 ]
-TRACK_SELECT = ", ".join(TRACK_COLUMNS)
 
 # tracks.genre_scores, read into every track dict as `genres`
 # (track_genres.genres_list). Not in TRACK_COLUMNS because production's

@@ -46,15 +46,6 @@ router = Router()
 # ---------------- Spotify library ingest ----------------
 
 
-def _bearer_token(auth_header: Optional[str]) -> str:
-    if not auth_header:
-        raise HTTPException(status_code=401, detail={"error": "missing_authorization"})
-    parts = auth_header.split(None, 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].strip():
-        raise HTTPException(status_code=401, detail={"error": "invalid_authorization"})
-    return parts[1].strip()
-
-
 @router.post("/api/ingest/clear")
 def ingest_clear(sess: dict = Depends(require_user)):
     """Remove the caller's library links (`user_tracks`) and nothing else.
