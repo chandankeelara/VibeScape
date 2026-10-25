@@ -9,6 +9,7 @@ import pytest
 import _dedupe_tracks as dd
 import _turso_create_track_indexes as idx
 import rebuild_user_track_stats as rebuild
+import db as backend_db  # backend/db.py; `db` is the fixture with the test database path
 
 TRACK_INDEXES = ("idx_tracks_spotify_id", "idx_tracks_apple_id", "idx_tracks_isrc",
                  "idx_tracks_ingestion_status")
@@ -249,7 +250,7 @@ def test_a_split_db_with_a_dead_user_id_column_survives_bootstrap(prodlike, sql,
                 "WHERE spotify_id IS NOT NULL")
     sql.commit()
     for _ in range(3):
-        app_module.get_conn().close()
+        backend_db.get_conn().close()
     cols = [r[1] for r in sql.execute("PRAGMA table_info(tracks)")]
     assert "language" in cols and "fuse_status" in cols
     assert [tuple(r) for r in sql.execute("SELECT spotify_id, isrc FROM tracks")] == [("a", "X")]

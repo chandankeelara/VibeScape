@@ -31,6 +31,32 @@ Audit date: 2026-10-02. No automated tests exist anywhere in the repo
 
 ---
 
+## Refactor in progress — splitting `backend/app.py` (started 2026-10-25)
+
+`backend/app.py` is ~6,000 lines and 49 routes. It is being moved, without
+changing any API behaviour, into `routers/`, `services/`, `deps.py` (auth
+dependencies), `track_rows.py` (the track SELECT and dict helpers) and
+`bootstrap.py`, over five PRs:
+
+1. **Safety net** (branch `refactor/pr1-safety-net`). No code moves.
+   `tests/backend/test_route_table.py` pins every (methods, path), its auth
+   dependency and the catch-all's place; characterisation tests cover the
+   routes nothing tested (auth, admin, meta, streams, YouTube GET/search,
+   library sync and public-playlist jobs, job cancel); `db.get_conn` becomes
+   the one connection seam (`app.py` calls `db.get_conn()` and keeps no
+   alias; tests patch it with conftest's `use_conn`).
+2. to 5. The moves themselves, in that direction. The order and split are a
+   plan, not settled here.
+
+Rules for every move: `test_route_table.py` stays green unedited unless a
+route deliberately changes (it should not); patch connections with
+`use_conn`, never a module's own `get_conn`; after removing or renaming any
+name, diff defined-vs-called names with `ast`, as `1be1c59` taught. The
+characterisation tests pin odd current behaviour on purpose (each is marked
+ODD in its docstring and has an entry below); fixing one is its own change.
+
+---
+
 ## 1. Broken now
 
 ### 1.1 ~~`/api/recompute-scores` rewrites every track in the database, for every user~~ — DONE (2026-10-13), writes batched 2026-10-15
@@ -722,6 +748,42 @@ at the head of it come back on every look and the stage never gets past
 them, while the run counts it idle and drains around it. Same candidate fix,
 kept per stage thread.
 
+### 3.13 Without `X-Spotify-Authorization`, `/api/spotify/library` sends the VibeScape session token to Spotify
+`backend/app.py` `spotify_library` (`_extract_bearer(spotify_authorization) or _extract_bearer(authorization)`)
+
+**verified** by `tests/backend/test_ingest_jobs.py::test_library_without_the_spotify_header_sends_the_session_token_to_spotify`
+(2026-10-25). The "legacy" fallback reads `Authorization`, which
+`require_user` already requires to be the caller's VibeScape session, so a
+request without the Spotify header hands our bearer token to
+api.spotify.com as the access token (and Spotify answers 401, which comes
+back as `spotify_token_expired`). frontend-next sets the header whenever it
+holds a Spotify token (`src/lib/api.js:38`), so this fires only when it
+does not. Fix: drop the fallback and answer 401
+`missing_spotify_authorization`. **[frontend contract]**, small: the error
+changes for a caller with no Spotify token.
+
+### 3.14 Deleting a user leaves their stats and events behind on SQLite
+`backend/app.py` `admin_delete_user`
+
+**verified** by `tests/backend/test_admin_routes.py::test_delete_leaves_the_users_stats_behind_on_sqlite`
+(2026-10-25). The manual cascade deletes `user_tracks`, `sessions` and
+`users` only. db_client's SQLite connections never enable foreign keys, so
+`user_track_stats`, `user_stats`, `track_events` and `user_events` keep
+rows for a user id that no longer exists. On Turso the schema's
+`ON DELETE CASCADE` removes them (not checked there). Local only; delete
+them explicitly in the same batch.
+
+### 3.15 On an empty database the first account is the admin
+`backend/app.py` `ADMIN_USER_ID`, `auth_email_signup`
+
+**verified** by `tests/backend/test_auth_routes.py::test_on_an_empty_database_the_first_signup_is_the_admin`
+(2026-10-25). `ADMIN_USER_ID` defaults to 1 and admin is `id == ADMIN_USER_ID`,
+so on a fresh local or test database whoever signs up first gets admin
+rights (so would a first guest session, by the same rule: read from the
+code, not tested). Production's user 1 exists, so this is a
+dev and fresh-deploy concern. Candidate fix: no default, admin off unless
+the variable is set.
+
 ## 4. Cleanup
 
 ### 4.1 Stale file references
@@ -826,6 +888,19 @@ argparse raises `UnicodeEncodeError` printing help. Real runs are unaffected.
 `activation_stats`, `mood_distribution` (now also `written`, `unchanged`).
 Nothing in `mobile/lib` calls `recomputeScores()`, and the endpoint is now
 admin-only, so the cheapest fix is deleting the wrapper and model.
+
+### 4.10 Docstrings that claim a scope the code does not have
+**verified** (2026-10-25, while characterising the routes for the refactor):
+
+- `ingest_cancel` says "post-ingest z-score still runs" after a cancel.
+  Nothing runs it: the import jobs stopped recomputing on 2026-10-13 (1.1).
+- `get_track_features` says "Per-user"; it reads any catalogue track for
+  any session (pinned in `tests/backend/test_meta_routes.py`). The streams
+  are not scoped either, which is the shared catalogue working as intended.
+- `/api/stream/{track_key}` takes a spotify_id only, unlike every other
+  `{track_key}` route, which also accepts a `tracks.id` (pinned in
+  `tests/backend/test_stream_routes.py`). Rename the parameter or resolve
+  through `_resolve_anchor`.
 
 ---
 

@@ -301,11 +301,11 @@ def test_upstream_503_is_none_with_error_not_500_and_retried_soon(client, track,
     assert body["status"] == "synced" and "error" not in body
 
 
-def test_works_without_the_table(client, track, fake, app_module, monkeypatch):
+def test_works_without_the_table(client, track, fake, use_conn):
     """Turso before scripts/_turso_create_track_lyrics.py: served, not cached.
     Dropping the table would not do: get_conn() re-runs ensure_db() locally."""
     import sqlite3
-    real = app_module.get_conn
+    real = use_conn.real
 
     class NoTable:
         def __init__(self, conn):
@@ -321,7 +321,7 @@ def test_works_without_the_table(client, track, fake, app_module, monkeypatch):
 
         def __getattr__(self, name):
             return getattr(self._conn, name)
-    monkeypatch.setattr(app_module, "get_conn", lambda: NoTable(real()))
+    use_conn(lambda: NoTable(real()))
     f = fake(get=entry(id=4, duration=201.0))
     tid, headers = track
     r = _get(client, tid, headers)

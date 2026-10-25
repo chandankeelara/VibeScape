@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+import db as backend_db  # backend/db.py; `db` is the fixture with the test database path
 
 REPO = Path(__file__).resolve().parents[2]
 SCHEMA = (REPO / "schema.sql").read_text(encoding="utf-8")
@@ -78,7 +79,7 @@ def test_fresh_bootstrap_survives_many_connections(db, app_module):
     connection (pin_hash, backlog 1.7); with that fixed it died on the third
     (the ladder added tracks.user_id, went legacy, and dropped `language`)."""
     for _ in range(5):
-        app_module.get_conn().close()
+        backend_db.get_conn().close()
 
 
 def test_fresh_bootstrap_keeps_the_schema_sql_shape(db):
@@ -113,7 +114,7 @@ def test_old_telemetry_tables_are_widened_in_place(tmp_path, monkeypatch, app_mo
     c.commit()
     c.close()
     monkeypatch.setenv("VIBESCAPE_DB_PATH", str(path))
-    app_module.get_conn().close()
+    backend_db.get_conn().close()
     c = sqlite3.connect(path)
     for col in ("listened_ms", "end_trigger", "playback", "session_id", "tz_offset_min", "data"):
         assert col in columns(c, "track_events"), col
@@ -137,7 +138,7 @@ def test_an_old_track_embeddings_gains_the_fused_v2_and_v3_columns(tmp_path, mon
     c.commit()
     c.close()
     monkeypatch.setenv("VIBESCAPE_DB_PATH", str(path))
-    app_module.get_conn().close()
+    backend_db.get_conn().close()
     c = sqlite3.connect(path)
     types = {r[1]: r[2] for r in c.execute("PRAGMA table_info(track_embeddings)")}
     assert types[FUSED_V2_COLUMN] == "F32_BLOB(841)"

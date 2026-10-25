@@ -11,6 +11,7 @@ import pytest
 
 import playlist_import as P
 import score_recompute
+import db as backend_db  # backend/db.py; `db` is the fixture with the test database path
 
 # Three librosa feature banks: loud/fast, quiet/slow, in between.
 FIXTURE = [
@@ -58,7 +59,7 @@ def scores(sql, ids):
 
 
 def recompute(app_module):
-    conn = app_module.get_conn()
+    conn = backend_db.get_conn()
     try:
         return score_recompute.recompute_axes_and_zscores(conn)
     finally:

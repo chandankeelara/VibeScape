@@ -35,7 +35,7 @@ def two(make_user, make_tracks, clusters):
     return a_h, a, b
 
 
-def _turso_shaped(monkeypatch, app_module, db):
+def _turso_shaped(use_conn, monkeypatch, app_module, db):
     """The Turso ranking SQL on the test file, with libSQL's vector functions
     stood in for (test_dj_paths._register_turso_functions)."""
     import db_client
@@ -46,7 +46,7 @@ def _turso_shaped(monkeypatch, app_module, db):
         c.row_factory = sqlite3.Row
         _register_turso_functions(c)
         return c
-    monkeypatch.setattr(app_module, "get_conn", conn)
+    use_conn(conn)
     monkeypatch.setenv("DB_BACKEND", "turso")
     app_module._dj_mean_cache.clear()
 
@@ -73,7 +73,7 @@ def test_off_stays_in_the_library_and_on_reaches_the_catalogue(client, two):
 
 @pytest.mark.parametrize("recency", [True, False])
 def test_the_turso_path_ranks_the_catalogue_without_the_numpy_fallback(
-        client, two, app_module, db, monkeypatch, recency):
+        client, two, app_module, db, monkeypatch, use_conn, recency):
     """`_UTS_JOIN` names the user_tracks alias that discovery drops: with it,
     the Turso SQL fails and the numpy path answers (mode_used loses _turso),
     which on Turso reads every fused vector. Without the re-rank there is no
@@ -84,7 +84,7 @@ def test_the_turso_path_ranks_the_catalogue_without_the_numpy_fallback(
     log = b[:3]
     body = {"events": [done(t) for t in log], "exclude_ids": log, "discover": True}
     local = _post(client, h, log[-1], body)
-    _turso_shaped(monkeypatch, app_module, db)
+    _turso_shaped(use_conn, monkeypatch, app_module, db)
     turso = _post(client, h, log[-1], body)
     assert turso["mode_used"] == "dj_replay_fused_turso_discover"
     assert [t["id"] for t in turso["tracks"]] == [t["id"] for t in local["tracks"]]
@@ -131,7 +131,7 @@ def test_another_release_of_a_library_song_is_not_a_discovery(client, sql, make_
 
 @pytest.mark.parametrize("path", ["numpy", "turso"])
 def test_a_skipped_discovery_is_penalised_on_the_next_request(
-        client, two, app_module, db, monkeypatch, path):
+        client, two, app_module, db, monkeypatch, use_conn, path):
     h, a, b = two
     heard = b[5]
     r = client.post("/api/events", headers=h, json={"events": [
@@ -141,7 +141,7 @@ def test_a_skipped_discovery_is_penalised_on_the_next_request(
     ]})
     assert r.status_code == 202, r.text
     if path == "turso":
-        _turso_shaped(monkeypatch, app_module, db)
+        _turso_shaped(use_conn, monkeypatch, app_module, db)
     log = b[:3]
     # fewer candidates than the limit, so the penalised track stays in it
     out = _post(client, h, log[-1], {"events": [done(t) for t in log],

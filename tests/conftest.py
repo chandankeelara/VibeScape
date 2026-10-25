@@ -37,6 +37,10 @@ sys.path.insert(0, str(REPO / "backend"))
 sys.path.insert(0, str(REPO / "scripts"))
 sys.path.append(str(REPO / "ingest"))   # last: ingest/db.py must not shadow backend/db.py
 
+# backend/db.py, under a name that does not collide with the `db` fixture.
+import db as backend_db  # noqa: E402
+assert Path(backend_db.__file__).parent.name == "backend", backend_db.__file__
+
 
 @pytest.fixture(autouse=True)
 def _fresh_spotify_guard():
@@ -140,6 +144,25 @@ def pauses(monkeypatch):
 from ingest_pipeline.fused_vector import FUSED_COLUMN, FUSED_DIM  # noqa: E402
 
 
+@pytest.fixture
+def use_conn(monkeypatch):
+    """use_conn(opener): from here on, every db.get_conn() returns opener().
+
+    db.get_conn is the one seam: backend/app.py calls it as `db.get_conn()`
+    and has no get_conn of its own (since the refactor's PR 1), so a stale
+    `monkeypatch.setattr(app, "get_conn", ...)` raises AttributeError instead
+    of silently patching a name nothing calls. `use_conn.real` is the
+    unpatched opener, for an opener that wraps it. Other modules that copied
+    the name (`from db import get_conn`, e.g. run_ingest_v2) are not
+    affected."""
+    real = backend_db.get_conn
+
+    def _use(opener):
+        monkeypatch.setattr(backend_db, "get_conn", opener)
+    _use.real = real
+    return _use
+
+
 @pytest.fixture(scope="session")
 def app_module():
     import logging
@@ -158,7 +181,7 @@ def db(tmp_path, monkeypatch, app_module):
     app_module._fused_v2_state.update(ready=None, checked_at=0.0, warned=False)
     app_module._fused_v3_state.update(ready=None, checked_at=0.0, warned=False)
     app_module._genre_scores_state.update(ready=None, checked_at=0.0, warned=False)
-    conn = app_module.get_conn()  # runs ensure_db() -> schema.sql + migrations
+    conn = backend_db.get_conn()  # runs ensure_db() -> schema.sql + migrations
     opened = conn.execute("PRAGMA database_list").fetchall()[0][2]
     conn.close()
     assert Path(opened).resolve() == path.resolve(), f"app opened {opened}, not the test DB"
@@ -178,7 +201,7 @@ def sql(db):
 def client(app_module, db):
     from fastapi.testclient import TestClient
     # Not used as a context manager, so the startup hook (LAN logging, audio
-    # dir) does not run. get_conn() bootstraps the DB on its own.
+    # dir) does not run. db.get_conn() bootstraps the DB on its own.
     return TestClient(app_module.app)
 
 
@@ -190,7 +213,7 @@ def make_user(sql, app_module):
         cur = sql.execute("INSERT INTO users (display_name) VALUES (?)", (name,))
         sql.commit()
         uid = int(cur.lastrowid)
-        conn = app_module.get_conn()
+        conn = backend_db.get_conn()
         try:
             token = app_module._issue_session(conn, uid)
         finally:

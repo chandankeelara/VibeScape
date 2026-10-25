@@ -102,7 +102,7 @@ def test_already_ingested_single_carries_genres(client, sql, make_user, make_tra
 @pytest.mark.parametrize("backend", ["sqlite", "turso"])
 def test_without_the_column_every_list_answers_with_no_genres(client, sql, db, app_module, make_user,
                                                                make_tracks, clusters, monkeypatch,
-                                                               caplog, backend):
+                                                               use_conn, caplog, backend):
     """Production's shape: no genre_scores column. Without the check every
     list SELECT fails with 'no such column' -- a 500 on search and random,
     an empty /api/tracks, and the Turso DJ path falling back to numpy."""
@@ -113,7 +113,7 @@ def test_without_the_column_every_list_answers_with_no_genres(client, sql, db, a
         sql.execute(f"ALTER TABLE tracks DROP COLUMN {col}")
     sql.commit()
     # No ensure_db, which would add the columns back.
-    monkeypatch.setattr(app_module, "get_conn", _turso_shaped(db))
+    use_conn(_turso_shaped(db))
     if backend == "turso":
         monkeypatch.setenv("DB_BACKEND", "turso")
     caplog.set_level(logging.WARNING, logger="vibescape")
