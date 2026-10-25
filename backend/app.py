@@ -45,7 +45,7 @@ from dj_replay import replay as _dj_replay
 import playlist_import as _pli
 import library_search as _libsearch
 import lyrics as _lyrics
-from track_rows import MOODS, _row_to_dict, _search_rows, _search_rows_cache, _track_select
+from track_rows import _row_to_dict, _search_rows, _search_rows_cache, _track_select
 from services.vectors import (FUSED_COLUMN, FUSED_V1_AVOID, FUSED_V1_MODEL_VERSION,
                               _DJ_VARIANT_DEFAULT, _embedding_column_for, _l2_normalize,
                               _load_mert_vec, _load_mert_vecs_bulk, _resolve_anchor,
@@ -55,6 +55,8 @@ from services.recency import (_RecencyCandidate, _UTS_JOIN, _UTS_JOIN_BY_USER, _
                               _fetch_user_halflife, _recency_penalty, _rerank_by_recency)
 from services.telemetry import _EVENT_BATCH_CAP, _record_track_events
 from services.jobs import JOBS, JOBS_LOCK, _bump, _is_cancelled, _update_job
+from routers import register as register_routes
+from routers import meta as meta_routes
 
 import score_recompute  # noqa: E402
 import spotify_guard  # noqa: E402  — every api.spotify.com call goes through it
@@ -75,6 +77,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Routers first, then the routes app.py still defines, then the SPA
+# catch-all at the bottom, which must stay last or it swallows every API
+# route. register(), not app.include_router: see routers/__init__.py.
+register_routes(app, meta_routes.router)
 
 
 @app.on_event("startup")
@@ -520,56 +527,6 @@ def spotify_refresh(body: SpotifyRefreshBody, sess: dict = Depends(require_user)
     }
 
 
-@app.get("/api/demo/moods")
-def demo_moods():
-    """
-    Public endpoint powering the landing-page hero card. Returns one
-    real track per mood band (sleep/chill/steady/hype/beast) from the
-    library, picking the track whose vibe score is closest to the
-    middle of each band and has a non-empty artwork URL. No auth.
-    """
-    vibe_expr = "COALESCE(t.vibe_score_ml * 100.0, t.vibe_score)"
-    bands = [
-        ("sleep",   0.0,  20.0, 10.0),
-        ("chill",  20.0,  40.0, 30.0),
-        ("steady", 40.0,  60.0, 50.0),
-        ("hype",   60.0,  80.0, 70.0),
-        ("beast",  80.0, 100.0, 90.0),
-    ]
-    out = []
-    conn = db.get_conn()
-    try:
-        for mood, lo, hi, target in bands:
-            row = conn.execute(
-                f"SELECT t.title, t.artist, t.album, t.artwork_url, "
-                f"       {vibe_expr} AS v "
-                f"FROM tracks t "
-                f"WHERE t.ingestion_status = 'done' "
-                f"  AND {vibe_expr} >= ? AND {vibe_expr} < ? "
-                f"  AND t.artwork_url IS NOT NULL AND t.artwork_url != '' "
-                f"ORDER BY ABS({vibe_expr} - ?) LIMIT 1",
-                (lo, hi, target),
-            ).fetchone()
-            if row:
-                out.append({
-                    "mood": mood,
-                    "title": row["title"],
-                    "artist": row["artist"],
-                    "album": row["album"],
-                    "artwork_url": row["artwork_url"],
-                    "vibe": int(round(row["v"] or target)),
-                })
-            else:
-                out.append({
-                    "mood": mood,
-                    "title": None, "artist": None, "album": None,
-                    "artwork_url": None, "vibe": int(target),
-                })
-    finally:
-        conn.close()
-    return {"moods": out}
-
-
 @app.post("/api/auth/guest")
 def auth_guest():
     """
@@ -683,23 +640,6 @@ def auth_spotify_link(body: SpotifyLinkBody, sess: dict = Depends(require_user))
     finally:
         conn.close()
     return {"ok": True, "spotify_user_id": body.spotify_user_id, "spotify_display_name": body.spotify_display_name}
-
-
-@app.get("/api/health")
-def health():
-    conn = db.get_conn()
-    try:
-        count = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
-    except Exception:
-        count = 0
-    finally:
-        conn.close()
-    return {"status": "ok", "track_count": count}
-
-
-@app.get("/api/moods")
-def moods():
-    return {"moods": MOODS}
 
 
 @app.get("/api/tracks")
@@ -1801,26 +1741,6 @@ def spotify_status():
     ingest/spotify_guard.py. Per process: another Cloud Run instance learns
     of a block from its own first 429."""
     return spotify_guard.status()
-
-
-@app.get("/api/spotify/config")
-def spotify_config():
-    client_id, _, redirect_uri = bootstrap.spotify_creds()
-    return {"client_id": client_id or "", "redirect_uri": redirect_uri or ""}
-
-
-@app.get("/api/client-config")
-def client_config():
-    """
-    Runtime config for the browser. Currently just the deployment env,
-    used by app.js to decide whether to emit verbose debug logs.
-    Defaults to 'prod' so prod stays quiet by default; set
-    VIBESCAPE_ENV=dev in a local `.env` to enable debug logs.
-    """
-    env = (os.environ.get("VIBESCAPE_ENV") or "prod").strip().lower()
-    if env not in ("dev", "prod"):
-        env = "prod"
-    return {"env": env, "debug": env == "dev"}
 
 
 @app.get("/api/track/{apple_id}/spotify")
@@ -4330,7 +4250,6 @@ NEXT_DIR = Path(__file__).resolve().parent.parent / "frontend-next" / "dist"
 #
 # ORDER MATTERS: the catch-all at the bottom must stay last, after every API
 # route, or it swallows them.
-
 
 
 @app.get("/next", include_in_schema=False)
