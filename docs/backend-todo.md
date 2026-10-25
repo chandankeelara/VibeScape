@@ -986,13 +986,13 @@ file is also a trap on its own terms — `upsert_track`'s UPDATE branch writes
 all 20 `_TRACK_COLS` from `track_data.get(c)`, nulling every column absent
 from the caller's dict.
 
-### 4.5 `_collect_tracks` is unreachable
-`backend/services/ingest_jobs.py` (was `backend/app.py:2814`)
+### 4.5 `fetch_liked` / `fetch_top_tracks` have no caller
+`ingest/spotify_library.py` (`fetch_liked`, `fetch_top_tracks`)
 
-**verified** — superseded by `_iter_tracks` (`backend/app.py:2773`) in
-`d2440a8`; `_run_ingest_job` only calls the streaming form. `fetch_liked` /
-`fetch_top_tracks` in `ingest/spotify_library.py:221-228` are its only
-remaining consumers and are themselves unused.
+**verified** (ast sweep, 2026-10-25). Their only consumer was
+`_collect_tracks`, superseded by the streaming `_iter_tracks` in `d2440a8`
+and deleted in the refactor's cleanup PR. Delete both, or keep them as the
+list-returning form of `iter_liked` / `iter_top_tracks` and say so.
 
 ### 4.6 The `/callback` bridge's return-path table is a raw object lookup
 `backend/app.py:1686-1687`
