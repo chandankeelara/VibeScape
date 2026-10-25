@@ -4,6 +4,7 @@ import secrets
 import pytest
 
 import library_search as L
+import track_rows
 
 LIB = [
     dict(id=1, title="Bekhayali", artist="Arijit Singh", album="Kabir Singh", language="hi"),
@@ -93,7 +94,7 @@ def library(sql, make_user):
 
 
 def test_endpoint_returns_full_rows_best_first(client, library, app_module):
-    app_module._search_rows_cache.clear()
+    track_rows._search_rows_cache.clear()
     headers, a, b = library
     r = client.get("/api/tracks/search", params={"q": "kanada vijay"}, headers=headers)
     assert r.status_code == 200
