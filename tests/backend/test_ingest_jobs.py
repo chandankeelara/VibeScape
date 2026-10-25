@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 import bootstrap  # backend/bootstrap.py: app_config and PROJECT_ROOT live there
+from services import jobs
 import requests
 
 import spotify_library as splib
@@ -306,14 +307,14 @@ def job(app_module):
 
     def _make(user_id, status="running"):
         jid = f"test-{len(made)}-{time.time_ns()}"
-        with app_module.JOBS_LOCK:
-            app_module.JOBS[jid] = {"status": status, "user_id": user_id, "cancel_requested": False}
+        with jobs.JOBS_LOCK:
+            jobs.JOBS[jid] = {"status": status, "user_id": user_id, "cancel_requested": False}
         made.append(jid)
         return jid
     yield _make
-    with app_module.JOBS_LOCK:
+    with jobs.JOBS_LOCK:
         for jid in made:
-            app_module.JOBS.pop(jid, None)
+            jobs.JOBS.pop(jid, None)
 
 
 def test_cancel_flags_a_running_job_only(client, make_user, job, app_module):
@@ -321,12 +322,12 @@ def test_cancel_flags_a_running_job_only(client, make_user, job, app_module):
     for status in ("pending", "running"):
         jid = job(uid, status)
         assert client.delete(f"/api/ingest/status/{jid}", headers=h).status_code == 204
-        assert app_module.JOBS[jid]["cancel_requested"] is True
+        assert jobs.JOBS[jid]["cancel_requested"] is True
     for status in ("complete", "error", "cancelled"):
         jid = job(uid, status)
         r = client.delete(f"/api/ingest/status/{jid}", headers=h)
         assert r.status_code == 204 and r.content == b""
-        assert app_module.JOBS[jid]["cancel_requested"] is False
+        assert jobs.JOBS[jid]["cancel_requested"] is False
 
 
 def test_cancel_of_someone_elses_or_no_job_is_the_same_404(client, make_user, job, app_module):
@@ -336,7 +337,7 @@ def test_cancel_of_someone_elses_or_no_job_is_the_same_404(client, make_user, jo
     for target in (jid, "no-such-job"):
         r = client.delete(f"/api/ingest/status/{target}", headers=h)
         assert r.status_code == 404 and r.json() == {"detail": "job not found"}
-    assert app_module.JOBS[jid]["cancel_requested"] is False
+    assert jobs.JOBS[jid]["cancel_requested"] is False
     assert client.delete(f"/api/ingest/status/{jid}").status_code == 401
 
 
@@ -444,11 +445,11 @@ def test_public_preflight_refusals(client, make_user, public, app_module,
                                    token, meta, probe, follow, status, error):
     _, h = make_user()
     public.meta, public.probe, public.follow = meta, list(probe), follow
-    before = set(app_module.JOBS)
+    before = set(jobs.JOBS)
     r = start_public(client, h, token=token)
     assert r.status_code == status
     assert r.json()["detail"] == {"error": error}
-    assert set(app_module.JOBS) == before                       # no job is created
+    assert set(jobs.JOBS) == before                       # no job is created
 
 
 def test_public_preflight_network_errors_are_502s(client, make_user, public):
