@@ -2,6 +2,8 @@
 the admin may call it. Before 2026-10-13 any session could, including the
 shared guest minted by POST /api/auth/guest with no credentials at all."""
 
+import deps  # backend/deps.py: ADMIN_USER_ID and the session helpers live there
+
 VID = "dQw4w9WgXcQ"
 
 
@@ -12,7 +14,7 @@ def youtube_id_of(sql, track_id):
 def test_non_admin_gets_403_and_nothing_is_written(client, sql, make_user, make_tracks, app_module, monkeypatch):
     admin_id, _ = make_user("admin")
     user_id, user_h = make_user("someone")
-    monkeypatch.setattr(app_module, "ADMIN_USER_ID", admin_id)
+    monkeypatch.setattr(deps, "ADMIN_USER_ID", admin_id)
     (tid,) = make_tracks(user_id, [None])
 
     r = client.post(f"/api/tracks/{tid}/youtube", json={"youtube_id": VID}, headers=user_h)
@@ -24,7 +26,7 @@ def test_non_admin_gets_403_and_nothing_is_written(client, sql, make_user, make_
 
 def test_guest_session_gets_403(client, sql, make_user, make_tracks, app_module, monkeypatch):
     admin_id, _ = make_user("admin")
-    monkeypatch.setattr(app_module, "ADMIN_USER_ID", admin_id)
+    monkeypatch.setattr(deps, "ADMIN_USER_ID", admin_id)
     (tid,) = make_tracks(admin_id, [None])
     guest = client.post("/api/auth/guest").json()
     assert guest["is_guest"] is True
@@ -38,7 +40,7 @@ def test_guest_session_gets_403(client, sql, make_user, make_tracks, app_module,
 
 def test_admin_sets_it(client, sql, make_user, make_tracks, app_module, monkeypatch):
     admin_id, admin_h = make_user("admin")
-    monkeypatch.setattr(app_module, "ADMIN_USER_ID", admin_id)
+    monkeypatch.setattr(deps, "ADMIN_USER_ID", admin_id)
     (tid,) = make_tracks(admin_id, [None])
 
     r = client.post(f"/api/tracks/{tid}/youtube", json={"youtube_id": VID}, headers=admin_h)

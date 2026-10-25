@@ -18,6 +18,7 @@ import pytest
 
 import bootstrap  # backend/bootstrap.py: app_config and PROJECT_ROOT live there
 from services import jobs
+from services import spotify_auth  # _get_app_token and its cache live there
 import requests
 
 import spotify_library as splib
@@ -376,7 +377,7 @@ def public(monkeypatch, app_module):
     monkeypatch.setattr(splib, "probe_playlist_tracks", fake_probe)
     monkeypatch.setattr(splib, "follow_playlist", fake_follow)
     monkeypatch.setattr(splib, "fetch_public_playlist_tracks", fake_fetch)
-    monkeypatch.setattr(app_module, "_get_app_token", lambda force_refresh=False: "APP")
+    monkeypatch.setattr(spotify_auth, "_get_app_token", lambda force_refresh=False: "APP")
     return state
 
 
@@ -466,7 +467,7 @@ def test_public_without_app_credentials_is_a_500(client, make_user, monkeypatch,
     """The real _get_app_token: its HTTPException is not caught by the
     preflight, so it reaches the client as is."""
     monkeypatch.setattr(bootstrap, "app_config", None)
-    monkeypatch.setattr(app_module, "_APP_TOKEN_STATE", {"token": None, "expires_at": 0.0})
+    monkeypatch.setattr(spotify_auth, "_APP_TOKEN_STATE", {"token": None, "expires_at": 0.0})
     _, h = make_user()
     r = start_public(client, h, token=None)
     assert r.status_code == 500 and r.json()["detail"] == {"error": "spotify_app_credentials_missing"}

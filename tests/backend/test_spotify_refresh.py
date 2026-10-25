@@ -2,6 +2,7 @@
 from types import SimpleNamespace
 
 import pytest
+import requests
 
 import bootstrap  # backend/bootstrap.py: app_config and PROJECT_ROOT live there
 
@@ -27,7 +28,7 @@ def spotify(monkeypatch, app_module):
     def fake_post(url, data=None, timeout=None, **_):
         calls.append({"url": url, "data": data})
         return state["response"]
-    monkeypatch.setattr(app_module.requests, "post", fake_post)
+    monkeypatch.setattr(requests, "post", fake_post)
     return SimpleNamespace(calls=calls, state=state)
 
 

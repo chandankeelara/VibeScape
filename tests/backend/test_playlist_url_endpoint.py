@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import pytest
 
 import playlist_import as P
+from services import spotify_auth  # _get_app_token and its cache live there
 
 
 @pytest.fixture
@@ -37,7 +38,7 @@ def importer(app_module, monkeypatch):
 
     monkeypatch.setattr(P, "fetch", fake_fetch)
     monkeypatch.setattr(P, "spotify_search", fake_search)
-    monkeypatch.setattr(app_module, "_get_app_token", lambda force_refresh=False: "app-token")
+    monkeypatch.setattr(spotify_auth, "_get_app_token", lambda force_refresh=False: "app-token")
     return state
 
 

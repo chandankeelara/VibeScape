@@ -34,9 +34,10 @@ Audit date: 2026-10-02. No automated tests exist anywhere in the repo
 ## Refactor in progress — splitting `backend/app.py` (started 2026-10-25)
 
 `backend/app.py` was ~6,000 lines and 49 routes (5,954 before PR 2, 4,508
-after). It is being moved, without changing any API behaviour, into
-`routers/`, `services/`, `deps.py` (auth dependencies), `track_rows.py` (the
-track SELECT and dict helpers) and `bootstrap.py`, over five PRs:
+after PR 2, 2,289 after PR 3). It is being moved, without changing any API
+behaviour, into `routers/`, `services/`, `deps.py` (auth dependencies),
+`track_rows.py` (the track SELECT and dict helpers) and `bootstrap.py`, over
+six PRs:
 
 1. **Safety net** (PR #34, merged). No code moves.
    `tests/backend/test_route_table.py` pins every (methods, path), its auth
@@ -45,33 +46,73 @@ track SELECT and dict helpers) and `bootstrap.py`, over five PRs:
    library sync and public-playlist jobs, job cancel); `db.get_conn` becomes
    the one connection seam (`app.py` calls `db.get_conn()` and keeps no
    alias; tests patch it with conftest's `use_conn`).
-2. **Leaf modules** (branch `refactor/pr2-leaf-modules`). Code with no route
-   of its own leaves `app.py`, unchanged, one move per commit. Module map
-   (all under `backend/`, which is the import root):
+2. **Leaf modules** (PR #35, merged). Code with no route of its own leaves
+   `app.py`, unchanged, one move per commit. Module map (all under
+   `backend/`, which is the import root):
    - `bootstrap.py`: `.env` load, `import db`, then the repo root and
      `ingest/` on `sys.path` (that order: `ingest/db.py` would shadow
      `backend/db.py`), the `vibescape` logger, `PROJECT_ROOT`, `AUDIO_DIR`,
      `app_config`, `spotify_creds()`. `app.py` imports it first.
    - `track_rows.py`: `TRACK_COLUMNS`, the genre_scores readiness check,
-     `_track_select`, `MOODS`, `_row_to_dict`, `_search_rows` and its cache.
+     `_track_select`, `MOODS`, `_row_to_dict`, `_search_rows` and its cache,
+     and (since PR 3) `_isrc_of`, shared by Spotify search and `_link_track`.
    - `services/vectors.py`: MERT and `FUSED_*` constants, column readiness
      (`_fused_v2_ready`, `_fused_v3_ready`), `_variant_spec`,
      `_resolve_anchor`, the embedding loaders, `_l2_normalize`, `_is_turso`.
    - `services/recency.py`: the `DJ_*` env knobs, `_UTS_*` SQL, the penalty,
      re-ranker and the two stats reads.
    - `services/telemetry.py`: event normalisation, the stats rollups,
-     `_record_track_events`. `POST /api/events` itself is still in `app.py`.
+     `_record_track_events`.
    - `services/jobs.py`: `JOBS`, `JOBS_LOCK`, `_update_job`, `_bump`,
      `_is_cancelled`.
    `services/` is a package, not more flat modules: nothing on `sys.path` is
    called `services`, the Dockerfile copies `backend/` whole, and both ways
    the app starts (`uvicorn app:app` from `backend/`, tests with `backend/`
-   on the path) resolve it. Later PRs put services there too.
-3. to 5. Routers and `deps.py`, then the cleanup PR: delete the plain
-   re-imports `app.py` keeps only for tests, and decide the three
-   initial ingest job dicts (a shared `jobs.create()` was not done in PR 2:
-   the dicts place their extra keys in different positions, so a shared base
-   would reorder the `/api/ingest/status` JSON).
+   on the path) resolve it.
+3. **Deps and routers** (branch `refactor/pr3-deps-routers`). Module map:
+   - `deps.py`: `require_user`, `require_admin`, `require_user_stream`,
+     `ADMIN_USER_ID`, `_issue_session`, `_lookup_session`, `_extract_bearer`.
+     Imports `bootstrap` first, since `ADMIN_USER_ID` is read from the
+     environment at import.
+   - `services/spotify_auth.py`: the OAuth code exchange and `/v1/me` read
+     behind Spotify login, and the cached client-credentials token
+     (`_get_app_token`, `_APP_TOKEN_STATE`) the ingest jobs use.
+   - `routers/`: `auth` (sign-up, login, logout, me, Spotify OAuth, guest,
+     spotify-link, `/api/spotify/refresh`, `/callback`), `meta` (health,
+     moods, demo moods, spotify/config, client-config), `tracks` (list,
+     search, random, features, lyrics, `/api/track/{apple_id}/spotify`),
+     `spotify` (library manifest, search, status), `stream`, `youtube`,
+     `events`, `me` (stats, the heart), `admin` (the four
+     `/api/admin/*` routes and `/api/recompute-scores`).
+   Still in `app.py`: the ingest routes, jobs and `_process_track` /
+   `_link_track` (PR 4), the DJ and both `/similar` routes (PR 5), and the
+   SPA routes, registered last.
+   **Routers are not added with `app.include_router`.** In FastAPI 0.141.1
+   (installed here) `include_router` appends one opaque `_IncludedRouter`
+   to `app.routes` instead of copying the routes, which breaks
+   `test_route_table.py`, and copying the router's own `APIRoute` objects
+   would bypass `app.dependency_overrides`. `routers.Router` records each
+   `add_api_route` call and `routers.register(app, router)` replays it on
+   the app, the path `@app.get` itself takes; `backend/routers/__init__.py`
+   has the detail, `tests/backend/test_routers_register.py` pins it. The
+   routes' registration order changed (routers first, then `app.py`'s own,
+   SPA last); 1,468 probe paths under six methods resolve to the same
+   endpoint as before, and the OpenAPI document is equal except for the
+   order its paths are listed in.
+4. and 5. Ingest, then the DJ, into routers and services.
+6. **Cleanup PR**: delete the plain re-imports `app.py` keeps only for
+   tests; decide the three initial ingest job dicts (a shared
+   `jobs.create()` was not done in PR 2: the dicts place their extra keys
+   in different positions, so a shared base would reorder the
+   `/api/ingest/status` JSON); merge the duplicated session lookup in
+   `require_user` / `require_user_stream`. Dead code found by the PR 3
+   sweep, moved or left as it was rather than deleted inside a move:
+   `_bearer_token` and `_itunes_lookup_by_isrc` (app.py, no callers),
+   `_yt_search_sync` / `_yt_search_with_timeout` (routers/youtube.py, no
+   callers: the YouTube GET never searches, so `scripts/prewarm_youtube.py`'s
+   "what the endpoint would have produced" is not true of any endpoint), and
+   app.py's unused `glob`, `shutil`, `tempfile` and top-level
+   `time as _time` imports.
 
 Rules for every move: `test_route_table.py` stays green unedited unless a
 route deliberately changes (it should not); patch connections with
@@ -83,10 +124,13 @@ ODD in its docstring and has an entry below); fixing one is its own change.
 that owns it**, never copied with `from module import name`, and `app.py`
 keeps no alias of it, so a stale `setattr(app_module, ...)` raises instead
 of patching nothing. Patched today: `bootstrap.app_config`,
-`bootstrap.PROJECT_ROOT`, `services.recency._DJ_RECENCY_WEIGHT`, and on
-`app.py` `ADMIN_USER_ID`, `NEXT_DIR`, `_get_app_token`, `_APP_TOKEN_STATE`,
-`_process_track`, `_YT_SEARCH_TIMEOUT_S`, `_yt_manual_search_sync`. Moving
-any of the latter means retargeting its patches in the same commit.
+`bootstrap.PROJECT_ROOT`, `services.recency._DJ_RECENCY_WEIGHT`,
+`deps.ADMIN_USER_ID`, `services.spotify_auth._get_app_token` and
+`_APP_TOKEN_STATE`, `routers.youtube._yt_manual_search_sync` and
+`_YT_SEARCH_TIMEOUT_S`, and on `app.py` `NEXT_DIR` and `_process_track`.
+Moving either of the last two means retargeting its patches in the same
+commit. FastAPI resolves `Depends(fn)` by identity: a
+`dependency_overrides` entry must key on the function in `deps.py`.
 
 `file:line` references to `backend/app.py` in the entries below predate the
 split; search for the name.

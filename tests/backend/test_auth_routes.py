@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import deps  # backend/deps.py: ADMIN_USER_ID and the session helpers live there
 import bootstrap  # backend/bootstrap.py: app_config and PROJECT_ROOT live there
 import requests
 import db as backend_db  # backend/db.py; `db` is the fixture with the test database path
@@ -40,7 +41,7 @@ def no_network(monkeypatch):
 def admin(monkeypatch, app_module, make_user):
     """An admin who owns two tracks (what an email signup is seeded from)."""
     uid, h = make_user("admin")
-    monkeypatch.setattr(app_module, "ADMIN_USER_ID", uid)
+    monkeypatch.setattr(deps, "ADMIN_USER_ID", uid)
     return uid, h
 
 
@@ -97,7 +98,7 @@ def test_signup_validation_is_a_422(client, email, password, error):
 def test_on_an_empty_database_the_first_signup_is_the_admin(client, monkeypatch, app_module):
     """ODD, pinned: is_admin is `user_id == ADMIN_USER_ID` (default 1), so on
     a fresh database whoever signs up first gets id 1 and admin rights."""
-    monkeypatch.setattr(app_module, "ADMIN_USER_ID", 1)
+    monkeypatch.setattr(deps, "ADMIN_USER_ID", 1)
     body = signup(client).json()
     assert body["user_id"] == 1 and body["is_admin"] is True
 
@@ -152,7 +153,7 @@ def test_login_validation_is_a_422(client, email, password, error):
 def test_logout_ends_only_that_session(client, sql, make_user, app_module):
     uid, h = make_user()
     conn = backend_db.get_conn()
-    other = app_module._issue_session(conn, uid)
+    other = deps._issue_session(conn, uid)
     conn.close()
     r = client.post("/api/auth/logout", headers=h)
     assert r.status_code == 204 and r.content == b""
@@ -179,7 +180,7 @@ def test_me_reports_the_spotify_profile(client, sql, make_user, monkeypatch, app
                 "spotify_country='IN', spotify_product='premium', spotify_avatar_url='https://a', "
                 "spotify_profile_url='https://p' WHERE id = ?", (uid,))
     sql.commit()
-    monkeypatch.setattr(app_module, "ADMIN_USER_ID", uid)
+    monkeypatch.setattr(deps, "ADMIN_USER_ID", uid)
     body = client.get("/api/auth/me", headers=h).json()
     created = body.pop("created_at")
     assert created

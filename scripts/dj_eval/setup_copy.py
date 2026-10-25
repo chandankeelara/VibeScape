@@ -28,7 +28,7 @@ WHAT THE COPY GAINS
 AUTH
 ----
 Each user gets an email and a random password, hashed in the format
-backend/app.py _hash_password writes (scrypt$salt$hash, n=2**14, r=8, p=1).
+backend/routers/auth.py _hash_password writes (scrypt$salt$hash, n=2**14, r=8, p=1).
 No session is minted here: the harness signs in through POST /api/auth/login
 on the running server, as the frontend's EmailForm does, and sends the
 returned session_token as `Authorization: Bearer` (client.login). The
@@ -80,7 +80,7 @@ def make_copy(backup: Path, out: Path) -> None:
 
 
 def _hash_password(password: str) -> str:
-    # backend/app.py _hash_password, so /api/auth/login verifies it.
+    # backend/routers/auth.py _hash_password, so /api/auth/login verifies it.
     salt = secrets.token_bytes(16)
     dk = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2 ** 14, r=8, p=1, dklen=32)
     return "scrypt$" + salt.hex() + "$" + dk.hex()

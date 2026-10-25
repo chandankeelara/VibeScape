@@ -11,6 +11,8 @@ import pytest
 
 import playlist_import as P
 import score_recompute
+import deps  # backend/deps.py: ADMIN_USER_ID and the session helpers live there
+from services import spotify_auth  # _get_app_token and its cache live there
 import db as backend_db  # backend/db.py; `db` is the fixture with the test database path
 
 # Three librosa feature banks: loud/fast, quiet/slow, in between.
@@ -123,7 +125,7 @@ def test_the_writes_go_out_in_batches_not_one_round_trip_each(sql, app_module, b
 def test_a_non_admin_gets_403_and_nothing_is_written(client, sql, make_user, app_module, monkeypatch):
     admin_id, _ = make_user("admin")
     uid, h = make_user("someone")
-    monkeypatch.setattr(app_module, "ADMIN_USER_ID", admin_id)
+    monkeypatch.setattr(deps, "ADMIN_USER_ID", admin_id)
     ids = add_featured(sql, uid)
 
     r = client.post("/api/recompute-scores", headers=h)
@@ -136,7 +138,7 @@ def test_a_non_admin_gets_403_and_nothing_is_written(client, sql, make_user, app
 def test_the_admin_recomputes_the_whole_catalogue(client, sql, make_user, app_module, monkeypatch):
     admin_id, admin_h = make_user("admin")
     other, _ = make_user("someone")
-    monkeypatch.setattr(app_module, "ADMIN_USER_ID", admin_id)
+    monkeypatch.setattr(deps, "ADMIN_USER_ID", admin_id)
     ids = add_featured(sql, other)               # not in the admin's library: it is global
 
     r = client.post("/api/recompute-scores", headers=admin_h)
@@ -153,7 +155,7 @@ def test_an_import_job_leaves_catalogue_scores_alone(client, sql, make_user, app
     ids = add_featured(sql)
     playlist = P.Playlist("List", [P.Item(title="New", artist="Ann", spotify_id="NEWSID")])
     monkeypatch.setattr(P, "fetch", lambda source, get, ytdlp_extract=None: playlist)
-    monkeypatch.setattr(app_module, "_get_app_token", lambda force_refresh=False: "app-token")
+    monkeypatch.setattr(spotify_auth, "_get_app_token", lambda force_refresh=False: "app-token")
 
     r = client.post("/api/ingest/playlist-url",
                     json={"url": "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"}, headers=h)
