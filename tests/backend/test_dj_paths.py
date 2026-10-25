@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 from ingest_pipeline import fused_vector as fv
+from services import vectors
 
 
 def done(t):
@@ -35,15 +36,15 @@ def _title():
 
 def test_the_app_the_schema_and_the_recipe_agree_on_the_space(app_module, sql):
     import db
-    assert app_module.FUSED_MODEL_VERSION == fv.FUSED_MODEL_VERSION
-    assert app_module.FUSED_V2_MODEL_VERSION == fv.FUSED_V2_MODEL_VERSION
-    assert app_module.FUSED_MODEL_VERSION != app_module.FUSED_V2_MODEL_VERSION
-    assert app_module.FUSED_DIM == fv.FUSED_DIM
-    assert app_module.FUSED_V2_DIM == fv.FUSED_V2_DIM
-    assert app_module.FUSED_LANG_DIMS == fv.LANG_DIMS
-    assert app_module.FUSED_GENRE_DIMS == fv.GENRE_DIMS
-    assert app_module.FUSED_COLUMN == db.FUSED_V3_COLUMN == fv.FUSED_COLUMN
-    assert app_module.FUSED_V2_COLUMN == db.FUSED_V2_COLUMN == fv.FUSED_V2_COLUMN
+    assert vectors.FUSED_MODEL_VERSION == fv.FUSED_MODEL_VERSION
+    assert vectors.FUSED_V2_MODEL_VERSION == fv.FUSED_V2_MODEL_VERSION
+    assert vectors.FUSED_MODEL_VERSION != vectors.FUSED_V2_MODEL_VERSION
+    assert vectors.FUSED_DIM == fv.FUSED_DIM
+    assert vectors.FUSED_V2_DIM == fv.FUSED_V2_DIM
+    assert vectors.FUSED_LANG_DIMS == fv.LANG_DIMS
+    assert vectors.FUSED_GENRE_DIMS == fv.GENRE_DIMS
+    assert vectors.FUSED_COLUMN == db.FUSED_V3_COLUMN == fv.FUSED_COLUMN
+    assert vectors.FUSED_V2_COLUMN == db.FUSED_V2_COLUMN == fv.FUSED_V2_COLUMN
     assert db.FUSED_V3_DDL == f"{fv.FUSED_COLUMN} F32_BLOB({fv.FUSED_DIM})"
     assert db.FUSED_V2_DDL == f"{fv.FUSED_V2_COLUMN} F32_BLOB({fv.FUSED_V2_DIM})"
     cols = {r["name"]: r["type"] for r in sql.execute("PRAGMA table_info(track_embeddings)")}
@@ -315,10 +316,10 @@ def test_without_fused_v3_the_dj_ranks_fused_v2(client, library, app_module, db,
     sql.execute(f"UPDATE track_embeddings SET {fv.FUSED_COLUMN} = ? WHERE track_id = ?",
                 (np.ones(fv.FUSED_DIM, dtype=np.float32).tobytes(), L["hi"][0]))
     sql.commit()
-    app_module._fused_v3_state["checked_at"] = 0.0
+    vectors._fused_v3_state["checked_at"] = 0.0
     conn = turso_shaped()
     try:
-        assert app_module._variant_spec("fused", conn) == (fv.FUSED_MODEL_VERSION, fv.FUSED_DIM)
+        assert vectors._variant_spec("fused", conn) == (fv.FUSED_MODEL_VERSION, fv.FUSED_DIM)
     finally:
         conn.close()
 
@@ -376,11 +377,11 @@ def test_before_the_v2_migration_the_dj_ranks_fused_v1_instead_of_failing(
     sql.execute(f"ALTER TABLE track_embeddings ADD COLUMN "
                 f"{fv.FUSED_V2_COLUMN} F32_BLOB({fv.FUSED_V2_DIM})")
     sql.commit()
-    app_module._fused_v2_state["checked_at"] = 0.0
-    app_module._fused_v3_state["checked_at"] = 0.0
+    vectors._fused_v2_state["checked_at"] = 0.0
+    vectors._fused_v3_state["checked_at"] = 0.0
     conn = turso_shaped()
     try:
-        assert app_module._variant_spec("fused", conn) == (fv.FUSED_V2_MODEL_VERSION,
+        assert vectors._variant_spec("fused", conn) == (fv.FUSED_V2_MODEL_VERSION,
                                                            fv.FUSED_V2_DIM)
     finally:
         conn.close()
