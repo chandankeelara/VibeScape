@@ -5,11 +5,13 @@ JOBS and starts the worker from services/ingest_jobs.py); adding one track
 synchronously (/api/ingest/single, through library_ingest._link_track);
 and reading or cancelling a job.
 
-Moved out of app.py unchanged (refactor PR 4, 2026-10-25). The three
-initial job dicts are written out in their routes on purpose: their keys
-sit in different positions, and that order is what /api/ingest/status
-returns. Ingest here is only the online half: rows land pending and the
-offline pipeline analyses them (backend/CLAUDE.md, the root CLAUDE.md).
+Moved out of app.py unchanged (refactor PR 4, 2026-10-25). Each route
+builds its job dict with services.jobs._new_job, placing its own keys
+where /api/ingest/status has always listed them (the three job types put
+theirs in different positions; tests/backend/test_ingest_jobs.py pins
+each dict exactly). Ingest here is only the online half: rows land pending
+and the offline pipeline analyses them (backend/CLAUDE.md, the root
+CLAUDE.md).
 """
 import threading
 import uuid
@@ -29,7 +31,7 @@ from deps import require_user
 import playlist_import as _pli
 from routers import Router
 from track_rows import _row_to_dict, _track_select
-from services.jobs import JOBS, JOBS_LOCK
+from services.jobs import JOBS, JOBS_LOCK, _new_job
 from services.ingest_jobs import (IngestSources, _run_ingest_job, _run_playlist_url_job,
                                   _run_public_playlist_job)
 # _get_app_token is patched by tests: read as spotify_auth._get_app_token.
@@ -105,25 +107,7 @@ def ingest_spotify(req: IngestRequest, sess: dict = Depends(require_user)):
         raise HTTPException(status_code=422, detail="no sources selected")
     job_id = uuid.uuid4().hex
     with JOBS_LOCK:
-        JOBS[job_id] = {
-            "status": "pending",
-            "user_id": sess["user_id"],
-            "current_track": None,
-            "total": 0,
-            "processed": 0,
-            # True while Spotify pages are still arriving. `total` is a
-            # running discovery count until this flips, so the UI should show
-            # "found N so far" rather than a percentage of a moving target.
-            "collecting": True,
-            # Four mutually exclusive buckets (sum == processed) matching
-            # the new two-phase ingest flow. See _process_track docstring.
-            "added_to_library": 0,     # global row already done, just linked
-            "already_in_library": 0,   # user already had this exact link
-            "queued_for_analysis": 0,  # new/pending row, worker will finish it
-            "skipped": 0,              # skip:no_id or exceptions
-            "cancel_requested": False,
-            "error_message": None,
-        }
+        JOBS[job_id] = _new_job(sess["user_id"])
     t = threading.Thread(
         target=_run_ingest_job,
         args=(job_id, req.access_token, req.sources, sess["user_id"]),
@@ -333,29 +317,12 @@ def ingest_spotify_public(req: PublicPlaylistIngestRequest,
 
     job_id = uuid.uuid4().hex
     with JOBS_LOCK:
-        JOBS[job_id] = {
-            "status": "pending",
-            "user_id": sess["user_id"],
-            "current_track": None,
+        JOBS[job_id] = _new_job(sess["user_id"], head={
             "playlist_id": playlist_id,
             "source": "public_playlist",
             "auth_mode": "user_oauth" if use_user_token else "app_token",
             "note": followed_note,
-            "total": 0,
-            "processed": 0,
-            # True while Spotify pages are still arriving. `total` is a
-            # running discovery count until this flips, so the UI should show
-            # "found N so far" rather than a percentage of a moving target.
-            "collecting": True,
-            # Four mutually exclusive buckets (sum == processed) matching
-            # the new two-phase ingest flow. See _process_track docstring.
-            "added_to_library": 0,     # global row already done, just linked
-            "already_in_library": 0,   # user already had this exact link
-            "queued_for_analysis": 0,  # new/pending row, worker will finish it
-            "skipped": 0,              # skip:no_id or exceptions
-            "cancel_requested": False,
-            "error_message": None,
-        }
+        })
     t = threading.Thread(
         target=_run_public_playlist_job,
         args=(job_id, playlist_id, sess["user_id"], user_token, followed_note),
@@ -409,29 +376,18 @@ def ingest_playlist_url(req: PlaylistUrlIngestRequest, sess: dict = Depends(requ
             "message": f"{_PLATFORM_NAMES.get(src.kind, src.kind)} playlists are not supported yet."})
     job_id = uuid.uuid4().hex
     with JOBS_LOCK:
-        JOBS[job_id] = {
-            "status": "pending",
-            "user_id": sess["user_id"],
-            "current_track": None,
+        JOBS[job_id] = _new_job(sess["user_id"], head={
             "source": f"playlist_url:{src.kind}",
             "platform": src.kind,
             "playlist_name": None,
             "note": None,
-            "total": 0,
-            "processed": 0,
-            "collecting": True,
-            "added_to_library": 0,
-            "already_in_library": 0,
-            "queued_for_analysis": 0,
-            "skipped": 0,
+        }, extra_counts={
             # Songs read from the source that matched nothing on Spotify.
             # A separate bucket from `skipped` (which is failures), with the
             # titles so the user can see exactly what did not come across.
             "not_matched": 0,
             "unmatched": [],
-            "cancel_requested": False,
-            "error_message": None,
-        }
+        })
     user_token = (req.access_token or "").strip() or None
     threading.Thread(target=_run_playlist_url_job,
                      args=(job_id, src, sess["user_id"], user_token), daemon=True).start()
