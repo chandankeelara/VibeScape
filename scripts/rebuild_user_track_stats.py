@@ -19,8 +19,8 @@ Dry-run by default, like every other operational script in scripts/:
     python scripts/rebuild_user_track_stats.py --turso --apply # prod, repair
     python scripts/rebuild_user_track_stats.py --user 1 --apply
 
-THE ARITHMETIC BELOW MUST MATCH backend/app.py's _accumulate_stats. That
-function is the spec (it is what runs on the hot path); this is its SQL
+THE ARITHMETIC BELOW MUST MATCH backend/services/telemetry.py's
+_accumulate_stats. That function is the spec (it is what runs on the hot path); this is its SQL
 restatement. If they disagree, running this script will silently "repair"
 correct rows into wrong ones, so change them together.
 
@@ -86,8 +86,8 @@ for _p, _label in (("u", "user"), ("s", "system")):
 # last_played means "last QUALIFIED listen" — a play_end with reason='completed'
 # OR heard time (listened_ms, else position_ms on pre-v2 rows) >=
 # DJ_QUALIFIED_PLAY_MS (default 90000). Must match the
-# backend/app.py:_accumulate_stats _qualified flag exactly; redefined here to
-# avoid importing backend.app from a script.
+# backend/services/telemetry.py:_accumulate_stats _qualified flag exactly;
+# redefined here to avoid importing the backend from a script.
 _QUALIFIED_PLAY_MS = int(os.environ.get("DJ_QUALIFIED_PLAY_MS") or 90000)
 _TIMESTAMPS = [
     ("first_played_at", "MIN(server_ts)"),

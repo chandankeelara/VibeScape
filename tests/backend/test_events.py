@@ -3,6 +3,8 @@ import json
 
 import pytest
 
+from services import telemetry
+
 ENV = {"session_id": "s-1", "tz_offset_min": 330, "vibe": 60, "vibe_source": "user", "dj_mode": True}
 
 
@@ -51,9 +53,9 @@ def test_counts_add_up(client, user):
 
 def test_batch_over_the_cap_rejects_the_overflow_not_the_request(client, user, app_module):
     _, h, (t, *_) = user
-    n = app_module._EVENT_BATCH_CAP + 5
+    n = telemetry._EVENT_BATCH_CAP + 5
     res = send(client, h, [{**ENV, "type": "pause", "track_id": t}] * n)
-    assert res == {"accepted": app_module._EVENT_BATCH_CAP, "rejected": 5}
+    assert res == {"accepted": telemetry._EVENT_BATCH_CAP, "rejected": 5}
 
 
 # ------------------------------------------------------------------- routing

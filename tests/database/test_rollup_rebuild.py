@@ -7,6 +7,8 @@ import random
 
 import pytest
 
+from services import telemetry
+
 rebuild = importlib.import_module("rebuild_user_track_stats")
 
 REASONS = ["completed", "skipped", "replaced", "abandoned", None, "weird-new-reason"]
@@ -45,7 +47,7 @@ def test_inline_rollup_equals_rebuild(app_module, make_user, make_tracks, db, se
     tracks = make_tracks(uid, [None] * 15)
     evs = random_session(rng, tracks[:12])      # 3 tracks never touched
     for i in range(0, len(evs), 50):
-        app_module._record_track_events(uid, evs[i:i + 50], "tester")
+        telemetry._record_track_events(uid, evs[i:i + 50], "tester")
 
     conn = rebuild._connect(False)
     want, have = rebuild._expected(conn, None), rebuild._existing(conn, None)
