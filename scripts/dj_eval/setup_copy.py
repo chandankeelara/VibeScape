@@ -17,7 +17,7 @@ WHAT THE COPY GAINS
                workers nor ten concurrent listener agents share play history
                (user_track_stats, which the recency re-rank reads). Not
                'Guest': the recency re-rank is off for that name
-               (_DJ_RECENCY_SKIP_GUEST in backend/app.py), and the eval must
+               (_DJ_RECENCY_SKIP_GUEST in backend/services/recency.py), and the eval must
                see what a signed-in listener sees.
   user_tracks  every track with ingestion_status='done' and a fused
                embedding, source 'dj_eval'. That is exactly the candidate

@@ -14,7 +14,8 @@ write path in backend/app.py short-circuits on it so that many visitors do
 not get conflated into one half-life; the rebuild must agree, otherwise it
 would silently re-materialise the drift the write path refuses to create.
 
-THE EMA ARITHMETIC BELOW MUST MATCH backend/app.py's _upsert_user_stats.
+THE EMA ARITHMETIC BELOW MUST MATCH backend/services/telemetry.py's
+_upsert_user_stats.
 That function is the spec (it is what runs on the hot path); this is its
 replay-from-events restatement. If they disagree, running this script will
 silently "repair" correct rows into wrong ones -- change them together.
@@ -44,7 +45,7 @@ except Exception:
 _REPO = Path(__file__).resolve().parents[1]
 _PS1 = _REPO / "scripts" / "_load_gcp_secrets.ps1"
 
-# Must agree with backend/app.py's _USER_STATS_* constants.
+# Must agree with backend/services/telemetry.py's _USER_STATS_* constants.
 _ALPHA = 0.1
 _MIN_H = 0.01
 _MAX_H = 720.0
