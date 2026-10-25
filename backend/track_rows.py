@@ -156,7 +156,7 @@ def _search_rows(conn, user_id: int) -> list:
     return out
 
 
-# Shared by the ingest path's _link_track (app.py) and Spotify search's
+# Shared by the ingest path's _link_track (services/library_ingest.py) and Spotify search's
 # in_library flag (routers/spotify.py), so it lives with neither.
 def _isrc_of(track: dict) -> Optional[str]:
     """A Spotify track's ISRC, None when it has none (or an empty one)."""

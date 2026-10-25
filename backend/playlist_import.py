@@ -5,7 +5,7 @@
     choose(item, candidates) -> (spotify_track, score) | (None, score)
 
 Every service is reduced to the same `Item`, then matched to a Spotify
-track, then handed to the normal ingest (`_process_track` in app.py), so a
+track, then handed to the normal ingest (`_process_track` in services/library_ingest.py), so a
 song imported from Apple Music or YouTube lands exactly like one synced
 from Spotify — a metadata row with ingestion_status='pending'.
 

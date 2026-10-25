@@ -9,7 +9,7 @@ Indian/Punjabi/Tamil regional catalog that iTunes' western-biased search
 routinely misses.
 
 Two entry points mirror ingest/itunes_client.py shape so
-backend/app.py:_process_track can call them without branching on source:
+backend/services/library_ingest.py:_process_track can call them without branching on source:
 
     lookup_by_isrc(isrc) -> dict | None
     search_track(title, artist) -> dict | None

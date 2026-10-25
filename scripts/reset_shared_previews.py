@@ -179,7 +179,7 @@ def main() -> int:
                 files += 1
 
     # vibe_score is NOT NULL; 0.0 is what the app's own pending INSERT
-    # writes (backend/app.py _process_track).
+    # writes (backend/services/library_ingest.py _link_track).
     nulls = ", ".join(f"{c} = 0.0" if c == "vibe_score" else f"{c} = NULL"
                       for c in _DERIVED + _PREVIEW + _STAGES)
     ph = ",".join("?" * len(targets))
