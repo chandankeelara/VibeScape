@@ -12,17 +12,16 @@ from typing import Optional
 import bootstrap
 from bootstrap import AUDIO_DIR, log
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, Response
 
 # Through the module, never `from db import get_conn`: db.get_conn is the one
 # seam tests patch (conftest.use_conn), and a copied name would not see it.
 import db
-from deps import require_user  # auth dependency
-from services.dj import SimilarBody, _discover_finish, _similar_dj, _similar_vibe
 from routers import admin as admin_routes
 from routers import auth as auth_routes
+from routers import dj as dj_routes
 from routers import events as events_routes
 from routers import ingest as ingest_routes
 from routers import me as me_routes
@@ -61,6 +60,7 @@ register_routes(app, stream_routes.router)
 register_routes(app, events_routes.router)
 register_routes(app, me_routes.router)
 register_routes(app, ingest_routes.router)
+register_routes(app, dj_routes.router)
 
 
 @app.on_event("startup")
@@ -92,71 +92,6 @@ def _log_lan_bind_info() -> None:
     log.info("VibeScape backend listening on http://0.0.0.0:%s", port)
     if ip:
         log.info("LAN URL (share with phones on same WiFi): http://%s:%s/", ip, port)
-
-
-@app.get("/api/tracks/{track_key}/similar")
-def similar_tracks(
-    track_key: str,
-    limit: int = Query(8, ge=1, le=25),
-    discover: bool = False,
-    sess: dict = Depends(require_user),
-):
-    """
-    Return N tracks from the caller's library most similar to the given
-    track. Similarity = weighted L1 distance across the four ML feature
-    dimensions (vibe_score_ml, energy_pred, danceability_pred,
-    valence_pred), with a small bonus for matching mood. The current
-    track is excluded from results.
-
-    track_key can be a spotify_id (string) or a numeric internal tracks.id.
-    `discover=1` ranks the whole catalogue instead (see SimilarBody).
-    """
-    resp = _similar_vibe(track_key, limit, sess["user_id"],
-                         display_name=sess.get("display_name"), discover=discover)
-    return _discover_finish(resp, sess["user_id"]) if discover else resp
-
-
-@app.post("/api/tracks/{track_key}/similar")
-def similar_tracks_post(
-    track_key: str,
-    body: Optional[SimilarBody] = None,
-    sess: dict = Depends(require_user),
-):
-    """POST variant: supports DJ mode (fused MERT cosine) via JSON body.
-
-    Body (all optional):
-      mode: "dj" | "vibe" (default vibe)
-      positive_ids: [{id, weight}, ...] — id may be internal tracks.id (int)
-        or spotify_id (str). Ints skip resolution; strings batch-resolve.
-      negative_ids: [{id, weight}, ...] — same shape as positive_ids
-      exclude_ids: [id, ...] — mixed list of internal tracks.id ints and/or
-        spotify_id strings. Ints skip resolution.
-      limit: int (1..25, default 8)
-      explain: bool (default false) — attach a per-track `explain` block with
-        the recency penalty breakdown and rank_before / rank_after. Opt-in;
-        off by default so no existing client sees a change.
-      discover: bool (default false) — rank the whole catalogue, not only the
-        caller's library. Each track's `in_library` and `discover` are then
-        real, and `mode_used` ends in `_discover`.
-
-    Each track carries `score` (cosine similarity on the DJ path, absent on
-    the vibe path — unchanged meaning) and, when recency re-ranking is
-    active, `final_score` = score - lambda * P.
-    """
-    if body is None:
-        body = SimilarBody()
-    limit = body.limit if body.limit else 8
-    limit = max(1, min(int(limit), 25))
-    mode = (body.mode or "vibe").lower()
-    discover = bool(body.discover)
-    if mode == "dj":
-        resp = _similar_dj(track_key, body, sess["user_id"],
-                           display_name=sess.get("display_name"))
-    else:
-        resp = _similar_vibe(track_key, limit, sess["user_id"],
-                             display_name=sess.get("display_name"),
-                             explain=bool(body.explain), discover=discover)
-    return _discover_finish(resp, sess["user_id"]) if discover else resp
 
 
 NEXT_DIR = Path(__file__).resolve().parent.parent / "frontend-next" / "dist"
