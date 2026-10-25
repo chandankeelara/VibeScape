@@ -2,9 +2,10 @@
 
 Each module defines `router = Router()` and decorates its endpoints with
 `@router.get(...)` exactly as they were decorated with `@app.get(...)`.
-app.py registers them with `register(app, router)`, before the routes it
-still defines itself, and the SPA catch-all last. Routers import their auth
-dependencies from deps.py and never import app.py.
+app.py registers them with `register(app, router)`, in order, with
+routers/spa.py (the SPA catch-all) last; since refactor PR 5 app.py defines
+no route of its own. Routers import their auth dependencies from deps.py
+and never import app.py.
 
 Why not app.include_router: in FastAPI 0.141.1 (the version installed here,
 read in fastapi/routing.py on 2026-10-25) include_router does not copy the

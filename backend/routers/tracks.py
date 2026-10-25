@@ -2,8 +2,8 @@
 search, a random pick in a vibe band, one track's stored features, its
 lyrics (cached, else LRCLIB), and the Spotify id of an Apple-keyed track.
 
-The DJ's /api/tracks/{key}/similar routes are not here; they stay in app.py
-until the DJ moves."""
+The DJ's /api/tracks/{key}/similar routes are not here: they are
+routers/dj.py."""
 import json
 import sqlite3
 from typing import Optional

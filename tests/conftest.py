@@ -177,8 +177,9 @@ def db(tmp_path, monkeypatch, app_module):
     path = tmp_path / "test.db"
     monkeypatch.setenv("VIBESCAPE_DB_PATH", str(path))
     import track_rows
+    from services import dj as dj_service
     from services import vectors
-    app_module._dj_mean_cache.clear()
+    dj_service._dj_mean_cache.clear()
     track_rows._search_rows_cache.clear()
     vectors._fused_v2_state.update(ready=None, checked_at=0.0, warned=False)
     vectors._fused_v3_state.update(ready=None, checked_at=0.0, warned=False)

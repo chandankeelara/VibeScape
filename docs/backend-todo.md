@@ -34,7 +34,7 @@ Audit date: 2026-10-02. No automated tests exist anywhere in the repo
 ## Refactor in progress — splitting `backend/app.py` (started 2026-10-25)
 
 `backend/app.py` was ~6,000 lines and 49 routes (5,954 before PR 2, 4,508
-after PR 2, 2,289 after PR 3, 1,158 after PR 4). It is being moved, without changing any API
+after PR 2, 2,289 after PR 3, 1,158 after PR 4, 98 after PR 5). It is being moved, without changing any API
 behaviour, into `routers/`, `services/`, `deps.py` (auth dependencies),
 `track_rows.py` (the track SELECT and dict helpers) and `bootstrap.py`, over
 six PRs:
@@ -99,7 +99,7 @@ six PRs:
    SPA last); 1,468 probe paths under six methods resolve to the same
    endpoint as before, and the OpenAPI document is equal except for the
    order its paths are listed in.
-4. **Ingest** (branch `refactor/pr4-ingest`). Module map:
+4. **Ingest** (PR #37, merged). Module map:
    - `services/library_ingest.py`: `_process_track`, `_link_track` and
      the `_TRACK_MATCH` / `_TRACK_PICK` fragments: the online half of the
      two-phase ingest, also the synchronous path of `/api/ingest/single`.
@@ -118,9 +118,33 @@ six PRs:
    now precede the two `/similar` routes still in `app.py` instead of
    following them. No path overlaps: 2,808 probed method and path pairs
    resolve to the same endpoint, and the OpenAPI document is identical,
-   path order included. Still in `app.py`: the DJ and both `/similar`
-   routes (PR 5), startup and LAN logging, and the SPA routes.
-5. The DJ into routers and services.
+   path order included. Left in `app.py` by PR 4: the DJ and both
+   `/similar` routes, startup and LAN logging, and the SPA routes.
+5. **DJ and SPA** (branch `refactor/pr5-dj`). Module map:
+   - `services/dj.py`: everything behind `/api/tracks/{key}/similar`, in
+     its old order: the request caps, `SimilarBody` (also `_similar_dj`'s
+     parameter type), `_similar_vibe`, `_parse_id_weight_list`,
+     `_resolve_ids_to_track_ids`, the library-mean cache
+     (`_dj_mean_cache`, `_dj_count_embedded`, `_dj_library_mean`),
+     `_dj_events_query`, `_dj_song_keys`, `_dj_drop_repeats`,
+     `_similar_dj`, `_dj_tag_library`, `_discover_finish`. `_similar_dj`
+     moved byte for byte, its Turso `except Exception` fallback to numpy
+     (13.1) included.
+   - `routers/dj.py`: GET and POST `/api/tracks/{track_key}/similar`,
+     registered right after the ingest router, which is where they sat.
+   - `routers/spa.py`: the `/next` redirects, the cache constants,
+     `_not_modified`, `_static_file` and the catch-all, registered last.
+     `NEXT_DIR` climbs one more parent (the file is one directory deeper);
+     it still resolves to `<repo>/frontend-next/dist`, and in the image to
+     `/app/frontend-next/dist`, where the Dockerfile copies the build.
+   - `app.py` is assembly only: the app, CORS, the `register` calls in
+     order, and the startup hook with `_lan_ip` / `_log_lan_bind_info`.
+     It defines no route.
+   Registration order is unchanged: 2,808 probed method and path pairs
+   resolve to the same endpoint as at `cbb75b7`, `app.routes` lists its
+   paths in the same order, and the OpenAPI document is identical. A real
+   `uvicorn app:app` on a scratch SQLite file answered `/api/health` 200,
+   both `/similar` routes 401 without a token and `/next/x` 308.
 6. **Cleanup PR**: delete the plain re-imports `app.py` keeps only for
    tests; decide the three initial ingest job dicts (a shared
    `jobs.create()` was not done in PR 2: the dicts place their extra keys
@@ -138,7 +162,21 @@ six PRs:
    callers: the YouTube GET never searches, so `scripts/prewarm_youtube.py`'s
    "what the endpoint would have produced" is not true of any endpoint), and
    app.py's unused `glob`, `shutil`, `tempfile` and top-level
-   `time as _time` imports.
+   `time as _time` imports. Comments that still point at `app.py` for
+   code that has left it (found in PR 5, not edited there): `dj_replay.py`
+   `replay`'s docstring (`_fused_v2_ready` is `services/vectors.py`),
+   `playlist_import.fetch`'s docstring (the Web API attempt is
+   `services/ingest_jobs.py`), `scripts/dj_eval/server.py` (the `.env`
+   load is `bootstrap.py`), `README.md` (`app.py::_similar_dj`, the tree
+   entry for `app.py`), and three frontend comments with stale
+   `app.py:<line>` references (`frontend-next/src/lib/vibe.js`,
+   `lib/api.js`, `features/queue/dj.js`). Older ones of the same kind:
+`db.py` (the get_conn shim's comment), `db_client.py`'s docstring and its
+BLOB-read note, `lyrics.py` (the `track_lyrics` cache and
+`get_track_lyrics` are `routers/tracks.py`), `playlist_import.py`'s
+module docstring, and `services/telemetry.py`'s "POST /api/events (still
+in app.py)", which is `routers/events.py`. `docs/dj-recency-plan.md` cites
+   `app.py` line numbers too; it is a dated design record, so leave it.
 
 Rules for every move: `test_route_table.py` stays green unedited unless a
 route deliberately changes (it should not); patch connections with
@@ -153,9 +191,10 @@ of patching nothing. Patched today: `bootstrap.app_config`,
 `bootstrap.PROJECT_ROOT`, `services.recency._DJ_RECENCY_WEIGHT`,
 `deps.ADMIN_USER_ID`, `services.spotify_auth._get_app_token` and
 `_APP_TOKEN_STATE`, `routers.youtube._yt_manual_search_sync` and
-`_YT_SEARCH_TIMEOUT_S`, `services.library_ingest._process_track`, and on
-`app.py` `NEXT_DIR`; moving it means retargeting its patch in the same
-commit. `spotify_library` functions are patched on that module itself,
+`_YT_SEARCH_TIMEOUT_S`, `services.library_ingest._process_track` and `routers.spa.NEXT_DIR`;
+moving one means retargeting its patch in the same commit. Since PR 5
+nothing is patched on `app.py`, and tests read only `app_module.app`.
+The DJ's mean cache is cleared as `services.dj._dj_mean_cache`. `spotify_library` functions are patched on that module itself,
 never through another module's `splib` alias. FastAPI resolves `Depends(fn)` by identity: a
 `dependency_overrides` entry must key on the function in `deps.py`.
 
@@ -1659,7 +1698,7 @@ DJ's own query, re-ranks and pool, and tags each track `in_library` /
 
 ### 13.1 The Turso SQL has only run on SQLite with stand-in vector functions
 
-`backend/app.py:1347` — the discovery query (no `user_tracks` join, the stats
+`backend/services/dj.py` `_similar_dj` — the discovery query (no `user_tracks` join, the stats
 join bound by a parameter) is tested through the Turso-shaped harness
 (`tests/backend/test_dj_discover.py`), which proves the SQL parses and binds
 on SQLite, not on libSQL. If libSQL rejects it, the except at the Turso call
@@ -1670,7 +1709,7 @@ discovery request, `mode_used` must end `_turso_discover`, and a WARNING
 
 ### 13.2 The query is centred on the library mean, not measured with discovery on
 
-`backend/app.py:2004` — mu is the caller's library mean, as with discovery
+`backend/services/dj.py` `_dj_events_query` — mu is the caller's library mean, as with discovery
 off. Candidates from outside the library can sit far from that mean, and
 nothing has measured whether language@10 holds. **Suspected.** Check:
 `replay_bench.py` with the pool widened to the catalogue; the pre-approved

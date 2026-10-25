@@ -10,6 +10,7 @@ import sqlite3
 
 import pytest
 
+from services import dj as dj_service
 from services import recency as recency_service  # `recency` is a test parameter here
 
 ENV = {"session_id": "s-disc", "tz_offset_min": 0, "vibe": 50, "vibe_source": "user", "dj_mode": True}
@@ -50,7 +51,7 @@ def _turso_shaped(use_conn, monkeypatch, app_module, db):
         return c
     use_conn(conn)
     monkeypatch.setenv("DB_BACKEND", "turso")
-    app_module._dj_mean_cache.clear()
+    dj_service._dj_mean_cache.clear()
 
 
 def test_off_stays_in_the_library_and_on_reaches_the_catalogue(client, two):

@@ -1,5 +1,5 @@
 """The DJ never serves another release of a song the session already had
-(backend/same_song.py, backend/app.py _dj_drop_repeats), and a skip of
+(backend/same_song.py, backend/services/dj.py _dj_drop_repeats), and a skip of
 such a repeat is not a taste signal (backend/dj_replay.py song_keys)."""
 import sqlite3
 
@@ -8,6 +8,7 @@ import pytest
 
 import dj_replay as R
 import same_song as ss
+from services import dj as dj_service
 from services import recency as recency_service  # `recency` is a test parameter here
 
 from ingest_pipeline.fused_vector import FUSED_DIM  # noqa: E402
@@ -138,7 +139,7 @@ def test_a_dubbed_version_is_not_filtered(app_module):
     rows = [{"title": 'Tabaahi - From "Toxic"', "artist": "Ravi Basrur", "language": "hi"},
             {"title": "Other", "artist": "Y", "language": "kn"}]
     session = {ss.song_key('Tabaahi - From "Toxic - Kannada"', "Ravi Basrur", "kn")}
-    kept = app_module._dj_drop_repeats(
+    kept = dj_service._dj_drop_repeats(
         rows, lambda r: ss.song_key(r["title"], r["artist"], r["language"]), session)
     assert kept == rows
 
@@ -182,7 +183,7 @@ def test_both_ranking_paths_filter_repeats_alike(client, releases, app_module, d
         return conn
     use_conn(turso_shaped)
     monkeypatch.setenv("DB_BACKEND", "turso")
-    app_module._dj_mean_cache.clear()
+    dj_service._dj_mean_cache.clear()
     turso = _post(client, h, played[-1], body)
     assert turso == local
     assert not set(turso) & {t for ids in songs[:6] for t in ids}
