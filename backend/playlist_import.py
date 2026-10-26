@@ -14,7 +14,8 @@ How each service is read, and why (all checked live 2026-10-10):
   spotify  The Web API refuses playlist contents to this app's
            client-credentials token (403 on /items) and hides Spotify's own
            editorial playlists entirely (404). With the user's Spotify
-           token app.py uses the API (full playlist). Without one, the
+           token the job uses the API (full playlist;
+           services/ingest_jobs.py _run_playlist_url_job). Without one, the
            public EMBED page (open.spotify.com/embed/playlist/<id>) carries
            the track list in __NEXT_DATA__: exact track ids, titles,
            artists and durations — capped at 100 songs. The ids are used
@@ -571,8 +572,8 @@ def fetch_amazon(source: Source, post) -> Playlist:
 
 
 def fetch(source: Source, get: HttpGet, ytdlp_extract=None, post=None) -> Playlist:
-    """Read the playlist. Spotify here means the public embed; app.py tries
-    the Web API first when the user is signed in with Spotify."""
+    """Read the playlist. Spotify here means the public embed;
+    services/ingest_jobs.py's _run_playlist_url_job tries the Web API first when the user is signed in with Spotify."""
     if source.kind not in SUPPORTED:
         raise ImportError_(f"{source.kind}_not_supported",
                            f"{source.kind.title()} playlists are not supported yet.")

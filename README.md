@@ -294,9 +294,9 @@ The deeper problem is that the two halves have **incompatible failure models**. 
 
 Splitting them lets each do what it is good at. The request path writes one row and returns. The pipeline owns durability: per-stage status columns record exactly how far each track got, so a crash resumes instead of restarting, and `ingestion_status` reports the aggregate.
 
-The synchronous worker (`_ingest_track_row`) is gone. `backend/app.py` no longer imports `ml_backend`, `features` or `deezer_client` at all — the API process carries no ML dependencies.
+The synchronous worker (`_ingest_track_row`) is gone. The backend no longer imports `ml_backend`, `features` or `deezer_client` at all — the API process carries no ML dependencies.
 
-### Phase 1 — online, synchronous (`backend/app.py`)
+### Phase 1 — online, synchronous (`backend/services/library_ingest.py`)
 
 `_process_track()` writes a metadata-only `tracks` row for anything genuinely new, with `ingestion_status='pending'`. The per-stage columns are left NULL — the pipeline arms them as it goes (see below). Three short-circuit outcomes:
 
@@ -505,7 +505,7 @@ Queued weight > completed weight because a queue-add is an *explicit, forward-lo
 
 **No age decay.** Every event in the 10-slot buffer counts at full base weight. The buffer *is* the recency window. Decay was tried and dropped: at buffer size 10 it just penalized the median-age event by ~40% for no useful discrimination.
 
-**Query vector construction** (`backend/app.py::_similar_dj`):
+**Query vector construction** (`backend/services/dj.py::_similar_dj`):
 
 ```
 pos_vec   = Σ (w_i · L2_normalize(fused_i))      for positive events
@@ -658,7 +658,12 @@ modal deploy modal_app.py      # publishes vibescape-ml app
 ```
 VibeScape/
 ├── backend/
-│   ├── app.py                # FastAPI: OAuth, ingest hot path, playback, library API, /similar
+│   ├── app.py                # FastAPI assembly: CORS, routers registered in order, startup
+│   ├── bootstrap.py          # .env, sys.path, logger, config; imported first
+│   ├── deps.py               # auth dependencies (require_user / _admin / _stream)
+│   ├── track_rows.py         # track columns, SELECT list, row -> dict
+│   ├── routers/              # one module per API area; spa.py (catch-all) last
+│   ├── services/             # logic behind the routes: ingest jobs, DJ, vectors, recency, telemetry
 │   ├── db.py                 # DB bootstrap + connection helpers
 │   └── db_client.py          # sqlite3-compatible shim over Turso/libSQL HTTP
 │

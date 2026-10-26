@@ -1083,7 +1083,7 @@ def _bootstrap_and_migrate(conn: sqlite3.Connection) -> None:
 # sqlite3 and a libsql-client-backed adapter based on the DB_BACKEND env
 # var. The returned object still exposes the same .execute() / .commit()
 # / .rollback() / .close() surface + row_factory=sqlite3.Row semantics,
-# so callers in backend/app.py continue to work unchanged.
+# so callers (deps.py, routers/, services/) work the same on either backend.
 def get_conn():
     ensure_db()
     return db_client.create_connection()

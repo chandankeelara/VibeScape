@@ -1,7 +1,8 @@
 """Lyrics from LRCLIB (https://lrclib.net) for GET /api/tracks/{key}/lyrics.
 
-No DB here: app.py owns the `track_lyrics` cache and calls `lookup()` on a
-miss, `response()` to shape what it returns and `is_fresh()` to decide.
+No DB here: routers/tracks.py's get_track_lyrics owns the `track_lyrics`
+cache and calls `lookup()` on a miss, `response()` to shape what it returns
+and `is_fresh()` to decide.
 
 Which LRCLIB entry. A song usually has several, at different durations (a
 radio edit, the album cut, a fan upload), and synced timestamps only line up
@@ -357,7 +358,7 @@ def is_fresh(row, now: datetime | None = None) -> bool:
 
 
 def response(row, track_duration_ms) -> dict:
-    """The endpoint's body (contract in app.py's get_track_lyrics)."""
+    """The endpoint's body (contract in routers/tracks.py's get_track_lyrics)."""
     status = row["status"]
     lines = parse_lrc(row["synced_lrc"] or "") if status == "synced" else []
     plain = plain_from_lines(lines) if lines else (row["plain"] or None)

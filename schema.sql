@@ -142,8 +142,8 @@ CREATE INDEX IF NOT EXISTS idx_tracks_activation_rel ON tracks(activation_relati
 CREATE INDEX IF NOT EXISTS idx_tracks_language       ON tracks(language);
 CREATE INDEX IF NOT EXISTS idx_tracks_ingestion_status ON tracks(ingestion_status);
 -- Not unique: every release of a recording shares its ISRC. _link_track in
--- backend/app.py matches on spotify_id OR isrc and needs both indexed to
--- avoid a scan.
+-- backend/services/library_ingest.py matches on spotify_id OR isrc and needs
+-- both indexed to avoid a scan.
 CREATE INDEX IF NOT EXISTS idx_tracks_isrc ON tracks(isrc);
 
 CREATE TABLE IF NOT EXISTS user_tracks (
@@ -180,7 +180,7 @@ CREATE INDEX IF NOT EXISTS idx_user_tracks_track ON user_tracks(track_id);
 --                         while fused_v3 is absent or empty.
 -- fused_v3_embedding: 865-D  fused_v3: fused_v2's blocks plus a 24-slot
 --                         genre block. What DJ mode ranks by once it holds
---                         vectors (backend/app.py _fused_v3_ready).
+--                         vectors (backend/services/vectors.py _fused_v3_ready).
 --                         Existing databases gain both columns from db.py
 --                         (SQLite) or scripts/refuse_vectors.py (Turso),
 --                         not from this file.

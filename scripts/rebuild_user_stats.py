@@ -10,7 +10,7 @@ script is what makes that an annoyance rather than data loss: it recomputes
 every row from the events alone.
 
 The Guest row (users.display_name='Guest') is deliberately skipped. The
-write path in backend/app.py short-circuits on it so that many visitors do
+write path (services/telemetry.py, _record_track_events) short-circuits on it so that many visitors do
 not get conflated into one half-life; the rebuild must agree, otherwise it
 would silently re-materialise the drift the write path refuses to create.
 

@@ -191,7 +191,7 @@ def replay(events: list[dict], vecs: dict, mu: np.ndarray,
     the skip streak but contribute no direction. neg_weight / m_step / m_max
     / avoid_perp / avoid_cap default to the module constants; the app passes
     the pre-fused_v2 values when it has to rank fused_v1 vectors
-    (backend/app.py _fused_v2_ready). avoid_cap=None means no cap.
+    (services/vectors.py _fused_v2_ready, services/dj.py _similar_dj). avoid_cap=None means no cap.
 
     song_keys {track_id: same_song.song_key or None}: a skip of a track that
     is another release of a song an EARLIER event already had (album, then
