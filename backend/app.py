@@ -1,7 +1,7 @@
 """The FastAPI app, assembled: CORS, every router registered in order with
 routers.register (the SPA router last), and the startup hook. No route is
-defined here; each lives in routers/ (docs/backend-todo.md, "Refactor in
-progress")."""
+defined here; each lives in routers/ (docs/backend-todo.md, "Backend
+module map")."""
 import os
 import socket
 from typing import Optional

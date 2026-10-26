@@ -31,175 +31,76 @@ Audit date: 2026-10-02. No automated tests exist anywhere in the repo
 
 ---
 
-## Refactor in progress — splitting `backend/app.py` (started 2026-10-25)
+## Backend module map — the `backend/app.py` split ("Refactor in progress", closed 2026-10-25)
 
-`backend/app.py` was ~6,000 lines and 49 routes (5,954 before PR 2, 4,508
-after PR 2, 2,289 after PR 3, 1,158 after PR 4, 98 after PR 5). It is being moved, without changing any API
-behaviour, into `routers/`, `services/`, `deps.py` (auth dependencies),
-`track_rows.py` (the track SELECT and dict helpers) and `bootstrap.py`, over
-six PRs:
+`backend/app.py` was ~6,000 lines with all 49 routes. Six PRs (#34 to #38
+and the cleanup PR) moved it, with no API change, into the modules below;
+`app.py` is now ~90 lines of assembly. `tests/backend/test_route_table.py`
+pins every (methods, path) and its auth dependency. After each move every
+probed method and path (2,808 pairs at the end) resolved to the same
+endpoint, and the OpenAPI document was equal; PR 3 changed only the order
+it lists paths in. `file:line` references to `backend/app.py` in the
+entries below predate the split; search for the name.
 
-1. **Safety net** (PR #34, merged). No code moves.
-   `tests/backend/test_route_table.py` pins every (methods, path), its auth
-   dependency and the catch-all's place; characterisation tests cover the
-   routes nothing tested (auth, admin, meta, streams, YouTube GET/search,
-   library sync and public-playlist jobs, job cancel); `db.get_conn` becomes
-   the one connection seam (`app.py` calls `db.get_conn()` and keeps no
-   alias; tests patch it with conftest's `use_conn`).
-2. **Leaf modules** (PR #35, merged). Code with no route of its own leaves
-   `app.py`, unchanged, one move per commit. Module map (all under
-   `backend/`, which is the import root):
-   - `bootstrap.py`: `.env` load, `import db`, then the repo root and
-     `ingest/` on `sys.path` (that order: `ingest/db.py` would shadow
-     `backend/db.py`), the `vibescape` logger, `PROJECT_ROOT`, `AUDIO_DIR`,
-     `app_config`, `spotify_creds()`. `app.py` imports it first.
-   - `track_rows.py`: `TRACK_COLUMNS`, the genre_scores readiness check,
-     `_track_select`, `MOODS`, `_row_to_dict`, `_search_rows` and its cache,
-     and (since PR 3) `_isrc_of`, shared by Spotify search and `_link_track`.
-   - `services/vectors.py`: MERT and `FUSED_*` constants, column readiness
-     (`_fused_v2_ready`, `_fused_v3_ready`), `_variant_spec`,
-     `_resolve_anchor`, the embedding loaders, `_l2_normalize`, `_is_turso`.
-   - `services/recency.py`: the `DJ_*` env knobs, `_UTS_*` SQL, the penalty,
-     re-ranker and the two stats reads.
-   - `services/telemetry.py`: event normalisation, the stats rollups,
-     `_record_track_events`.
-   - `services/jobs.py`: `JOBS`, `JOBS_LOCK`, `_update_job`, `_bump`,
-     `_is_cancelled`.
-   `services/` is a package, not more flat modules: nothing on `sys.path` is
-   called `services`, the Dockerfile copies `backend/` whole, and both ways
-   the app starts (`uvicorn app:app` from `backend/`, tests with `backend/`
-   on the path) resolve it.
-3. **Deps and routers** (PR #36, merged). Module map:
-   - `deps.py`: `require_user`, `require_admin`, `require_user_stream`,
-     `ADMIN_USER_ID`, `_issue_session`, `_lookup_session`, `_extract_bearer`.
-     Imports `bootstrap` first, since `ADMIN_USER_ID` is read from the
-     environment at import.
-   - `services/spotify_auth.py`: the OAuth code exchange and `/v1/me` read
-     behind Spotify login, and the cached client-credentials token
-     (`_get_app_token`, `_APP_TOKEN_STATE`) the ingest jobs use.
-   - `routers/`: `auth` (sign-up, login, logout, me, Spotify OAuth, guest,
-     spotify-link, `/api/spotify/refresh`, `/callback`), `meta` (health,
-     moods, demo moods, spotify/config, client-config), `tracks` (list,
-     search, random, features, lyrics, `/api/track/{apple_id}/spotify`),
-     `spotify` (library manifest, search, status), `stream`, `youtube`,
-     `events`, `me` (stats, the heart), `admin` (the four
-     `/api/admin/*` routes and `/api/recompute-scores`).
-   Still in `app.py`: the ingest routes, jobs and `_process_track` /
-   `_link_track` (PR 4), the DJ and both `/similar` routes (PR 5), and the
-   SPA routes, registered last.
-   **Routers are not added with `app.include_router`.** In FastAPI 0.141.1
-   (installed here) `include_router` appends one opaque `_IncludedRouter`
-   to `app.routes` instead of copying the routes, which breaks
-   `test_route_table.py`, and copying the router's own `APIRoute` objects
-   would bypass `app.dependency_overrides`. `routers.Router` records each
-   `add_api_route` call and `routers.register(app, router)` replays it on
-   the app, the path `@app.get` itself takes; `backend/routers/__init__.py`
-   has the detail, `tests/backend/test_routers_register.py` pins it. The
-   routes' registration order changed (routers first, then `app.py`'s own,
-   SPA last); 1,468 probe paths under six methods resolve to the same
-   endpoint as before, and the OpenAPI document is equal except for the
-   order its paths are listed in.
-4. **Ingest** (PR #37, merged). Module map:
-   - `services/library_ingest.py`: `_process_track`, `_link_track` and
-     the `_TRACK_MATCH` / `_TRACK_PICK` fragments: the online half of the
-     two-phase ingest, also the synchronous path of `/api/ingest/single`.
-   - `services/ingest_jobs.py`: the three job workers
-     (`_run_ingest_job`, `_run_public_playlist_job`,
-     `_run_playlist_url_job`) with `_iter_tracks`, `_playable_first`,
-     `_catalog_match`, `_UNMATCHED_REPORT_CAP` and `IngestSources` (the
-     sync worker's parameter type). A module apart from library_ingest
-     because that one has no thread, paging or job state.
-     `services/jobs.py` stays the registry.
-   - `routers/ingest.py`: the seven `/api/ingest/*` routes with their
-     request bodies; the clear and cancel logic stays in its routes (each
-     is the route's body), and the three initial job dicts stay written
-     out per route.
-   The ingest router is registered after the other routers, so its routes
-   now precede the two `/similar` routes still in `app.py` instead of
-   following them. No path overlaps: 2,808 probed method and path pairs
-   resolve to the same endpoint, and the OpenAPI document is identical,
-   path order included. Left in `app.py` by PR 4: the DJ and both
-   `/similar` routes, startup and LAN logging, and the SPA routes.
-5. **DJ and SPA** (branch `refactor/pr5-dj`). Module map:
-   - `services/dj.py`: everything behind `/api/tracks/{key}/similar`, in
-     its old order: the request caps, `SimilarBody` (also `_similar_dj`'s
-     parameter type), `_similar_vibe`, `_parse_id_weight_list`,
-     `_resolve_ids_to_track_ids`, the library-mean cache
-     (`_dj_mean_cache`, `_dj_count_embedded`, `_dj_library_mean`),
-     `_dj_events_query`, `_dj_song_keys`, `_dj_drop_repeats`,
-     `_similar_dj`, `_dj_tag_library`, `_discover_finish`. `_similar_dj`
-     moved byte for byte, its Turso `except Exception` fallback to numpy
-     (13.1) included.
-   - `routers/dj.py`: GET and POST `/api/tracks/{track_key}/similar`,
-     registered right after the ingest router, which is where they sat.
-   - `routers/spa.py`: the `/next` redirects, the cache constants,
-     `_not_modified`, `_static_file` and the catch-all, registered last.
-     `NEXT_DIR` climbs one more parent (the file is one directory deeper);
-     it still resolves to `<repo>/frontend-next/dist`, and in the image to
-     `/app/frontend-next/dist`, where the Dockerfile copies the build.
-   - `app.py` is assembly only: the app, CORS, the `register` calls in
-     order, and the startup hook with `_lan_ip` / `_log_lan_bind_info`.
-     It defines no route.
-   Registration order is unchanged: 2,808 probed method and path pairs
-   resolve to the same endpoint as at `cbb75b7`, `app.routes` lists its
-   paths in the same order, and the OpenAPI document is identical. A real
-   `uvicorn app:app` on a scratch SQLite file answered `/api/health` 200,
-   both `/similar` routes 401 without a token and `/next/x` 308.
-6. **Cleanup PR**: delete the plain re-imports `app.py` keeps only for
-   tests; decide the three initial ingest job dicts (a shared
-   `jobs.create()` was not done in PR 2: the dicts place their extra keys
-   in different positions, so a shared base would reorder the
-   `/api/ingest/status` JSON); merge the duplicated session lookup in
-   `require_user` / `require_user_stream`. Dead code found by the PR 3
-   and PR 4 sweeps, moved or left as it was rather than deleted inside a move:
-   `_bearer_token` (now routers/ingest.py) and `_itunes_lookup_by_isrc`
-   (now services/library_ingest.py), no callers; `_collect_tracks` (now
-   services/ingest_jobs.py, 4.5); app.py's `feat = None`, which nothing
-   reads (its comment names an ingest hot path that is offline now);
-   `ingest/deezer_client.py`'s docstring, which says `_process_track` calls
-   its lookups (it calls no lookup at all);
-   `_yt_search_sync` / `_yt_search_with_timeout` (routers/youtube.py, no
-   callers: the YouTube GET never searches, so `scripts/prewarm_youtube.py`'s
-   "what the endpoint would have produced" is not true of any endpoint), and
-   app.py's unused `glob`, `shutil`, `tempfile` and top-level
-   `time as _time` imports. Comments that still point at `app.py` for
-   code that has left it (found in PR 5, not edited there): `dj_replay.py`
-   `replay`'s docstring (`_fused_v2_ready` is `services/vectors.py`),
-   `playlist_import.fetch`'s docstring (the Web API attempt is
-   `services/ingest_jobs.py`), `scripts/dj_eval/server.py` (the `.env`
-   load is `bootstrap.py`), `README.md` (`app.py::_similar_dj`, the tree
-   entry for `app.py`), and three frontend comments with stale
-   `app.py:<line>` references (`frontend-next/src/lib/vibe.js`,
-   `lib/api.js`, `features/queue/dj.js`). Older ones of the same kind:
-`db.py` (the get_conn shim's comment), `db_client.py`'s docstring and its
-BLOB-read note, `lyrics.py` (the `track_lyrics` cache and
-`get_track_lyrics` are `routers/tracks.py`), `playlist_import.py`'s
-module docstring, and `services/telemetry.py`'s "POST /api/events (still
-in app.py)", which is `routers/events.py`. `docs/dj-recency-plan.md` cites
-   `app.py` line numbers too; it is a dated design record, so leave it.
+**What lives where** (all under `backend/`, the import root: uvicorn runs
+`app:app` from it, tests put it first on `sys.path`):
 
-Rules for every move: `test_route_table.py` stays green unedited unless a
-route deliberately changes (it should not); patch connections with
-`use_conn`, never a module's own `get_conn`; after removing or renaming any
-name, diff defined-vs-called names with `ast`, as `1be1c59` taught. The
-characterisation tests pin odd current behaviour on purpose (each is marked
-ODD in its docstring and has an entry below); fixing one is its own change.
-**A name a test patches is read as `module.name` at call time, in the module
-that owns it**, never copied with `from module import name`, and `app.py`
-keeps no alias of it, so a stale `setattr(app_module, ...)` raises instead
-of patching nothing. Patched today: `bootstrap.app_config`,
-`bootstrap.PROJECT_ROOT`, `services.recency._DJ_RECENCY_WEIGHT`,
-`deps.ADMIN_USER_ID`, `services.spotify_auth._get_app_token` and
-`_APP_TOKEN_STATE`, `routers.youtube._yt_manual_search_sync` and
-`_YT_SEARCH_TIMEOUT_S`, `services.library_ingest._process_track` and `routers.spa.NEXT_DIR`;
-moving one means retargeting its patch in the same commit. Since PR 5
-nothing is patched on `app.py`, and tests read only `app_module.app`.
-The DJ's mean cache is cleared as `services.dj._dj_mean_cache`. `spotify_library` functions are patched on that module itself,
-never through another module's `splib` alias. FastAPI resolves `Depends(fn)` by identity: a
-`dependency_overrides` entry must key on the function in `deps.py`.
+- `app.py`: the FastAPI app, CORS, `register()` for each router in order,
+  the startup hook (`ensure_db`, audio dir, LAN logging). No route.
+- `bootstrap.py`: `.env`, `import db`, then the repo root and `ingest/` on
+  `sys.path` (that order: `ingest/db.py` would shadow `backend/db.py`,
+  4.4), the `vibescape` logger, `PROJECT_ROOT`, `AUDIO_DIR`, `app_config`,
+  `spotify_creds()`. Every module that needs `ingest/` imports it first.
+- `deps.py`: `require_user`, `require_admin`, `require_user_stream` (one
+  shared body, `_require_session`), `ADMIN_USER_ID`, sessions.
+- `track_rows.py`: `TRACK_COLUMNS`, `_track_select`, `_row_to_dict`, the
+  library-search rows and cache, `_isrc_of`, `MOODS`.
+- `column_ready.py`: the cache behind the optional-column checks
+  (`genre_scores`, fused_v2, fused_v3).
+- `routers/`, in registration order: `auth`, `meta`, `tracks`, `spotify`,
+  `admin`, `youtube`, `stream`, `events`, `me`, `ingest`, `dj`, `spa` (the
+  catch-all, last).
+- `services/`: `library_ingest` (the online half of the two-phase ingest:
+  `_process_track`, `_link_track`), `ingest_jobs` (the three job threads),
+  `jobs` (the `JOBS` registry and `_new_job`), `spotify_auth` (OAuth
+  exchange, app token), `dj` (everything behind `/similar`), `vectors`
+  (embedding variants and loaders), `recency`, `telemetry`.
+- Flat modules from before the split, with no FastAPI import: `db.py`,
+  `db_client.py`, `dj_replay.py`, `same_song.py`, `library_search.py`,
+  `lyrics.py`, `playlist_import.py`, `track_genres.py`.
 
-`file:line` references to `backend/app.py` in the entries below predate the
-split; search for the name.
+**The seam rule.** Imports go one way: `app.py` → `routers/` →
+`services/`, `deps.py` and the flat modules. No router imports `app` or
+another router, and nothing below the routers imports them or `app`
+(`tests/backend/test_import_layers.py`, function-local imports included).
+A name a test patches is read as `module.name` at call time in the module
+that owns it, never copied with `from module import name`, and `app.py`
+keeps no alias, so a stale patch raises instead of patching nothing.
+Patched today: `bootstrap.app_config` and `PROJECT_ROOT`,
+`services.recency._DJ_RECENCY_WEIGHT`, `deps.ADMIN_USER_ID`,
+`services.spotify_auth._get_app_token` and `_APP_TOKEN_STATE`,
+`routers.youtube._yt_manual_search_sync` and `_YT_SEARCH_TIMEOUT_S`,
+`services.library_ingest._process_track`, `routers.spa.NEXT_DIR` and
+`routers.ingest.threading`; `spotify_library` functions on that module,
+never through a `splib` alias; connections only with conftest's
+`use_conn` (`db.get_conn` is the one connection seam). FastAPI resolves
+`Depends(fn)` by identity, so a `dependency_overrides` entry keys on the
+function in `deps.py`. Tests read only `app_module.app`.
+
+**Why `register()`, not `app.include_router`.** In FastAPI 0.141.1
+(installed here; requirements ask only for `>=0.104.0`) `include_router`
+appends one opaque `_IncludedRouter` to `app.routes` instead of copying
+the routes, so `test_route_table.py` could not see what it guards; copying
+a router's own `APIRoute` objects instead would bypass
+`app.dependency_overrides`. `routers.Router` records each
+`add_api_route` call and `routers.register(app, router)` replays it on
+the app, the path `@app.get` itself takes, on any FastAPI version.
+`backend/routers/__init__.py` has the detail;
+`tests/backend/test_routers_register.py` pins it.
+
+The characterisation tests written for the split pin odd current behaviour
+on purpose (each is marked ODD in its docstring and has an entry below);
+fixing one is its own change.
 
 ---
 
@@ -980,7 +881,7 @@ entrypoint fail loudly when a local run has no DB.
 
 **verified** — nothing imports `upsert_track`, `track_exists_by_spotify_id`,
 `update_audio_path` or `update_spotify_id`. Worth deleting rather than
-leaving: the module is named `db`, and `backend/app.py:42` puts `ingest/` on
+leaving: the module is named `db`, and `backend/bootstrap.py` puts `ingest/` on
 `sys.path`, so a future `import db` resolves to whichever directory wins. The
 file is also a trap on its own terms — `upsert_track`'s UPDATE branch writes
 all 20 `_TRACK_COLS` from `track_data.get(c)`, nulling every column absent
@@ -1006,13 +907,13 @@ on the default" the comment promises either. Use
 `Object.prototype.hasOwnProperty.call(RETURN_PATHS, state)`.
 
 ### 4.7 Jobs are never reaped despite a comment saying they are
-`backend/app.py:2333`
+`backend/services/jobs.py` (`_update_job`)
 
-**verified.** `_update_job`'s docstring says it "silently ignores a job that
-has been reaped", but nothing reaps: `JOBS` only loses entries via the two
-`JOBS.pop` calls in `/api/ingest/single` (`backend/app.py:3140`,
-`backend/app.py:3144`). Every completed sync job leaks its dict for the life
-of the process. Add a TTL sweep, or delete the claim.
+**verified** (re-read 2026-10-25). `_update_job`'s docstring says it
+"silently ignores a job that has been reaped", but nothing reaps: no code
+removes an entry from `JOBS` at all (`/api/ingest/single`'s two
+`JOBS.pop` calls went with its temporary job in `a2d46a5`). Every job leaks its
+dict for the life of the process. Add a TTL sweep, or delete the claim.
 
 ### 4.8 ~~`run_ingest_v2.py --help` crashes on a Windows console~~ — DONE (2026-10-15)
 `scripts/run_ingest_v2.py:28`
@@ -1047,6 +948,22 @@ admin-only, so the cheapest fix is deleting the wrapper and model.
   `{track_key}` route, which also accepts a `tracks.id` (pinned in
   `tests/backend/test_stream_routes.py`). Rename the parameter or resolve
   through `_resolve_anchor`.
+
+### 4.11 Comments outside the backend still cite `backend/app.py` line numbers
+**verified** (grep, 2026-10-25). The cleanup PR repointed the backend,
+`ingest/`, `ingest_pipeline/`, `scripts/`, `schema.sql`, the Dockerfile,
+`README.md` and the three frontend files the backlog named (`lib/vibe.js`,
+`lib/api.js`, `features/queue/dj.js`). Still pointing at `app.py`, most
+with line numbers that now land in nothing: `frontend-next/src/App.jsx`
+(the `/callback` bridge and its `code` -> `spotify_code` rename, now
+`routers/auth.py`), `features/login/EmailForm.jsx`,
+`features/login/useSpotifyLogin.js`, `features/panels/features.js`,
+`features/player/bit/useBitState.js` (which also names a `TRACK_FIELDS`
+that never existed: it is `TRACK_COLUMNS` in `track_rows.py`),
+`state/SpotifyAuthContext.jsx`, `frontend-next/MIGRATION.md`,
+`docs/architecture.md`, `docs/mobile-api.md` and
+`mobile/lib/core/api/README.md`. Comments only; the frontend owner's to
+change. Use file and function names, not line numbers.
 
 ---
 
@@ -1866,7 +1783,7 @@ for one) carried this noise; re-run `--final3` before comparing a new
 number against them.
 
 ### 15.8 Track payloads carry `genres`; production answers `[]` until 15.1 step 1
-`backend/app.py` `_track_select`, `_genre_scores_ready`, `backend/track_genres.py`
+`backend/track_rows.py` `_track_select`, `_genre_scores_ready` (cache: `backend/column_ready.py`), `backend/track_genres.py`
 
 **verified by the local test** (`tests/backend/test_track_genres.py`; nothing
 run against production). Every track dict (`_row_to_dict`) has `genres`, a
