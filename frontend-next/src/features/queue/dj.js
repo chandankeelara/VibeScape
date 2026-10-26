@@ -71,7 +71,7 @@ const PLAYED = new Set(['searched', 'picked', 'completed', 'next', 'skipped']);
  * making tracks eligible again while the frontend believed they were excluded.
  *
  * 200 is the backend's own _DJ_MAX_EXCLUDE_IDS, which truncates anything
- * longer, and backend/app.py inlines these as SQL literals in a `NOT IN (...)`
+ * longer, and backend/services/dj.py inlines these as SQL literals in a `NOT IN (...)`
  * clause. At ~7 bytes per id that is ~1.4 KB on the wire.
  */
 export const DJ_MAX_EXCLUDES = 200;

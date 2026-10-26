@@ -1,13 +1,9 @@
 """The FastAPI app, assembled: CORS, every router registered in order with
 routers.register (the SPA router last), and the startup hook. No route is
-defined here; each lives in routers/ (docs/backend-todo.md, "Refactor in
-progress")."""
-import glob
+defined here; each lives in routers/ (docs/backend-todo.md, "Backend
+module map")."""
 import os
-import shutil
 import socket
-import tempfile
-import time as _time
 from typing import Optional
 
 # First: loads .env, imports backend/db.py, then puts the repo root and
@@ -34,11 +30,6 @@ from routers import spotify as spotify_routes
 from routers import stream as stream_routes
 from routers import tracks as tracks_routes
 from routers import youtube as youtube_routes
-
-# `features` pulls in librosa/numpy — heavy deps not needed in the
-# playback-only prod deployment. Import lazily at call sites that need it
-# (only the ingest hot path, and only when Modal ML backend is unavailable).
-feat = None
 
 app = FastAPI(title="VibeScape API")
 

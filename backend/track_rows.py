@@ -14,6 +14,7 @@ from bootstrap import log  # first: puts ingest/ on sys.path for `scoring`
 
 import scoring  # noqa: E402
 import track_genres as _track_genres  # noqa: E402
+from column_ready import cached_ready
 
 TRACK_COLUMNS = [
     "id",
@@ -54,7 +55,6 @@ TRACK_COLUMNS = [
     # library / mood-grid endpoints filter to 'done'.
     "ingestion_status",
 ]
-TRACK_SELECT = ", ".join(TRACK_COLUMNS)
 
 # tracks.genre_scores, read into every track dict as `genres`
 # (track_genres.genres_list). Not in TRACK_COLUMNS because production's
@@ -70,22 +70,16 @@ _genre_scores_state = {"ready": None, "checked_at": 0.0, "warned": False}
 def _genre_scores_ready(conn) -> bool:
     """Does `tracks` have the genre_scores column? A zero-row SELECT, which
     fails the same way on SQLite and over Hrana and reads no rows."""
-    st = _genre_scores_state
-    now = _time.time()
-    if st["ready"] or (st["ready"] is False and now - st["checked_at"] < _GENRE_RECHECK_S):
-        return bool(st["ready"])
-    try:
+    def probe():
         conn.execute(f"SELECT {GENRE_SCORES_COLUMN} FROM tracks LIMIT 0").fetchall()
-        ready = True
-    except Exception as e:
-        ready = False
-        if not st["warned"]:
-            st["warned"] = True
-            log.warning("tracks.%s missing (%s): track payloads carry genres: [] "
-                        "until scripts/_turso_add_genre_columns.py has run",
-                        GENRE_SCORES_COLUMN, e)
-    st["ready"], st["checked_at"] = ready, now
-    return ready
+        return True, ""
+
+    def warn(why):
+        log.warning("tracks.%s missing (%s): track payloads carry genres: [] "
+                    "until scripts/_turso_add_genre_columns.py has run",
+                    GENRE_SCORES_COLUMN, why)
+
+    return cached_ready(_genre_scores_state, _GENRE_RECHECK_S, probe, warn)
 
 
 def _track_select(conn, alias: str = "t") -> str:

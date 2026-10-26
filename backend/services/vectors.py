@@ -8,12 +8,12 @@ constants must match ingest_pipeline/fused_vector.py
 are mutated in place, never rebound.
 """
 import os
-from datetime import datetime, timezone
 from typing import Optional
 
 import numpy as np
 
 from bootstrap import log
+from column_ready import cached_ready
 
 MERT_MODEL_VERSION = "mert_v1_95m_fp32_30s"
 MERT_DIM = 768
@@ -59,32 +59,26 @@ _fused_v3_state = {"ready": None, "checked_at": 0.0, "warned": False}
 def _column_ready(conn, st: dict, col: str, needs_rows: bool, fallback: str) -> bool:
     """Is `col` usable for ranking? Once it is, that is cached for the life
     of the process; a no is re-checked every _FUSED_V2_RECHECK_S, so a
-    migration run while instances are up is picked up without a restart.
+    migration run while instances are up is picked up without a restart
+    (the cache is column_ready.cached_ready, shared with genre_scores).
     Without `needs_rows` the column only has to exist (a zero-row SELECT, not
     PRAGMA: it fails the same way on SQLite and over Hrana); with it, one row
     must hold a vector. That second query stops at its first hit, so it is a
     scan only while the column exists and is empty -- on Turso, the minutes
     between refuse_vectors.py adding the column and writing it, or a
     database where it was added and never filled."""
-    now = datetime.now(timezone.utc).timestamp()
-    if st["ready"] or (st["ready"] is False and now - st["checked_at"] < _FUSED_V2_RECHECK_S):
-        return bool(st["ready"])
-    try:
+    def probe():
         if needs_rows:
-            ready = conn.execute(f"SELECT 1 FROM track_embeddings WHERE {col} IS NOT NULL "
-                                 f"LIMIT 1").fetchone() is not None
-            why = "no vectors"
-        else:
-            conn.execute(f"SELECT {col} FROM track_embeddings LIMIT 0").fetchall()
-            ready, why = True, ""
-    except Exception as e:
-        ready, why = False, str(e)
-    if not ready and not st["warned"]:
-        st["warned"] = True
+            return (conn.execute(f"SELECT 1 FROM track_embeddings WHERE {col} IS NOT NULL "
+                                 f"LIMIT 1").fetchone() is not None, "no vectors")
+        conn.execute(f"SELECT {col} FROM track_embeddings LIMIT 0").fetchall()
+        return True, ""
+
+    def warn(why):
         log.warning("[dj] %s not ready (%s): ranking %s until "
                     "scripts/refuse_vectors.py has run", col, why, fallback)
-    st["ready"], st["checked_at"] = ready, now
-    return ready
+
+    return cached_ready(st, _FUSED_V2_RECHECK_S, probe, warn)
 
 
 def _fused_v2_ready(conn) -> bool:

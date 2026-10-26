@@ -7,8 +7,9 @@ Mode is chosen by env var VIBESCAPE_ML_MODE:
     auto    -> default. Try Modal (if MODAL_TOKEN_ID set), else local, else none.
 
 Both public entrypoints below have the SAME signature and return value shape
-regardless of which backend served the call, so callers (backend/app.py ingest,
-ml/src/backfill_languages.py) don't need to care.
+regardless of which backend served the call, so callers
+(ingest_pipeline/stage_classify.py; the web backend no longer imports this
+module) don't need to care.
 
 Local mode env knobs:
     VIBESCAPE_MERT_CKPT       (default: <repo>/ml/models/mert_v1.ckpt)

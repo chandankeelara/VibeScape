@@ -1,9 +1,14 @@
 """Resolve and cache the YouTube video ID for every track that hasn't been
 queried yet.
 
-Runs the same yt-dlp search ladder as backend/routers/youtube.py::_yt_search_sync so the
-prewarmed IDs match what the endpoint would have produced. Writes directly
-to `data/vibescape.db`. Resume-safe: re-running skips anything already
+Runs a yt-dlp search ladder (ytsearch5 over progressively relaxed queries)
+and keeps the first candidate a full extract shows is embeddable. No
+endpoint searches: GET /api/tracks/{id}/youtube only returns the cached id
+(backend/routers/youtube.py). The ladder was copied from a backend helper,
+_yt_search_sync, that no route called; it was deleted on 2026-10-25. The
+pipeline's youtube stage (ingest_pipeline/stage_youtube.py) is the other
+writer of tracks.youtube_id, and it stores the first search hit without
+these checks. Writes directly to `data/vibescape.db`. Resume-safe: re-running skips anything already
 queried (whether hit or miss).
 
 Usage (from project root, or anywhere — paths are absolute-safe):

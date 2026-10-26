@@ -10,7 +10,7 @@ process, terminated on exit, is the whole lifecycle.
 
 The environment is built, not inherited wholesale: DB_BACKEND is forced to
 sqlite and every TURSO_* variable is dropped, so nothing in the caller's
-shell can point this server at production. backend/app.py also calls
+shell can point this server at production. backend/bootstrap.py also calls
 load_dotenv(<repo>/.env), which never overrides a variable already set.
 VIBESCAPE_DB_PATH is the only way to choose the file (backend/CLAUDE.md:
 setting db.DB_PATH does nothing).

@@ -82,29 +82,6 @@ def _iter_tracks(token: str, sources: IngestSources) -> Iterator[tuple[dict, str
                 yield t, f"playlist:{pid}"
 
 
-def _collect_tracks(token: str, sources: IngestSources) -> list[tuple[dict, str]]:
-    seen: set[str] = set()
-    out: list[tuple[dict, str]] = []
-
-    def _add(items: list[dict], src: str):
-        for t in items:
-            tid = t.get("id") if isinstance(t, dict) else None
-            if not tid or tid in seen:
-                continue
-            seen.add(tid)
-            out.append((t, src))
-
-    if sources.liked:
-        _add(splib.fetch_liked(token), "liked_songs")
-    if sources.top_tracks:
-        _add(splib.fetch_top_tracks(token), "top_tracks")
-    for pid in sources.playlist_ids or []:
-        if not pid:
-            continue
-        _add(splib.fetch_playlist_tracks(pid, token), f"playlist:{pid}")
-    return out
-
-
 def _playable_first(conn, tracks, job_id):
     """Reorder a sync so the tracks that are INSTANTLY playable go first.
 

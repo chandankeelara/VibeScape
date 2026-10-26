@@ -13,22 +13,9 @@ tests (test_ingest_jobs), so callers read it as
 import sqlite3
 from typing import Optional
 
-import requests
-
 from bootstrap import log
 from services.jobs import _update_job
 from track_rows import _isrc_of
-
-
-def _itunes_lookup_by_isrc(isrc: str) -> Optional[dict]:
-    try:
-        r = requests.get("https://itunes.apple.com/lookup", params={"isrc": isrc}, timeout=15)
-        r.raise_for_status()
-        results = r.json().get("results") or []
-        return results[0] if results else None
-    except requests.RequestException as e:
-        log.warning("itunes ISRC lookup failed for %s: %s", isrc, e)
-        return None
 
 
 # _itunes_search_track() lived here for the synchronous worker. Preview

@@ -5,7 +5,6 @@ _yt_manual_search_sync and _YT_SEARCH_TIMEOUT_S are patched by tests, so the
 search route reads them as this module's globals at call time."""
 import asyncio
 import re
-from typing import Optional
 
 from bootstrap import log  # first: .env, sys.path (see bootstrap.py)
 
@@ -23,87 +22,6 @@ router = Router()
 _YT_SEARCH_TIMEOUT_S = 15.0
 
 
-def _yt_search_sync(artist: str, title: str) -> Optional[str]:
-    """
-    Blocking yt-dlp search. Returns the first EMBEDDABLE 11-char YouTube
-    video ID or None. Uses ytsearch5 across a query ladder, then validates
-    each candidate via full extract (playable_in_embed True, age_limit 0,
-    availability public/unlisted).
-    """
-    try:
-        from yt_dlp import YoutubeDL
-    except Exception:
-        log.warning("[youtube] yt_dlp import failed")
-        return None
-
-    queries = [
-        f'ytsearch5:"{title} - {artist} official music video"',
-        f'ytsearch5:"{title} - {artist}"',
-        f'ytsearch5:{title} {artist} official music video',
-        f'ytsearch5:{title} {artist}',
-        f'ytsearch5:{title}',
-        f'ytsearch5:{artist}',
-    ]
-    flat_opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "skip_download": True, "noplaylist": True}
-    full_opts = {
-        "quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True,
-        "extractor_args": {"youtube": {"player_client": ["default", "android", "web_embedded"]}},
-    }
-
-    seen_ids: set = set()
-    for q in queries:
-        try:
-            with YoutubeDL(flat_opts) as ydl:
-                info = ydl.extract_info(q, download=False)
-        except Exception as e:
-            log.warning("[youtube] search failed for %r: %s", q, e)
-            continue
-        entries = info.get("entries") if isinstance(info, dict) else None
-        if not entries:
-            continue
-        for entry in entries:
-            if not entry:
-                continue
-            vid = entry.get("id") if isinstance(entry, dict) else None
-            if not (isinstance(vid, str) and len(vid) == 11):
-                continue
-            if vid in seen_ids:
-                continue
-            seen_ids.add(vid)
-            try:
-                with YoutubeDL(full_opts) as ydl:
-                    full = ydl.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
-            except Exception:
-                continue
-            if not full:
-                continue
-            if full.get("playable_in_embed") is False:
-                continue
-            if full.get("age_limit"):
-                continue
-            avail = full.get("availability")
-            if avail not in (None, "public", "unlisted"):
-                continue
-            if full.get("live_status") in ("is_upcoming", "post_live"):
-                continue
-            return vid
-    return None
-
-
-async def _yt_search_with_timeout(artist: str, title: str) -> Optional[str]:
-    try:
-        return await asyncio.wait_for(
-            run_in_threadpool(_yt_search_sync, artist, title),
-            timeout=_YT_SEARCH_TIMEOUT_S,
-        )
-    except asyncio.TimeoutError:
-        log.warning("[youtube] search timed out for %r - %r", artist, title)
-        return None
-    except Exception as e:
-        log.warning("[youtube] unexpected error for %r - %r: %s", artist, title, e)
-        return None
-
-
 @router.get("/api/tracks/{track_id}/youtube")
 async def get_track_youtube(track_id: int, sess: dict = Depends(require_user)):
     """
@@ -111,6 +29,9 @@ async def get_track_youtube(track_id: int, sess: dict = Depends(require_user)):
     one. Never triggers a search — resolution is done offline by
     scripts/prewarm_youtube.py so users never eat the ~3–5s yt-dlp latency.
     """
+    # The pipeline's youtube stage (ingest_pipeline/stage_youtube.py) writes
+    # tracks.youtube_id too. Said here, not in the docstring above: FastAPI
+    # serves that as this route's OpenAPI description.
     conn = db.get_conn()
     try:
         row = conn.execute(

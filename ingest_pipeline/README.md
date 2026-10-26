@@ -610,7 +610,10 @@ stage_*.py           the eight stages
 
 `ingest/` next door is **not** an older copy of this. Despite the name it is
 the shared client layer — `ml_backend`, `features`, `scoring`,
-`itunes_client` — imported by both this package and `backend/app.py`.
+`itunes_client` — imported by this package. The web backend imports only
+`scoring`, `score_recompute` and the Spotify modules (`spotify_guard`,
+`spotify_library`, `spotify_matcher`) from it, never `ml_backend` or
+`features`.
 
 ## Operating it
 

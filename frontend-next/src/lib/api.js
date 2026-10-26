@@ -8,8 +8,9 @@
  *     query variant instead — see streamUrl(). Do NOT extend ?token= to any
  *     other endpoint; the backend only scrubs it from logs for /api/stream/*.
  *
- * Route list mirrors docs/mobile-api.md §7, whose source of truth is
- * backend/app.py.
+ * Route list mirrors docs/mobile-api.md §7. The source of truth is the
+ * backend's route table, pinned in tests/backend/test_route_table.py (the
+ * routes live in backend/routers/).
  */
 
 import { getToken, clearToken } from './session';
@@ -90,7 +91,7 @@ export const spotifyConfig = () => request('/api/spotify/config', { auth: false 
 export const spotifyRefresh = (refresh_token) =>
   request('/api/spotify/refresh', { method: 'POST', body: { refresh_token } });
 /**
- * WARNING: `GET /api/users` does NOT exist in backend/app.py. It is listed in
+ * WARNING: `GET /api/users` does NOT exist in the backend (backend/routers/). It is listed in
  * docs/mobile-api.md §7, but that doc is stale — verified 2026-09-27 against
  * the route table. Kept only so the profile-picker UI still compiles; it will
  * 404. Do not build new features on it.
@@ -104,10 +105,12 @@ export const demoMoods = () => request('/api/demo/moods', { auth: false });
 export const signup = (payload) => request('/api/auth/signup', { method: 'POST', body: payload, auth: false });
 export const login = (payload) => request('/api/auth/login', { method: 'POST', body: payload, auth: false });
 
-/** Zero-friction demo mode — all guests share one 'Guest' user (app.py:703). */
+/** Zero-friction demo mode — all guests share one 'Guest' user
+ *  (auth_guest, backend/routers/auth.py). */
 export const guestLogin = () => request('/api/auth/guest', { method: 'POST', auth: false });
 
-/** Log in / sign up with a Spotify authorization code (app.py:525). Returns
+/** Log in / sign up with a Spotify authorization code (auth_spotify_oauth,
+ *  backend/routers/auth.py). Returns
  *  the same payload shape as /api/auth/login. */
 export const spotifyOAuthLogin = (payload) =>
   request('/api/auth/spotify-oauth', { method: 'POST', body: payload, auth: false });
@@ -127,7 +130,7 @@ export const similarTracks = (trackKey, params) =>
   request(`/api/tracks/${encodeURIComponent(trackKey)}/similar${qs(params)}`);
 
 /**
- * POST variant of /similar (backend/app.py:1506 → _similar_dj). DJ mode needs
+ * POST variant of /similar (backend/routers/dj.py → services/dj.py _similar_dj). DJ mode needs
  * this because the session weights don't fit in a query string.
  * body: { mode:'dj', positive_ids:[{id,weight}], negative_ids:[{id,weight}],
  *         exclude_ids:[int], limit:int }
@@ -214,7 +217,7 @@ const KEEPALIVE_OK = (() => {
  *   3. The unload path needs `keepalive`.
  *
  * Why keepalive and not navigator.sendBeacon: /api/events is guarded by
- * require_user (backend/app.py), which is header-only Bearer — sendBeacon
+ * require_user (backend/deps.py), which is header-only Bearer — sendBeacon
  * cannot set a header, and ?token= is the controlled compromise for
  * /api/stream/* ONLY (see streamUrl above). keepalive is the one unload-safe
  * transport that can still send Authorization, so it is the primary path and

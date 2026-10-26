@@ -495,3 +495,75 @@ def test_public_job_failures_end_the_job_in_error(client, make_user, public, err
     public.tracks = error
     s = wait(client, h, start_public(client, h).json()["job_id"])
     assert (s["status"], s["error_message"]) == ("error", message)
+
+
+# ------------------------------------------------ the initial job dict, exactly
+
+@pytest.fixture
+def unstarted(monkeypatch, app_module):
+    """routers/ingest.py's own `threading` binding, with a Thread that never
+    runs: each job stays exactly as its route created it."""
+    from routers import ingest as ingest_routes
+
+    class Unstarted:
+        def __init__(self, target=None, args=(), daemon=None):
+            pass
+
+        def start(self):
+            pass
+    monkeypatch.setattr(ingest_routes, "threading", SimpleNamespace(Thread=Unstarted))
+
+
+BUCKETS = [("total", 0), ("processed", 0), ("collecting", True), ("added_to_library", 0),
+           ("already_in_library", 0), ("queued_for_analysis", 0), ("skipped", 0)]
+TAIL = [("cancel_requested", False), ("error_message", None)]
+
+
+def _created(client, h, r):
+    """The job as /api/ingest/status returns it, as (key, value) pairs in
+    the order the JSON lists them, checked against the dict in JOBS."""
+    assert r.status_code == 202, r.text
+    job_id = r.json()["job_id"]
+    body = client.get(f"/api/ingest/status/{job_id}", headers=h).json()
+    with jobs.JOBS_LOCK:
+        assert list(jobs.JOBS[job_id].items()) == list(body.items())
+    return list(body.items())
+
+
+def test_the_library_sync_job_starts_as_this_exact_dict(client, make_user, unstarted):
+    """Key order included: it is the order of /api/ingest/status's JSON."""
+    uid, h = make_user()
+    r = client.post("/api/ingest/spotify", headers=h,
+                    json={"access_token": "T", "sources": {"liked": True}})
+    assert _created(client, h, r) == [
+        ("status", "pending"), ("user_id", uid), ("current_track", None),
+        *BUCKETS, *TAIL]
+
+
+@pytest.mark.parametrize("token,probe,auth_mode,note", [
+    ("USER", [200], "user_oauth", None),
+    (None, [200], "app_token", None),
+    ("USER", [403, 200], "user_oauth",
+     "Followed playlist to enable ingest — visible in your Spotify library."),
+])
+def test_the_public_playlist_job_starts_as_this_exact_dict(client, make_user, public, unstarted,
+                                                            token, probe, auth_mode, note):
+    uid, h = make_user()
+    public.probe = probe
+    assert _created(client, h, start_public(client, h, token=token)) == [
+        ("status", "pending"), ("user_id", uid), ("current_track", None),
+        ("playlist_id", PID), ("source", "public_playlist"), ("auth_mode", auth_mode),
+        ("note", note), *BUCKETS, *TAIL]
+
+
+@pytest.mark.parametrize("url,kind", [
+    ("https://music.apple.com/us/playlist/x/pl.abc", "apple"),
+    (f"https://open.spotify.com/playlist/{PID}", "spotify"),
+])
+def test_the_playlist_link_job_starts_as_this_exact_dict(client, make_user, unstarted, url, kind):
+    uid, h = make_user()
+    r = client.post("/api/ingest/playlist-url", json={"url": url}, headers=h)
+    assert _created(client, h, r) == [
+        ("status", "pending"), ("user_id", uid), ("current_track", None),
+        ("source", f"playlist_url:{kind}"), ("platform", kind), ("playlist_name", None),
+        ("note", None), *BUCKETS, ("not_matched", 0), ("unmatched", []), *TAIL]

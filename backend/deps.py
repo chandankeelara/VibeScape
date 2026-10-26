@@ -66,12 +66,11 @@ def _extract_bearer(auth_header: Optional[str]) -> Optional[str]:
     return tok or None
 
 
-def require_user(request: Request, authorization: Optional[str] = Header(None)) -> dict:
-    """
-    FastAPI dependency. Returns the auth session dict {user_id, display_name, ...}
-    or raises 401. Attaches user_id onto request.state for logging.
-    """
-    token = _extract_bearer(authorization)
+def _require_session(request: Request, token: Optional[str]) -> dict:
+    """The body require_user and require_user_stream share once each has
+    picked its token: 401 missing_authorization without one, 401
+    invalid_session when no session has it, else the session dict, with
+    user_id and the token attached to request.state for logging."""
     if not token:
         raise HTTPException(status_code=401, detail={"error": "missing_authorization"})
     conn = db.get_conn()
@@ -84,6 +83,14 @@ def require_user(request: Request, authorization: Optional[str] = Header(None)) 
     request.state.user_id = sess["user_id"]
     request.state.session_token = token
     return sess
+
+
+def require_user(request: Request, authorization: Optional[str] = Header(None)) -> dict:
+    """
+    FastAPI dependency. Returns the auth session dict {user_id, display_name, ...}
+    or raises 401. Attaches user_id onto request.state for logging.
+    """
+    return _require_session(request, _extract_bearer(authorization))
 
 
 # The user_id of the single admin is stored in an env var so it's
@@ -109,18 +116,9 @@ def require_user_stream(request: Request, authorization: Optional[str] = Header(
     endpoints should keep header-only auth so tokens don't leak into
     server logs / referer / URL-shaped caches.
     """
+    # The query token only when the header holds no bearer: a bearer that
+    # fails is a 401, not a fallback (tests/backend/test_stream_routes.py).
     token = _extract_bearer(authorization)
     if not token:
         token = (request.query_params.get("token") or "").strip() or None
-    if not token:
-        raise HTTPException(status_code=401, detail={"error": "missing_authorization"})
-    conn = db.get_conn()
-    try:
-        sess = _lookup_session(conn, token)
-    finally:
-        conn.close()
-    if not sess:
-        raise HTTPException(status_code=401, detail={"error": "invalid_session"})
-    request.state.user_id = sess["user_id"]
-    request.state.session_token = token
-    return sess
+    return _require_session(request, token)

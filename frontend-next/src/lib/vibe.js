@@ -207,7 +207,7 @@ export const isMetadataOnly = (t) => t?.classification_source === 'metadata_only
  * `{track_key}` path segment on the API.
  *
  * MUST stay spotify_id-first. The backend's `_resolve_anchor`
- * (backend/app.py:924) accepts a spotify_id or the internal numeric
+ * (backend/services/vectors.py) accepts a spotify_id or the internal numeric
  * `tracks.id` ONLY — its docstring notes the apple_id lookup path was
  * retired because every row now has a spotify_id. An apple_id-keyed request
  * to /similar or /features 404s.
@@ -242,8 +242,8 @@ export function trackVibe(t) {
  * The key to send to the API — path segments and id payloads alike.
  *
  * Prefers the internal numeric `tracks.id`. The backend's `_resolve_anchor`
- * (app.py:924) and `_resolve_ids_to_track_ids` (app.py:1168) both short-circuit
- * on ints and skip SQL entirely; a spotify_id string costs a batched lookup.
+ * (services/vectors.py) and `_resolve_ids_to_track_ids` (services/dj.py) both
+ * short-circuit on ints and skip SQL entirely; a spotify_id string costs a batched lookup.
  * On a 50-entry DJ exclude list that difference used to be ~750ms.
  *
  * Falls back to spotify_id for tracks that aren't in the library yet — Spotify

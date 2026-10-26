@@ -26,8 +26,9 @@ class PreviewStage(Stage):
     status_column = "preview_status"
     # Preview is an ENTRY stage: nothing upstream arms it, so it triggers
     # off ingestion_status='pending' — the only status column the app's
-    # INSERT writes literally (backend/app.py). The other six rely on a
-    # column DEFAULT that exists locally but not in Turso.
+    # INSERT writes literally (_process_track in
+    # backend/services/library_ingest.py). The other six rely on a column
+    # DEFAULT that exists locally but not in Turso.
     arms = ("download_status",)
     # No provider had a preview: the track can never be analysed, so this
     # settles it. Was promote()'s ->no_preview rule.

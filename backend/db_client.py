@@ -3,7 +3,8 @@ Database connection factory that transparently switches between local
 SQLite (default) and Turso/libSQL based on the DB_BACKEND env var.
 
 The returned connection object exposes the same surface that
-`backend/app.py` and `backend/db.py` rely on today:
+the backend (`backend/db.py`, and the routes and services through
+`db.get_conn()`) relies on today:
 
     conn.execute(sql, params) -> Cursor        # positional params only
     conn.execute_batch([(sql, params), ...])   # one transaction, see below
@@ -131,7 +132,7 @@ def _decode_blob(text) -> bytes:
     urlsafe_b64decode with the same padding). The reader before this, a
     bare `except` around plain b64decode, returned 3072 bytes and 0 bytes.
     So only blobs whose length is not a multiple of 3 broke: every fused
-    vector, the empty read backend/app.py works around with
+    vector, the empty read services/vectors.py works around with
     vector_extract(), and never the MERT vector. libsql's source agrees
     (STANDARD_NO_PAD in libsql-hrana/src/proto.rs); the Hrana spec names
     neither padding nor alphabet.

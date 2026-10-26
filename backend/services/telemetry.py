@@ -1,6 +1,6 @@
 """Listening telemetry: event normalisation, the per-track and per-user
-stats rollups, and _record_track_events, which POST /api/events (still in
-app.py) and tests/database/test_rollup_rebuild.py call.
+stats rollups, and _record_track_events, which POST /api/events (routers/events.py)
+and tests/database/test_rollup_rebuild.py call.
 
 Moved out of app.py unchanged (refactor PR 2, 2026-10-25), except that the
 qualified-play threshold is read as recency._DJ_QUALIFIED_PLAY_MS rather
