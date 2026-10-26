@@ -1,5 +1,9 @@
-"""Deezer public-API client used as a fallback when Spotify's preview_url
-is empty and iTunes' term search misses.
+"""Deezer public-API client, built as a preview fallback for when Spotify's
+preview_url is empty and iTunes' term search misses. Not used by default:
+nothing imports this module (checked 2026-10-25). ingest_pipeline/
+preview_providers.py's DeezerIsrcPreview and DeezerSearchPreview take it as
+their client, but default_chain() is Spotify then iTunes only, because Deezer
+previews shift MERT embeddings (see its docstring).
 
 Spotify killed preview_url for most tracks in Nov 2024, and iTunes'
 undocumented /lookup?isrc= now returns 0 hits for every ISRC. Deezer's
@@ -8,8 +12,9 @@ term search — and importantly, it has good coverage for the
 Indian/Punjabi/Tamil regional catalog that iTunes' western-biased search
 routinely misses.
 
-Two entry points mirror ingest/itunes_client.py shape so
-backend/services/library_ingest.py:_process_track can call them without branching on source:
+Two entry points mirror ingest/itunes_client.py's shape, so a preview
+provider can call either client without branching on source
+(_process_track, the online ingest, calls no preview lookup at all):
 
     lookup_by_isrc(isrc) -> dict | None
     search_track(title, artist) -> dict | None
