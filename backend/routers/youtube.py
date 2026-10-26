@@ -26,10 +26,12 @@ _YT_SEARCH_TIMEOUT_S = 15.0
 async def get_track_youtube(track_id: int, sess: dict = Depends(require_user)):
     """
     Return the cached YouTube video ID for a track, or null if we don't have
-    one. Never triggers a search — resolution is done offline, by the
-    pipeline's youtube stage (ingest_pipeline/stage_youtube.py) or
-    scripts/prewarm_youtube.py, so users never eat the ~3–5s yt-dlp latency.
+    one. Never triggers a search — resolution is done offline by
+    scripts/prewarm_youtube.py so users never eat the ~3–5s yt-dlp latency.
     """
+    # The pipeline's youtube stage (ingest_pipeline/stage_youtube.py) writes
+    # tracks.youtube_id too. Said here, not in the docstring above: FastAPI
+    # serves that as this route's OpenAPI description.
     conn = db.get_conn()
     try:
         row = conn.execute(
